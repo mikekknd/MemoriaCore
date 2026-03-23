@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory DB Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #1a1a2e;
+  --bg2: #16213e;
+  --bg3: #0f3460;
+  --card: #1e2746;
+  --border: #2a3a5c;
+  --text: #e0e0e0;
+  --text2: #a0a8c0;
+  --accent: #4fc3f7;
+  --accent2: #81d4fa;
+  --green: #66bb6a;
+  --yellow: #ffd54f;
+  --red: #ef5350;
+  --orange: #ffa726;
+  --purple: #ab47bc;
+  --pink: #f06292;
+}
+
+body {
+  font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ===== Header ===== */
+.header {
+  background: linear-gradient(135deg, var(--bg2), var(--bg3));
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.header h1 { font-size: 20px; color: var(--accent); }
+.header .file-info { font-size: 13px; color: var(--text2); }
+
+/* ===== Drop Zone ===== */
+.drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: calc(100vh - 60px);
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  margin: 24px;
+  transition: all 0.3s;
+  cursor: pointer;
+}
+.drop-zone.hover { border-color: var(--accent); background: rgba(79,195,247,0.05); }
+.drop-zone .icon { font-size: 64px; margin-bottom: 16px; }
+.drop-zone p { font-size: 16px; color: var(--text2); }
+.drop-zone small { font-size: 12px; color: var(--text2); margin-top: 8px; }
+
+/* ===== Stats Bar ===== */
+.stats-bar {
+  display: flex;
+  gap: 16px;
+  padding: 12px 24px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text2);
+}
+.stat-item .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.stat-item .count { font-weight: 700; color: var(--text); }
+
+/* ===== Table Tabs ===== */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 8px 24px 0;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 8px 20px;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--text2);
+  border: 1px solid transparent;
+  border-bottom: none;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tab:hover { background: rgba(79,195,247,0.08); }
+.tab.active {
+  background: var(--card);
+  color: var(--accent);
+  border-color: var(--border);
+}
+.tab .badge {
+  background: var(--bg3);
+  color: var(--accent2);
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ===== Toolbar ===== */
+.toolbar {
+  display: flex;
+  gap: 12px;
+  padding: 12px 24px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.search-box {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.search-box:focus { border-color: var(--accent); }
+.search-box::placeholder { color: var(--text2); }
+
+.filter-select {
+  padding: 8px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.btn {
+  padding: 8px 16px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn:hover { background: var(--accent); color: var(--bg); }
+
+.page-info { font-size: 12px; color: var(--text2); }
+
+/* ===== Content Area ===== */
+.content { padding: 0 24px 24px; }
+
+/* ===== Data Table ===== */
+.data-table-wrapper {
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.data-table th {
+  background: var(--bg3);
+  color: var(--accent2);
+  padding: 10px 14px;
+  text-align: left;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 2px solid var(--border);
+}
+.data-table th:hover { color: var(--accent); }
+.data-table th .sort-arrow { margin-left: 4px; font-size: 10px; }
+
+.data-table td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  max-width: 400px;
+}
+.data-table tr:hover { background: rgba(79,195,247,0.04); }
+.data-table tr:nth-child(even) { background: rgba(0,0,0,0.1); }
+.data-table tr:nth-child(even):hover { background: rgba(79,195,247,0.06); }
+
+/* ===== Cell Styles ===== */
+.cell-timestamp { color: var(--yellow); white-space: nowrap; font-family: monospace; font-size: 12px; }
+.cell-id { color: var(--text2); font-family: monospace; font-size: 11px; word-break: break-all; max-width: 180px; }
+.cell-number { color: var(--orange); font-family: monospace; text-align: right; }
+.cell-text { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.cell-blob { color: var(--purple); font-style: italic; font-size: 12px; }
+.cell-null { color: var(--text2); font-style: italic; }
+.cell-category {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.cat-basic_info { background: rgba(79,195,247,0.15); color: var(--accent); }
+.cat-explicit_preference { background: rgba(102,187,106,0.15); color: var(--green); }
+.cat-behavioral_pattern { background: rgba(255,167,38,0.15); color: var(--orange); }
+.cat-relationship { background: rgba(171,71,188,0.15); color: var(--purple); }
+.cat-default { background: rgba(224,224,224,0.1); color: var(--text2); }
+
+.confidence-positive { color: var(--green); }
+.confidence-negative { color: var(--red); font-weight: 700; }
+.consolidated-yes { color: var(--green); }
+.consolidated-no { color: var(--text2); }
+
+/* ===== Expandable JSON ===== */
+.json-toggle {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.json-toggle:hover { color: var(--accent2); }
+.json-content {
+  display: none;
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.json-content.open { display: block; }
+
+/* JSON syntax highlighting */
+.json-key { color: var(--accent); }
+.json-string { color: var(--green); }
+.json-number { color: var(--orange); }
+.json-bool { color: var(--purple); }
+.json-null { color: var(--text2); }
+
+/* ===== Row Detail Modal ===== */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 100;
+  justify-content: center;
+  align-items: center;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 800px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+}
+.modal-title {
+  font-size: 16px;
+  color: var(--accent);
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text2);
+  font-size: 24px;
+  cursor: pointer;
+}
+.modal-close:hover { color: var(--red); }
+.modal-field {
+  margin-bottom: 12px;
+  padding: 10px;
+  background: rgba(0,0,0,0.15);
+  border-radius: 8px;
+}
+.modal-field-label {
+  font-size: 11px;
+  color: var(--accent2);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+.modal-field-value {
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+/* ===== Dialogue Viewer ===== */
+.dialogue-list { display: flex; flex-direction: column; gap: 8px; }
+.dialogue-msg {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.dialogue-msg.user { background: rgba(79,195,247,0.1); border-left: 3px solid var(--accent); }
+.dialogue-msg.assistant { background: rgba(102,187,106,0.1); border-left: 3px solid var(--green); }
+.dialogue-msg.system { background: rgba(255,213,79,0.1); border-left: 3px solid var(--yellow); }
+.dialogue-role {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.dialogue-msg.user .dialogue-role { color: var(--accent); }
+.dialogue-msg.assistant .dialogue-role { color: var(--green); }
+.dialogue-msg.system .dialogue-role { color: var(--yellow); }
+
+/* ===== Preference Tags ===== */
+.pref-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  margin: 2px 4px 2px 0;
+  border-radius: 12px;
+  font-size: 12px;
+  background: rgba(171,71,188,0.15);
+  color: var(--purple);
+}
+.pref-intensity {
+  font-size: 10px;
+  color: var(--text2);
+  margin-left: 4px;
+}
+
+/* ===== Custom SQL ===== */
+.sql-panel {
+  display: none;
+  padding: 16px 24px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.sql-panel.open { display: block; }
+.sql-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  outline: none;
+  resize: vertical;
+  min-height: 60px;
+}
+.sql-input:focus { border-color: var(--accent); }
+.sql-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+.sql-error { color: var(--red); font-size: 12px; margin-left: 12px; }
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--bg3); }
+
+/* ===== Loading ===== */
+.loading {
+  display: none;
+  text-align: center;
+  padding: 60px;
+  color: var(--text2);
+}
+.loading.active { display: block; }
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🗄️ Memory DB Viewer</h1>
+  <span class="file-info" id="fileInfo">拖入 .db 檔案以開始</span>
+</div>
+
+<!-- Drop Zone -->
+<div class="drop-zone" id="dropZone">
+  <div class="icon">🗃️</div>
+  <p>拖放 SQLite .db 檔案到此處</p>
+  <small>或點擊選擇檔案</small>
+  <input type="file" id="fileInput" accept=".db,.sqlite,.sqlite3" style="display:none">
+</div>
+
+<!-- Loading -->
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <p>正在載入資料庫...</p>
+</div>
+
+<!-- Main View (hidden until loaded) -->
+<div id="mainView" style="display:none">
+  <!-- Stats -->
+  <div class="stats-bar" id="statsBar"></div>
+
+  <!-- Table Tabs -->
+  <div class="tab-bar" id="tabBar"></div>
+
+  <!-- SQL Panel -->
+  <div class="sql-panel" id="sqlPanel">
+    <textarea class="sql-input" id="sqlInput" placeholder="輸入自訂 SQL 查詢... (例如 SELECT * FROM memory_blocks WHERE encounter_count > 2)"></textarea>
+    <div class="sql-actions">
+      <button class="btn" onclick="executeCustomSQL()">▶ 執行</button>
+      <button class="btn" onclick="toggleSQL()">✕ 關閉</button>
+      <span class="sql-error" id="sqlError"></span>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar" id="toolbar">
+    <input class="search-box" id="searchBox" type="text" placeholder="🔍 搜尋... (Ctrl+F)">
+    <select class="filter-select" id="filterSelect" style="display:none"></select>
+    <button class="btn" onclick="toggleSQL()">📝 SQL 查詢</button>
+    <button class="btn" onclick="exportCSV()">📥 匯出 CSV</button>
+    <div style="flex:1"></div>
+    <button class="btn" id="prevPage" onclick="changePage(-1)">◀</button>
+    <span class="page-info" id="pageInfo"></span>
+    <button class="btn" id="nextPage" onclick="changePage(1)">▶</button>
+  </div>
+
+  <!-- Data Table -->
+  <div class="content">
+    <div class="data-table-wrapper">
+      <table class="data-table" id="dataTable">
+        <thead id="tableHead"></thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Row Detail Modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-title">
+      <span id="modalTitle">詳細資料</span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<script>
+// ===== Global State =====
+let db = null;
+let currentTable = '';
+let allTables = [];
+let tableData = { columns: [], rows: [] };
+let filteredRows = [];
+let sortCol = -1;
+let sortAsc = true;
+let currentPage = 0;
+const PAGE_SIZE = 50;
+let jsonToggleId = 0;
+
+// ===== Known Schema Info =====
+const TABLE_META = {
+  memory_blocks: {
+    icon: '🧠', label: '記憶區塊',
+    idCol: 'block_id',
+    blobCols: ['overview_vector'],
+    jsonCols: ['sparse_vector', 'raw_dialogues', 'potential_preferences'],
+    timeCols: ['timestamp'],
+    numCols: ['encounter_count'],
+  },
+  core_memories: {
+    icon: '💡', label: '核心認知',
+    idCol: 'core_id',
+    blobCols: ['insight_vector'],
+    jsonCols: [],
+    timeCols: ['timestamp'],
+    numCols: ['encounter_count'],
+  },
+  user_profile: {
+    icon: '👤', label: '使用者畫像',
+    idCol: 'fact_key',
+    blobCols: [],
+    jsonCols: [],
+    timeCols: ['timestamp'],
+    numCols: ['confidence'],
+  },
+  user_profile_vectors: {
+    icon: '📐', label: '畫像向量',
+    idCol: 'fact_key',
+    blobCols: ['fact_vector'],
+    jsonCols: [],
+    timeCols: [],
+    numCols: [],
+  }
+};
+
+// ===== Init sql.js =====
+let SQL;
+async function initSQL() {
+  SQL = await initSqlJs({
+    locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
+  });
+}
+initSQL();
+
+// ===== File Handling =====
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('hover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('hover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('hover');
+  if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if (e.target.files.length) loadFile(e.target.files[0]); });
+
+async function loadFile(file) {
+  dropZone.style.display = 'none';
+  document.getElementById('loading').classList.add('active');
+
+  if (!SQL) await initSQL();
+
+  const buf = await file.arrayBuffer();
+  try {
+    db = new SQL.Database(new Uint8Array(buf));
+  } catch (err) {
+    alert('無法開啟資料庫: ' + err.message);
+    dropZone.style.display = '';
+    document.getElementById('loading').classList.remove('active');
+    return;
+  }
+
+  document.getElementById('fileInfo').textContent = `${file.name} (${formatSize(file.size)})`;
+
+  // Discover tables
+  const res = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+  allTables = res.length ? res[0].values.map(r => r[0]) : [];
+
+  buildStats();
+  buildTabs();
+
+  document.getElementById('loading').classList.remove('active');
+  document.getElementById('mainView').style.display = '';
+
+  if (allTables.length) switchTable(allTables[0]);
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+// ===== Stats =====
+function buildStats() {
+  const bar = document.getElementById('statsBar');
+  const colors = [
+    'var(--accent)', 'var(--green)', 'var(--yellow)',
+    'var(--purple)', 'var(--orange)', 'var(--pink)'
+  ];
+  bar.innerHTML = allTables.map((t, i) => {
+    const cnt = db.exec(`SELECT COUNT(*) FROM "${t}"`);
+    const count = cnt.length ? cnt[0].values[0][0] : 0;
+    const meta = TABLE_META[t];
+    const label = meta ? `${meta.icon} ${meta.label}` : t;
+    return `<div class="stat-item">
+      <span class="dot" style="background:${colors[i % colors.length]}"></span>
+      ${label}: <span class="count">${count}</span> 筆
+    </div>`;
+  }).join('');
+}
+
+// ===== Tabs =====
+function buildTabs() {
+  const bar = document.getElementById('tabBar');
+  bar.innerHTML = allTables.map(t => {
+    const meta = TABLE_META[t];
+    const label = meta ? `${meta.icon} ${meta.label}` : t;
+    const cnt = db.exec(`SELECT COUNT(*) FROM "${t}"`);
+    const count = cnt.length ? cnt[0].values[0][0] : 0;
+    return `<div class="tab" data-table="${t}" onclick="switchTable('${t}')">
+      ${label} <span class="badge">${count}</span>
+    </div>`;
+  }).join('');
+  // Add custom SQL tab
+  bar.innerHTML += `<div class="tab" data-table="__sql__" onclick="toggleSQL()" style="margin-left:auto">
+    📝 SQL
+  </div>`;
+}
+
+function switchTable(name) {
+  currentTable = name;
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.table === name);
+  });
+
+  // Build filter for specific tables
+  const filterSelect = document.getElementById('filterSelect');
+  const meta = TABLE_META[name];
+  if (name === 'user_profile') {
+    filterSelect.style.display = '';
+    const cats = db.exec("SELECT DISTINCT category FROM user_profile WHERE category IS NOT NULL");
+    const categories = cats.length ? cats[0].values.map(r => r[0]) : [];
+    filterSelect.innerHTML = '<option value="">所有類別</option>' +
+      categories.map(c => `<option value="${c}">${c}</option>`).join('');
+    filterSelect.onchange = () => { currentPage = 0; queryTable(); };
+  } else {
+    filterSelect.style.display = 'none';
+  }
+
+  document.getElementById('searchBox').value = '';
+  sortCol = -1;
+  currentPage = 0;
+  queryTable();
+}
+
+// ===== Query & Render =====
+function queryTable() {
+  const search = document.getElementById('searchBox').value.trim().toLowerCase();
+  const filter = document.getElementById('filterSelect').value;
+
+  let sql = `SELECT * FROM "${currentTable}"`;
+  const conditions = [];
+  if (filter && currentTable === 'user_profile') {
+    conditions.push(`category = '${filter.replace(/'/g, "''")}'`);
+  }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+
+  // Sort by timestamp desc if available
+  const meta = TABLE_META[currentTable];
+  if (meta && meta.timeCols.length) {
+    sql += ` ORDER BY "${meta.timeCols[0]}" DESC`;
+  }
+
+  const res = db.exec(sql);
+  if (!res.length) {
+    tableData = { columns: [], rows: [] };
+    filteredRows = [];
+    renderTable();
+    return;
+  }
+
+  tableData.columns = res[0].columns;
+  tableData.rows = res[0].values;
+
+  // Client-side text search
+  if (search) {
+    filteredRows = tableData.rows.filter(row =>
+      row.some(cell => {
+        if (cell === null || cell === undefined) return false;
+        if (cell instanceof Uint8Array) return false;
+        return String(cell).toLowerCase().includes(search);
+      })
+    );
+  } else {
+    filteredRows = [...tableData.rows];
+  }
+
+  // Sort
+  if (sortCol >= 0) {
+    filteredRows.sort((a, b) => {
+      let va = a[sortCol], vb = b[sortCol];
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      if (typeof va === 'number' && typeof vb === 'number') return sortAsc ? va - vb : vb - va;
+      va = String(va); vb = String(vb);
+      return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+  }
+
+  renderTable();
+}
+
+function renderTable() {
+  const head = document.getElementById('tableHead');
+  const body = document.getElementById('tableBody');
+  const cols = tableData.columns;
+  const meta = TABLE_META[currentTable] || {};
+
+  // Header
+  head.innerHTML = '<tr>' + cols.map((c, i) => {
+    const arrow = sortCol === i ? (sortAsc ? '▲' : '▼') : '';
+    return `<th onclick="sortByCol(${i})">${c} <span class="sort-arrow">${arrow}</span></th>`;
+  }).join('') + '<th style="width:40px"></th></tr>';
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  if (currentPage >= totalPages) currentPage = totalPages - 1;
+  const start = currentPage * PAGE_SIZE;
+  const pageRows = filteredRows.slice(start, start + PAGE_SIZE);
+  document.getElementById('pageInfo').textContent =
+    `${start + 1}-${Math.min(start + PAGE_SIZE, filteredRows.length)} / ${filteredRows.length}`;
+
+  // Rows
+  body.innerHTML = pageRows.map((row, ri) => {
+    const cells = cols.map((col, ci) => renderCell(col, row[ci], meta));
+    return `<tr>${cells.join('')}<td>
+      <span style="cursor:pointer;font-size:16px" title="詳細" onclick='showDetail(${start + ri})'>🔍</span>
+    </td></tr>`;
+  }).join('');
+}
+
+function renderCell(col, val, meta) {
+  if (val === null || val === undefined) {
+    return `<td><span class="cell-null">NULL</span></td>`;
+  }
+
+  // BLOB
+  if (val instanceof Uint8Array) {
+    const dims = val.length / 4; // float32
+    return `<td><span class="cell-blob">BLOB (${dims} dims, ${val.length} bytes)</span></td>`;
+  }
+
+  const blobCols = meta.blobCols || [];
+  const jsonCols = meta.jsonCols || [];
+  const timeCols = meta.timeCols || [];
+  const numCols = meta.numCols || [];
+  const idCol = meta.idCol || '';
+
+  // ID column
+  if (col === idCol) {
+    return `<td><span class="cell-id" title="${escHtml(val)}">${escHtml(truncate(val, 24))}</span></td>`;
+  }
+
+  // Timestamp
+  if (timeCols.includes(col)) {
+    return `<td><span class="cell-timestamp">${escHtml(formatTimestamp(val))}</span></td>`;
+  }
+
+  // Numeric
+  if (numCols.includes(col)) {
+    const num = parseFloat(val);
+    if (col === 'confidence') {
+      const cls = num < 0 ? 'confidence-negative' : 'confidence-positive';
+      return `<td><span class="cell-number ${cls}">${num.toFixed(2)}</span></td>`;
+    }
+    if (col === 'encounter_count') {
+      return `<td><span class="cell-number">${num.toFixed(1)}</span></td>`;
+    }
+    return `<td><span class="cell-number">${num}</span></td>`;
+  }
+
+  // is_consolidated
+  if (col === 'is_consolidated') {
+    const yes = parseInt(val) === 1;
+    return `<td><span class="${yes ? 'consolidated-yes' : 'consolidated-no'}">${yes ? '✔ 已整合' : '✖ 未整合'}</span></td>`;
+  }
+
+  // Category
+  if (col === 'category') {
+    const catCls = `cat-${val}` in { 'cat-basic_info': 1, 'cat-explicit_preference': 1, 'cat-behavioral_pattern': 1, 'cat-relationship': 1 }
+      ? `cat-${val}` : 'cat-default';
+    return `<td><span class="cell-category ${catCls}">${escHtml(val)}</span></td>`;
+  }
+
+  // JSON columns
+  if (jsonCols.includes(col)) {
+    return renderJsonCell(val, col);
+  }
+
+  // Text (overview, insight, etc.)
+  const str = String(val);
+  if (str.length > 120) {
+    return `<td><span class="cell-text">${escHtml(str.substring(0, 120))}...</span></td>`;
+  }
+  return `<td><span class="cell-text">${escHtml(str)}</span></td>`;
+}
+
+function renderJsonCell(val, col) {
+  const id = 'jtoggle_' + (jsonToggleId++);
+  let parsed;
+  try { parsed = JSON.parse(val); } catch { return `<td><span class="cell-text">${escHtml(truncate(val, 80))}</span></td>`; }
+
+  let preview = '';
+  if (col === 'raw_dialogues' && Array.isArray(parsed)) {
+    preview = `${parsed.length} 則對話`;
+  } else if (col === 'potential_preferences' && Array.isArray(parsed)) {
+    if (parsed.length === 0) return `<td><span class="cell-null">[]</span></td>`;
+    preview = parsed.map(p => {
+      const tag = p.tag || p;
+      const intensity = p.intensity != null ? p.intensity : '';
+      return `<span class="pref-tag">${escHtml(tag)}${intensity ? `<span class="pref-intensity">${intensity}</span>` : ''}</span>`;
+    }).join('');
+    return `<td>${preview}</td>`;
+  } else if (col === 'sparse_vector') {
+    const keys = Object.keys(parsed);
+    preview = `${keys.length} tokens`;
+  } else {
+    preview = truncate(JSON.stringify(parsed), 60);
+  }
+
+  return `<td>
+    <span class="json-toggle" onclick="document.getElementById('${id}').classList.toggle('open')">${preview} ▾</span>
+    <div class="json-content" id="${id}">${syntaxHighlight(JSON.stringify(parsed, null, 2))}</div>
+  </td>`;
+}
+
+// ===== Sorting =====
+function sortByCol(i) {
+  if (sortCol === i) { sortAsc = !sortAsc; }
+  else { sortCol = i; sortAsc = true; }
+  queryTable();
+}
+
+// ===== Pagination =====
+function changePage(dir) {
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  currentPage = Math.max(0, Math.min(totalPages - 1, currentPage + dir));
+  renderTable();
+}
+
+// ===== Detail Modal =====
+function showDetail(idx) {
+  const row = filteredRows[idx];
+  const cols = tableData.columns;
+  const meta = TABLE_META[currentTable] || {};
+  const title = meta.idCol ? `${meta.icon || ''} ${row[cols.indexOf(meta.idCol)] || ''}` : `Row ${idx + 1}`;
+  document.getElementById('modalTitle').textContent = title;
+
+  const content = document.getElementById('modalContent');
+  content.innerHTML = cols.map((col, ci) => {
+    const val = row[ci];
+    return `<div class="modal-field">
+      <div class="modal-field-label">${col}</div>
+      <div class="modal-field-value">${renderDetailValue(col, val, meta)}</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+function renderDetailValue(col, val, meta) {
+  if (val === null || val === undefined) return '<span class="cell-null">NULL</span>';
+  if (val instanceof Uint8Array) {
+    const dims = val.length / 4;
+    // Show first few values
+    const view = new Float32Array(val.buffer, val.byteOffset, Math.min(8, dims));
+    const preview = Array.from(view).map(v => v.toFixed(4)).join(', ');
+    return `<span class="cell-blob">float32[${dims}] = [${preview}${dims > 8 ? ', ...' : ''}]</span>`;
+  }
+
+  const jsonCols = meta.jsonCols || [];
+
+  // raw_dialogues → render as chat
+  if (col === 'raw_dialogues') {
+    try {
+      const msgs = JSON.parse(val);
+      if (Array.isArray(msgs)) {
+        return '<div class="dialogue-list">' + msgs.map(m => {
+          const role = m.role || 'unknown';
+          return `<div class="dialogue-msg ${role}">
+            <div class="dialogue-role">${role}</div>
+            <div>${escHtml(m.content || '')}</div>
+          </div>`;
+        }).join('') + '</div>';
+      }
+    } catch {}
+  }
+
+  // potential_preferences
+  if (col === 'potential_preferences') {
+    try {
+      const prefs = JSON.parse(val);
+      if (Array.isArray(prefs) && prefs.length) {
+        return prefs.map(p => {
+          const tag = p.tag || p;
+          const intensity = p.intensity != null ? ` (intensity: ${p.intensity})` : '';
+          return `<span class="pref-tag">${escHtml(tag)}${intensity}</span>`;
+        }).join(' ');
+      }
+      return '<span class="cell-null">[]</span>';
+    } catch {}
+  }
+
+  // JSON columns
+  if (jsonCols.includes(col)) {
+    try {
+      const parsed = JSON.parse(val);
+      return `<div style="font-family:monospace;font-size:12px">${syntaxHighlight(JSON.stringify(parsed, null, 2))}</div>`;
+    } catch {}
+  }
+
+  // confidence
+  if (col === 'confidence') {
+    const num = parseFloat(val);
+    const cls = num < 0 ? 'confidence-negative' : 'confidence-positive';
+    const label = num < 0 ? ' (🪦 墓碑)' : '';
+    return `<span class="${cls}">${num.toFixed(2)}${label}</span>`;
+  }
+
+  // is_consolidated
+  if (col === 'is_consolidated') {
+    return parseInt(val) === 1 ? '<span class="consolidated-yes">✔ 已整合</span>' : '<span class="consolidated-no">✖ 未整合</span>';
+  }
+
+  // category
+  if (col === 'category') {
+    return `<span class="cell-category cat-${val in {'basic_info':1,'explicit_preference':1,'behavioral_pattern':1,'relationship':1} ? val : 'default'}">${escHtml(val)}</span>`;
+  }
+
+  return `<span class="cell-text">${escHtml(String(val))}</span>`;
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+}
+
+// ===== Custom SQL =====
+function toggleSQL() {
+  const panel = document.getElementById('sqlPanel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) {
+    document.getElementById('sqlInput').focus();
+  }
+}
+
+function executeCustomSQL() {
+  const sql = document.getElementById('sqlInput').value.trim();
+  const errEl = document.getElementById('sqlError');
+  errEl.textContent = '';
+
+  if (!sql) return;
+
+  try {
+    const res = db.exec(sql);
+    if (!res.length) {
+      errEl.textContent = '查詢完成，無回傳結果';
+      return;
+    }
+
+    // Render as custom table
+    currentTable = '__custom__';
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+
+    tableData.columns = res[0].columns;
+    tableData.rows = res[0].values;
+    filteredRows = [...tableData.rows];
+    sortCol = -1;
+    currentPage = 0;
+    renderTable();
+  } catch (err) {
+    errEl.textContent = '❌ ' + err.message;
+  }
+}
+
+// ===== Search (Ctrl+F) =====
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    const box = document.getElementById('searchBox');
+    if (box) { box.focus(); box.select(); }
+  }
+  if (e.key === 'Escape') closeModal();
+});
+
+document.getElementById('searchBox').addEventListener('input', () => {
+  currentPage = 0;
+  queryTable();
+});
+
+// ===== Export CSV =====
+function exportCSV() {
+  if (!tableData.columns.length) return;
+  const cols = tableData.columns;
+  const rows = filteredRows.map(r =>
+    r.map(v => {
+      if (v === null) return '';
+      if (v instanceof Uint8Array) return '[BLOB]';
+      const s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n'))
+        return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    }).join(',')
+  );
+  const csv = [cols.join(','), ...rows].join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${currentTable || 'export'}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ===== Utilities =====
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function truncate(s, max) {
+  return s.length > max ? s.substring(0, max) + '...' : s;
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch { return ts; }
+}
+
+function syntaxHighlight(json) {
+  return json.replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
+    let cls = 'json-number';
+    if (/^"/.test(match)) {
+      cls = /:$/.test(match) ? 'json-key' : 'json-string';
+    } else if (/true|false/.test(match)) {
+      cls = 'json-bool';
+    } else if (/null/.test(match)) {
+      cls = 'json-null';
+    }
+    return `<span class="${cls}">${match}</span>`;
+  });
+}
+</script>
+</body>
+</html>

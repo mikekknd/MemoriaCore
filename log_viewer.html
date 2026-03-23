@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Trace Log Viewer</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+    --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff; --accent2: #3fb950;
+    --warn: #d29922; --error: #f85149; --purple: #bc8cff;
+    --prompt-bg: #0d2137; --response-bg: #0d2117; --event-bg: #1a1520; --error-bg: #2d1215;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* ===== Header ===== */
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 100; }
+  .header h1 { font-size: 18px; font-weight: 600; white-space: nowrap; }
+  .header h1 span { color: var(--accent); }
+  .stats { font-size: 13px; color: var(--text2); display: flex; gap: 16px; white-space: nowrap; }
+  .stats .badge { background: var(--surface2); padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+  .stats .badge.llm { color: var(--accent); }
+  .stats .badge.event { color: var(--purple); }
+  .stats .badge.err { color: var(--error); }
+
+  /* ===== Toolbar ===== */
+  .toolbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; position: sticky; top: 58px; z-index: 99; }
+  .search-box { flex: 1; min-width: 200px; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; color: var(--text); font-size: 14px; outline: none; }
+  .search-box:focus { border-color: var(--accent); }
+  .search-box::placeholder { color: var(--text2); }
+  .filter-group { display: flex; gap: 4px; }
+  .filter-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; color: var(--text2); font-size: 13px; cursor: pointer; transition: all .15s; user-select: none; }
+  .filter-btn:hover { border-color: var(--text2); }
+  .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .filter-btn.active.event-btn { background: var(--purple); border-color: var(--purple); }
+  .filter-btn.active.error-btn { background: var(--error); border-color: var(--error); }
+  .cat-select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; color: var(--text); font-size: 13px; outline: none; cursor: pointer; }
+  .toolbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .expand-all-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; color: var(--text2); font-size: 12px; cursor: pointer; }
+  .expand-all-btn:hover { border-color: var(--text2); }
+
+  /* ===== Drop Zone ===== */
+  .drop-zone { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: calc(100vh - 120px); padding: 40px; }
+  .drop-area { width: 100%; max-width: 600px; border: 2px dashed var(--border); border-radius: 16px; padding: 60px 40px; text-align: center; transition: all .2s; cursor: pointer; position: relative; }
+  .drop-area:hover, .drop-area.dragover { border-color: var(--accent); background: rgba(88,166,255,.05); }
+  .drop-area.dragover { transform: scale(1.02); }
+  .drop-icon { font-size: 48px; margin-bottom: 16px; opacity: .6; }
+  .drop-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+  .drop-sub { color: var(--text2); font-size: 14px; }
+  .drop-area input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+  /* ===== Log Entries ===== */
+  .log-container { padding: 12px 24px 80px; display: none; }
+  .log-entry { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; overflow: hidden; transition: all .15s; }
+  .log-entry:hover { border-color: var(--text2); }
+  .log-entry.hidden { display: none; }
+  .log-entry.type-prompt { border-left: 3px solid var(--accent); }
+  .log-entry.type-response { border-left: 3px solid var(--accent2); }
+  .log-entry.type-event { border-left: 3px solid var(--purple); }
+  .log-entry.type-error { border-left: 3px solid var(--error); }
+
+  .entry-header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; cursor: pointer; user-select: none; }
+  .entry-header:hover { background: var(--surface2); }
+  .entry-chevron { font-size: 12px; color: var(--text2); transition: transform .15s; width: 16px; text-align: center; flex-shrink: 0; }
+  .log-entry.expanded .entry-chevron { transform: rotate(90deg); }
+  .entry-time { font-size: 12px; color: var(--text2); font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; flex-shrink: 0; }
+  .entry-type { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
+  .entry-type.prompt { background: var(--prompt-bg); color: var(--accent); }
+  .entry-type.response { background: var(--response-bg); color: var(--accent2); }
+  .entry-type.event { background: var(--event-bg); color: var(--purple); }
+  .entry-type.error { background: var(--error-bg); color: var(--error); }
+  .entry-cat { font-size: 12px; color: var(--warn); font-weight: 500; white-space: nowrap; flex-shrink: 0; }
+  .entry-model { font-size: 11px; color: var(--text2); background: var(--surface2); padding: 1px 6px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; }
+  .entry-summary { font-size: 13px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .entry-summary mark { background: #6e40c966; color: var(--text); border-radius: 2px; padding: 0 2px; }
+
+  .entry-body { display: none; padding: 0 14px 12px; }
+  .log-entry.expanded .entry-body { display: block; }
+  .entry-body pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 13px; font-family: 'Cascadia Code', 'Fira Code', monospace; line-height: 1.6; white-space: pre-wrap; word-break: break-all; overflow-x: auto; max-height: 500px; overflow-y: auto; color: var(--text); }
+  .entry-body pre mark { background: #6e40c966; color: var(--text); border-radius: 2px; padding: 0 2px; }
+
+  .msg-block { margin-bottom: 8px; }
+  .msg-role { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 2px; }
+  .msg-role.user { color: var(--accent); }
+  .msg-role.assistant { color: var(--accent2); }
+  .msg-role.system { color: var(--warn); }
+  .msg-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+
+  .detail-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin-top: 8px; }
+  .detail-key { color: var(--text2); font-weight: 500; }
+  .detail-val { color: var(--text); word-break: break-all; }
+
+  /* ===== Scrollbar ===== */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+
+  /* ===== Pair Connector ===== */
+  .pair-badge { font-size: 10px; background: var(--surface2); color: var(--text2); padding: 0 6px; border-radius: 8px; margin-left: auto; flex-shrink: 0; cursor: pointer; }
+  .pair-badge:hover { color: var(--accent); }
+
+  /* ===== Responsive ===== */
+  @media (max-width: 768px) {
+    .header { padding: 12px 16px; }
+    .toolbar { padding: 8px 16px; }
+    .log-container { padding: 8px 12px 60px; }
+    .entry-summary { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>LLM Trace</span> Log Viewer</h1>
+  <div class="stats" id="stats"></div>
+</div>
+
+<div class="toolbar" id="toolbar" style="display:none;">
+  <input type="text" class="search-box" id="searchBox" placeholder="搜尋日誌內容... (Ctrl+F)">
+  <div class="filter-group">
+    <button class="filter-btn active" data-filter="all" onclick="toggleFilter(this)">全部</button>
+    <button class="filter-btn active" data-filter="prompt" onclick="toggleFilter(this)">Prompt</button>
+    <button class="filter-btn active" data-filter="response" onclick="toggleFilter(this)">Response</button>
+    <button class="filter-btn active event-btn" data-filter="event" onclick="toggleFilter(this)">Event</button>
+    <button class="filter-btn active error-btn" data-filter="error" onclick="toggleFilter(this)">Error</button>
+  </div>
+  <select class="cat-select" id="catSelect" onchange="applyFilters()">
+    <option value="">所有任務類別</option>
+  </select>
+  <div class="toolbar-right">
+    <button class="expand-all-btn" onclick="expandAll()">展開全部</button>
+    <button class="expand-all-btn" onclick="collapseAll()">收合全部</button>
+  </div>
+</div>
+
+<div class="drop-zone" id="dropZone">
+  <div class="drop-area" id="dropArea">
+    <input type="file" accept=".jsonl,.json,.log,.txt" onchange="handleFile(this.files[0])">
+    <div class="drop-icon">📋</div>
+    <div class="drop-title">拖放 JSONL 日誌檔至此</div>
+    <div class="drop-sub">支援 .jsonl / .json / .log / .txt（如 llm_trace.jsonl）</div>
+  </div>
+</div>
+
+<div class="log-container" id="logContainer"></div>
+
+<script>
+let allEntries = [];
+let searchTerm = '';
+
+// ===== Drag & Drop =====
+const dropArea = document.getElementById('dropArea');
+const dropZone = document.getElementById('dropZone');
+
+['dragenter','dragover'].forEach(e => {
+  document.addEventListener(e, ev => { ev.preventDefault(); ev.stopPropagation(); });
+  dropArea.addEventListener(e, () => dropArea.classList.add('dragover'));
+});
+['dragleave','drop'].forEach(e => {
+  dropArea.addEventListener(e, () => dropArea.classList.remove('dragover'));
+});
+document.addEventListener('drop', ev => {
+  ev.preventDefault(); ev.stopPropagation();
+  if (ev.dataTransfer.files.length) handleFile(ev.dataTransfer.files[0]);
+});
+
+// ===== Keyboard Shortcut =====
+document.addEventListener('keydown', ev => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === 'f') {
+    ev.preventDefault();
+    const sb = document.getElementById('searchBox');
+    if (sb) sb.focus();
+  }
+});
+
+// ===== File Loading =====
+function handleFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => parseAndRender(e.target.result, file.name);
+  reader.readAsText(file, 'utf-8');
+}
+
+function parseAndRender(text, filename) {
+  allEntries = [];
+  const lines = text.split('\n').filter(l => l.trim());
+  for (const line of lines) {
+    try { allEntries.push(JSON.parse(line)); } catch {}
+  }
+  if (!allEntries.length) { alert('無法解析任何有效的 JSON 行'); return; }
+
+  document.title = `Log Viewer - ${filename}`;
+  dropZone.style.display = 'none';
+  document.getElementById('toolbar').style.display = 'flex';
+  document.getElementById('logContainer').style.display = 'block';
+
+  // Populate category dropdown
+  const cats = new Set();
+  allEntries.forEach(e => { if (e.category) cats.add(e.category); });
+  const sel = document.getElementById('catSelect');
+  sel.innerHTML = '<option value="">所有任務類別</option>';
+  [...cats].sort().forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c; opt.textContent = c;
+    sel.appendChild(opt);
+  });
+
+  // Stats
+  const prompts = allEntries.filter(e => e.type === 'llm_call' && e.direction === 'prompt').length;
+  const responses = allEntries.filter(e => e.type === 'llm_call' && e.direction === 'response').length;
+  const events = allEntries.filter(e => e.type === 'system_event').length;
+  const errors = allEntries.filter(e => e.type === 'error').length;
+  document.getElementById('stats').innerHTML = `
+    <span>${allEntries.length} 筆紀錄</span>
+    <span class="badge llm">LLM ${prompts}/${responses}</span>
+    <span class="badge event">Event ${events}</span>
+    ${errors ? `<span class="badge err">Error ${errors}</span>` : ''}
+  `;
+
+  renderEntries();
+
+  // Search
+  const sb = document.getElementById('searchBox');
+  sb.oninput = () => { searchTerm = sb.value.trim().toLowerCase(); applyFilters(); };
+}
+
+// ===== Rendering =====
+function getEntryType(entry) {
+  if (entry.type === 'error') return 'error';
+  if (entry.type === 'llm_call') return entry.direction === 'prompt' ? 'prompt' : 'response';
+  return 'event';
+}
+
+function getTypeLabel(type) {
+  const map = { prompt: 'PROMPT', response: 'RESPONSE', event: 'EVENT', error: 'ERROR' };
+  return map[type] || type;
+}
+
+function getSummary(entry, type) {
+  if (type === 'prompt') {
+    const msgs = entry.messages || [];
+    const last = msgs[msgs.length - 1];
+    return last ? last.content.substring(0, 120) : '';
+  }
+  if (type === 'response') return (entry.content || '').substring(0, 120);
+  return entry.message || '';
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return ts;
+  return d.toLocaleTimeString('zh-TW', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3,'0');
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function highlightText(text, term) {
+  if (!term) return escapeHtml(text);
+  const escaped = escapeHtml(text);
+  const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+  return escaped.replace(regex, '<mark>$1</mark>');
+}
+
+function renderEntries() {
+  const container = document.getElementById('logContainer');
+  // Build a map for prompt-response pairing
+  const pairMap = new Map();
+  for (let i = 0; i < allEntries.length; i++) {
+    const e = allEntries[i];
+    if (e.type === 'llm_call' && e.direction === 'prompt') {
+      // Find next response with same category+model
+      for (let j = i + 1; j < allEntries.length; j++) {
+        const r = allEntries[j];
+        if (r.type === 'llm_call' && r.direction === 'response' && r.category === e.category && r.model === e.model) {
+          pairMap.set(i, j);
+          pairMap.set(j, i);
+          break;
+        }
+      }
+    }
+  }
+
+  let html = '';
+  allEntries.forEach((entry, idx) => {
+    const type = getEntryType(entry);
+    const summary = getSummary(entry, type);
+    const pairIdx = pairMap.get(idx);
+    const pairLabel = pairIdx !== undefined
+      ? `<span class="pair-badge" onclick="event.stopPropagation(); scrollToEntry(${pairIdx})" title="跳至配對">${type === 'prompt' ? '→ Response' : '← Prompt'}</span>`
+      : '';
+
+    html += `<div class="log-entry type-${type}" data-idx="${idx}" data-type="${type}" data-cat="${entry.category || ''}" id="entry-${idx}">
+      <div class="entry-header" onclick="toggleEntry(this.parentElement)">
+        <span class="entry-chevron">&#9654;</span>
+        <span class="entry-time">${formatTime(entry.timestamp)}</span>
+        <span class="entry-type ${type}">${getTypeLabel(type)}</span>
+        <span class="entry-cat">${entry.category || ''}</span>
+        ${entry.model ? `<span class="entry-model">${entry.model}</span>` : ''}
+        <span class="entry-summary">${escapeHtml(summary)}</span>
+        ${pairLabel}
+      </div>
+      <div class="entry-body" id="body-${idx}"></div>
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+function renderBody(idx) {
+  const entry = allEntries[idx];
+  const body = document.getElementById(`body-${idx}`);
+  if (body.dataset.loaded) return;
+  body.dataset.loaded = '1';
+
+  const type = getEntryType(entry);
+  let html = '';
+
+  if (type === 'prompt' && entry.messages) {
+    entry.messages.forEach(msg => {
+      html += `<div class="msg-block">
+        <div class="msg-role ${msg.role}">${msg.role}</div>
+        <div class="msg-content">${highlightText(msg.content || '', searchTerm)}</div>
+      </div>`;
+    });
+  } else if (type === 'response') {
+    let content = entry.content || '';
+    // Try to pretty-print JSON
+    try {
+      const start = content.indexOf('{');
+      const arrStart = content.indexOf('[');
+      const jsonStart = (start >= 0 && (arrStart < 0 || start < arrStart)) ? start : arrStart;
+      if (jsonStart >= 0) {
+        const prefix = content.substring(0, jsonStart);
+        const jsonPart = content.substring(jsonStart);
+        const parsed = JSON.parse(jsonPart);
+        content = (prefix ? prefix + '\n' : '') + JSON.stringify(parsed, null, 2);
+      }
+    } catch {}
+    html += `<pre>${highlightText(content, searchTerm)}</pre>`;
+  } else if (type === 'event' || type === 'error') {
+    html += `<div style="padding:4px 0;font-size:14px;">${highlightText(entry.message || '', searchTerm)}</div>`;
+    if (entry.details) {
+      html += '<div class="detail-grid">';
+      const renderObj = (obj, prefix) => {
+        for (const [k, v] of Object.entries(obj)) {
+          const key = prefix ? `${prefix}.${k}` : k;
+          if (v && typeof v === 'object' && !Array.isArray(v)) {
+            renderObj(v, key);
+          } else {
+            const val = Array.isArray(v) ? JSON.stringify(v, null, 1) : String(v);
+            html += `<span class="detail-key">${escapeHtml(key)}</span><span class="detail-val">${highlightText(val, searchTerm)}</span>`;
+          }
+        }
+      };
+      renderObj(entry.details, '');
+      html += '</div>';
+    }
+  }
+
+  body.innerHTML = html;
+}
+
+// ===== Interactions =====
+function toggleEntry(el) {
+  const wasExpanded = el.classList.contains('expanded');
+  el.classList.toggle('expanded');
+  if (!wasExpanded) renderBody(parseInt(el.dataset.idx));
+}
+
+function expandAll() {
+  document.querySelectorAll('.log-entry:not(.hidden)').forEach(el => {
+    el.classList.add('expanded');
+    renderBody(parseInt(el.dataset.idx));
+  });
+}
+
+function collapseAll() {
+  document.querySelectorAll('.log-entry').forEach(el => el.classList.remove('expanded'));
+}
+
+function scrollToEntry(idx) {
+  const el = document.getElementById(`entry-${idx}`);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('expanded');
+    renderBody(idx);
+    el.style.outline = '2px solid var(--accent)';
+    setTimeout(() => el.style.outline = '', 1500);
+  }
+}
+
+// ===== Filtering =====
+function toggleFilter(btn) {
+  const filter = btn.dataset.filter;
+  if (filter === 'all') {
+    const willActivate = !btn.classList.contains('active');
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', willActivate));
+  } else {
+    btn.classList.toggle('active');
+    // Sync "all" button
+    const others = document.querySelectorAll('.filter-btn:not([data-filter="all"])');
+    const allActive = [...others].every(b => b.classList.contains('active'));
+    document.querySelector('.filter-btn[data-filter="all"]').classList.toggle('active', allActive);
+  }
+  applyFilters();
+}
+
+function applyFilters() {
+  const activeTypes = new Set();
+  document.querySelectorAll('.filter-btn.active:not([data-filter="all"])').forEach(b => activeTypes.add(b.dataset.filter));
+  const catFilter = document.getElementById('catSelect').value;
+
+  document.querySelectorAll('.log-entry').forEach(el => {
+    const type = el.dataset.type;
+    const cat = el.dataset.cat;
+    const idx = parseInt(el.dataset.idx);
+    const entry = allEntries[idx];
+
+    let visible = activeTypes.has(type);
+    if (catFilter && cat !== catFilter) visible = false;
+
+    if (visible && searchTerm) {
+      const text = JSON.stringify(entry).toLowerCase();
+      visible = text.includes(searchTerm);
+    }
+
+    el.classList.toggle('hidden', !visible);
+
+    // Update highlights in already-rendered bodies
+    if (visible && el.querySelector('.entry-body[data-loaded="1"]')) {
+      const bodyEl = document.getElementById(`body-${idx}`);
+      bodyEl.dataset.loaded = '';
+      if (el.classList.contains('expanded')) renderBody(idx);
+    }
+
+    // Update summary highlight
+    const summaryEl = el.querySelector('.entry-summary');
+    if (summaryEl) {
+      const rawSummary = getSummary(entry, type);
+      summaryEl.innerHTML = highlightText(rawSummary, searchTerm);
+    }
+  });
+}
+</script>
+</body>
+</html>

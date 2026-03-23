@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv_ai_memory/
+env/
+venv/
+.pytest_cache/
+.coverage
+
+# Environments
+.env
+.venv
+
+# VS Code / IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# Databases & App State
+*.db
+*.sqlite3
+chat_history.json
+llm_trace.jsonl
+user_prefs.json
+system_prompt.txt
+
+# Build & Dist
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Large Models
+*.onnx
+*.onnx_data
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Any other generated logs
+*.log
