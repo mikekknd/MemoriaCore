@@ -26,6 +26,7 @@
 
 ### 3. 配置模型 (重要！)
 由於 GitHub 檔案大小限制，**核心嵌入模型 (`model_quantized.onnx`) 未包含在儲存庫中**。
+相關檔案可至Hugging face下載(https://huggingface.co/gpahal/bge-m3-onnx-int8/tree/main)，或者選擇自己偏好的embedding model
 > [!CAUTION]
 > 您必須手動下載 `model_quantized.onnx` 檔案，並將其放置於以下目錄：
 > `StreamingAssets/Models/model_quantized.onnx`
@@ -47,17 +48,6 @@
 
 ---
 
-## 🛠 技術架構 (Technical Architecture)
-
-本專案在移植至 Unity/C# 時遵循以下關鍵原則：
-1. **絕對泛化 (Zero-Hardcoding)**：嚴禁使用應編碼標籤，所有實體提取均依賴 LLM 的零樣本歸納。
-2. **語意閘道 (Semantic-Gated Recency)**：結合時間權重與向量相似度，防止無關的近期記憶干擾 AI 決策。
-3. **雙軌檢索 (Hybrid Retrieval)**：同時使用 Dense Vector (語意) 與 Sparse Vector (關鍵字) 進行混合檢索。
-
-*(更多技術實作詳情請參閱 `docs/` 目錄下的文件)*
-
----
-
 ## 📄 授權條款 (License)
 
-本專案採用 **自主評估中**。 (建議採用 MIT 或 AGPL v3)
+本專案採用MIT。
