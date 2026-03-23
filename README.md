@@ -26,7 +26,7 @@
 
 ### 3. 配置模型 (重要！)
 由於 GitHub 檔案大小限制，**核心嵌入模型 (`model_quantized.onnx`) 未包含在儲存庫中**。
-相關檔案可至Hugging face下載(https://huggingface.co/gpahal/bge-m3-onnx-int8/tree/main)，或者選擇自己偏好的embedding model
+相關檔案可至Hugging face下載( https://huggingface.co/gpahal/bge-m3-onnx-int8/tree/main )，或者選擇自己偏好的embedding model
 > [!CAUTION]
 > 您必須手動下載 `model_quantized.onnx` 檔案，並將其放置於以下目錄：
 > `StreamingAssets/Models/model_quantized.onnx`
