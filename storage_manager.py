@@ -52,8 +52,10 @@ class StorageManager:
         return f"memory_db_{safe_model_name}.db"
 
     def _init_db(self, db_path):
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=15.0)
         cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS memory_blocks (
                 block_id TEXT PRIMARY KEY,
@@ -405,8 +407,10 @@ class StorageManager:
     _CONV_DB = "conversation.db"
 
     def _init_conversation_db(self):
-        conn = sqlite3.connect(self._CONV_DB)
+        conn = sqlite3.connect(self._CONV_DB, timeout=15.0)
         cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS conversation_sessions (
                 session_id TEXT PRIMARY KEY,

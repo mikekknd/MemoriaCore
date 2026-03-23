@@ -67,7 +67,7 @@ class OllamaProvider(ILLMProvider):
                 if token_id in tokenizer.all_special_ids:
                     continue
                 token_str = str(token_id)
-                w = float(weight)
+                w = float(weight.item())
                 if token_str not in sparse_dict or w > sparse_dict[token_str]:
                     sparse_dict[token_str] = w
             return {"dense": dense_vec, "sparse": sparse_dict}
