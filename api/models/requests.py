@@ -58,6 +58,7 @@ class ConfigUpdateRequest(BaseModel):
     embed_model: Optional[str] = None
     openai_key: Optional[str] = None
     or_key: Optional[str] = None
+    llamacpp_url: Optional[str] = None
     ai_observe_enabled: Optional[bool] = None
     reflection_threshold: Optional[int] = None
     telegram_bot_token: Optional[str] = None

@@ -238,14 +238,20 @@ function getTypeLabel(type) {
   return map[type] || type;
 }
 
+function toStr(val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'object') return JSON.stringify(val);
+  return String(val);
+}
+
 function getSummary(entry, type) {
   if (type === 'prompt') {
     const msgs = entry.messages || [];
     const last = msgs[msgs.length - 1];
-    return last ? last.content.substring(0, 120) : '';
+    return last ? toStr(last.content).substring(0, 120) : '';
   }
-  if (type === 'response') return (entry.content || '').substring(0, 120);
-  return entry.message || '';
+  if (type === 'response') return toStr(entry.content).substring(0, 120);
+  return toStr(entry.message).substring(0, 120);
 }
 
 function formatTime(ts) {
@@ -342,7 +348,10 @@ function renderBody(idx) {
     } catch {}
     html += `<pre>${highlightText(content, searchTerm)}</pre>`;
   } else if (type === 'event' || type === 'error') {
-    html += `<div style="padding:4px 0;font-size:14px;">${highlightText(entry.message || '', searchTerm)}</div>`;
+    const msgText = (typeof entry.message === 'object' && entry.message !== null)
+      ? JSON.stringify(entry.message, null, 2)
+      : toStr(entry.message);
+    html += `<div style="padding:4px 0;font-size:14px;">${highlightText(msgText, searchTerm)}</div>`;
     if (entry.details) {
       html += '<div class="detail-grid">';
       const renderObj = (obj, prefix) => {
@@ -440,7 +449,7 @@ function applyFilters() {
     // Update summary highlight
     const summaryEl = el.querySelector('.entry-summary');
     if (summaryEl) {
-      const rawSummary = getSummary(entry, type);
+      const rawSummary = toStr(getSummary(entry, type));
       summaryEl.innerHTML = highlightText(rawSummary, searchTerm);
     }
   });

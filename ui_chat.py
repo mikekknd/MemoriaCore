@@ -5,8 +5,43 @@ import json
 import requests
 
 
+def _render_perf_panel(di):
+    """效能計時面板"""
+    perf = di.get('perf_timing', {})
+    if not perf or not perf.get('steps'):
+        return
+    total_ms = perf.get('total_ms', 0)
+    steps = perf.get('steps', [])
+
+    with st.expander(f"⏱️ 效能分析 (總耗時: {total_ms:,.1f} ms)"):
+        # 瀑布圖式文字呈現
+        max_ms = max((s['ms'] for s in steps), default=1)
+        for s in steps:
+            name = s['name']
+            ms = s['ms']
+            pct = (ms / total_ms * 100) if total_ms > 0 else 0
+            bar_len = int((ms / max_ms) * 20) if max_ms > 0 else 0
+            bar = "█" * bar_len + "░" * (20 - bar_len)
+            st.text(f"{bar} {ms:>8.1f} ms ({pct:>5.1f}%)  {name}")
+
+        st.divider()
+
+        # 分類統計
+        llm_ms = sum(s['ms'] for s in steps if 'LLM' in s['name'])
+        search_ms = sum(s['ms'] for s in steps if '檢索' in s['name'] or 'Search' in s['name'])
+        other_ms = total_ms - llm_ms - search_ms
+        st.markdown(
+            f"**LLM 呼叫**: `{llm_ms:,.1f} ms` ({llm_ms/total_ms*100:.1f}%) · "
+            f"**向量檢索**: `{search_ms:,.1f} ms` ({search_ms/total_ms*100:.1f}%) · "
+            f"**其他**: `{other_ms:,.1f} ms` ({other_ms/total_ms*100:.1f}%)"
+            if total_ms > 0 else "無計時資料"
+        )
+
+
 def _render_debug_panel(di):
     """偵錯面板共用渲染邏輯"""
+    _render_perf_panel(di)
+
     with st.expander(f"🔍 記憶喚醒分析 (Threshold: {di.get('threshold', 0):.2f})"):
         st.markdown("**[核心認知喚醒]**")
         st.info(di.get('core_debug_text', '未觸發核心認知。'))

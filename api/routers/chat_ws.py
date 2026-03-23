@@ -5,6 +5,7 @@ WebSocket 對話端點 + 同步 REST 對話端點。
 import asyncio
 import json
 import re
+import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_analyzer,
@@ -13,6 +14,43 @@ from api.dependencies import (
 from api.session_manager import session_manager
 from api.models.requests import ChatSyncRequest
 from api.models.responses import ChatSyncResponseDTO, RetrievalContextDTO
+
+
+# ── 效能計時器 ────────────────────────────────────────────
+class StepTimer:
+    """記錄每個步驟的耗時，供效能分析使用。"""
+    def __init__(self):
+        self._steps: list[dict] = []
+        self._wall_start = time.perf_counter()
+
+    def step(self, name: str):
+        """回傳一個 context manager，自動記錄該步驟的耗時。"""
+        return _TimedStep(self, name)
+
+    def summary(self) -> dict:
+        total = time.perf_counter() - self._wall_start
+        return {
+            "total_ms": round(total * 1000, 1),
+            "steps": self._steps,
+        }
+
+
+class _TimedStep:
+    def __init__(self, timer: StepTimer, name: str):
+        self._timer = timer
+        self._name = name
+        self._start = 0.0
+
+    def __enter__(self):
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        elapsed = time.perf_counter() - self._start
+        self._timer._steps.append({
+            "name": self._name,
+            "ms": round(elapsed * 1000, 1),
+        })
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -63,12 +101,114 @@ async def _extract_ai_observations_bg(reply_text: str, context_msgs: list[dict])
         pass  # 觀察提取失敗不影響主流程
 
 
+# ── 記憶管線背景任務 ──────────────────────────────────────
+def _run_memory_pipeline_sync(msgs_to_extract: list[dict], last_block: dict | None):
+    """
+    同步執行記憶管線全流程（在背景執行緒中跑）。
+    包含：記憶管線 LLM → 區塊寫入 → 畫像提取 → 偏好聚合 → 人格反思。
+    回傳 pipeline_events 列表。
+    """
+    ms = get_memory_sys()
+    analyzer = get_analyzer()
+    rtr = get_router()
+    embed_model = get_embed_model()
+    pipeline_events = []
+
+    t_start = time.perf_counter()
+
+    # ─── 記憶管線 LLM ───
+    try:
+        pipeline_res = analyzer.process_memory_pipeline(
+            msgs_to_extract, last_block, rtr, embed_model, task_key="pipeline",
+        )
+    except Exception as e:
+        pipeline_res = {"error": str(e)}
+
+    if "error" not in pipeline_res:
+        healed_list = pipeline_res.get("healed_entities")
+        if healed_list and last_block:
+            old_overview = last_block["overview"]
+            summary_part = old_overview.split("\n[情境摘要]: ")[-1] if "\n[情境摘要]: " in old_overview else old_overview
+            new_overview = f"[核心實體]: {', '.join(healed_list)}\n[情境摘要]: {summary_part}"
+            ms.update_memory_block(last_block["block_id"], new_overview)
+
+        for block in pipeline_res.get("new_memories", []):
+            entities_str = ", ".join(block.get("entities", []))
+            summary_str = block.get("summary", "無摘要")
+            indices = block.get("message_indices", [])
+            prefs = block.get("potential_preferences", [])
+            overview = f"[核心實體]: {entities_str}\n[情境摘要]: {summary_str}"
+            raw_dialogues = [msgs_to_extract[idx] for idx in indices if 0 <= idx < len(msgs_to_extract)]
+            if raw_dialogues:
+                ms.add_memory_block(overview, raw_dialogues, router=rtr, potential_preferences=prefs)
+
+    pipeline_events.append({"type": "system_event", "action": "pipeline_complete",
+                            "new_blocks": len(pipeline_res.get("new_memories", []))})
+
+    # ─── 使用者畫像提取 ───
+    try:
+        current_profile = ms.storage.load_all_profiles(ms.db_path) if ms.db_path else []
+        profile_facts = analyzer.extract_user_facts(msgs_to_extract, current_profile, rtr, task_key="profile")
+        if profile_facts:
+            ms.apply_profile_facts(profile_facts, embed_model)
+            pipeline_events.append({"type": "system_event", "action": "profile_updated",
+                                    "facts_count": len(profile_facts)})
+    except Exception:
+        pass
+
+    # ─── 偏好聚合 ───
+    try:
+        from preference_aggregator import PreferenceAggregator
+        pref_agg = PreferenceAggregator(ms)
+        promoted = pref_agg.aggregate(score_threshold=3.0)
+        if promoted:
+            pref_agg.write_to_profile(promoted)
+            pipeline_events.append({"type": "system_event", "action": "preferences_aggregated",
+                                    "promoted_count": len(promoted)})
+    except Exception:
+        pass
+
+    # ─── AI 人格反思 ───
+    try:
+        pe = get_personality_engine()
+        if pe.should_reflect():
+            reflection_ok = pe.run_reflection(rtr)
+            if reflection_ok:
+                pipeline_events.append({"type": "system_event", "action": "personality_reflected"})
+    except Exception:
+        pass
+
+    pipeline_events.append({"type": "system_event", "action": "graph_updated", "entity": "memory_blocks"})
+
+    elapsed_ms = (time.perf_counter() - t_start) * 1000
+    pipeline_events.append({"type": "system_event", "action": "pipeline_timing",
+                            "elapsed_ms": round(elapsed_ms, 1)})
+    return pipeline_events
+
+
+async def _run_memory_pipeline_bg(session_id: str, msgs_to_extract: list[dict],
+                                   last_block: dict | None):
+    """
+    非同步包裝器：在背景執行緒中跑記憶管線，完成後推送事件給 WebSocket 客戶端。
+    """
+    try:
+        events = await asyncio.to_thread(
+            _run_memory_pipeline_sync, msgs_to_extract, last_block,
+        )
+        for evt in events:
+            await ws_manager.send_json(session_id, evt)
+    except Exception:
+        pass  # 背景管線失敗不影響已完成的對話回覆
+
+
 # ── 共用：完整對話編排邏輯 ────────────────────────────────
 def _run_chat_orchestration(session_messages: list[dict], last_entities: list[str],
                             user_prompt: str, user_prefs: dict):
     """
-    同步執行完整的對話編排流程（在執行緒池中跑）。
-    回傳 (reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_events)
+    同步執行對話編排的關鍵路徑（在執行緒池中跑）。
+    話題偏移時的記憶管線已拆至背景，此處只做偵測 → 檢索 → 生成。
+    回傳 (reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data)
+    pipeline_data: 若話題偏移，包含 (msgs_to_extract, last_block) 供呼叫端發起背景任務。
     """
     ms = get_memory_sys()
     analyzer = get_analyzer()
@@ -82,94 +222,39 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     memory_threshold = user_prefs.get("memory_threshold", 0.5)
     temperature = user_prefs.get("temperature", 0.7)
 
-    pipeline_events = []  # 收集需要推送給客戶端的系統事件
     topic_shifted = False
+    pipeline_data = None  # (msgs_to_extract, last_block) — 供背景管線使用
+    timer = StepTimer()
 
     # ─── 話題偏移偵測 ───
-    is_shift, cohesion_score = analyzer.detect_topic_shift(
-        session_messages, embed_model, threshold=shift_threshold,
-    )
+    with timer.step("話題偏移偵測 (Topic Shift Detection)"):
+        is_shift, cohesion_score = analyzer.detect_topic_shift(
+            session_messages, embed_model, threshold=shift_threshold,
+        )
 
     if is_shift:
         topic_shifted = True
-        pipeline_events.append({"type": "system_event", "action": "topic_shift",
-                                "cohesion_score": round(cohesion_score, 3)})
-
+        # 準備背景管線所需的資料快照（不在此處執行管線）
+        import copy
         msgs_to_extract = [{"role": m["role"], "content": m["content"]}
                            for m in session_messages[:-1]]
-        last_block = ms.memory_blocks[-1] if ms.memory_blocks else None
-
-        # 記憶管線
-        pipeline_res = analyzer.process_memory_pipeline(
-            msgs_to_extract, last_block, rtr, embed_model, task_key="pipeline",
-        )
-
-        if "error" not in pipeline_res:
-            healed_list = pipeline_res.get("healed_entities")
-            if healed_list and last_block:
-                old_overview = last_block["overview"]
-                summary_part = old_overview.split("\n[情境摘要]: ")[-1] if "\n[情境摘要]: " in old_overview else old_overview
-                new_overview = f"[核心實體]: {', '.join(healed_list)}\n[情境摘要]: {summary_part}"
-                ms.update_memory_block(last_block["block_id"], new_overview)
-
-            for block in pipeline_res.get("new_memories", []):
-                entities_str = ", ".join(block.get("entities", []))
-                summary_str = block.get("summary", "無摘要")
-                indices = block.get("message_indices", [])
-                prefs = block.get("potential_preferences", [])
-                overview = f"[核心實體]: {entities_str}\n[情境摘要]: {summary_str}"
-                raw_dialogues = [msgs_to_extract[idx] for idx in indices if 0 <= idx < len(msgs_to_extract)]
-                if raw_dialogues:
-                    ms.add_memory_block(overview, raw_dialogues, router=rtr, potential_preferences=prefs)
-
-        pipeline_events.append({"type": "system_event", "action": "pipeline_complete",
-                                "new_blocks": len(pipeline_res.get("new_memories", []))})
-
-        # 使用者畫像提取
-        try:
-            current_profile = ms.storage.load_all_profiles(ms.db_path) if ms.db_path else []
-            profile_facts = analyzer.extract_user_facts(msgs_to_extract, current_profile, rtr, task_key="profile")
-            if profile_facts:
-                ms.apply_profile_facts(profile_facts, embed_model)
-                pipeline_events.append({"type": "system_event", "action": "profile_updated",
-                                        "facts_count": len(profile_facts)})
-        except Exception:
-            pass
-
-        # 偏好聚合
-        try:
-            from preference_aggregator import PreferenceAggregator
-            pref_agg = PreferenceAggregator(ms)
-            promoted = pref_agg.aggregate(score_threshold=3.0)
-            if promoted:
-                pref_agg.write_to_profile(promoted)
-                pipeline_events.append({"type": "system_event", "action": "preferences_aggregated",
-                                        "promoted_count": len(promoted)})
-        except Exception:
-            pass
-
-        # AI 人格反思（話題偏移時檢查是否應觸發）
-        try:
-            pe = get_personality_engine()
-            if pe.should_reflect():
-                reflection_ok = pe.run_reflection(rtr)
-                if reflection_ok:
-                    pipeline_events.append({"type": "system_event", "action": "personality_reflected"})
-        except Exception:
-            pass
-
-        pipeline_events.append({"type": "system_event", "action": "graph_updated", "entity": "memory_blocks"})
+        last_block = copy.deepcopy(ms.memory_blocks[-1]) if ms.memory_blocks else None
+        pipeline_data = (msgs_to_extract, last_block)
 
     # ─── 雙軌檢索 ───
-    expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand")
+    with timer.step("查詢擴展 (Query Expansion LLM)"):
+        expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand")
     inherited_str = " ".join(last_entities)
     combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
 
     f_alpha = ui_alpha
     f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
 
-    blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
-    core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45)
+    with timer.step("情境記憶檢索 (Memory Block Search)"):
+        blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
+
+    with timer.step("核心認知檢索 (Core Memory Search)"):
+        core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45)
 
     core_ctx = ""
     core_debug_text = "未觸發核心認知。"
@@ -177,7 +262,8 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         core_ctx = f"【使用者核心資訊】：{core_insights[0]['insight']}\n"
         core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
 
-    profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5)
+    with timer.step("使用者偏好檢索 (Profile Search)"):
+        profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5)
     profile_ctx = ""
     profile_debug_text = "未觸發使用者偏好。"
     if profile_matches:
@@ -250,29 +336,38 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         "required": ["reply", "extracted_entities"],
     }
 
-    api_messages = [{"role": "system", "content": sys_prompt}]
-    clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-4:]]
-    api_messages.extend(clean_history)
+    with timer.step("上下文組裝 (Context Assembly)"):
+        api_messages = [{"role": "system", "content": sys_prompt}]
+        clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-4:]]
+        api_messages.extend(clean_history)
 
-    try:
-        full_res = rtr.generate("chat", api_messages, temperature=temperature, response_format=chat_schema)
-        _start = full_res.find('{')
-        if _start != -1:
-            try:
-                parsed, _ = json.JSONDecoder().raw_decode(full_res, _start)
-                reply_text = parsed.get("reply", "解析錯誤")
-                new_entities = parsed.get("extracted_entities", [])
-            except Exception:
+    with timer.step("LLM 對話生成 (Chat Generation LLM)"):
+        try:
+            full_res = rtr.generate("chat", api_messages, temperature=temperature, response_format=chat_schema)
+        except Exception as e:
+            full_res = None
+            reply_text = f"生成錯誤: {e}"
+            new_entities = []
+
+    if full_res is not None:
+        with timer.step("回應解析 (Response Parsing)"):
+            _start = full_res.find('{')
+            if _start != -1:
+                try:
+                    parsed, _ = json.JSONDecoder().raw_decode(full_res, _start)
+                    reply_text = parsed.get("reply", "解析錯誤")
+                    new_entities = parsed.get("extracted_entities", [])
+                except Exception:
+                    reply_text = full_res
+                    new_entities = []
+            else:
                 reply_text = full_res
                 new_entities = []
-        else:
-            reply_text = full_res
-            new_entities = []
-    except Exception as e:
-        reply_text = f"生成錯誤: {e}"
-        new_entities = []
 
-    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events
+    # 將效能計時結果注入 retrieval_ctx
+    retrieval_ctx["perf_timing"] = timer.summary()
+
+    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data
 
 
 # ── WebSocket 端點 ────────────────────────────────────────
@@ -326,16 +421,18 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 
             user_prefs = get_storage().load_prefs()
 
-            # 在執行緒池中跑完整編排
-            reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events = \
+            # 在執行緒池中跑關鍵路徑（偵測 → 檢索 → 生成）
+            reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data = \
                 await asyncio.to_thread(
                     _run_chat_orchestration,
                     list(s.messages), list(s.last_entities), content, user_prefs,
                 )
 
-            # 如果話題偏移，先推送管線事件
-            for evt in pipeline_events:
-                await ws.send_json(evt)
+            # 如果話題偏移，通知客戶端並在背景啟動記憶管線
+            if topic_shifted:
+                await ws.send_json({"type": "system_event", "action": "topic_shift"})
+                if pipeline_data:
+                    asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
 
             # 推送檢索上下文
             await ws.send_json({"type": "retrieval_context", "data": retrieval_ctx})
@@ -378,7 +475,7 @@ async def chat_sync(body: ChatSyncRequest):
 
     user_prefs = get_storage().load_prefs()
 
-    reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events = \
+    reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data = \
         await asyncio.to_thread(
             _run_chat_orchestration,
             list(s.messages), list(s.last_entities), body.content, user_prefs,
@@ -392,10 +489,9 @@ async def chat_sync(body: ChatSyncRequest):
 
     if topic_shifted:
         await session_manager.bridge(sid)
-
-    # 通知 WebSocket 客戶端（如果有）
-    for evt in pipeline_events:
-        await ws_manager.send_json(sid, evt)
+        # 在背景啟動記憶管線（管線完成後會透過 ws_manager 推送事件給 WebSocket 客戶端）
+        if pipeline_data:
+            asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
 
     return ChatSyncResponseDTO(
         reply=reply_text,

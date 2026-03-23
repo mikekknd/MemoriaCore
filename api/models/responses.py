@@ -118,6 +118,14 @@ class GraphDTO(BaseModel):
 
 
 # ── Chat 同步回應 ─────────────────────────────────────────
+class PerfStepDTO(BaseModel):
+    name: str
+    ms: float
+
+class PerfTimingDTO(BaseModel):
+    total_ms: float = 0.0
+    steps: list[PerfStepDTO] = []
+
 class RetrievalContextDTO(BaseModel):
     original_query: str = ""
     expanded_keywords: str = ""
@@ -131,6 +139,7 @@ class RetrievalContextDTO(BaseModel):
     core_debug_text: str = ""
     profile_debug_text: str = ""
     dynamic_prompt: str = ""
+    perf_timing: PerfTimingDTO = PerfTimingDTO()
 
 
 class ChatSyncResponseDTO(BaseModel):
@@ -151,6 +160,7 @@ class SystemConfigDTO(BaseModel):
     embed_model: str = "bge-m3:latest"
     openai_key: str = ""
     or_key: str = ""
+    llamacpp_url: str = "http://localhost:8080"
     ai_observe_enabled: bool = True
     reflection_threshold: int = 5
     telegram_bot_token: str = ""

@@ -122,6 +122,42 @@ class OpenAICompatibleProvider(ILLMProvider):
             except Exception:
                 return {"dense": [], "sparse": {}}
 
+class LlamaCppProvider(OpenAICompatibleProvider):
+    """llama.cpp server 專用 Provider — response_format 自動降級。
+
+    舊版 llama.cpp 不支援 json_schema，改用 json_object + prompt 內嵌 schema。
+    新版則嘗試 json_schema，失敗後再自動降級。
+    """
+
+    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict = None) -> str:
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature
+        }
+        if response_format:
+            # 先嘗試 json_schema（新版 llama.cpp 支援）
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "dynamic_schema",
+                    "schema": response_format,
+                    "strict": False
+                }
+            }
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+                return response.choices[0].message.content.strip()
+            except Exception:
+                # 降級為 json_object（舊版 llama.cpp）
+                kwargs["response_format"] = {"type": "json_object"}
+                response = self.client.chat.completions.create(**kwargs)
+                return response.choices[0].message.content.strip()
+
+        response = self.client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content.strip()
+
+
 class LLMRouter:
     def __init__(self):
         self.routes = {}

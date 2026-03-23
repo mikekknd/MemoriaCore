@@ -13,7 +13,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from storage_manager import StorageManager
-from llm_gateway import OllamaProvider, OpenAICompatibleProvider, LLMRouter
+from llm_gateway import OllamaProvider, OpenAICompatibleProvider, LlamaCppProvider, LLMRouter
 from core_memory import MemorySystem
 from memory_analyzer import MemoryAnalyzer
 from personality_engine import PersonalityEngine
@@ -50,14 +50,17 @@ def init_all():
     # 建立 Provider 實例
     openai_key = user_prefs.get("openai_key", "")
     or_key = user_prefs.get("or_key", "")
+    llamacpp_url = user_prefs.get("llamacpp_url", "http://localhost:8080")
     local_provider = OllamaProvider()
     openai_provider = OpenAICompatibleProvider(api_key=openai_key)
     or_provider = OpenAICompatibleProvider(api_key=or_key, base_url="https://openrouter.ai/api/v1")
+    llamacpp_provider = LlamaCppProvider(api_key="none", base_url=f"{llamacpp_url.rstrip('/')}/v1")
 
     providers_map = {
         "Ollama (本地)": local_provider,
         "OpenAI (雲端)": openai_provider,
         "OpenRouter (雲端)": or_provider,
+        "llama.cpp (本地)": llamacpp_provider,
     }
 
     # 路由註冊
@@ -72,6 +75,17 @@ def init_all():
 
     # 向量引擎初始化（觸發 ONNX 載入）
     memory_sys.switch_embedding_model(local_provider, embed_model)
+
+    # Warmup：強制載入 ONNX Session + Tokenizer 並跑一次推論，
+    # 將冷啟動延遲轉移到啟動期，避免第一次使用者請求特別慢。
+    import time as _t
+    _w_start = _t.perf_counter()
+    try:
+        local_provider.get_embedding(text="warmup", model=embed_model)
+        _w_ms = (_t.perf_counter() - _w_start) * 1000
+        print(f"[Startup] Embedding warmup 完成 ({_w_ms:.0f} ms)")
+    except Exception as e:
+        print(f"[Startup] Embedding warmup 失敗（不影響後續運作）: {e}")
 
     # 注入 storage 給 session_manager（持久化對話紀錄）
     from api.session_manager import session_manager
@@ -89,13 +103,16 @@ def reload_router():
 
     openai_key = user_prefs.get("openai_key", "")
     or_key = user_prefs.get("or_key", "")
+    llamacpp_url = user_prefs.get("llamacpp_url", "http://localhost:8080")
     local_provider = OllamaProvider()
     openai_provider = OpenAICompatibleProvider(api_key=openai_key)
     or_provider = OpenAICompatibleProvider(api_key=or_key, base_url="https://openrouter.ai/api/v1")
+    llamacpp_provider = LlamaCppProvider(api_key="none", base_url=f"{llamacpp_url.rstrip('/')}/v1")
     providers_map = {
         "Ollama (本地)": local_provider,
         "OpenAI (雲端)": openai_provider,
         "OpenRouter (雲端)": or_provider,
+        "llama.cpp (本地)": llamacpp_provider,
     }
 
     routing_config = user_prefs.get("routing_config", {})

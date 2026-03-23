@@ -22,6 +22,11 @@ def render_settings_page(api_base):
         st.header("🌐 全域 API 金鑰配置")
         new_openai_key = st.text_input("OpenAI API Key", type="password", value=user_prefs.get("openai_key", ""))
         new_or_key = st.text_input("OpenRouter API Key", type="password", value=user_prefs.get("or_key", ""))
+        new_llamacpp_url = st.text_input(
+            "llama.cpp Server URL",
+            value=user_prefs.get("llamacpp_url", "http://localhost:8080"),
+            help="llama.cpp server 的位址（不含 /v1）。啟動指令範例：llama-server --model model.gguf --port 8080 --cont-batching -np 4",
+        )
         new_tg_token = st.text_input("Telegram Bot Token", type="password", value=user_prefs.get("telegram_bot_token", ""),
                                       help="從 @BotFather 取得。設定後重啟伺服器即可啟用 Telegram 對話。留空則不啟動 Bot。")
 
@@ -45,7 +50,7 @@ def render_settings_page(api_base):
                                               help="累積多少筆 AI 自我觀察後，在話題偏移時自動觸發人格反思。")
 
     st.header("⚙️ 異質任務路由映射表 (雙軌混合版)")
-    provider_names = ["Ollama (本地)", "OpenAI (雲端)", "OpenRouter (雲端)"]
+    provider_names = ["Ollama (本地)", "llama.cpp (本地)", "OpenAI (雲端)", "OpenRouter (雲端)"]
 
     # 從 Ollama 抓取可用模型列表（快取避免重複請求）
     @st.cache_data(ttl=60)
@@ -58,7 +63,19 @@ def render_settings_page(api_base):
             pass
         return []
 
+    # 從 llama.cpp server 抓取已載入模型列表
+    @st.cache_data(ttl=60)
+    def _fetch_llamacpp_models(base_url: str):
+        try:
+            r = requests.get(f"{base_url.rstrip('/')}/v1/models", timeout=3)
+            if r.ok:
+                return [m["id"] for m in r.json().get("data", [])]
+        except Exception:
+            pass
+        return []
+
     ollama_models = _fetch_ollama_models()
+    llamacpp_models = _fetch_llamacpp_models(user_prefs.get("llamacpp_url", "http://localhost:8080"))
 
     task_infos = {
         "chat": {"desc": "即時對話 (帶影子標籤)", "help": "處理玩家對話，同時伴隨生成實體標籤。建議高參數量模型。"},
@@ -84,10 +101,15 @@ def render_settings_page(api_base):
             if not saved_model:
                 saved_model = "qwen3.5"
 
-            # Ollama 供應商：顯示下拉選單；其他供應商：手動輸入
+            # 依供應商顯示下拉選單或手動輸入
             if p_sel == "Ollama (本地)" and ollama_models:
-                # 確保已儲存的模型在列表中，否則附加到末尾
                 model_options = list(ollama_models)
+                if saved_model and saved_model not in model_options:
+                    model_options.append(saved_model)
+                m_idx = model_options.index(saved_model) if saved_model in model_options else 0
+                m_sel = st.selectbox(f"模型 ({task_key})", model_options, index=m_idx, key=f"m_{task_key}", help=info["help"])
+            elif p_sel == "llama.cpp (本地)" and llamacpp_models:
+                model_options = list(llamacpp_models)
                 if saved_model and saved_model not in model_options:
                     model_options.append(saved_model)
                 m_idx = model_options.index(saved_model) if saved_model in model_options else 0
@@ -101,6 +123,7 @@ def render_settings_page(api_base):
         update_payload = {
             "openai_key": new_openai_key,
             "or_key": new_or_key,
+            "llamacpp_url": new_llamacpp_url,
             "telegram_bot_token": new_tg_token,
             "embed_model": new_embed_model,
             "temperature": new_temperature,

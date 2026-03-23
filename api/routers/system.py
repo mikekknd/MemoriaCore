@@ -31,6 +31,7 @@ async def get_config():
         embed_model=prefs.get("embed_model", "bge-m3:latest"),
         openai_key=prefs.get("openai_key", ""),
         or_key=prefs.get("or_key", ""),
+        llamacpp_url=prefs.get("llamacpp_url", "http://localhost:8080"),
         ai_observe_enabled=prefs.get("ai_observe_enabled", True),
         reflection_threshold=prefs.get("reflection_threshold", 5),
         telegram_bot_token=prefs.get("telegram_bot_token", ""),
