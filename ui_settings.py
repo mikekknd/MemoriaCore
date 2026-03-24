@@ -4,16 +4,17 @@ import streamlit as st
 import requests
 
 
-def render_settings_page(api_base):
+def render_settings_page(api_base, user_prefs=None):
     st.title("⚙️ 系統與路由設定")
 
-    # 從 API 載入設定
-    try:
-        resp = requests.get(f"{api_base}/system/config", timeout=5)
-        user_prefs = resp.json() if resp.ok else {}
-    except Exception:
-        user_prefs = {}
-        st.error("無法從 API 載入設定。")
+    # 使用 app.py 傳入的快取 config，避免重複 API 呼叫
+    if not user_prefs:
+        try:
+            resp = requests.get(f"{api_base}/system/config", timeout=5)
+            user_prefs = resp.json() if resp.ok else {}
+        except Exception:
+            user_prefs = {}
+            st.error("無法從 API 載入設定。")
 
     routing_config = user_prefs.get("routing_config", {})
 

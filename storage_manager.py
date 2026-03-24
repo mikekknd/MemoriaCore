@@ -4,7 +4,7 @@ import os
 import re
 import sqlite3
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class StorageManager:
     def __init__(self, prefs_file="user_prefs.json", history_file="chat_history.json"):
@@ -511,3 +511,56 @@ class StorageManager:
         cursor.execute('UPDATE conversation_sessions SET is_active = 0 WHERE session_id = ?', (session_id,))
         conn.commit()
         conn.close()
+
+    def reactivate_session(self, session_id):
+        """重新標記 session 為活躍"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute('UPDATE conversation_sessions SET is_active = 1, last_active = ? WHERE session_id = ?', (now, session_id))
+        conn.commit()
+        conn.close()
+
+    def hard_delete_session(self, session_id):
+        """永久刪除指定 session 及其所有訊息"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM conversation_messages WHERE session_id = ?', (session_id,))
+        cursor.execute('DELETE FROM conversation_sessions WHERE session_id = ?', (session_id,))
+        conn.commit()
+        conn.close()
+
+    def hard_delete_sessions_older_than(self, days: int) -> int:
+        """永久刪除 N 天前的 session 及其訊息，回傳刪除數量"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        # 找出符合條件的 session_ids
+        cursor.execute(
+            'SELECT session_id FROM conversation_sessions WHERE last_active < ?', (cutoff,)
+        )
+        old_ids = [r[0] for r in cursor.fetchall()]
+        if old_ids:
+            placeholders = ','.join('?' * len(old_ids))
+            cursor.execute(f'DELETE FROM conversation_messages WHERE session_id IN ({placeholders})', old_ids)
+            cursor.execute(f'DELETE FROM conversation_sessions WHERE session_id IN ({placeholders})', old_ids)
+            conn.commit()
+        conn.close()
+        return len(old_ids)
+
+    def get_session_info(self, session_id):
+        """取得單一 session 的元資料"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT s.session_id, s.channel, s.channel_uid, s.created_at, s.last_active, s.is_active,
+                   (SELECT COUNT(*) FROM conversation_messages m WHERE m.session_id = s.session_id)
+            FROM conversation_sessions s WHERE s.session_id = ?
+        ''', (session_id,))
+        r = cursor.fetchone()
+        conn.close()
+        if not r:
+            return None
+        return {"session_id": r[0], "channel": r[1], "channel_uid": r[2],
+                "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
+                "message_count": r[6]}

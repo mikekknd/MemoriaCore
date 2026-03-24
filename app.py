@@ -52,7 +52,7 @@ elif current_page == "🧠 記憶庫與資料庫管理":
     render_db_manager_page(API_BASE, user_prefs)
 
 elif current_page == "⚙️ 系統與路由設定":
-    render_settings_page(API_BASE)
+    render_settings_page(API_BASE, user_prefs)
 
 elif current_page == "📋 Log 檢視器":
     render_log_viewer_page(API_BASE)

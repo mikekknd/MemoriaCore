@@ -56,6 +56,32 @@ class SessionManager:
                 return s
         return await self.create(channel=channel, channel_uid=channel_uid)
 
+    async def restore_from_db(self, session_id: str) -> SessionState | None:
+        """從 DB 還原已過期的 session 到記憶體（含訊息歷史）"""
+        if not self._storage:
+            return None
+        info = self._storage.get_session_info(session_id)
+        if not info:
+            return None
+        async with self._lock:
+            # 已在記憶體中則直接返回
+            if session_id in self._sessions:
+                return self._sessions[session_id]
+            # 從 DB 載入訊息
+            messages = self._storage.load_conversation_messages(session_id)
+            session = SessionState(
+                session_id=session_id,
+                messages=messages,
+                channel=info.get("channel", "rest"),
+                channel_uid=info.get("channel_uid", ""),
+                created_at=datetime.fromisoformat(info["created_at"]) if info.get("created_at") else datetime.now(),
+                last_active=datetime.now(),
+            )
+            self._sessions[session_id] = session
+            # 重新標記為活躍
+            self._storage.reactivate_session(session_id)
+            return session
+
     async def delete(self, session_id: str) -> bool:
         async with self._lock:
             removed = self._sessions.pop(session_id, None) is not None

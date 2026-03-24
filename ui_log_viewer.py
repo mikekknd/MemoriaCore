@@ -21,8 +21,9 @@ CATEGORY_META = {
 # 資料載入與分組
 # ──────────────────────────────────────────
 
+@st.cache_data(ttl=10, show_spinner=False)
 def _load_entries_from_api(api_base, limit=1000):
-    """從 API 載入 Log 條目"""
+    """從 API 載入 Log 條目（快取 10 秒）"""
     try:
         resp = requests.get(f"{api_base}/logs?limit={limit}", timeout=10)
         if resp.ok:
@@ -177,6 +178,7 @@ def render_log_viewer_page(api_base):
         st.caption(f"資料來源: {api_base}/logs")
     with col_reload:
         if st.button("🔄 重新載入", use_container_width=True):
+            _load_entries_from_api.clear()
             st.rerun()
 
     # 載入資料（API 回傳已按最新在前排序）

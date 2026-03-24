@@ -70,14 +70,58 @@ def _render_debug_panel(di):
                 st.code(di.get('dynamic_prompt', ''), language="markdown")
 
 
+@st.cache_data(ttl=5, show_spinner=False)
+def _load_session_list(api_base):
+    """載入歷史 session 列表（快取 5 秒避免重繪重複請求）"""
+    try:
+        resp = requests.get(f"{api_base}/session/history", params={"channel": "streamlit", "limit": 30}, timeout=5)
+        if resp.ok:
+            return resp.json()
+    except Exception:
+        pass
+    return []
+
+
+def _create_new_session(api_base):
+    """建立新 session 並更新 st.session_state"""
+    resp = requests.post(f"{api_base}/session", json={"channel": "streamlit"}, timeout=5)
+    if resp.ok:
+        new_sid = resp.json()["session_id"]
+        st.session_state.api_session_id = new_sid
+        st.session_state.chat_messages_cache = []
+        return new_sid
+    return None
+
+
+def _restore_session(api_base, session_id):
+    """還原歷史 session 到記憶體並載入訊息"""
+    try:
+        # 先嘗試還原到記憶體
+        requests.post(f"{api_base}/session/{session_id}/restore", timeout=5)
+        # 載入歷史訊息
+        hist_resp = requests.get(f"{api_base}/session/history/{session_id}", timeout=5)
+        if hist_resp.ok:
+            msgs = hist_resp.json().get("messages", [])
+            st.session_state.api_session_id = session_id
+            st.session_state.chat_messages_cache = msgs
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def render_chat_page(api_base, user_prefs):
     st.title("💬 異質模型分流: 雙軌混合檢索版")
 
-    with st.expander("🎭 機器人設定 (System Prompt)", expanded=False):
+    @st.cache_data(ttl=15, show_spinner=False)
+    def _load_system_prompt(_api_base):
         try:
-            current_prompt = requests.get(f"{api_base}/system/prompt", timeout=5).json().get("prompt", "")
+            return requests.get(f"{_api_base}/system/prompt", timeout=5).json().get("prompt", "")
         except Exception:
-            current_prompt = ""
+            return ""
+
+    with st.expander("🎭 機器人設定 (System Prompt)", expanded=False):
+        current_prompt = _load_system_prompt(api_base)
         system_prompt_input = st.text_area("System Prompt：", value=current_prompt, height=150)
         if st.button("💾 儲存提示詞"):
             try:
@@ -86,34 +130,72 @@ def render_chat_page(api_base, user_prefs):
             except Exception as e:
                 st.error(f"儲存失敗: {e}")
 
-    # Session 管理：透過 API 建立/取得 session
+    # ── Session 選擇器（側邊欄）──
+    with st.sidebar:
+        st.subheader("📋 對話紀錄")
+
+        if st.button("➕ 開始新對話", use_container_width=True):
+            _create_new_session(api_base)
+            _load_session_list.clear()
+            st.rerun()
+
+        sessions = _load_session_list(api_base)
+        if sessions:
+            current_sid = st.session_state.get("api_session_id", "")
+            for sess in sessions:
+                sid = sess["session_id"]
+                msg_count = sess.get("message_count", 0)
+                created = sess.get("created_at", "")[:16]
+                is_current = (sid == current_sid)
+                label = f"{'▶ ' if is_current else ''}{created} ({msg_count} 則)"
+                col_btn, col_del = st.columns([5, 1])
+                with col_btn:
+                    if st.button(label, key=f"sess_{sid}", use_container_width=True, disabled=is_current):
+                        _restore_session(api_base, sid)
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑", key=f"del_{sid}", help="永久刪除此對話"):
+                        try:
+                            requests.delete(f"{api_base}/session/history/{sid}", timeout=10)
+                        except Exception:
+                            pass
+                        # 若刪除的是當前 session，清除本地狀態
+                        if is_current:
+                            st.session_state.pop("api_session_id", None)
+                            st.session_state.pop("chat_messages_cache", None)
+                        _load_session_list.clear()
+                        st.rerun()
+
+    # Session 管理：首次載入時自動恢復最近有訊息的 streamlit session
+    # 若無可恢復的 session，不主動建立——等使用者發送訊息時再建
     if "api_session_id" not in st.session_state:
-        try:
-            resp = requests.post(f"{api_base}/session", json={"channel": "streamlit"}, timeout=5)
-            if resp.ok:
-                st.session_state.api_session_id = resp.json()["session_id"]
-            else:
-                st.error("無法建立 Session")
-                return
-        except Exception as e:
-            st.error(f"無法連線到 API: {e}")
-            return
+        sessions = _load_session_list(api_base)
+        if sessions:
+            latest = sessions[0]
+            if latest.get("message_count", 0) > 0:
+                _restore_session(api_base, latest["session_id"])
+        # 無論是否恢復成功，都初始化快取（避免後續 KeyError）
+        if "chat_messages_cache" not in st.session_state:
+            st.session_state.chat_messages_cache = []
 
-    session_id = st.session_state.api_session_id
+    session_id = st.session_state.get("api_session_id")
 
-    # 對話歷史：優先使用本地快取，避免每次 rerun 都打 GET /session/{id}
-    # 只有在首次進入頁面（快取不存在）時才從 API 拉一次
-    if "chat_messages_cache" not in st.session_state:
+    # 對話歷史：有 session 時才嘗試載入
+    if session_id and "chat_messages_cache" not in st.session_state:
         try:
             sess_resp = requests.get(f"{api_base}/session/{session_id}", timeout=5)
             if sess_resp.ok:
                 st.session_state.chat_messages_cache = sess_resp.json().get("messages", [])
             else:
-                st.session_state.chat_messages_cache = []
+                hist_resp = requests.get(f"{api_base}/session/history/{session_id}", timeout=5)
+                if hist_resp.ok:
+                    st.session_state.chat_messages_cache = hist_resp.json().get("messages", [])
+                else:
+                    st.session_state.chat_messages_cache = []
         except Exception:
             st.session_state.chat_messages_cache = []
 
-    messages = st.session_state.chat_messages_cache
+    messages = st.session_state.get("chat_messages_cache", [])
 
     # 渲染對話歷史
     for message in messages:
@@ -127,6 +209,24 @@ def render_chat_page(api_base, user_prefs):
 
     if prompt := st.chat_input("請輸入...", disabled=st.session_state.is_generating):
         st.session_state.is_generating = True
+
+        # 延遲建立 session：第一則訊息時才建立
+        if not session_id:
+            try:
+                resp = requests.post(f"{api_base}/session", json={"channel": "streamlit"}, timeout=5)
+                if resp.ok:
+                    session_id = resp.json()["session_id"]
+                    st.session_state.api_session_id = session_id
+                    _load_session_list.clear()
+                else:
+                    st.error("無法建立 Session")
+                    st.session_state.is_generating = False
+                    st.rerun()
+                    return
+            except Exception as e:
+                st.error(f"無法連線到 API: {e}")
+                st.session_state.is_generating = False
+                return
 
         # 立即將使用者訊息加入本地快取並顯示
         st.session_state.chat_messages_cache.append({"role": "user", "content": prompt})

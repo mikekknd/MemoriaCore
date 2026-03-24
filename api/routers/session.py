@@ -45,9 +45,7 @@ async def list_conversation_history(
 async def get_conversation_history(session_id: str):
     """從 DB 載入指定 session 的完整訊息（含已結束的 session）"""
     storage = get_storage()
-    # 先查 session 元資料
-    all_sessions = storage.load_conversation_sessions(limit=500)
-    session_info = next((s for s in all_sessions if s["session_id"] == session_id), None)
+    session_info = storage.get_session_info(session_id)
     if not session_info:
         raise HTTPException(404, detail=f"Session {session_id} not found in history")
 
@@ -82,3 +80,35 @@ async def bridge_session(session_id: str):
     if not ok:
         raise HTTPException(404, detail=f"Session {session_id} not found")
     return {"status": "bridged", "session_id": session_id}
+
+
+@router.post("/{session_id}/restore", response_model=SessionDTO)
+async def restore_session(session_id: str):
+    """從 DB 還原已過期的 session 到記憶體"""
+    s = await session_manager.restore_from_db(session_id)
+    if not s:
+        raise HTTPException(404, detail=f"Session {session_id} not found in DB")
+    return _state_to_dto(s)
+
+
+@router.delete("/history/cleanup/{days}")
+async def cleanup_old_sessions(days: int):
+    """永久刪除 N 天前的所有 session 及訊息"""
+    if days < 1:
+        raise HTTPException(400, detail="days 必須 >= 1")
+    storage = get_storage()
+    count = storage.hard_delete_sessions_older_than(days)
+    return {"status": "cleanup_done", "deleted_count": count, "older_than_days": days}
+
+
+@router.delete("/history/{session_id}")
+async def hard_delete_session(session_id: str):
+    """永久刪除指定 session 及其所有訊息（不可恢復）"""
+    storage = get_storage()
+    info = storage.get_session_info(session_id)
+    if not info:
+        raise HTTPException(404, detail=f"Session {session_id} not found")
+    # 也從記憶體移除（如果還在的話）
+    await session_manager.delete(session_id)
+    storage.hard_delete_session(session_id)
+    return {"status": "permanently_deleted", "session_id": session_id}

@@ -26,6 +26,7 @@ chat_history.json
 llm_trace.jsonl
 user_prefs.json
 system_prompt.txt
+ai_personality.md
 
 # Build & Dist
 build/
