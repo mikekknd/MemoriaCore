@@ -23,6 +23,7 @@ def render_settings_page(api_base, user_prefs=None):
         st.header("🌐 全域 API 金鑰配置")
         new_openai_key = st.text_input("OpenAI API Key", type="password", value=user_prefs.get("openai_key", ""))
         new_or_key = st.text_input("OpenRouter API Key", type="password", value=user_prefs.get("or_key", ""))
+        new_tavily_key = st.text_input("Tavily API Key (網路搜尋用)", type="password", value=user_prefs.get("tavily_api_key", ""))
         new_llamacpp_url = st.text_input(
             "llama.cpp Server URL",
             value=user_prefs.get("llamacpp_url", "http://localhost:8080"),
@@ -30,6 +31,19 @@ def render_settings_page(api_base, user_prefs=None):
         )
         new_tg_token = st.text_input("Telegram Bot Token", type="password", value=user_prefs.get("telegram_bot_token", ""),
                                       help="從 @BotFather 取得。設定後重啟伺服器即可啟用 Telegram 對話。留空則不啟動 Bot。")
+
+        st.header("⏳ 背景搜集設定")
+        default_hours = int(user_prefs.get("bg_gather_interval", 14400)) // 3600
+        new_bg_gather_hours = st.number_input("背景話題搜集頻率 (小時)", min_value=1, max_value=168, value=default_hours)
+        if st.button("🚀 馬上觸發一次背景搜尋"):
+            try:
+                r = requests.post(f"{api_base}/system/gather_now", timeout=5)
+                if r.ok:
+                    st.success(r.json().get("message", "已成功發送立即搜集訊號！系統將在 10 秒內開始執行。"))
+                else:
+                    st.error("發送失敗，請確認後端已重新啟動。")
+            except Exception as e:
+                st.error(f"連線失敗: {e}")
 
         st.header("🧲 基礎向量引擎")
         new_embed_model = st.text_input("Embedding 模型名稱", value=user_prefs.get("embed_model", "bge-m3:latest"))
@@ -88,6 +102,7 @@ def render_settings_page(api_base, user_prefs=None):
         "profile": {"desc": "使用者畫像更新", "help": "從對話中萃取使用者的個人特徵與偏好。"},
         "ai_observe": {"desc": "AI 自我觀察提取", "help": "從對話中偵測 AI 的自我陳述與行為變化。建議快速小模型。"},
         "ai_reflect": {"desc": "AI 人格反思", "help": "綜合觀察紀錄更新 AI 個性檔案。建議高品質模型。"},
+        "background_gather": {"desc": "背景話題摘要", "help": "在背景將 Tavily 搜尋下來的資料摘要成主動話題。建議不需太強的模型。"},
     }
 
     new_routing_config = {}
@@ -124,6 +139,8 @@ def render_settings_page(api_base, user_prefs=None):
         update_payload = {
             "openai_key": new_openai_key,
             "or_key": new_or_key,
+            "tavily_api_key": new_tavily_key,
+            "bg_gather_interval": int(new_bg_gather_hours * 3600),
             "llamacpp_url": new_llamacpp_url,
             "telegram_bot_token": new_tg_token,
             "embed_model": new_embed_model,

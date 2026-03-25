@@ -234,33 +234,54 @@ def render_chat_page(api_base, user_prefs):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("⚡ 雙路檢索中 (情境回憶 + 核心認知)..."):
-                try:
-                    chat_resp = requests.post(
-                        f"{api_base}/chat/sync",
-                        json={"content": prompt, "session_id": session_id},
-                        timeout=120,
-                    )
-                    if chat_resp.ok:
-                        result = chat_resp.json()
-                        reply_text = result.get("reply", "解析錯誤")
-                        retrieval_ctx = result.get("retrieval_context", {})
+            status_placeholder = st.empty()
+            status_placeholder.info("⚡ 雙路檢索中 (情境回憶 + 核心認知)...")
+            try:
+                chat_resp = requests.post(
+                    f"{api_base}/chat/stream-sync",
+                    json={"content": prompt, "session_id": session_id},
+                    stream=True,
+                    timeout=120,
+                )
+                chat_resp.raise_for_status()
 
-                        # 將 AI 回覆加入本地快取（附帶 debug_info）
-                        st.session_state.chat_messages_cache.append({
-                            "role": "assistant",
-                            "content": reply_text,
-                            "debug_info": retrieval_ctx,
-                        })
+                result = None
+                for line in chat_resp.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    event = json.loads(line[6:])
+                    evt_type = event.get("type")
+                    if evt_type == "tool_status":
+                        status_placeholder.info(f"🔍 {event.get('message', '處理中...')}")
+                    elif evt_type == "error":
+                        status_placeholder.empty()
+                        st.error(f"API 錯誤: {event.get('message', '未知錯誤')}")
+                        result = None
+                        break
+                    elif evt_type == "result":
+                        result = event
 
-                        _render_debug_panel(retrieval_ctx)
-                        st.markdown(reply_text)
-                    else:
-                        st.error(f"API 錯誤: {chat_resp.status_code} - {chat_resp.text}")
-                except requests.Timeout:
-                    st.error("請求超時，LLM 回覆時間過長。")
-                except Exception as e:
-                    st.error(f"生成錯誤: {e}")
-                finally:
-                    st.session_state.is_generating = False
-                    st.rerun()
+                status_placeholder.empty()
+
+                if result:
+                    reply_text = result.get("reply", "解析錯誤")
+                    retrieval_ctx = result.get("retrieval_context", {})
+
+                    st.session_state.chat_messages_cache.append({
+                        "role": "assistant",
+                        "content": reply_text,
+                        "debug_info": retrieval_ctx,
+                    })
+
+                    _render_debug_panel(retrieval_ctx)
+                    st.markdown(reply_text)
+
+            except requests.Timeout:
+                status_placeholder.empty()
+                st.error("請求超時，LLM 回覆時間過長。")
+            except Exception as e:
+                status_placeholder.empty()
+                st.error(f"生成錯誤: {e}")
+            finally:
+                st.session_state.is_generating = False
+                st.rerun()

@@ -125,6 +125,17 @@ class StorageManager:
             )
         ''')
 
+        # 【Schema Evolution】：主動話題快取資料表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS topic_cache (
+                topic_id TEXT PRIMARY KEY,
+                interest_keyword TEXT,
+                summary_content TEXT,
+                created_at TEXT,
+                is_mentioned_to_user INTEGER DEFAULT 0
+            )
+        ''')
+
         conn.commit()
         return conn
 
@@ -400,6 +411,43 @@ class StorageManager:
         row = cursor.fetchone()
         conn.close()
         return {"fact_key": row[0], "fact_value": row[1], "category": row[2], "confidence": row[3]} if row else None
+
+    # ==========================================
+    # 話題快取 (Topic Cache) CRUD
+    # ==========================================
+    def insert_topic_cache(self, db_path, topic_id, interest_keyword, summary_content):
+        conn = self._init_db(db_path)
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT OR REPLACE INTO topic_cache (topic_id, interest_keyword, summary_content, created_at, is_mentioned_to_user)
+            VALUES (?, ?, ?, ?, 0)
+        ''', (topic_id, interest_keyword, summary_content, now))
+        conn.commit()
+        conn.close()
+
+    def get_unmentioned_topics(self, db_path, limit=3):
+        if not os.path.exists(db_path):
+            return []
+        conn = self._init_db(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT topic_id, interest_keyword, summary_content, created_at
+            FROM topic_cache
+            WHERE is_mentioned_to_user = 0
+            ORDER BY created_at DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [{"topic_id": r[0], "interest_keyword": r[1], "summary_content": r[2], "created_at": r[3]} for r in rows]
+
+    def mark_topic_mentioned(self, db_path, topic_id):
+        conn = self._init_db(db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE topic_cache SET is_mentioned_to_user = 1 WHERE topic_id = ?', (topic_id,))
+        conn.commit()
+        conn.close()
 
     # ==========================================
     # 對話紀錄持久化 (conversation.db)

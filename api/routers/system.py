@@ -35,6 +35,8 @@ async def get_config():
         ai_observe_enabled=prefs.get("ai_observe_enabled", True),
         reflection_threshold=prefs.get("reflection_threshold", 5),
         telegram_bot_token=prefs.get("telegram_bot_token", ""),
+        tavily_api_key=prefs.get("tavily_api_key", ""),
+        bg_gather_interval=int(prefs.get("bg_gather_interval", 14400)),
     )
 
 
@@ -56,6 +58,15 @@ async def get_prompt():
     sto = get_storage()
     text = sto.load_system_prompt()
     return {"prompt": text}
+
+@router.post("/gather_now")
+async def trigger_gather_now():
+    """手動觸發背景話題搜尋，並重設後續的排程時間"""
+    from background_gatherer import force_gather_now
+    
+    # 調用剛才寫好的中斷重設函式
+    force_gather_now()
+    return {"status": "success", "message": "已觸發背景蒐集信號，系統將在接下來 10 秒內啟動搜尋。"}
 
 
 @router.put("/prompt")

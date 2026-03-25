@@ -866,3 +866,20 @@ class MemorySystem:
                 lines.append(f"- ⚠️ {f['fact_key']}: {f['fact_value']}")
 
         return "\n".join(lines)
+
+    def get_proactive_topics_prompt(self, limit=1):
+        """從 topic_cache 撈取未提過的話題轉為 Prompt，並標記為已使用"""
+        if not self.db_path:
+            return ""
+            
+        topics = self.storage.get_unmentioned_topics(self.db_path, limit=limit)
+        if not topics:
+            return ""
+            
+        lines = ["【系統背景資訊】：我們在背景發現了您可能感興趣的最新資訊："]
+        for t in topics:
+            lines.append(f"({t['interest_keyword']}) {t['summary_content']}")
+            self.storage.mark_topic_mentioned(self.db_path, t['topic_id'])
+            
+        lines.append("請視上下文，極度自然地在對話中提起或融合這些資訊。不要說「我查到了」或「根據背景資訊」。")
+        return "\n".join(lines)

@@ -60,8 +60,9 @@ class ConfigUpdateRequest(BaseModel):
     or_key: Optional[str] = None
     llamacpp_url: Optional[str] = None
     ai_observe_enabled: Optional[bool] = None
-    reflection_threshold: Optional[int] = None
     telegram_bot_token: Optional[str] = None
+    tavily_api_key: Optional[str] = None
+    bg_gather_interval: Optional[int] = None
 
 
 class ExpandQueryRequest(BaseModel):

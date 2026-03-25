@@ -9,9 +9,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.dependencies import init_all, get_storage
+from api.dependencies import init_all, get_storage, get_router, get_memory_sys
 from api.session_manager import session_manager
 from api.telegram_bot import start_telegram_bot, stop_telegram_bot
+from background_gatherer import start_background_gather_loop
 from api.routers import health, memory, profile, system, session, logs, chat_ws
 
 
@@ -30,17 +31,33 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(_session_cleanup_loop())
 
     # Telegram Bot（可選：有 token 才啟動）
-    tg_token = get_storage().load_prefs().get("telegram_bot_token", "")
+    user_prefs = get_storage().load_prefs()
+    tg_token = user_prefs.get("telegram_bot_token", "")
     if tg_token:
         await start_telegram_bot(tg_token)
+
+    # 背景話題搜集 (每 4 小時一次)
+    bg_gather_task = None
+    if user_prefs.get("tavily_api_key"):
+        db_path = get_memory_sys().db_path
+        if db_path:
+            # interval 暫定 14400 秒 (4小時)，也可後續拉出到設定檔
+            bg_gather_task = asyncio.create_task(
+                start_background_gather_loop(db_path, get_router(), get_storage(), default_interval_seconds=14400)
+            )
 
     yield
 
     # Shutdown
     await stop_telegram_bot()
     cleanup_task.cancel()
+    if bg_gather_task:
+        bg_gather_task.cancel()
+        
     try:
         await cleanup_task
+        if bg_gather_task:
+            await bg_gather_task
     except asyncio.CancelledError:
         pass
 

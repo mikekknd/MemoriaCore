@@ -4,9 +4,11 @@ WebSocket 對話端點 + 同步 REST 對話端點。
 """
 import asyncio
 import json
+import queue as sync_queue
 import re
 import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_analyzer,
     get_embed_model, get_personality_engine, db_write_lock,
@@ -203,12 +205,13 @@ async def _run_memory_pipeline_bg(session_id: str, msgs_to_extract: list[dict],
 
 # ── 共用：完整對話編排邏輯 ────────────────────────────────
 def _run_chat_orchestration(session_messages: list[dict], last_entities: list[str],
-                            user_prompt: str, user_prefs: dict):
+                            user_prompt: str, user_prefs: dict, on_event=None):
     """
     同步執行對話編排的關鍵路徑（在執行緒池中跑）。
     話題偏移時的記憶管線已拆至背景，此處只做偵測 → 檢索 → 生成。
     回傳 (reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data)
     pipeline_data: 若話題偏移，包含 (msgs_to_extract, last_block) 供呼叫端發起背景任務。
+    on_event: 可選的 callback，用於即時推送中間狀態（如工具呼叫通知）給前端。
     """
     ms = get_memory_sys()
     analyzer = get_analyzer()
@@ -299,17 +302,21 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     personality_ctx = pe.get_personality_prompt()
     personality_block = f"\n【AI個性記憶】\n{personality_ctx}\n" if personality_ctx else ""
 
+    proactive_topics_block = ms.get_proactive_topics_prompt(limit=1)
+    if proactive_topics_block:
+        proactive_topics_block = f"\n{proactive_topics_block}\n"
+
     sys_prompt = f"""{storage.load_system_prompt()}
 {personality_block}{static_profile_block}
-{core_ctx}{profile_ctx}
+{core_ctx}{profile_ctx}{proactive_topics_block}
 【動態攔截規則】：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。
 
 【系統核心指令】：綜合以下情境記憶區塊來回答使用者。
 [情境記憶區]
 {mem_ctx}
 
-【強制輸出格式】：你的回覆必須是合法的 JSON，僅包含以下兩個欄位，禁止輸出任何額外說明或 Markdown：
-{{ "reply": "你的自然語言回覆", "extracted_entities": ["核心微觀實體1", "實體2"] }}"""
+【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：
+{{ "reply": "你的自然語言回覆", "extracted_entities": ["核心實體1"]}}"""
 
     retrieval_ctx = {
         "original_query": user_prompt,
@@ -342,9 +349,73 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         api_messages.extend(clean_history)
 
     with timer.step("LLM 對話生成 (Chat Generation LLM)"):
+        pre_tool_message = ""
         try:
-            full_res = rtr.generate("chat", api_messages, temperature=temperature, response_format=chat_schema)
+            from tools_tavily import TAVILY_SEARCH_SCHEMA, execute_tool_call
+            tools_list = [TAVILY_SEARCH_SCHEMA]
+
+            MAX_TOOL_ROUNDS = 3
+            used_tools = False
+
+            for _tool_round in range(MAX_TOOL_ROUNDS):
+                full_res, tool_calls = rtr.generate_with_tools(
+                    "chat", api_messages, tools=tools_list, temperature=temperature,
+                )
+
+                if not tool_calls:
+                    break
+
+                used_tools = True
+
+                # 攔截第一輪工具呼叫前的思考文字
+                if _tool_round == 0 and full_res and full_res.strip():
+                    pre_tool_message = f"*(系統攔截 AI 思考：{full_res.strip()})*\n\n"
+
+                # 通知前端正在使用工具
+                if on_event:
+                    for tc in tool_calls:
+                        tool_name = tc.get("function", {}).get("name", "unknown")
+                        query = tc.get("function", {}).get("arguments", {}).get("query", "")
+                        on_event({
+                            "type": "tool_status",
+                            "action": "calling",
+                            "tool_name": tool_name,
+                            "message": f"正在搜尋：{query}" if query else f"正在呼叫工具：{tool_name}",
+                        })
+
+                # 將 assistant 的 tool_calls 加入對話歷史（provider 層會自動正規化格式）
+                api_messages.append({
+                    "role": "assistant",
+                    "content": full_res or "",
+                    "tool_calls": tool_calls,
+                })
+
+                # 執行每個 tool call 並將結果回填
+                for tc in tool_calls:
+                    tool_result = execute_tool_call(tc)
+                    tc_id = tc.get("id", f"call_{tc.get('function', {}).get('name', 'unknown')}")
+                    api_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": tool_result,
+                    })
+
+            # 經過 tool call 後，不帶 tools 參數、帶 response_format 取得結構化回應
+            if used_tools:
+                if on_event:
+                    on_event({
+                        "type": "tool_status",
+                        "action": "complete",
+                        "message": "搜尋完成，正在整理回覆...",
+                    })
+                full_res = rtr.generate(
+                    "chat", api_messages, temperature=temperature,
+                    response_format=chat_schema,
+                )
+
         except Exception as e:
+            from system_logger import SystemLogger
+            SystemLogger.log_error(f"Chat 對話生成發生錯誤 ({type(e).__name__}): {e}")
             full_res = None
             reply_text = f"生成錯誤: {e}"
             new_entities = []
@@ -355,13 +426,13 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
             if _start != -1:
                 try:
                     parsed, _ = json.JSONDecoder().raw_decode(full_res, _start)
-                    reply_text = parsed.get("reply", "解析錯誤")
+                    reply_text = pre_tool_message + parsed.get("reply", "解析錯誤")
                     new_entities = parsed.get("extracted_entities", [])
                 except Exception:
-                    reply_text = full_res
+                    reply_text = pre_tool_message + full_res
                     new_entities = []
             else:
-                reply_text = full_res
+                reply_text = pre_tool_message + full_res
                 new_entities = []
 
     # 將效能計時結果注入 retrieval_ctx
@@ -421,11 +492,18 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 
             user_prefs = get_storage().load_prefs()
 
+            # 建立即時事件推送 callback（從工作執行緒安全呼叫 async WS send）
+            loop = asyncio.get_running_loop()
+
+            def _ws_event_cb(data: dict):
+                asyncio.run_coroutine_threadsafe(ws.send_json(data), loop)
+
             # 在執行緒池中跑關鍵路徑（偵測 → 檢索 → 生成）
             reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data = \
                 await asyncio.to_thread(
                     _run_chat_orchestration,
                     list(s.messages), list(s.last_entities), content, user_prefs,
+                    on_event=_ws_event_cb,
                 )
 
             # 如果話題偏移，通知客戶端並在背景啟動記憶管線
@@ -498,3 +576,77 @@ async def chat_sync(body: ChatSyncRequest):
         extracted_entities=new_entities,
         retrieval_context=RetrievalContextDTO(**retrieval_ctx),
     )
+
+
+# ── SSE 串流端點（供 Streamlit 即時狀態更新） ────────────
+@router.post("/stream-sync")
+async def chat_stream_sync(body: ChatSyncRequest):
+    """
+    與 /sync 功能相同，但以 SSE (Server-Sent Events) 串流回傳中間狀態。
+    事件格式：data: {"type": "tool_status"|"result"|"error", ...}
+    """
+    session = await session_manager.get_or_create(body.session_id, channel="rest")
+    sid = session.session_id
+
+    await session_manager.add_user_message(sid, body.content)
+    s = await session_manager.get(sid)
+    if not s:
+        async def _err():
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Session error'}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(_err(), media_type="text/event-stream")
+
+    user_prefs = get_storage().load_prefs()
+    event_q = sync_queue.Queue()
+
+    def on_event(data: dict):
+        event_q.put(data)
+
+    async def event_generator():
+        # 在背景執行緒中啟動對話編排
+        orch_task = asyncio.create_task(asyncio.to_thread(
+            _run_chat_orchestration,
+            list(s.messages), list(s.last_entities), body.content, user_prefs,
+            on_event=on_event,
+        ))
+
+        # 持續輪詢 event queue，即時串流中間狀態給前端
+        while not orch_task.done():
+            try:
+                event = event_q.get_nowait()
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            except sync_queue.Empty:
+                await asyncio.sleep(0.1)
+
+        # 排空佇列中剩餘的事件
+        while not event_q.empty():
+            event = event_q.get_nowait()
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        # 取得最終結果
+        try:
+            reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data = orch_task.result()
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+            return
+
+        # 寫入 session 及背景任務（與 /sync 相同）
+        await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
+
+        if user_prefs.get("ai_observe_enabled", True):
+            asyncio.create_task(_extract_ai_observations_bg(reply_text, list(s.messages[-4:])))
+
+        if topic_shifted:
+            await session_manager.bridge(sid)
+            if pipeline_data:
+                asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
+
+        # 送出最終結果
+        final = {
+            "type": "result",
+            "reply": reply_text,
+            "extracted_entities": new_entities,
+            "retrieval_context": retrieval_ctx,
+        }
+        yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

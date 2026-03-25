@@ -164,6 +164,8 @@ class SystemConfigDTO(BaseModel):
     ai_observe_enabled: bool = True
     reflection_threshold: int = 5
     telegram_bot_token: str = ""
+    tavily_api_key: str = ""
+    bg_gather_interval: int = 14400
 
 
 # ── 通用錯誤 ──────────────────────────────────────────────

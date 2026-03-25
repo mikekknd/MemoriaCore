@@ -175,12 +175,43 @@ async def _handle_message(message: types.Message):
 
     user_prefs = get_storage().load_prefs()
 
+    # 建立 Telegram 即時狀態通知 callback
+    _status_msg = None
+    _loop = asyncio.get_running_loop()
+
+    def _tg_event_cb(data: dict):
+        nonlocal _status_msg
+        action = data.get("action", "")
+        text = data.get("message", "")
+        if action == "calling" and text:
+            # 發送或更新搜尋中提示訊息
+            async def _send_or_edit():
+                nonlocal _status_msg
+                try:
+                    if _status_msg is None:
+                        _status_msg = await message.answer(f"🔍 {text}")
+                    else:
+                        await _status_msg.edit_text(f"🔍 {text}")
+                except Exception:
+                    pass
+            asyncio.run_coroutine_threadsafe(_send_or_edit(), _loop)
+        elif action == "complete" and text:
+            async def _edit_complete():
+                nonlocal _status_msg
+                try:
+                    if _status_msg:
+                        await _status_msg.edit_text(f"✅ {text}")
+                except Exception:
+                    pass
+            asyncio.run_coroutine_threadsafe(_edit_complete(), _loop)
+
     try:
         # 在執行緒池中跑完整編排（與 chat_ws.py 共用同一函式）
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events = \
             await asyncio.to_thread(
                 _run_chat_orchestration,
                 list(s.messages), list(s.last_entities), user_text, user_prefs,
+                on_event=_tg_event_cb,
             )
     except Exception as e:
         logger.error("Chat orchestration failed: %s", e, exc_info=True)
