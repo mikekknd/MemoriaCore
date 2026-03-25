@@ -130,6 +130,10 @@
     <option value="">所有任務類別</option>
   </select>
   <div class="toolbar-right">
+    <button class="expand-all-btn" id="reloadBtn" onclick="reloadFile()" title="重新讀取同一檔案">🔄 重新載入</button>
+    <label class="expand-all-btn" style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+      <input type="checkbox" id="newestFirst" onchange="toggleNewestFirst()" style="cursor:pointer;"> 最新在上
+    </label>
     <button class="expand-all-btn" onclick="expandAll()">展開全部</button>
     <button class="expand-all-btn" onclick="collapseAll()">收合全部</button>
   </div>
@@ -149,6 +153,8 @@
 <script>
 let allEntries = [];
 let searchTerm = '';
+let currentFile = null;
+let newestFirst = false;
 
 // ===== Drag & Drop =====
 const dropArea = document.getElementById('dropArea');
@@ -178,9 +184,23 @@ document.addEventListener('keydown', ev => {
 // ===== File Loading =====
 function handleFile(file) {
   if (!file) return;
+  currentFile = file;
   const reader = new FileReader();
   reader.onload = e => parseAndRender(e.target.result, file.name);
   reader.readAsText(file, 'utf-8');
+}
+
+function reloadFile() {
+  if (!currentFile) return;
+  const reader = new FileReader();
+  reader.onload = e => parseAndRender(e.target.result, currentFile.name);
+  reader.readAsText(currentFile, 'utf-8');
+}
+
+function toggleNewestFirst() {
+  newestFirst = document.getElementById('newestFirst').checked;
+  renderEntries();
+  applyFilters();
 }
 
 function parseAndRender(text, filename) {
@@ -279,7 +299,6 @@ function renderEntries() {
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
     if (e.type === 'llm_call' && e.direction === 'prompt') {
-      // Find next response with same category+model
       for (let j = i + 1; j < allEntries.length; j++) {
         const r = allEntries[j];
         if (r.type === 'llm_call' && r.direction === 'response' && r.category === e.category && r.model === e.model) {
@@ -291,8 +310,13 @@ function renderEntries() {
     }
   }
 
+  // Build display order
+  const indices = allEntries.map((_, i) => i);
+  if (newestFirst) indices.reverse();
+
   let html = '';
-  allEntries.forEach((entry, idx) => {
+  indices.forEach(idx => {
+    const entry = allEntries[idx];
     const type = getEntryType(entry);
     const summary = getSummary(entry, type);
     const pairIdx = pairMap.get(idx);

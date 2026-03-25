@@ -4,14 +4,16 @@ import streamlit as st
 import requests
 import warnings
 
-from ui_settings import render_settings_page
 from ui_chat import render_chat_page
 from ui_db_manager import render_db_manager_page
+from ui_history import render_history_page
+from ui_settings import render_settings_page
+from ui_routing import render_routing_page
 from ui_log_viewer import render_log_viewer_page
 
 warnings.filterwarnings("ignore", message="coroutine 'expire_cache' was never awaited")
 
-st.set_page_config(page_title="具備情境記憶的 LLM", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="MemoriaCore", page_icon="🧠", layout="wide")
 
 # ==========================================
 # API 基礎位址設定
@@ -35,24 +37,39 @@ try:
         st.warning("無法連線到 FastAPI 後端，部分功能可能無法使用。")
 except requests.ConnectionError:
     user_prefs = {}
-    st.error("⚠️ FastAPI 後端未啟動！請先執行: `uvicorn api.main:app --port 8000`")
+    st.error("⚠️ FastAPI 後端未啟動！請先執行: `uvicorn api.main:app --port 8088`")
 
 # ==========================================
 # 頁面路由分發 (View Controller)
 # ==========================================
+PAGES = [
+    "💬 對話大廳",
+    "🧠 記憶庫管理",
+    "💬 對話歷史",
+    "⚙️ 系統設定",
+    "🔀 路由映射",
+    "📋 Log 檢視器",
+]
+
 with st.sidebar:
-    st.title("導覽列")
-    current_page = st.radio("選擇功能區塊", ["💬 對話大廳", "🧠 記憶庫與資料庫管理", "⚙️ 系統與路由設定", "📋 Log 檢視器"])
+    st.title("MemoriaCore")
+    current_page = st.radio("導覽", PAGES, label_visibility="collapsed")
     st.divider()
 
 if current_page == "💬 對話大廳":
     render_chat_page(API_BASE, user_prefs)
 
-elif current_page == "🧠 記憶庫與資料庫管理":
+elif current_page == "🧠 記憶庫管理":
     render_db_manager_page(API_BASE, user_prefs)
 
-elif current_page == "⚙️ 系統與路由設定":
+elif current_page == "💬 對話歷史":
+    render_history_page(API_BASE, user_prefs)
+
+elif current_page == "⚙️ 系統設定":
     render_settings_page(API_BASE, user_prefs)
+
+elif current_page == "🔀 路由映射":
+    render_routing_page(API_BASE, user_prefs)
 
 elif current_page == "📋 Log 檢視器":
     render_log_viewer_page(API_BASE)
