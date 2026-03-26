@@ -4,12 +4,13 @@ import streamlit as st
 import requests
 import warnings
 
-from ui_chat import render_chat_page
-from ui_db_manager import render_db_manager_page
-from ui_history import render_history_page
-from ui_settings import render_settings_page
-from ui_routing import render_routing_page
-from ui_log_viewer import render_log_viewer_page
+from ui.chat import render_chat_page
+from ui.db_manager import render_db_manager_page
+from ui.history import render_history_page
+from ui.settings import render_settings_page
+from ui.routing import render_routing_page
+from ui.log_viewer import render_log_viewer_page
+from ui.character import render_character_page
 
 warnings.filterwarnings("ignore", message="coroutine 'expire_cache' was never awaited")
 
@@ -45,6 +46,7 @@ except requests.ConnectionError:
 PAGES = [
     "💬 對話大廳",
     "🧠 記憶庫管理",
+    "🎭 角色設定",
     "💬 對話歷史",
     "⚙️ 系統設定",
     "🔀 路由映射",
@@ -61,6 +63,9 @@ if current_page == "💬 對話大廳":
 
 elif current_page == "🧠 記憶庫管理":
     render_db_manager_page(API_BASE, user_prefs)
+
+elif current_page == "🎭 角色設定":
+    render_character_page(API_BASE, user_prefs)
 
 elif current_page == "💬 對話歷史":
     render_history_page(API_BASE, user_prefs)

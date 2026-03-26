@@ -4,8 +4,8 @@ import json
 import os
 from datetime import datetime
 
-# 日誌檔路徑 (與 app.py 同目錄)
-_LOG_DIR = os.path.dirname(os.path.abspath(__file__))
+# 日誌檔路徑 (專案根目錄)
+_LOG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOG_FILE = os.path.join(_LOG_DIR, "llm_trace.jsonl")
 
 

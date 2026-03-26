@@ -36,7 +36,10 @@ async def get_config():
         reflection_threshold=prefs.get("reflection_threshold", 5),
         telegram_bot_token=prefs.get("telegram_bot_token", ""),
         tavily_api_key=prefs.get("tavily_api_key", ""),
+        weather_city=prefs.get("weather_city", ""),
         bg_gather_interval=int(prefs.get("bg_gather_interval", 14400)),
+        active_character_id=prefs.get("active_character_id", "default"),
+        dual_layer_enabled=prefs.get("dual_layer_enabled", False),
     )
 
 
@@ -62,11 +65,40 @@ async def get_prompt():
 @router.post("/gather_now")
 async def trigger_gather_now():
     """手動觸發背景話題搜尋，並重設後續的排程時間"""
-    from background_gatherer import force_gather_now
+    from core.background_gatherer import force_gather_now
     
     # 調用剛才寫好的中斷重設函式
     force_gather_now()
     return {"status": "success", "message": "已觸發背景蒐集信號，系統將在接下來 10 秒內啟動搜尋。"}
+
+
+@router.get("/weather-cache")
+async def get_weather_cache():
+    """取得今天的天氣快取"""
+    from tools.weather_cache import WeatherCache
+    wc = WeatherCache()
+    slots = wc.get_full_today()
+    current = wc.get_current_slot()
+    if slots is None:
+        return {"status": "no_cache", "current": None, "slots": []}
+    return {"status": "ok", "current": current, "slots": slots}
+
+
+@router.post("/weather-cache/refresh")
+async def refresh_weather_cache():
+    """強制刷新天氣快取"""
+    sto = get_storage()
+    prefs = sto.load_prefs()
+    city = prefs.get("weather_city", "")
+    api_key = prefs.get("openweather_api_key", "")
+    if not city or not api_key:
+        return {"status": "error", "message": "未設定 weather_city 或 openweather_api_key"}
+    from tools.weather_cache import WeatherCache
+    wc = WeatherCache()
+    success = await asyncio.to_thread(wc.ensure_today, city, api_key)
+    if success:
+        return {"status": "ok", "message": f"已刷新 {city} 天氣快取"}
+    return {"status": "error", "message": "刷新失敗，請檢查 API Key 與城市名稱"}
 
 
 @router.put("/prompt")

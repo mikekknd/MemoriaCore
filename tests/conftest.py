@@ -8,11 +8,11 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core_memory import MemorySystem
-from memory_analyzer import MemoryAnalyzer
-from preference_aggregator import PreferenceAggregator
-from llm_gateway import OllamaProvider, LLMRouter
-from storage_manager import StorageManager
+from core.core_memory import MemorySystem
+from core.memory_analyzer import MemoryAnalyzer
+from core.preference_aggregator import PreferenceAggregator
+from core.llm_gateway import OllamaProvider, LLMRouter
+from core.storage_manager import StorageManager
 from tests.test_config import OLLAMA_SIM_MODEL, OLLAMA_TASK_MODEL, EMBED_MODEL, OLLAMA_AVAILABLE
 
 

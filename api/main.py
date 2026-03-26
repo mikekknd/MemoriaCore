@@ -12,8 +12,8 @@ from fastapi.responses import JSONResponse
 from api.dependencies import init_all, get_storage, get_router, get_memory_sys
 from api.session_manager import session_manager
 from api.telegram_bot import start_telegram_bot, stop_telegram_bot
-from background_gatherer import start_background_gather_loop
-from api.routers import health, memory, profile, system, session, logs, chat_ws
+from core.background_gatherer import start_background_gather_loop
+from api.routers import health, memory, profile, system, session, logs, chat_ws, character
 
 
 # ── Lifespan：啟動 / 關機 ────────────────────────────────
@@ -35,6 +35,14 @@ async def lifespan(app: FastAPI):
     tg_token = user_prefs.get("telegram_bot_token", "")
     if tg_token:
         await start_telegram_bot(tg_token)
+
+    # 天氣快取預熱（有設定城市 + API key 才執行）
+    weather_city = user_prefs.get("weather_city", "")
+    ow_key = user_prefs.get("openweather_api_key", "")
+    if weather_city and ow_key:
+        from tools.weather_cache import WeatherCache
+        wc = WeatherCache()
+        await asyncio.to_thread(wc.ensure_today, weather_city, ow_key)
 
     # 背景話題搜集 (每 4 小時一次)
     bg_gather_task = None
@@ -88,6 +96,7 @@ app.include_router(system.router, prefix=PREFIX)
 app.include_router(session.router, prefix=PREFIX)
 app.include_router(logs.router, prefix=PREFIX)
 app.include_router(chat_ws.router, prefix=PREFIX)
+app.include_router(character.router, prefix=PREFIX)
 
 
 # ── 全域例外處理 ──────────────────────────────────────────

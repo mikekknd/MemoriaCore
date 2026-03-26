@@ -11,7 +11,7 @@ import os
 import sys
 
 PORT = 8765
-VIEWER = "log_viewer.html"
+VIEWER = "static/log_viewer.html"
 
 # 切換工作目錄到此腳本所在位置
 os.chdir(os.path.dirname(os.path.abspath(__file__)))

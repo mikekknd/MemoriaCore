@@ -8,7 +8,7 @@ import onnxruntime as ort
 from transformers import AutoTokenizer
 import json
 import glob
-from system_logger import SystemLogger
+from core.system_logger import SystemLogger
 
 _onnx_session = None
 _tokenizer = None
@@ -170,7 +170,7 @@ class OpenAICompatibleProvider(ILLMProvider):
         kwargs = {
             "model": model,
             "messages": self._normalize_messages(messages),
-            "temperature": temperature
+            "temperature": temperature,
         }
         # 【核心修正】：OpenAI 格式自動轉譯包裝
         if response_format:
@@ -185,8 +185,16 @@ class OpenAICompatibleProvider(ILLMProvider):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
-            
-        response = self.client.chat.completions.create(**kwargs)
+
+        try:
+            response = self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # 部分模型（推理模型）不支援自訂 temperature，自動降級重試
+            if "temperature" in str(e) and "unsupported_value" in str(e):
+                kwargs.pop("temperature", None)
+                response = self.client.chat.completions.create(**kwargs)
+            else:
+                raise
         msg = response.choices[0].message
         content = msg.content or ''
         

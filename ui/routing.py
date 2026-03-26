@@ -29,6 +29,8 @@ def render_routing_page(api_base, user_prefs=None):
         "ai_observe": {"desc": "AI 自我觀察提取", "help": "從對話中偵測 AI 的自我陳述與行為變化。建議快速小模型。"},
         "ai_reflect": {"desc": "AI 人格反思", "help": "綜合觀察紀錄更新 AI 個性檔案。建議高品質模型。"},
         "background_gather": {"desc": "背景話題摘要", "help": "在背景將 Tavily 搜尋下來的資料摘要成主動話題。建議不需太強的模型。"},
+        "character_gen": {"desc": "角色設定生成", "help": "根據簡短描述利用 AI 擴充出完整的角色系統提示詞與心理指標。"},
+        "router": {"desc": "意圖路由預處理", "help": "雙層 Agent 模式的第一階段：判斷是否需要呼叫外部工具並產生過渡語音。建議使用輕量快速模型以降低延遲。"},
     }
 
     new_routing_config = {}

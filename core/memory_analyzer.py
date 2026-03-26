@@ -2,7 +2,7 @@
 import json
 import re
 from datetime import datetime
-from system_logger import SystemLogger
+from core.system_logger import SystemLogger
 
 class MemoryAnalyzer:
     def __init__(self, memory_sys):

@@ -12,11 +12,12 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from storage_manager import StorageManager
-from llm_gateway import OllamaProvider, OpenAICompatibleProvider, LlamaCppProvider, LLMRouter
-from core_memory import MemorySystem
-from memory_analyzer import MemoryAnalyzer
-from personality_engine import PersonalityEngine
+from core.storage_manager import StorageManager
+from core.llm_gateway import OllamaProvider, OpenAICompatibleProvider, LlamaCppProvider, LLMRouter
+from core.core_memory import MemorySystem
+from core.memory_analyzer import MemoryAnalyzer
+from core.personality_engine import PersonalityEngine
+from core.character_engine import CharacterManager
 
 # ── Module-level singletons ──────────────────────────────
 memory_sys: MemorySystem | None = None
@@ -24,6 +25,7 @@ storage: StorageManager | None = None
 analyzer: MemoryAnalyzer | None = None
 global_router: LLMRouter | None = None
 personality_engine: PersonalityEngine | None = None
+character_mgr: CharacterManager | None = None
 embed_model: str = ""
 
 # SQLite 寫入序列化鎖
@@ -35,7 +37,7 @@ _startup_time: float = 0.0
 
 def init_all():
     """在 FastAPI lifespan startup 時呼叫一次，初始化全部核心物件。"""
-    global memory_sys, storage, analyzer, global_router, personality_engine, embed_model, _startup_time
+    global memory_sys, storage, analyzer, global_router, personality_engine, character_mgr, embed_model, _startup_time
     import time
     _startup_time = time.time()
 
@@ -43,6 +45,7 @@ def init_all():
     memory_sys = MemorySystem()
     analyzer = MemoryAnalyzer(memory_sys)
     personality_engine = PersonalityEngine(memory_sys, storage)
+    character_mgr = CharacterManager()
 
     user_prefs = storage.load_prefs()
     embed_model = user_prefs.get("embed_model", "bge-m3:latest")
@@ -66,10 +69,13 @@ def init_all():
     # 路由註冊
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "ai_observe", "ai_reflect"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "ai_observe", "ai_reflect", "router"]
     for task_key in tasks:
-        p_name = routing_config.get(task_key, {}).get("provider", "Ollama (本地)")
-        m_name = routing_config.get(task_key, {}).get("model", "qwen3.5")
+        # router 預設跟隨 chat 的 provider/model 設定
+        fallback = routing_config.get("chat", {}) if task_key == "router" else {}
+        cfg = routing_config.get(task_key, fallback)
+        p_name = cfg.get("provider", "Ollama (本地)")
+        m_name = cfg.get("model", "qwen3.5")
         active_prov = providers_map.get(p_name, local_provider)
         global_router.register_route(task_key, active_prov, m_name)
 
@@ -117,10 +123,12 @@ def reload_router():
 
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "ai_observe", "ai_reflect"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "ai_observe", "ai_reflect", "router"]
     for task_key in tasks:
-        p_name = routing_config.get(task_key, {}).get("provider", "Ollama (本地)")
-        m_name = routing_config.get(task_key, {}).get("model", "qwen3.5")
+        fallback = routing_config.get("chat", {}) if task_key == "router" else {}
+        cfg = routing_config.get(task_key, fallback)
+        p_name = cfg.get("provider", "Ollama (本地)")
+        m_name = cfg.get("model", "qwen3.5")
         active_prov = providers_map.get(p_name, local_provider)
         global_router.register_route(task_key, active_prov, m_name)
 
@@ -157,6 +165,11 @@ def get_router() -> LLMRouter:
 def get_personality_engine() -> PersonalityEngine:
     assert personality_engine is not None, "PersonalityEngine not initialized"
     return personality_engine
+
+
+def get_character_manager() -> CharacterManager:
+    assert character_mgr is not None, "CharacterManager not initialized"
+    return character_mgr
 
 
 def get_embed_model() -> str:

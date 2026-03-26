@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_analyzer,
     get_embed_model, get_personality_engine, db_write_lock,
+    get_character_manager
 )
 from api.session_manager import session_manager
 from api.models.requests import ChatSyncRequest
@@ -61,6 +62,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ConnectionManager:
     def __init__(self):
         self._connections: dict[str, WebSocket] = {}  # session_id -> ws
+        self._active_tasks: dict[str, asyncio.Task] = {}  # session_id -> running task
 
     async def connect(self, session_id: str, ws: WebSocket):
         await ws.accept()
@@ -68,6 +70,7 @@ class ConnectionManager:
 
     def disconnect(self, session_id: str):
         self._connections.pop(session_id, None)
+        self._active_tasks.pop(session_id, None)
 
     async def send_json(self, session_id: str, data: dict):
         ws = self._connections.get(session_id)
@@ -79,6 +82,21 @@ class ConnectionManager:
 
     def get_ws(self, session_id: str) -> WebSocket | None:
         return self._connections.get(session_id)
+
+    def set_active_task(self, session_id: str, task: asyncio.Task):
+        self._active_tasks[session_id] = task
+
+    async def cancel_active_task(self, session_id: str):
+        task = self._active_tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    def clear_active_task(self, session_id: str):
+        self._active_tasks.pop(session_id, None)
 
 
 ws_manager = ConnectionManager()
@@ -209,7 +227,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     """
     同步執行對話編排的關鍵路徑（在執行緒池中跑）。
     話題偏移時的記憶管線已拆至背景，此處只做偵測 → 檢索 → 生成。
-    回傳 (reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data)
+    回傳 (reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data, inner_thought, status_metrics, tone, speech)
     pipeline_data: 若話題偏移，包含 (msgs_to_extract, last_block) 供呼叫端發起背景任務。
     on_event: 可選的 callback，用於即時推送中間狀態（如工具呼叫通知）給前端。
     """
@@ -306,17 +324,64 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     if proactive_topics_block:
         proactive_topics_block = f"\n{proactive_topics_block}\n"
 
-    sys_prompt = f"""{storage.load_system_prompt()}
-{personality_block}{static_profile_block}
+    # 天氣快取注入（直接讀本地 JSON，無 HTTP 開銷）
+    weather_block = ""
+    try:
+        from tools.weather_cache import WeatherCache
+        weather_summary = WeatherCache().get_current_slot()
+        if weather_summary:
+            weather_block = f"\n【即時天氣資訊】\n{weather_summary}\n"
+    except Exception:
+        pass
+
+    # 動態角色載入
+    char_mgr = get_character_manager()
+    active_char_id = user_prefs.get("active_character_id", "default")
+    active_char = char_mgr.get_active_character(active_char_id)
+    metrics = active_char.get("metrics", ["professionalism"])
+    allowed_tones = active_char.get("allowed_tones", ["Neutral", "Happy", "Professional"])
+    speech_rules = active_char.get("speech_rules", "Traditional Chinese. NO EMOJIS.")
+    char_tts_lang = active_char.get("tts_language", "")
+    char_sys_prompt = active_char.get("system_prompt", storage.load_system_prompt())
+
+    metrics_str = ", ".join(metrics)
+    tones_str = "/".join(allowed_tones)
+
+    speech_instruction = ""
+    speech_json = ""
+    if char_tts_lang:
+        speech_instruction = f"4. `speech`: 這是專門提供給語音合成 (TTS) 的發音文本，請嚴格遵守以下角色發音規則：[{char_tts_lang}] {speech_rules}\n5. `reply`: 這是顯示給使用者看的自然語言回覆（字幕），需對應 `speech` 的語意，可根據需要輸出翻譯視角（例如 speech 為 {char_tts_lang} 發音，reply 則為中文翻譯字幕）。"
+        speech_json = f'  "speech": "符合 {char_tts_lang} 的發音文本",\n'
+    else:
+        speech_instruction = f"4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{speech_rules}"
+        speech_json = ""
+
+    sys_prompt = f"""{char_sys_prompt}
+{personality_block}{static_profile_block}{weather_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
-【動態攔截規則】：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。
+【系統動態規則】
+1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。
+2. 泛化工具調用：當你需要獲取即時資訊、動態數據或客觀事實以回應使用者時，絕對禁止使用內部知識猜測。你必須自主評估並呼叫最適合的外部工具（Function Calling）。各工具的使用時機、參數限制與語言要求，請嚴格遵循系統提供的 Tool Schema Description 執行。
 
 【系統核心指令】：綜合以下情境記憶區塊來回答使用者。
 [情境記憶區]
 {mem_ctx}
 
+【心理活動與狀態評估規則】
+在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：
+1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。
+2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。
+3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。
+{speech_instruction}
+
 【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：
-{{ "reply": "你的自然語言回覆", "extracted_entities": ["核心實體1"]}}"""
+{{
+  "internal_thought": "...",
+  "status_metrics": {{ "{metrics[0] if metrics else 'score'}": 50 }},
+  "tone": "{allowed_tones[0] if allowed_tones else 'Neutral'}",
+{speech_json}  "reply": "你的自然語言回覆（螢幕字幕文字）",
+  "extracted_entities": ["核心實體1"]
+}}"""
 
     retrieval_ctx = {
         "original_query": user_prompt,
@@ -334,13 +399,22 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     }
 
     # ─── LLM 生成 ───
+    metrics_props = {m: {"type": "integer", "minimum": 0, "maximum": 100} for m in metrics}
     chat_schema = {
         "type": "object",
         "properties": {
+            "internal_thought": {"type": "string"},
+            "status_metrics": {
+                "type": "object",
+                "properties": metrics_props,
+                "required": metrics
+            },
+            "tone": {"type": "string"},
+            "speech": {"type": "string"},
             "reply": {"type": "string"},
             "extracted_entities": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["reply", "extracted_entities"],
+        "required": ["internal_thought", "status_metrics", "tone", "speech", "reply", "extracted_entities"],
     }
 
     with timer.step("上下文組裝 (Context Assembly)"):
@@ -352,7 +426,8 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         pre_tool_message = ""
         try:
             from tools_tavily import TAVILY_SEARCH_SCHEMA, execute_tool_call
-            tools_list = [TAVILY_SEARCH_SCHEMA]
+            from tools_weather import WEATHER_SCHEMA
+            tools_list = [TAVILY_SEARCH_SCHEMA, WEATHER_SCHEMA]
 
             MAX_TOOL_ROUNDS = 3
             used_tools = False
@@ -415,10 +490,15 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
 
         except Exception as e:
             from system_logger import SystemLogger
-            SystemLogger.log_error(f"Chat 對話生成發生錯誤 ({type(e).__name__}): {e}")
+            SystemLogger.log_error("ChatGeneration", f"{type(e).__name__}: {e}")
             full_res = None
             reply_text = f"生成錯誤: {e}"
             new_entities = []
+
+    inner_thought = None
+    status_metrics = None
+    tone = None
+    speech = None
 
     if full_res is not None:
         with timer.step("回應解析 (Response Parsing)"):
@@ -428,6 +508,10 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
                     parsed, _ = json.JSONDecoder().raw_decode(full_res, _start)
                     reply_text = pre_tool_message + parsed.get("reply", "解析錯誤")
                     new_entities = parsed.get("extracted_entities", [])
+                    inner_thought = parsed.get("internal_thought")
+                    status_metrics = parsed.get("status_metrics")
+                    tone = parsed.get("tone")
+                    speech = parsed.get("speech")
                 except Exception:
                     reply_text = pre_tool_message + full_res
                     new_entities = []
@@ -438,7 +522,24 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     # 將效能計時結果注入 retrieval_ctx
     retrieval_ctx["perf_timing"] = timer.summary()
 
-    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data
+    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, inner_thought, status_metrics, tone, speech
+
+
+# ── 共用：選擇對話編排函式 ────────────────────────────────
+def _select_orchestration(user_prefs: dict):
+    """根據 dual_layer_enabled 設定選擇對話編排函式。"""
+    if user_prefs.get("dual_layer_enabled", False):
+        from chat_orchestrator import run_dual_layer_orchestration
+        return run_dual_layer_orchestration
+    return _run_chat_orchestration
+
+
+def _unpack_orchestration_result(result: tuple):
+    """統一解構 9-tuple（舊）或 10-tuple（新）的編排結果。"""
+    if len(result) == 10:
+        return result  # (reply, entities, ctx, shifted, pipeline, thought, metrics, tone, speech, thinking_speech)
+    # 舊版 9-tuple，補上 thinking_speech=""
+    return (*result, "")
 
 
 # ── WebSocket 端點 ────────────────────────────────────────
@@ -466,7 +567,13 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 await ws.send_json({"type": "pong"})
                 continue
 
+            if frame_type == "cancel":
+                await ws_manager.cancel_active_task(sid)
+                await ws.send_json({"type": "system_event", "action": "cancelled"})
+                continue
+
             if frame_type == "clear_context":
+                await ws_manager.cancel_active_task(sid)
                 await session_manager.delete(sid)
                 session = await session_manager.create()
                 sid = session.session_id
@@ -483,6 +590,9 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 await ws.send_json({"type": "error", "code": "EMPTY_MESSAGE", "message": "Empty message"})
                 continue
 
+            # 打斷機制：取消前一個活躍任務
+            await ws_manager.cancel_active_task(sid)
+
             # 加入使用者訊息
             await session_manager.add_user_message(sid, content)
             s = await session_manager.get(sid)
@@ -498,13 +608,28 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             def _ws_event_cb(data: dict):
                 asyncio.run_coroutine_threadsafe(ws.send_json(data), loop)
 
-            # 在執行緒池中跑關鍵路徑（偵測 → 檢索 → 生成）
-            reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data = \
-                await asyncio.to_thread(
-                    _run_chat_orchestration,
-                    list(s.messages), list(s.last_entities), content, user_prefs,
-                    on_event=_ws_event_cb,
-                )
+            # 選擇對話編排函式（雙層 or 單層）
+            orchestration_fn = _select_orchestration(user_prefs)
+
+            # 在執行緒池中跑關鍵路徑，包裝為 Task 以支援取消
+            task = asyncio.create_task(asyncio.to_thread(
+                orchestration_fn,
+                list(s.messages), list(s.last_entities), content, user_prefs,
+                on_event=_ws_event_cb,
+            ))
+            ws_manager.set_active_task(sid, task)
+
+            try:
+                result = await task
+            except asyncio.CancelledError:
+                # 任務被取消（使用者打斷），跳過後續處理
+                continue
+            finally:
+                ws_manager.clear_active_task(sid)
+
+            reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
+                inner_thought, status_metrics, tone, speech, thinking_speech = \
+                _unpack_orchestration_result(result)
 
             # 如果話題偏移，通知客戶端並在背景啟動記憶管線
             if topic_shifted:
@@ -517,7 +642,16 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 
             # 推送完整回覆（非串流模式，因為底層 LLM 目前不支援 async yield）
             await ws.send_json({"type": "token", "content": reply_text})
-            await ws.send_json({"type": "chat_done", "reply": reply_text, "extracted_entities": new_entities})
+            # 準備包含詳細狀態的 done payload
+            done_payload = {
+                "type": "chat_done",
+                "reply": reply_text,
+                "extracted_entities": new_entities,
+                "internal_thought": inner_thought,
+                "status_metrics": status_metrics,
+                "tone": tone,
+            }
+            await ws.send_json(done_payload)
 
             # 寫入 assistant 回覆
             await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
@@ -552,12 +686,15 @@ async def chat_sync(body: ChatSyncRequest):
         return ChatSyncResponseDTO(reply="Session error")
 
     user_prefs = get_storage().load_prefs()
+    orchestration_fn = _select_orchestration(user_prefs)
 
-    reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data = \
-        await asyncio.to_thread(
-            _run_chat_orchestration,
-            list(s.messages), list(s.last_entities), body.content, user_prefs,
-        )
+    result = await asyncio.to_thread(
+        orchestration_fn,
+        list(s.messages), list(s.last_entities), body.content, user_prefs,
+    )
+    reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
+        inner_thought, status_metrics, tone, speech, thinking_speech = \
+        _unpack_orchestration_result(result)
 
     await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
 
@@ -567,7 +704,6 @@ async def chat_sync(body: ChatSyncRequest):
 
     if topic_shifted:
         await session_manager.bridge(sid)
-        # 在背景啟動記憶管線（管線完成後會透過 ws_manager 推送事件給 WebSocket 客戶端）
         if pipeline_data:
             asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
 
@@ -575,6 +711,11 @@ async def chat_sync(body: ChatSyncRequest):
         reply=reply_text,
         extracted_entities=new_entities,
         retrieval_context=RetrievalContextDTO(**retrieval_ctx),
+        internal_thought=inner_thought,
+        status_metrics=status_metrics,
+        tone=tone,
+        speech=speech,
+        thinking_speech=thinking_speech or None,
     )
 
 
@@ -597,6 +738,7 @@ async def chat_stream_sync(body: ChatSyncRequest):
 
     user_prefs = get_storage().load_prefs()
     event_q = sync_queue.Queue()
+    orchestration_fn = _select_orchestration(user_prefs)
 
     def on_event(data: dict):
         event_q.put(data)
@@ -604,7 +746,7 @@ async def chat_stream_sync(body: ChatSyncRequest):
     async def event_generator():
         # 在背景執行緒中啟動對話編排
         orch_task = asyncio.create_task(asyncio.to_thread(
-            _run_chat_orchestration,
+            orchestration_fn,
             list(s.messages), list(s.last_entities), body.content, user_prefs,
             on_event=on_event,
         ))
@@ -624,10 +766,14 @@ async def chat_stream_sync(body: ChatSyncRequest):
 
         # 取得最終結果
         try:
-            reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data = orch_task.result()
+            result = orch_task.result()
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
             return
+
+        reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
+            inner_thought, status_metrics, tone, speech, thinking_speech = \
+            _unpack_orchestration_result(result)
 
         # 寫入 session 及背景任務（與 /sync 相同）
         await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
@@ -646,6 +792,10 @@ async def chat_stream_sync(body: ChatSyncRequest):
             "reply": reply_text,
             "extracted_entities": new_entities,
             "retrieval_context": retrieval_ctx,
+            "internal_thought": inner_thought,
+            "status_metrics": status_metrics,
+            "tone": tone,
+            "thinking_speech": thinking_speech or None,
         }
         yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
 

@@ -417,6 +417,7 @@ body {
 <div class="header">
   <h1>🗄️ Memory DB Viewer</h1>
   <span class="file-info" id="fileInfo">拖入 .db 檔案以開始</span>
+  <button id="reloadBtn" onclick="reloadDB()" style="display:none; margin-left:auto; background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:5px 12px; color:var(--accent); font-size:13px; cursor:pointer;" title="重新載入資料庫">🔄 重新載入</button>
 </div>
 
 <!-- Drop Zone -->
@@ -546,16 +547,66 @@ initSQL();
 // ===== File Handling =====
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
+let currentFileHandle = null;  // FileSystemFileHandle（支援重新讀取磁碟最新內容）
 
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('hover'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('hover'));
-dropZone.addEventListener('drop', e => {
+dropZone.addEventListener('drop', async e => {
   e.preventDefault();
   dropZone.classList.remove('hover');
-  if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+  // 嘗試取得 FileSystemFileHandle
+  const items = e.dataTransfer.items;
+  if (items && items.length > 0 && items[0].getAsFileSystemHandle) {
+    try {
+      const handle = await items[0].getAsFileSystemHandle();
+      if (handle && handle.kind === 'file') {
+        currentFileHandle = handle;
+        const file = await handle.getFile();
+        await loadFile(file);
+        document.getElementById('reloadBtn').style.display = '';
+        return;
+      }
+    } catch {}
+  }
+  // Fallback
+  if (e.dataTransfer.files.length) {
+    currentFileHandle = null;
+    await loadFile(e.dataTransfer.files[0]);
+  }
 });
-fileInput.addEventListener('change', e => { if (e.target.files.length) loadFile(e.target.files[0]); });
+fileInput.addEventListener('change', async e => {
+  if (!e.target.files.length) return;
+  // 嘗試透過 File System Access API 取得 handle
+  if (window.showOpenFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'SQLite DB', accept: { 'application/x-sqlite3': ['.db','.sqlite','.sqlite3'] } }],
+      });
+      currentFileHandle = handle;
+      const file = await handle.getFile();
+      await loadFile(file);
+      document.getElementById('reloadBtn').style.display = '';
+      return;
+    } catch {}
+  }
+  // Fallback
+  currentFileHandle = null;
+  await loadFile(e.target.files[0]);
+});
+
+async function reloadDB() {
+  if (currentFileHandle) {
+    try {
+      const file = await currentFileHandle.getFile();
+      await loadFile(file);
+      return;
+    } catch (e) {
+      console.warn('FileHandle reload failed:', e);
+    }
+  }
+  alert('瀏覽器不支援自動重新讀取，請重新拖入檔案。');
+}
 
 async function loadFile(file) {
   dropZone.style.display = 'none';
@@ -574,6 +625,7 @@ async function loadFile(file) {
   }
 
   document.getElementById('fileInfo').textContent = `${file.name} (${formatSize(file.size)})`;
+  if (currentFileHandle) document.getElementById('reloadBtn').style.display = '';
 
   // Discover tables
   const res = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");

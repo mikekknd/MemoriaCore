@@ -21,6 +21,10 @@ def render_settings_page(api_base, user_prefs=None):
         new_openai_key = st.text_input("OpenAI API Key", type="password", value=user_prefs.get("openai_key", ""))
         new_or_key = st.text_input("OpenRouter API Key", type="password", value=user_prefs.get("or_key", ""))
         new_tavily_key = st.text_input("Tavily API Key (網路搜尋用)", type="password", value=user_prefs.get("tavily_api_key", ""))
+        new_openweather_key = st.text_input("OpenWeather API Key (天氣查詢用)", type="password", value=user_prefs.get("openweather_api_key", ""),
+                                             help="從 https://openweathermap.org/api 免費申請。用於即時天氣與預報查詢。")
+        new_weather_city = st.text_input("天氣快取城市 (英文名)", value=user_prefs.get("weather_city", ""),
+                                          help="設定後系統會自動快取該城市當天天氣並注入對話。使用英文城市名如 Taipei, Tokyo, New York。")
         new_llamacpp_url = st.text_input(
             "llama.cpp Server URL",
             value=user_prefs.get("llamacpp_url", "http://localhost:8080"),
@@ -38,6 +42,11 @@ def render_settings_page(api_base, user_prefs=None):
         new_shift_threshold = st.slider("話題偏移敏感度", 0.30, 0.85, user_prefs.get("shift_threshold", 0.55), 0.05)
         new_cluster_threshold = st.slider("大腦反芻收束閾值", 0.60, 0.90, user_prefs.get("cluster_threshold", 0.75), 0.05,
                                            help="數值越低，越容易將微弱相關的記憶縫合；數值越高，則只總結高度一致的話題。")
+
+        st.header("🤖 雙層 Agent 架構")
+        new_dual_layer_enabled = st.checkbox(
+            "啟用異步雙層 Agent 模式", value=user_prefs.get("dual_layer_enabled", False),
+            help="開啟後，對話將拆分為「意圖路由」與「角色渲染」兩階段。需要工具時會先播放過渡語音，並行執行工具查詢，消除等待空窗。")
 
         st.header("🧬 AI 人格演化")
         new_ai_observe_enabled = st.checkbox("啟用 AI 自我觀察", value=user_prefs.get("ai_observe_enabled", True),
@@ -63,6 +72,8 @@ def render_settings_page(api_base, user_prefs=None):
             "openai_key": new_openai_key,
             "or_key": new_or_key,
             "tavily_api_key": new_tavily_key,
+            "openweather_api_key": new_openweather_key,
+            "weather_city": new_weather_city,
             "bg_gather_interval": int(new_bg_gather_hours * 3600),
             "llamacpp_url": new_llamacpp_url,
             "telegram_bot_token": new_tg_token,
@@ -74,6 +85,7 @@ def render_settings_page(api_base, user_prefs=None):
             "cluster_threshold": new_cluster_threshold,
             "ai_observe_enabled": new_ai_observe_enabled,
             "reflection_threshold": new_reflection_threshold,
+            "dual_layer_enabled": new_dual_layer_enabled,
         }
         try:
             resp = requests.put(f"{api_base}/system/config", json=update_payload, timeout=10)

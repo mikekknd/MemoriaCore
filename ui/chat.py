@@ -111,7 +111,18 @@ def _restore_session(api_base, session_id):
 
 
 def render_chat_page(api_base, user_prefs):
-    st.title("💬 異質模型分流: 雙軌混合檢索版")
+    active_char_id = user_prefs.get("active_character_id", "default")
+    active_char_name = "預設助理"
+    try:
+        c_resp = requests.get(f"{api_base}/character/{active_char_id}", timeout=2)
+        if c_resp.ok:
+            c_data = c_resp.json()
+            if "name" in c_data:
+                active_char_name = c_data["name"]
+    except Exception:
+        pass
+
+    st.title(f"💬 對話大廳 - 🎭 {active_char_name}")
 
     @st.cache_data(ttl=15, show_spinner=False)
     def _load_system_prompt(_api_base):
@@ -120,7 +131,8 @@ def render_chat_page(api_base, user_prefs):
         except Exception:
             return ""
 
-    with st.expander("🎭 機器人設定 (System Prompt)", expanded=False):
+    with st.expander("⚙️ 全域預設設定 (Global System Prompt)", expanded=False):
+        st.caption("⚠️ 注意：若您已指派特定的**對話角色**，此處的全域設定將會被該角色的**專屬提示詞徹底覆蓋**。此設定僅在沒有角色或角色無提示詞時生效。")
         current_prompt = _load_system_prompt(api_base)
         system_prompt_input = st.text_area("System Prompt：", value=current_prompt, height=150)
         if st.button("💾 儲存提示詞"):
@@ -246,6 +258,8 @@ def render_chat_page(api_base, user_prefs):
                 chat_resp.raise_for_status()
 
                 result = None
+                has_error = False
+                thinking_speech_text = None
                 for line in chat_resp.iter_lines(decode_unicode=True):
                     if not line or not line.startswith("data: "):
                         continue
@@ -253,10 +267,13 @@ def render_chat_page(api_base, user_prefs):
                     evt_type = event.get("type")
                     if evt_type == "tool_status":
                         status_placeholder.info(f"🔍 {event.get('message', '處理中...')}")
+                    elif evt_type == "thinking_speech":
+                        thinking_speech_text = event.get("content", "")
+                        status_placeholder.markdown(f"*💭 {thinking_speech_text}*")
                     elif evt_type == "error":
                         status_placeholder.empty()
                         st.error(f"API 錯誤: {event.get('message', '未知錯誤')}")
-                        result = None
+                        has_error = True
                         break
                     elif evt_type == "result":
                         result = event
@@ -279,9 +296,12 @@ def render_chat_page(api_base, user_prefs):
             except requests.Timeout:
                 status_placeholder.empty()
                 st.error("請求超時，LLM 回覆時間過長。")
+                has_error = True
             except Exception as e:
                 status_placeholder.empty()
                 st.error(f"生成錯誤: {e}")
+                has_error = True
             finally:
                 st.session_state.is_generating = False
-                st.rerun()
+                if not has_error:
+                    st.rerun()

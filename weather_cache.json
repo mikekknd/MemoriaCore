@@ -1,0 +1,40 @@
+{
+  "date": "2026-03-26",
+  "city": "Taichung",
+  "country": "TW",
+  "fetched_at": "2026-03-26T11:09:09",
+  "slots": [
+    {
+      "time": "2026-03-26 14:00",
+      "weather": "多雲",
+      "temp": 31.05,
+      "humidity": 52,
+      "wind": 4.85,
+      "pop": 0
+    },
+    {
+      "time": "2026-03-26 17:00",
+      "weather": "晴，少雲",
+      "temp": 29.15,
+      "humidity": 53,
+      "wind": 3.12,
+      "pop": 3
+    },
+    {
+      "time": "2026-03-26 20:00",
+      "weather": "小雨",
+      "temp": 24.94,
+      "humidity": 68,
+      "wind": 1.35,
+      "pop": 28
+    },
+    {
+      "time": "2026-03-26 23:00",
+      "weather": "小雨",
+      "temp": 24.01,
+      "humidity": 69,
+      "wind": 1.11,
+      "pop": 20
+    }
+  ]
+}

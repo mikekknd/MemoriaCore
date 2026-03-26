@@ -40,22 +40,32 @@ build_server.bat
 
 ## Architecture
 
+### Directory Structure
+```
+core/           — Core engine modules (memory, LLM routing, personality, storage, etc.)
+tools/          — LLM tool implementations (Tavily search, weather, synthetic data)
+ui/             — Streamlit UI pages (chat, settings, routing, etc.)
+static/         — Static HTML viewers (db_viewer, log_viewer)
+api/            — FastAPI backend (routers, models, dependencies)
+tests/          — Pytest test suite
+```
+
 ### Request Flow
 ```
 Client (Streamlit / Telegram / Unity WebSocket)
   → FastAPI (api/main.py, routers under api/routers/)
-    → LLMRouter (llm_gateway.py) — routes 9 task types to providers
-    → MemorySystem (core_memory.py) — dual vector search (dense + sparse)
-    → MemoryAnalyzer (memory_analyzer.py) — topic shift detection, memory pipeline
-    → PersonalityEngine (personality_engine.py) — self-observation & reflection
-    → PreferenceAggregator (preference_aggregator.py) — user preference learning
-    → StorageManager (storage_manager.py) — SQLite WAL + JSON files
+    → LLMRouter (core/llm_gateway.py) — routes 9 task types to providers
+    → MemorySystem (core/core_memory.py) — dual vector search (dense + sparse)
+    → MemoryAnalyzer (core/memory_analyzer.py) — topic shift detection, memory pipeline
+    → PersonalityEngine (core/personality_engine.py) — self-observation & reflection
+    → PreferenceAggregator (core/preference_aggregator.py) — user preference learning
+    → StorageManager (core/storage_manager.py) — SQLite WAL + JSON files
 ```
 
 ### Singletons (api/dependencies.py)
 All core components are initialized as singletons in `api/dependencies.py` and injected into routers via FastAPI dependency injection: `memory_sys`, `storage`, `analyzer`, `global_router`, `personality_engine`.
 
-### LLM Routing (llm_gateway.py)
+### LLM Routing (core/llm_gateway.py)
 9 task routes, each independently configurable to a different provider/model via `user_prefs.json` `routing_config`:
 `chat`, `pipeline`, `expand`, `compress`, `distill`, `ep_fuse`, `profile`, `ai_observe`, `ai_reflect`.
 
@@ -78,5 +88,5 @@ Supported providers: Ollama (local), OpenAI, OpenRouter, llama.cpp.
 
 - Python 3.12, NumPy <2.0.0
 - ONNX model required at `StreamingAssets/Models/model_quantized.onnx` (BGE-M3 int8 from HuggingFace)
-- SQLite uses WAL mode with async locks for concurrency — respect the locking pattern in storage_manager.py
+- SQLite uses WAL mode with async locks for concurrency — respect the locking pattern in core/storage_manager.py
 - Windows-oriented development (batch scripts), but core Python code is cross-platform

@@ -2,7 +2,7 @@
 # 取代舊版 run_preference_deduction.py 的 LLM-based 叢集偏好推導。
 import math
 from datetime import datetime
-from system_logger import SystemLogger
+from core.system_logger import SystemLogger
 
 
 class PreferenceAggregator:

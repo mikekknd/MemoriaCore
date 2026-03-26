@@ -5,7 +5,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core_memory import MemorySystem
+from core.core_memory import MemorySystem
 
 
 @pytest.fixture

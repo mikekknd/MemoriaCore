@@ -1,11 +1,14 @@
+# 環境假設：Python 3.10+, Requests 庫, 已配置 StorageManager 與 SystemLogger
+# 功能對齊：維持原有 Tavily API 呼叫邏輯，強化 query 參數的語言動態切換指令。
+
 import os
 import requests
 import json
-from system_logger import SystemLogger
+from core.system_logger import SystemLogger
 
 def _get_tavily_key():
     try:
-        from storage_manager import StorageManager
+        from core.storage_manager import StorageManager
         prefs = StorageManager().load_prefs()
         key = prefs.get("tavily_api_key")
         if key: return key
@@ -17,18 +20,18 @@ TAVILY_SEARCH_SCHEMA = {
     "type": "function",
     "function": {
         "name": "search_web",
-        "description": "搜尋網際網路以取得最新資訊、新聞或解答使用者的具體問題。當你需要了解最新時事、未知的實體或客觀知識時，請呼叫此函數。",
+        "description": "【功能】搜尋網際網路以取得客觀知識、最新資訊或時事解答。\n【觸發時機】當遇到知識盲區、需要查證事實，或使用者詢問真實世界存在的實體與事件時呼叫。",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "要搜尋的關鍵字或問題描述"
+                    "description": "搜尋關鍵字。規則：\n1. 禁止輸入口語化句子，必須萃取出核心關鍵字。\n2. 專有名詞需加上引號（如 \"名探偵コナン\"）。\n3. 強制語言切換：根據主題切換至目標語言搜尋（例如：日本動漫/聲優用日文，歐美科技/開源專案用英文，台灣在地資訊用繁體中文）。"
                 },
                 "topic": {
                     "type": "string",
                     "enum": ["general", "news"],
-                    "description": "搜尋主題：'general' 為一般搜尋，'news' 會鎖定最新新聞。"
+                    "description": "搜尋範圍。絕大多數情況使用 'general'。只有在使用者明確詢問「最近幾天的新聞」、「即時財經快訊」時，才切換為 'news'。"
                 }
             },
             "required": ["query"]
@@ -42,7 +45,7 @@ def search_web(query: str, topic: str = "general") -> str:
     """
     api_key = _get_tavily_key()
     if not api_key:
-        SystemLogger.log_error("Tavily Search Error: 尚未設定 TAVILY_API_KEY 環境變數或參數")
+        SystemLogger.log_error("Tavily", "尚未設定 TAVILY_API_KEY 環境變數或參數")
         return json.dumps({"error": "系統尚未設定 TAVILY_API_KEY，請前往設定介面填寫後再試。"}, ensure_ascii=False)
     
     url = "https://api.tavily.com/search"
@@ -77,26 +80,26 @@ def search_web(query: str, topic: str = "general") -> str:
         return json.dumps({"search_results": final_str}, ensure_ascii=False)
         
     except Exception as e:
-        SystemLogger.log_error(f"Tavily Search Exception: {e}")
+        SystemLogger.log_error("Tavily", f"搜尋過程中發生錯誤: {e}")
         return json.dumps({"error": f"網路搜尋過程中發生錯誤: {e}"}, ensure_ascii=False)
 
 def execute_tool_call(tool_call: dict) -> str:
     """
-    接收 LLM 的 tool_call 結構並執行對應的工具
-    tool_call 結構範例:
-    {
-        "function": {
-            "name": "search_web",
-            "arguments": {"query": "...", "topic": "news"}
-        }
-    }
+    統一工具調度中心 — 接收 LLM 的 tool_call 結構並執行對應的工具。
+    新增工具時只需在此處加入對應的分支。
     """
     func_name = tool_call.get("function", {}).get("name")
     args = tool_call.get("function", {}).get("arguments", {})
-    
+
     if func_name == "search_web":
         query = args.get("query", "")
         topic = args.get("topic", "general")
         return search_web(query, topic)
-    
+
+    if func_name == "get_weather":
+        from tools_weather import get_weather
+        city = args.get("city", "")
+        mode = args.get("mode", "current")
+        return get_weather(city, mode)
+
     return json.dumps({"error": f"找不到工具 {func_name}"}, ensure_ascii=False)

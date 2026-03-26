@@ -141,7 +141,7 @@
 
 <div class="drop-zone" id="dropZone">
   <div class="drop-area" id="dropArea">
-    <input type="file" accept=".jsonl,.json,.log,.txt" onchange="handleFile(this.files[0])">
+    <input type="file" accept=".jsonl,.json,.log,.txt" onchange="handleFileInput(this)">
     <div class="drop-icon">📋</div>
     <div class="drop-title">拖放 JSONL 日誌檔至此</div>
     <div class="drop-sub">支援 .jsonl / .json / .log / .txt（如 llm_trace.jsonl）</div>
@@ -153,7 +153,8 @@
 <script>
 let allEntries = [];
 let searchTerm = '';
-let currentFile = null;
+let currentFileHandle = null;   // FileSystemFileHandle（支援重新讀取磁碟最新內容）
+let currentFileName = '';
 let newestFirst = false;
 
 // ===== Drag & Drop =====
@@ -167,9 +168,24 @@ const dropZone = document.getElementById('dropZone');
 ['dragleave','drop'].forEach(e => {
   dropArea.addEventListener(e, () => dropArea.classList.remove('dragover'));
 });
-document.addEventListener('drop', ev => {
+document.addEventListener('drop', async ev => {
   ev.preventDefault(); ev.stopPropagation();
-  if (ev.dataTransfer.files.length) handleFile(ev.dataTransfer.files[0]);
+  // 嘗試取得 FileSystemFileHandle（支援後續 reload）
+  const items = ev.dataTransfer.items;
+  if (items && items.length > 0 && items[0].getAsFileSystemHandle) {
+    try {
+      const handle = await items[0].getAsFileSystemHandle();
+      if (handle && handle.kind === 'file') {
+        currentFileHandle = handle;
+        currentFileName = handle.name;
+        const file = await handle.getFile();
+        loadFileContent(file);
+        return;
+      }
+    } catch {}
+  }
+  // Fallback：無 File System Access API
+  if (ev.dataTransfer.files.length) handleFileFallback(ev.dataTransfer.files[0]);
 });
 
 // ===== Keyboard Shortcut =====
@@ -182,19 +198,55 @@ document.addEventListener('keydown', ev => {
 });
 
 // ===== File Loading =====
-function handleFile(file) {
+// 透過 <input type="file"> 選擇時，嘗試用 showOpenFilePicker 取得 handle
+async function handleFileInput(inputEl) {
+  const file = inputEl.files[0];
   if (!file) return;
-  currentFile = file;
+  // 嘗試透過 File System Access API 取得 handle
+  if (window.showOpenFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        startIn: 'downloads',
+        types: [{ description: 'Log files', accept: { 'application/jsonl': ['.jsonl','.json','.log','.txt'] } }],
+      });
+      currentFileHandle = handle;
+      currentFileName = handle.name;
+      const freshFile = await handle.getFile();
+      loadFileContent(freshFile);
+      return;
+    } catch {}
+  }
+  // Fallback
+  handleFileFallback(file);
+}
+
+function handleFileFallback(file) {
+  currentFileHandle = null;
+  currentFileName = file.name;
+  loadFileContent(file);
+}
+
+function loadFileContent(file) {
   const reader = new FileReader();
   reader.onload = e => parseAndRender(e.target.result, file.name);
   reader.readAsText(file, 'utf-8');
 }
 
-function reloadFile() {
-  if (!currentFile) return;
-  const reader = new FileReader();
-  reader.onload = e => parseAndRender(e.target.result, currentFile.name);
-  reader.readAsText(currentFile, 'utf-8');
+async function reloadFile() {
+  if (currentFileHandle) {
+    // 透過 handle 取得磁碟上的最新內容
+    try {
+      const file = await currentFileHandle.getFile();
+      loadFileContent(file);
+      return;
+    } catch (e) {
+      console.warn('FileHandle reload failed:', e);
+    }
+  }
+  // 無 handle 時提示使用者重新選擇
+  if (!currentFileHandle) {
+    alert('瀏覽器不支援自動重新讀取，請重新拖入檔案。');
+  }
 }
 
 function toggleNewestFirst() {
