@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from core.system_logger import SystemLogger
+from core.prompt_manager import get_prompt_manager
 
 
 # ── 資料結構 ──────────────────────────────────────────────
@@ -46,14 +47,22 @@ class PersonaResult:
 
 # ── Module A: Router Agent ────────────────────────────────
 
-ROUTER_SYSTEM_PROMPT_TEMPLATE = """你是意圖路由代理。你的唯一任務是判斷使用者的問題是否需要呼叫外部工具。
-角色語氣提示：{char_hint}
+def _get_router_prompt():
+    return get_prompt_manager().get("router_system")
 
-規則：
-1. 若使用者問題需要即時資訊（天氣、新聞、事實查證、網路搜尋），你必須呼叫對應工具。
-2. 呼叫工具時，必須同時用角色語氣說一句簡短等待語（20字以內），放在回覆文字中。
-3. 若不需要工具，不要呼叫任何工具，也不要輸出任何文字。
-4. 你不負責回答使用者的問題，只負責路由判斷。"""
+# Dummy Tool Schema — 利用 function calling 的多選機制穩定意圖判定
+DIRECT_CHAT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "direct_chat",
+        "description": "當使用者只是在日常閒聊、表達主觀意見、分享心情或生活狀態，沒有明確詢問客觀知識或即時數據時，呼叫此工具將控制權直接交還角色進行對話。",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
 
 
 def run_router_agent(
@@ -69,14 +78,17 @@ def run_router_agent(
     Args:
         user_prompt: 使用者的原始輸入。
         char_hint: 角色語氣的一行描述（例如「傲嬌女僕，語氣帶點不耐煩但其實很認真」）。
-        tools_list: 所有可用的 Tool Schema 列表。
+        tools_list: 所有可用的 Tool Schema 列表（不含 direct_chat，會自動注入）。
         router: LLMRouter 實例。
         temperature: LLM 溫度參數。
 
     Returns:
         RouterResult — needs_tools / tool_calls / thinking_speech。
     """
-    sys_prompt = ROUTER_SYSTEM_PROMPT_TEMPLATE.format(char_hint=char_hint)
+    # 注入 dummy tool，讓 LLM 在「真工具」與「純聊天」之間做多選
+    augmented_tools = tools_list + [DIRECT_CHAT_SCHEMA]
+
+    sys_prompt = _get_router_prompt().format(char_hint=char_hint)
     messages = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_prompt},
@@ -84,19 +96,25 @@ def run_router_agent(
 
     try:
         content, tool_calls = router.generate_with_tools(
-            "router", messages, tools=tools_list, temperature=temperature,
+            "router", messages, tools=augmented_tools, temperature=temperature,
         )
     except Exception as e:
         SystemLogger.log_error("RouterAgent", f"{type(e).__name__}: {e}")
         return RouterResult(needs_tools=False)
 
     if tool_calls:
-        thinking_speech = (content or "").strip()
-        return RouterResult(
-            needs_tools=True,
-            tool_calls=tool_calls,
-            thinking_speech=thinking_speech,
-        )
+        # 過濾掉 direct_chat — 它只是路由信號，不是真正的工具
+        real_tool_calls = [
+            tc for tc in tool_calls
+            if tc.get("function", {}).get("name") != "direct_chat"
+        ]
+        if real_tool_calls:
+            thinking_speech = (content or "").strip()
+            return RouterResult(
+                needs_tools=True,
+                tool_calls=real_tool_calls,
+                thinking_speech=thinking_speech,
+            )
 
     return RouterResult(needs_tools=False)
 
@@ -119,7 +137,7 @@ def run_middleware(
     Returns:
         ToolContext — 工具結果 + 已推播的過渡語。
     """
-    from tools_tavily import execute_tool_call
+    from tools.tavily import execute_tool_call
 
     thinking_speech = router_result.thinking_speech
 
@@ -274,6 +292,8 @@ def run_dual_layer_orchestration(
     """
     異步雙層 Agent 對話編排 — 取代 _run_chat_orchestration()。
 
+    記憶檢索管線與工具路由管線平行執行，兩邊完成後再進入 Module C。
+
     維持與原函式相同的參數簽名。
     回傳 10-tuple：原 9 元素 + thinking_speech。
     """
@@ -288,6 +308,8 @@ def run_dual_layer_orchestration(
     rtr = get_router()
     storage = get_storage()
     embed_model = get_embed_model()
+    pe = get_personality_engine()
+    char_mgr = get_character_manager()
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -295,97 +317,9 @@ def run_dual_layer_orchestration(
     memory_threshold = user_prefs.get("memory_threshold", 0.5)
     temperature = user_prefs.get("temperature", 0.7)
 
-    topic_shifted = False
-    pipeline_data = None
-    timer = StepTimer()
-    thinking_speech = ""
+    main_timer = StepTimer()
 
-    # ─── Phase 0: 話題偏移偵測（與原邏輯相同） ───
-    with timer.step("話題偏移偵測 (Topic Shift Detection)"):
-        is_shift, cohesion_score = analyzer.detect_topic_shift(
-            session_messages, embed_model, threshold=shift_threshold,
-        )
-
-    if is_shift:
-        topic_shifted = True
-        import copy
-        msgs_to_extract = [{"role": m["role"], "content": m["content"]}
-                           for m in session_messages[:-1]]
-        last_block = copy.deepcopy(ms.memory_blocks[-1]) if ms.memory_blocks else None
-        pipeline_data = (msgs_to_extract, last_block)
-
-    # ─── Phase 0: 雙軌檢索（與原邏輯相同） ───
-    with timer.step("查詢擴展 (Query Expansion LLM)"):
-        expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand")
-    inherited_str = " ".join(last_entities)
-    combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
-
-    f_alpha = ui_alpha
-    f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
-
-    with timer.step("情境記憶檢索 (Memory Block Search)"):
-        blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
-
-    with timer.step("核心認知檢索 (Core Memory Search)"):
-        core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45)
-
-    core_ctx = ""
-    core_debug_text = "未觸發核心認知。"
-    if core_insights:
-        core_ctx = f"【使用者核心資訊】：{core_insights[0]['insight']}\n"
-        core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
-
-    with timer.step("使用者偏好檢索 (Profile Search)"):
-        profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5)
-    profile_ctx = ""
-    profile_debug_text = "未觸發使用者偏好。"
-    if profile_matches:
-        profile_lines = [f"- {pm['fact_key']}: {pm['fact_value']}" for pm in profile_matches]
-        profile_ctx = f"【使用者相關偏好】\n" + "\n".join(profile_lines) + "\n"
-        profile_debug_text = f"觸發 {len(profile_matches)} 筆偏好: " + ", ".join(
-            [f"{pm['fact_key']}={pm['fact_value']} ({pm['score']:.3f})" for pm in profile_matches])
-
-    block_details = []
-    mem_ctx = "無相關記憶。"
-    if blocks:
-        formatted_blocks = []
-        for i, block in enumerate(blocks):
-            raw_text = "\n".join([f"  - {m['role']}: {m['content']}" for m in block["raw_dialogues"] if "role" in m])
-            formatted_blocks.append(
-                f"【情境回憶 {i + 1}】\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
-            overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
-            block_details.append({
-                "id": i + 1, "overview": overview_header,
-                "hybrid": block.get("_debug_score", 0),
-                "dense": block.get("_debug_raw_sim", 0),
-                "sparse": block.get("_debug_sparse_raw", 0),
-                "recency": block.get("_debug_recency", 0),
-                "importance": block.get("_debug_importance", 0),
-            })
-        mem_ctx = "\n\n".join(formatted_blocks)
-
-    # ─── Phase 0: System Prompt 組裝（與原邏輯相同） ───
-    static_profile = ms.get_static_profile_prompt()
-    static_profile_block = f"\n{static_profile}\n" if static_profile else ""
-
-    pe = get_personality_engine()
-    personality_ctx = pe.get_personality_prompt()
-    personality_block = f"\n【AI個性記憶】\n{personality_ctx}\n" if personality_ctx else ""
-
-    proactive_topics_block = ms.get_proactive_topics_prompt(limit=1)
-    if proactive_topics_block:
-        proactive_topics_block = f"\n{proactive_topics_block}\n"
-
-    weather_block = ""
-    try:
-        from weather_cache import WeatherCache
-        weather_summary = WeatherCache().get_current_slot()
-        if weather_summary:
-            weather_block = f"\n【即時天氣資訊】\n{weather_summary}\n"
-    except Exception:
-        pass
-
-    char_mgr = get_character_manager()
+    # ─── Pre-fork：載入角色資訊 + 判斷可用工具（兩條分支都需要） ───
     active_char_id = user_prefs.get("active_character_id", "default")
     active_char = char_mgr.get_active_character(active_char_id)
     metrics = active_char.get("metrics", ["professionalism"])
@@ -395,105 +329,214 @@ def run_dual_layer_orchestration(
     char_sys_prompt = active_char.get("system_prompt", storage.load_system_prompt())
     char_name = active_char.get("name", "助理")
 
-    metrics_str = ", ".join(metrics)
-    tones_str = "/".join(allowed_tones)
-
-    speech_instruction = ""
-    speech_json = ""
-    if char_tts_lang:
-        speech_instruction = f"4. `speech`: 這是專門提供給語音合成 (TTS) 的發音文本，請嚴格遵守以下角色發音規則：[{char_tts_lang}] {speech_rules}\n5. `reply`: 這是顯示給使用者看的自然語言回覆（字幕），需對應 `speech` 的語意，可根據需要輸出翻譯視角（例如 speech 為 {char_tts_lang} 發音，reply 則為中文翻譯字幕）。"
-        speech_json = f'  "speech": "符合 {char_tts_lang} 的發音文本",\n'
-    else:
-        speech_instruction = f"4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{speech_rules}"
-        speech_json = ""
-
-    sys_prompt = f"""{char_sys_prompt}
-{personality_block}{static_profile_block}{weather_block}
-{core_ctx}{profile_ctx}{proactive_topics_block}
-【系統動態規則】
-1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。
-2. 泛化工具調用：本次對話中，你不需要自行呼叫任何工具。如果有外部工具查詢結果，系統會自動提供給你。
-
-【系統核心指令】：綜合以下情境記憶區塊來回答使用者。
-[情境記憶區]
-{mem_ctx}
-
-【心理活動與狀態評估規則】
-在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：
-1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。
-2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。
-3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。
-{speech_instruction}
-
-【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：
-{{
-  "internal_thought": "...",
-  "status_metrics": {{ "{metrics[0] if metrics else 'score'}": 50 }},
-  "tone": "{allowed_tones[0] if allowed_tones else 'Neutral'}",
-{speech_json}  "reply": "你的自然語言回覆（螢幕字幕文字）",
-  "extracted_entities": ["核心實體1"]
-}}"""
-
-    retrieval_ctx = {
-        "original_query": user_prompt,
-        "expanded_keywords": expand_res['expanded_keywords'],
-        "inherited_tags": last_entities,
-        "has_memory": bool(blocks),
-        "block_count": len(blocks),
-        "threshold": memory_threshold,
-        "hard_base": f_base,
-        "confidence": expand_res["entity_confidence"],
-        "block_details": block_details,
-        "core_debug_text": core_debug_text,
-        "profile_debug_text": profile_debug_text,
-        "dynamic_prompt": sys_prompt,
-    }
-
-    # ─── JSON Schema ───
-    metrics_props = {m: {"type": "integer", "minimum": 0, "maximum": 100} for m in metrics}
-    chat_schema = {
-        "type": "object",
-        "properties": {
-            "internal_thought": {"type": "string"},
-            "status_metrics": {
-                "type": "object",
-                "properties": metrics_props,
-                "required": metrics
-            },
-            "tone": {"type": "string"},
-            "speech": {"type": "string"},
-            "reply": {"type": "string"},
-            "extracted_entities": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["internal_thought", "status_metrics", "tone", "speech", "reply", "extracted_entities"],
-    }
-
-    # ─── 上下文組裝 ───
-    with timer.step("上下文組裝 (Context Assembly)"):
-        api_messages = [{"role": "system", "content": sys_prompt}]
-        clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-4:]]
-        api_messages.extend(clean_history)
-
-    # ─── 判斷可用工具 ───
     tools_list = []
     try:
-        from tools_tavily import TAVILY_SEARCH_SCHEMA
+        from tools.tavily import TAVILY_SEARCH_SCHEMA
         if user_prefs.get("tavily_api_key"):
             tools_list.append(TAVILY_SEARCH_SCHEMA)
     except ImportError:
         pass
     try:
-        from tools_weather import WEATHER_SCHEMA
+        from tools.weather import WEATHER_SCHEMA
         if user_prefs.get("openweather_api_key"):
             tools_list.append(WEATHER_SCHEMA)
     except ImportError:
         pass
 
-    tool_context = None
-    if tools_list:
-        # ─── Module A: Router Agent（LLM 呼叫） ───
+    # ═══════════════════════════════════════════════════════════
+    # Branch A：記憶檢索管線（偵測 → 擴展 → 三軌檢索 → Prompt 組裝）
+    # ═══════════════════════════════════════════════════════════
+    def _memory_branch():
+        t = StepTimer()
+
+        # 話題偏移偵測
+        with t.step("話題偏移偵測 (Topic Shift Detection)"):
+            is_shift, _ = analyzer.detect_topic_shift(
+                session_messages, embed_model, threshold=shift_threshold,
+            )
+
+        topic_shifted = False
+        pipeline_data = None
+        if is_shift:
+            topic_shifted = True
+            import copy
+            msgs_to_extract = [{"role": m["role"], "content": m["content"]}
+                               for m in session_messages[:-1]]
+            last_block = copy.deepcopy(ms.memory_blocks[-1]) if ms.memory_blocks else None
+            pipeline_data = (msgs_to_extract, last_block)
+
+        # 查詢擴展（LLM 呼叫）
+        with t.step("查詢擴展 (Query Expansion LLM)"):
+            expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand")
+        inherited_str = " ".join(last_entities)
+        combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
+
+        f_alpha = ui_alpha
+        f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
+
+        # 三軌記憶檢索
+        with t.step("情境記憶檢索 (Memory Block Search)"):
+            blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
+
+        with t.step("核心認知檢索 (Core Memory Search)"):
+            core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45)
+
+        with t.step("使用者偏好檢索 (Profile Search)"):
+            profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5)
+
+        # 格式化記憶上下文
+        core_ctx = ""
+        core_debug_text = "未觸發核心認知。"
+        if core_insights:
+            core_ctx = f"【使用者核心資訊】：{core_insights[0]['insight']}\n"
+            core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
+
+        profile_ctx = ""
+        profile_debug_text = "未觸發使用者偏好。"
+        if profile_matches:
+            profile_lines = [f"- {pm['fact_key']}: {pm['fact_value']}" for pm in profile_matches]
+            profile_ctx = "【使用者相關偏好】\n" + "\n".join(profile_lines) + "\n"
+            profile_debug_text = f"觸發 {len(profile_matches)} 筆偏好: " + ", ".join(
+                [f"{pm['fact_key']}={pm['fact_value']} ({pm['score']:.3f})" for pm in profile_matches])
+
+        block_details = []
+        mem_ctx = "無相關記憶。"
+        if blocks:
+            formatted_blocks = []
+            for i, block in enumerate(blocks):
+                raw_text = "\n".join([f"  - {m['role']}: {m['content']}" for m in block["raw_dialogues"] if "role" in m])
+                formatted_blocks.append(
+                    f"【情境回憶 {i + 1}】\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
+                overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
+                block_details.append({
+                    "id": i + 1, "overview": overview_header,
+                    "hybrid": block.get("_debug_score", 0),
+                    "dense": block.get("_debug_raw_sim", 0),
+                    "sparse": block.get("_debug_sparse_raw", 0),
+                    "recency": block.get("_debug_recency", 0),
+                    "importance": block.get("_debug_importance", 0),
+                })
+            mem_ctx = "\n\n".join(formatted_blocks)
+
+        # System Prompt 組裝
+        with t.step("System Prompt 組裝 (Prompt Assembly)"):
+            static_profile = ms.get_static_profile_prompt()
+            static_profile_block = f"\n{static_profile}\n" if static_profile else ""
+
+            personality_ctx = pe.get_personality_prompt()
+            personality_block = f"\n【AI個性記憶】\n{personality_ctx}\n" if personality_ctx else ""
+
+            proactive_topics_block = ms.get_proactive_topics_prompt(limit=1)
+            if proactive_topics_block:
+                proactive_topics_block = f"\n{proactive_topics_block}\n"
+
+            weather_block = ""
+            try:
+                from tools.weather_cache import WeatherCache
+                weather_summary = WeatherCache().get_current_slot()
+                if weather_summary:
+                    weather_block = f"\n【即時天氣資訊】\n{weather_summary}\n"
+            except Exception:
+                pass
+
+            metrics_str = ", ".join(metrics)
+            tones_str = "/".join(allowed_tones)
+
+            speech_instruction = ""
+            speech_json = ""
+            if char_tts_lang:
+                speech_instruction = f"4. `speech`: 這是專門提供給語音合成 (TTS) 的發音文本，請嚴格遵守以下角色發音規則：[{char_tts_lang}] {speech_rules}\n5. `reply`: 這是顯示給使用者看的自然語言回覆（字幕），需對應 `speech` 的語意，可根據需要輸出翻譯視角（例如 speech 為 {char_tts_lang} 發音，reply 則為中文翻譯字幕）。"
+                speech_json = f'  "speech": "符合 {char_tts_lang} 的發音文本",\n'
+            else:
+                speech_instruction = f"4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{speech_rules}"
+                speech_json = ""
+
+            pm = get_prompt_manager()
+            _rules_block = pm.get("chat_system_rules")
+            _memory_block = pm.get("chat_memory_instruction").format(mem_ctx=mem_ctx)
+            _mental_block = pm.get("chat_mental_state").format(
+                metrics_str=metrics_str, tones_str=tones_str,
+                speech_instruction=speech_instruction
+            )
+            _output_block = pm.get("chat_output_format").format(
+                metrics_example=metrics[0] if metrics else 'score',
+                tones_example=allowed_tones[0] if allowed_tones else 'Neutral',
+                speech_json=speech_json
+            )
+
+            sys_prompt = f"""{char_sys_prompt}
+{personality_block}{static_profile_block}{weather_block}
+{core_ctx}{profile_ctx}{proactive_topics_block}
+{_rules_block}
+
+{_memory_block}
+
+{_mental_block}
+
+{_output_block}"""
+
+            # 上下文組裝
+            api_messages = [{"role": "system", "content": sys_prompt}]
+            clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-4:]]
+            api_messages.extend(clean_history)
+
+        # JSON Schema
+        metrics_props = {m: {"type": "integer", "minimum": 0, "maximum": 100} for m in metrics}
+        chat_schema = {
+            "type": "object",
+            "properties": {
+                "internal_thought": {"type": "string"},
+                "status_metrics": {
+                    "type": "object",
+                    "properties": metrics_props,
+                    "required": metrics
+                },
+                "tone": {"type": "string"},
+                "speech": {"type": "string"},
+                "reply": {"type": "string"},
+                "extracted_entities": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["internal_thought", "status_metrics", "tone", "speech", "reply", "extracted_entities"],
+        }
+
+        retrieval_ctx = {
+            "original_query": user_prompt,
+            "expanded_keywords": expand_res['expanded_keywords'],
+            "inherited_tags": last_entities,
+            "has_memory": bool(blocks),
+            "block_count": len(blocks),
+            "threshold": memory_threshold,
+            "hard_base": f_base,
+            "confidence": expand_res["entity_confidence"],
+            "block_details": block_details,
+            "core_debug_text": core_debug_text,
+            "profile_debug_text": profile_debug_text,
+            "dynamic_prompt": sys_prompt,
+        }
+
+        return {
+            "topic_shifted": topic_shifted,
+            "pipeline_data": pipeline_data,
+            "api_messages": api_messages,
+            "retrieval_ctx": retrieval_ctx,
+            "chat_schema": chat_schema,
+            "timer_steps": t._steps,
+        }
+
+    # ═══════════════════════════════════════════════════════════
+    # Branch B：工具路由管線（Module A → Module B）
+    # ═══════════════════════════════════════════════════════════
+    def _tool_branch():
+        t = StepTimer()
+        thinking = ""
+        ctx = None
+
+        if not tools_list:
+            return {"tool_context": None, "thinking_speech": "", "timer_steps": []}
+
         char_hint = f"{char_name}（{speech_rules}）"
-        with timer.step("意圖路由判斷 (Router Agent LLM)"):
+
+        with t.step("[並行] 意圖路由判斷 (Router Agent LLM)"):
             router_result = run_router_agent(
                 user_prompt=user_prompt,
                 char_hint=char_hint,
@@ -502,24 +545,62 @@ def run_dual_layer_orchestration(
                 temperature=temperature,
             )
 
-        # ─── Module B: Middleware（僅在需要工具時執行） ───
         if router_result.needs_tools:
-            # 過渡語音推播（幾乎不耗時，但記錄以利除錯）
-            with timer.step("過渡語音推播 (Thinking Speech Dispatch)"):
+            with t.step("[並行] 過渡語音推播 (Thinking Speech Dispatch)"):
                 if router_result.thinking_speech and on_event:
                     on_event({"type": "thinking_speech", "content": router_result.thinking_speech})
 
-            # 工具並行執行（主要耗時區段）
-            with timer.step("工具並行執行 (Tool Execution)"):
-                tool_context = run_middleware(
+            with t.step("[並行] 工具並行執行 (Tool Execution)"):
+                ctx = run_middleware(
                     router_result=router_result,
-                    on_thinking_speech=None,  # 已在上方推播
+                    on_thinking_speech=None,
                     on_tool_status=on_event,
                 )
-                thinking_speech = tool_context.thinking_speech_sent
+                thinking = ctx.thinking_speech_sent
 
-    # ─── Module C: Persona Synthesis Agent ───
-    with timer.step("角色渲染生成 (Persona Agent LLM)"):
+        return {
+            "tool_context": ctx,
+            "thinking_speech": thinking,
+            "timer_steps": t._steps,
+        }
+
+    # ═══════════════════════════════════════════════════════════
+    # 平行執行兩條分支
+    # ═══════════════════════════════════════════════════════════
+    parallel_start = time.perf_counter()
+
+    if tools_list:
+        # 有工具可用：兩條分支平行跑
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            mem_future = pool.submit(_memory_branch)
+            tool_future = pool.submit(_tool_branch)
+            mem_result = mem_future.result()
+            tool_result = tool_future.result()
+    else:
+        # 無可用工具：只跑記憶分支
+        mem_result = _memory_branch()
+        tool_result = {"tool_context": None, "thinking_speech": "", "timer_steps": []}
+
+    parallel_ms = round((time.perf_counter() - parallel_start) * 1000, 1)
+
+    # 合併計時步驟（標記平行區段的實際牆鐘時間）
+    main_timer._steps.append({"name": "⏱ 並行區段總牆鐘時間", "ms": parallel_ms})
+    main_timer._steps.extend(mem_result["timer_steps"])
+    main_timer._steps.extend(tool_result["timer_steps"])
+
+    # 解構分支結果
+    topic_shifted = mem_result["topic_shifted"]
+    pipeline_data = mem_result["pipeline_data"]
+    api_messages = mem_result["api_messages"]
+    retrieval_ctx = mem_result["retrieval_ctx"]
+    chat_schema = mem_result["chat_schema"]
+    tool_context = tool_result["tool_context"]
+    thinking_speech = tool_result["thinking_speech"]
+
+    # ═══════════════════════════════════════════════════════════
+    # Module C：角色渲染（等兩條分支都完成後才執行）
+    # ═══════════════════════════════════════════════════════════
+    with main_timer.step("角色渲染生成 (Persona Agent LLM)"):
         raw_res, error_result = run_persona_agent(
             user_prompt=user_prompt,
             api_messages=api_messages,
@@ -532,7 +613,7 @@ def run_dual_layer_orchestration(
     if error_result is not None:
         persona_result = error_result
     else:
-        with timer.step("回應解析 (Response Parsing)"):
+        with main_timer.step("回應解析 (Response Parsing)"):
             persona_result = _parse_persona_response(raw_res)
 
     reply_text = persona_result.reply_text
@@ -543,7 +624,7 @@ def run_dual_layer_orchestration(
     speech = persona_result.speech
 
     # 將效能計時結果注入 retrieval_ctx
-    retrieval_ctx["perf_timing"] = timer.summary()
+    retrieval_ctx["perf_timing"] = main_timer.summary()
 
     return (
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data,

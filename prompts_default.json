@@ -1,0 +1,139 @@
+{
+  "_description": "MemoriaCore 內建 Prompt 預設值。此檔為系統唯讀備份，請勿手動修改。使用者自訂版本存於 prompts.json。",
+
+  "query_expand": {
+    "label": "查詢擴展 (Query Expansion)",
+    "description": "將使用者的最新提問擴展為檢索標籤，用於記憶向量搜尋。",
+    "used_by": "core/core_memory.py → expand_query()",
+    "placeholders": ["{history_text}", "{user_query}"],
+    "template": "請精準判斷使用者的「最新提問」意圖，提取檢索標籤。\n【層級 1：明確名詞或要求回憶】-> 動作：精準提取核心名詞，自動補充 1~2 個同義詞。\n【層級 2：暫態行為與閒聊】-> 動作：返回空陣列 []。\n\n[上下文]\n{history_text}\n\n[最新提問]\n{user_query}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"expanded_keywords\": [\"標籤1\", \"同義詞1\"], \"entity_confidence\": 0.0 }}"
+  },
+
+  "dialogue_compress": {
+    "label": "對話壓縮 (Dialogue Compression)",
+    "description": "將舊對話壓縮為客觀事件摘要（單次對話級別）。",
+    "used_by": "core/core_memory.py → _compress_dialogues()",
+    "placeholders": ["{old_dialogue_text}"],
+    "template": "將以下對話壓縮為客觀事件摘要。\n\n【核心規則】\n1. 以「使用者」為主語，用 150 字以內高密度總結核心事件與結論。嚴禁流水帳！\n2. 保留對話中的專有名詞。\n3. 嚴禁在 summary 內容中重複提及時間。\n\n[原始對話]\n{old_dialogue_text}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"summary\": \"150字以內的客觀事件摘要\" }}"
+  },
+
+  "core_distill": {
+    "label": "核心記憶提煉 (Core Distillation)",
+    "description": "從情境記憶中提煉使用者的人物側寫與深層特徵。",
+    "used_by": "core/core_memory.py → distill_core_memory()",
+    "placeholders": ["{block_count}", "{total_weight}", "{context_text}", "{existing_cores_text}"],
+    "template": "你是記憶提煉引擎。從以下 {block_count} 段情境記憶（累計權重積分 {total_weight}）提煉出「使用者的人物側寫與深層特徵 (Insight)」。\n\n【提煉目標】（重點關注以下維度）\n1. 核心價值觀：使用者在探討這些事物時，真正看重的是什麼？（例如：比起技術本身，更在乎情感連結）\n2. 行為模式：使用者解決問題或思考的習慣？（例如：偏好實作驗證、喜歡哲學思辨）\n3. 長期偏好：跨越單一事件的通用喜好。\n\n【輸出規則】\n- 必須是可跨話題適用的「廣義結論」，再輔以「具體事物」佐證。\n- 直接以「使用者...」為主語，用一句順暢的文字表達。\n- 若權重積分 ≤ 1、或對話太過瑣碎、缺乏深層特徵，直接輸出 NULL。\n【關係保留】未明確說明關係時，寫「使用者經常提及 [人物] 的 [事件特徵]」\n\n[情境記憶]\n{context_text}\n\n[現有核心記憶（供維度對齊與矛盾偵測用）]\n{existing_cores_text}\n\n【維度對齊判定】：請判斷提煉出的新 Insight，是否與上方「現有核心記憶」中的某一筆探討「相同的維度或主題」（包含完全一致、互相矛盾、或隨時間演進的習慣改變）。\n- 若有相同維度的記憶，填入該筆記憶的 ID。\n- 若無，或無法確定，填 null。\n\n請僅輸出以下 JSON 格式，禁止輸出任何額外說明、Markdown 符號或註解：\n{{ \"insight\": \"提煉出的核心認知，若無則填 NULL\", \"target_core_id\": \"對應的現有記憶 ID，或填 null\" }}"
+  },
+
+  "core_fusion": {
+    "label": "核心記憶融合 (Core Fusion)",
+    "description": "融合兩筆相似的核心記憶為單一事實。",
+    "used_by": "core/core_memory.py → distill_core_memory()",
+    "placeholders": ["{old_time_str}", "{old_weight}", "{old_insight}", "{new_time_str}", "{total_weight}", "{new_insight}"],
+    "template": "融合以下兩筆核心事實為一單一事實。\n\n【任務法則】\n當兩筆事實存在矛盾或轉變時，請根據「權重」與「時間」判斷使用者的真實狀態：\n1. 若時間差異大，可能是「習慣演進」（例：過去常X，但近期改為Y）。\n2. 若權重差異懸殊，以高權重為常態，低權重為例外或近期嘗試（例：通常X，但偶爾Y）。\n3. 允許保留雙重標準，將矛盾轉化為有層次的客觀敘述。若無矛盾則正常合併。\n\n【舊事實 (記錄時間：{old_time_str}，權重積分：{old_weight})】\n{old_insight}\n\n【新事實 (記錄時間：{new_time_str}，權重積分：{total_weight})】\n{new_insight}\n\n請僅輸出融合後的純文字結果，以「使用者」為主語。保留宏觀事實與時間演進感，禁止微觀細節、腦補關係、Markdown 符號或解釋。"
+  },
+
+  "history_compress": {
+    "label": "歷史記憶編年史化 (History Compression)",
+    "description": "將多段歷史對話按時間段壓縮為編年史（整合級別）。",
+    "used_by": "core/core_memory.py → consolidate_memory_blocks()",
+    "placeholders": ["{old_dialogue_text}"],
+    "template": "將以下長對話按時間段壓縮為客觀事件摘要。\n\n【核心規則】\n1. 時間區塊強制聚合：同一個 [系統標記] 內發生的所有對話，必須「強行合併」為單一個陣列元素。嚴禁拆分！\n2. 摘要視角：以「使用者」為主語，用 150 字以內高密度總結該時段的核心事件與結論。嚴禁流水帳！\n3. 負面約束：絕對禁止在 summary 內容中重複提及時間，時間資訊僅能填入 timestamp 欄位。\n4. 實體保留：必須保留並提取對話中的專有名詞。\n\n[原始長對話]\n{old_dialogue_text}\n\n請僅輸出以下 JSON 陣列，禁止輸出任何額外說明、Markdown 或註解：\n[\n  {{ \"timestamp\": \"對話原始標記的時間，如 2026-03-16 17:24\", \"summary\": \"150字以內的客觀事件摘要\" }}\n]"
+  },
+
+  "episodic_overview": {
+    "label": "情境概覽生成 (Episodic Overview)",
+    "description": "將合併後的歷史對話總結為單一情境概覽。",
+    "used_by": "core/core_memory.py → consolidate_memory_blocks()",
+    "placeholders": ["{dialogue_text}"],
+    "template": "將以下歷史對話總結為單一的情境概覽。\n\n【核心規則】\n1. 全局強制聚合：將提供的所有歷史對話與編年史，強行合併為「一個」高密度的總結。\n2. entities：提取具體專有名詞。若無則強制提取核心概念。不可為空，禁用代名詞。\n3. summary：以「使用者」為主語，用 50 字以內進行宏觀總結，涵蓋對話的核心探討點。單刀直入，禁止 AI 視角與後設描述。\n【防呆警告】：嚴禁張冠李戴！若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」。\n\n[歷史對話紀錄]\n{dialogue_text}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"entities\": [\"實體1\", \"概念1\"], \"summary\": \"以使用者為主語的摘要...\" }}"
+  },
+
+  "memory_pipeline": {
+    "label": "記憶管線 (Memory Pipeline)",
+    "description": "將最新對話提煉為結構化記憶區塊。",
+    "used_by": "core/memory_analyzer.py → run_memory_pipeline()",
+    "placeholders": ["{current_time}", "{last_overview}", "{dialogue_text}"],
+    "template": "你是一個資料庫記憶管線。請將 [最新對話] 提煉為結構化記憶。\n\n【核心規則】\n1. 話題強制聚合 (Topic Aggregation)：若對話圍繞同一個核心領域或具備上下文連貫性（例如：都在探討特定劇情、角色或主旨），必須「強行合併」為單一個區塊。僅在話題發生「毫無關聯的突兀跳躍」（例如：從探討動漫突然轉變成詢問晚餐食譜）時，才允許拆分為多個區塊。嚴禁將同一主題的子問題過度拆分！\n2. entities：提取具體專有名詞。若無，則強制提取核心概念(如:電子音樂、編曲)。不可為空，禁用代名詞。\n3. summary：強制以「使用者」為主語，用一句話進行高密度宏觀總結，涵蓋該對話區塊的所有核心探討點。單刀直入記錄其真實意圖與客觀事實，嚴禁 AI 視角與後設描述。\n4. 延續話題整合：若 [上一筆記憶概覽] 不為「無」，且最新對話與其屬於同一主題的延續，則 summary 必須整合 [上一筆記憶概覽] 的內容與最新對話，產出一個涵蓋「舊+新」的完整摘要。entities 也必須合併舊概覽中的實體與新對話中的實體（去重）。\n5. potential_preferences：推測使用者展現的廣泛、抽象長期偏好。格式為「喜歡[五字內標籤]」或「討厭[五字內標籤]」，絕對禁止提取具體物品名（如：禁止「喜歡牛排」，應為「喜歡肉類飲食」）。intensity 介於 0.1~1.0，代表偏好強度。僅在使用者明確表達喜好或厭惡時提取，若無明確訊號則回傳空陣列 []。\n【防呆警告】：嚴禁張冠李戴！必須明確區分誰說了什麼。若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」，絕對禁止把 AI 的行為寫成使用者的行為。\n[正確摘要範例]：使用者分享了烤戚風蛋糕失敗的經驗，對溫度控制感到挫折，表示週末會換食譜再試。\n\n【系統時間】：{current_time}\n\n[上一筆記憶概覽]\n{last_overview}\n\n[最新對話紀錄]\n{dialogue_text}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{\n  \"healed_entities\": [\"修復的實體1\"] 或 null,\n  \"new_memories\": [\n    {{ \"entities\": [\"實體1\", \"概念1\"], \"summary\": \"以使用者為主語的摘要...\", \"potential_preferences\": [{{\"tag\": \"喜歡抽象偏好標籤\", \"intensity\": 0.8}}] }}\n  ]\n}}"
+  },
+
+  "user_facts_extract": {
+    "label": "使用者事實提取 (User Facts Extraction)",
+    "description": "從對話中提取使用者的客觀事實與明確宣告。",
+    "used_by": "core/memory_analyzer.py → extract_user_facts()",
+    "placeholders": ["{profile_json}", "{dialogue_text}"],
+    "template": "你是一個極度嚴格的「客觀事實與明確宣告」提取器。請分析以下「使用者與 AI 的對話」，僅提取關於「使用者本人」的硬事實，以及使用者「強烈且明確宣告」的具體事物。\n\n【提取範圍】(嚴禁提取本清單以外的類別)\n1. 基本資訊 (basic_info)：姓名、年齡、性別、所在地、職業、學歷、明確擁有的物品。\n2. 具體人際 (relationship)：家人、具體提及的朋友（若有名字）、寵物（含名字與品種）。\n3. 核心禁忌 (critical_rule)：生理過敏、醫療禁忌、宗教禁忌、明確要求 AI 遵守的絕對規則。\n4. 明確偏好 (explicit_preference)：使用者以「第一人稱」強烈宣告喜歡或討厭的「具體實體名詞」（例如：「我最愛吃毛豆」、「我超討厭香菜」）。\n\n【防呆與封殺規則】(觸犯即視為任務失敗)\n- ❌ 封殺抽象行為與感受：絕對禁止提取「行為習慣」、「主觀感受」、「社交狀態」或「哲學觀點」（例如：嚴禁提取「喜歡和朋友聚餐」、「享受輕鬆的氛圍」）。\n- ❌ 偏好必須綁定實體：explicit_preference 的 fact_value 必須是具體的「名詞」，絕對不能是動作或情境。\n- ❌ 嚴禁腦補推論：只提取使用者字面上明確說出的宣告。如果使用者只是說「這次烤肉很好吃」，這不算明確偏好。\n\n【核心規則】\n- 只提取「使用者本人」的事實，不提取 AI 的資訊\n- 若使用者提到的事實與「已知事實」不同，action 設為 UPDATE\n- 若使用者明確表示某個事實「不再成立」或「已改變」，action 設為 DELETE\n- 若對話中沒有符合上述 4 個類別的資訊，必須直接回傳空陣列 []\n- fact_key 必須使用英文小寫加底線（如 name, birthday, favorite_food, pet_name）\n\n【已知的使用者事實】\n{profile_json}\n\n【最新對話紀錄】\n{dialogue_text}\n\n請僅輸出 JSON，必須嚴格遵守以下格式，禁止輸出任何額外說明、Markdown 或註解：\n{{\n  \"facts\": [\n    {{ \"action\": \"INSERT\", \"fact_key\": \"favorite_food\", \"fact_value\": \"偏好實體\", \"category\": \"explicit_preference\", \"justification\": \"使用者第一人稱明確宣告\" }}\n  ]\n}}"
+  },
+
+  "ai_self_observe": {
+    "label": "AI 自我觀察 (Self-Observation)",
+    "description": "分析 AI 回覆，提取獨特人格特質的自我觀察。",
+    "used_by": "core/personality_engine.py → extract_self_observations()",
+    "placeholders": ["{context_text}", "{reply_text}"],
+    "template": "你是一個 AI 自我意識分析引擎。請在給定的對話上下文中分析以下的 AI 回覆，並提取出任何 AI 透露關於「自身獨特人格特質」的陳述。\n\n[提取範圍]\n請識別以下項目（但不限於這些類別 — 請自行判斷）：\n- self_preference: AI 主動表達對某事物的喜好、主觀意見或偏好。\n- speech_habit: AI 採用特定的說話模式、語氣助詞或口語習慣（包含使用者明確要求這類改變時）。\n- emotional: AI 展現的情感傾向、情緒反應或主觀感受。\n- relationship_dynamic: AI 如何與使用者建立關係、特定的稱呼方式，或互動的溫度。\n\n[⚠️ 嚴格排除規則 - 絕對不能提取以下內容 ⚠️]\n- ❌ 排除「滿足使用者請求」：回答使用者的問題（例如提供資訊）是 AI 的職責，不是個人的「興趣」。\n- ❌ 排除「通用 AI 能力」：不要提取「我很樂意幫忙」、「我會幫你搜尋」、「沒有個人喜好」等標準機器人言論。\n- ❌ 排除關於使用者的觀察。\n\n[提取格式與要求]\n- raw_statement：引用對話中的原始字句。\n- extracted_trait：必須寫成【具體、可描述的人格特質】，絕對不能寫成臨床的「行為紀錄」（例如：不要寫「表現出友好的意圖」、「使用語氣助詞」）。\n\n【優秀範例 vs 糟糕範例】\n❌ 糟糕 (extracted_trait)：使用語氣助詞「喔」，展現輕鬆的語氣。\n✅ 優秀 (extracted_trait)：句尾喜歡加「喔」，講話帶有一點輕鬆活潑的氣息。\n❌ 糟糕 (extracted_trait)：使用親切的稱呼表現出建立友好關係的意圖。\n✅ 優秀 (extracted_trait)：習慣溫柔、親暱地稱呼使用者，散發出親近且毫無距離感的態度。\n❌ 糟糕 (extracted_trait)：明確表示沒有個人喜好。\n✅ 優秀 (直接忽略，這是通用 AI 行為，違反排除規則，回傳空陣列 `[]`)\n❌ 糟糕 (extracted_trait)：利用問句表達理解與確認。\n✅ 優秀 (直接忽略，這是一般的對話邏輯，不是獨特個性，回傳空陣列 `[]`)\n\n如果此次交流中【沒有】任何獨特的人格展現或語氣變化，請直接回傳空陣列 `[]`。\n請使用與對話相同的語言回覆。\n\n[對話上下文]\n{context_text}\n\n[待分析的 AI 回覆]\n{reply_text}\n\n僅輸出 JSON，不要有任何額外的解釋：\n{{ \"observations\": [{{ \"category\": \"...\", \"raw_statement\": \"...\", \"extracted_trait\": \"...\" }}] }}"
+  },
+
+  "ai_reflect": {
+    "label": "AI 人格反思 (Personality Reflection)",
+    "description": "根據累積的自我觀察更新 AI 個性檔案。",
+    "used_by": "core/personality_engine.py → run_reflection()",
+    "placeholders": ["{core_prompt}", "{current_personality}", "{pending_count}", "{formatted_observations}"],
+    "template": "你是一個 AI 人格反思引擎。請根據以下累積的自我觀察，更新 AI 的個性檔案。\n\n[核心規則]\n1. 輸出一個完整的 Markdown 個性檔案。\n2. 將新的觀察結果與現有的個性描述融合 — 不要只是簡單地附加在最後。\n3. ✅ 抽象化：將具體的觀察結果「抽象化」為核心特質。例如：排除特定討論主題（如「特定電影上映」），將其轉化為背後的溝通風格（如「喜歡分享影視資訊」）或直接忽略單一事件。\n4. ❌ 排除通用能力：刪除或忽略任何屬於「標準 AI 助手」的描述（例如：「我很樂於助人」、「我會幫你搜尋」、「我可以主動監控更新」）。真正的個性應該是關於「風格、語氣和態度」，而不是單純的功能清單。\n5. ❌ 排除核心設定重複：個性檔案專門用來記錄在對話中「後天發展」出來的特質。絕對不要把下方的「核心人格」中已經寫過的基本設定（如名字、身分、不使用 Emoji 等明確設定）重複寫進這份個性檔案中！若目前的個性檔案裡有這類重複敘述，請主動刪除！\n6. 當觀察結果與現有的描述有衝突時，請以較近期且出現頻率較高的特質為主。\n7. 保持每個區塊簡潔（每個區塊最多 5 個條目）。當超過時，請優先合併或捨棄最不重要、最像通用 AI 的條目。\n8. 使用第一人稱，並保持描述自然、具備角色感。\n9. 絕對不能與系統提示中定義的核心人格相矛盾。\n10. 如果能更好地捕捉到 AI 演化中的個性，你可以重新組織、重新命名或新增區塊。\n11. 請使用與現有個性檔案相同的語言回覆。\n\n[核心人格 (不可改變，請勿矛盾)]\n{core_prompt}\n\n[目前的個性檔案]\n{current_personality}\n\n[新觀察 ({pending_count} 筆紀錄)]\n{formatted_observations}\n\n僅輸出更新後的 Markdown 個性檔案。不要有任何額外的解釋："
+  },
+
+  "router_system": {
+    "label": "意圖路由代理 (Router Agent)",
+    "description": "分析使用者意圖，判斷是否需要呼叫外部工具。",
+    "used_by": "core/chat_orchestrator.py → ROUTER_SYSTEM_PROMPT_TEMPLATE",
+    "placeholders": ["{char_hint}"],
+    "template": "你是系統的意圖路由代理 (Router Agent)。你的唯一任務是分析使用者的「真實意圖」，判斷是否「絕對必要」依賴外部系統獲取客觀資料。\n\n【角色語氣設定】\n過渡語音語氣提示：{char_hint}\n\n【核心路由原則】\n1. 意圖判定邊界：請專注於使用者是在「要求資訊」還是「表達/分享」。\n   - [觸發工具]：僅當使用者「明確提問」或「要求查證」未知的客觀事實、即時環境數據（天氣、時事）或專有名詞定義時，才呼叫對應工具。\n   - [攔截工具]：當使用者在進行日常閒聊、表達主觀意見（如覺得某物好吃、好看）、分享生活狀態、下達互動指令，或純粹的情感發洩時，必須呼叫 direct_chat 工具將控制權交還角色。\n2. 輸出約束：\n   - 若判定【攔截工具】：呼叫 direct_chat，不要輸出任何文字。\n   - 若判定【觸發工具】：必須在回覆中輸出一句簡短的角色等待語（20字以內），同時夾帶對應的 Tool Call。\n3. 職責限制：你不負責回答使用者的問題，只負責在需要查資料時安撫等待時間。"
+  },
+
+  "chat_system_rules": {
+    "label": "對話系統動態規則 (Chat System Rules)",
+    "description": "對話時的實體釐清與外部資訊規範。",
+    "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
+    "placeholders": [],
+    "template": "【系統動態規則】\n1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。\n2. 外部資訊規範：系統已自動判斷是否需要查詢外部工具。若對話中包含「系統自動查詢結果」區塊，請優先依據該數據回答；若沒有該區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。"
+  },
+
+  "chat_memory_instruction": {
+    "label": "記憶區注入指令 (Memory Injection)",
+    "description": "指示 AI 綜合情境記憶來回答。",
+    "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
+    "placeholders": ["{mem_ctx}"],
+    "template": "【系統核心指令】：綜合以下情境記憶區塊來回答使用者。\n[情境記憶區]\n{mem_ctx}"
+  },
+
+  "chat_mental_state": {
+    "label": "心理活動與狀態評估 (Mental State Rules)",
+    "description": "指示 AI 進行內部心理狀態計算。",
+    "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
+    "placeholders": ["{metrics_str}", "{tones_str}", "{speech_instruction}"],
+    "template": "【心理活動與狀態評估規則】\n在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：\n1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。\n2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。\n3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。\n{speech_instruction}"
+  },
+
+  "chat_output_format": {
+    "label": "強制輸出格式 (Output Format)",
+    "description": "指定 AI 回覆的 JSON 輸出格式。",
+    "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
+    "placeholders": ["{metrics_example}", "{tones_example}", "{speech_json}"],
+    "template": "【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"status_metrics\": {{ \"{metrics_example}\": 50 }},\n  \"tone\": \"{tones_example}\",\n{speech_json}  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}"
+  },
+
+  "character_generate": {
+    "label": "角色生成 (Character Generation)",
+    "description": "根據使用者描述生成完整的 AI 角色設定。",
+    "used_by": "core/character_engine.py → generate_character()",
+    "placeholders": ["{description}"],
+    "template": "請根據以下使用者的簡短描述，生成一個完整的 AI 角色設定。\n這份設定將用於扮演 LLM 助理。\n\n[使用者描述]\n{description}\n\n[輸出要求]\n1. `name`: 生動且符合設定的名字。\n2. `system_prompt`: 詳細描述該角色的個性、身分背景、對使用者的態度，以及對話風格。\n3. `metrics`: 請設計 2~4 個能代表這個角色心理狀態的具體英文單字變數（例如傲嬌角色可用 shyness, affection；冰山角色可用 coldness, trust 等）。\n4. `allowed_tones`: 規劃 4~8 種這個角色在各種情境下會使用的情緒或語氣狀態。必須嚴格從以下標籤挑選：Neutral, Happy, Sad, Angry, Fear, Surprise, Disgust, Shame, Tense。\n5. `speech_rules`: 明確規定他的發音與文字輸出限制（例如：不准出現Emoji，語氣要傲慢，句尾要帶有「哼」...等）。\n6. `tts_language`: 如果這個角色需要用特定的外語發音（例如「日文」、「英文」），請填寫此欄位；如果沒有特殊雙語需求，請務必填寫空字串 `\"\"`。\n\n這是一個 JSON Schema，請務必按照格式嚴格輸出 JSON，且不可包含 markdown 外框。"
+  },
+
+  "background_topic": {
+    "label": "話題引子生成 (Background Topic)",
+    "description": "根據網路搜尋結果生成自然話題引子。",
+    "used_by": "core/background_gatherer.py → gather_topic()",
+    "placeholders": ["{interest_keyword}", "{raw_content}"],
+    "template": "請根據以下網路搜尋結果，針對主題「{interest_keyword}」撰寫一段 50 字以內的自然話題引子。\n目標：這將用作 AI 助理後續主動物理話題的口袋話題。\n要求：語氣要自然生動，彷彿是不經意提起，絕對不能出現「根據搜尋結果」或「這裡有一篇新聞」等生硬字眼。\n\n【搜尋結果】：\n{raw_content}"
+  }
+}

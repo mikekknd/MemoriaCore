@@ -92,23 +92,66 @@ class StorageManager:
             cursor.execute("ALTER TABLE core_memories ADD COLUMN encounter_count REAL DEFAULT 1.0")
 
         # 【Schema Evolution】：使用者畫像 (User Profile) 資料表
+        # 複合主鍵 (fact_key, fact_value)，允許同一 key 儲存多個不同 value
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_profile (
-                fact_key TEXT PRIMARY KEY,
-                fact_value TEXT,
+                fact_key TEXT NOT NULL,
+                fact_value TEXT NOT NULL,
                 category TEXT,
                 confidence REAL DEFAULT 1.0,
                 timestamp TEXT,
-                source_context TEXT
+                source_context TEXT,
+                PRIMARY KEY (fact_key, fact_value)
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_profile_vectors (
-                fact_key TEXT PRIMARY KEY,
+                fact_key TEXT NOT NULL,
+                fact_value TEXT NOT NULL,
                 fact_vector BLOB,
-                FOREIGN KEY (fact_key) REFERENCES user_profile(fact_key) ON DELETE CASCADE
+                PRIMARY KEY (fact_key, fact_value),
+                FOREIGN KEY (fact_key, fact_value) REFERENCES user_profile(fact_key, fact_value) ON DELETE CASCADE
             )
         ''')
+
+        # 【Schema Migration】：user_profile 從單一 PK 遷移至複合 PK
+        cursor.execute("PRAGMA table_info(user_profile)")
+        up_cols = {info[1]: info for info in cursor.fetchall()}
+        # 舊 schema: fact_key pk=1, fact_value pk=0 → 需要遷移
+        if up_cols.get('fact_key', (None,)*6)[5] == 1 and up_cols.get('fact_value', (None,)*6)[5] == 0:
+            cursor.execute("ALTER TABLE user_profile RENAME TO _user_profile_old")
+            cursor.execute('''
+                CREATE TABLE user_profile (
+                    fact_key TEXT NOT NULL,
+                    fact_value TEXT NOT NULL,
+                    category TEXT,
+                    confidence REAL DEFAULT 1.0,
+                    timestamp TEXT,
+                    source_context TEXT,
+                    PRIMARY KEY (fact_key, fact_value)
+                )
+            ''')
+            cursor.execute("INSERT INTO user_profile SELECT * FROM _user_profile_old")
+            cursor.execute("DROP TABLE _user_profile_old")
+
+            # 同步遷移 vectors 表：補上 fact_value 欄位
+            cursor.execute("ALTER TABLE user_profile_vectors RENAME TO _user_profile_vectors_old")
+            cursor.execute('''
+                CREATE TABLE user_profile_vectors (
+                    fact_key TEXT NOT NULL,
+                    fact_value TEXT NOT NULL,
+                    fact_vector BLOB,
+                    PRIMARY KEY (fact_key, fact_value),
+                    FOREIGN KEY (fact_key, fact_value) REFERENCES user_profile(fact_key, fact_value) ON DELETE CASCADE
+                )
+            ''')
+            cursor.execute('''
+                INSERT INTO user_profile_vectors
+                SELECT v.fact_key, p.fact_value, v.fact_vector
+                FROM _user_profile_vectors_old v
+                JOIN user_profile p ON v.fact_key = p.fact_key
+            ''')
+            cursor.execute("DROP TABLE _user_profile_vectors_old")
 
         # 【Schema Evolution】：AI 個性觀察資料表
         cursor.execute('''
@@ -337,24 +380,28 @@ class StorageManager:
         conn.commit()
         conn.close()
 
-    def upsert_profile_vector(self, db_path, fact_key, fact_vector):
-        """新增或更新一筆使用者事實的向量"""
+    def upsert_profile_vector(self, db_path, fact_key, fact_value, fact_vector):
+        """新增或更新一筆使用者事實的向量（複合鍵：fact_key + fact_value）"""
         conn = self._init_db(db_path)
         cursor = conn.cursor()
         vector_blob = np.array(fact_vector, dtype=np.float32).tobytes()
         cursor.execute('''
-            INSERT OR REPLACE INTO user_profile_vectors (fact_key, fact_vector)
-            VALUES (?, ?)
-        ''', (fact_key, vector_blob))
+            INSERT OR REPLACE INTO user_profile_vectors (fact_key, fact_value, fact_vector)
+            VALUES (?, ?, ?)
+        ''', (fact_key, fact_value, vector_blob))
         conn.commit()
         conn.close()
 
-    def delete_profile(self, db_path, fact_key):
-        """刪除一筆使用者事實（同時清除向量）"""
+    def delete_profile(self, db_path, fact_key, fact_value=None):
+        """刪除使用者事實（同時清除向量）。若指定 fact_value 則精準刪除，否則刪除該 key 下所有值。"""
         conn = self._init_db(db_path)
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM user_profile_vectors WHERE fact_key = ?", (fact_key,))
-        cursor.execute("DELETE FROM user_profile WHERE fact_key = ?", (fact_key,))
+        if fact_value is not None:
+            cursor.execute("DELETE FROM user_profile_vectors WHERE fact_key = ? AND fact_value = ?", (fact_key, fact_value))
+            cursor.execute("DELETE FROM user_profile WHERE fact_key = ? AND fact_value = ?", (fact_key, fact_value))
+        else:
+            cursor.execute("DELETE FROM user_profile_vectors WHERE fact_key = ?", (fact_key,))
+            cursor.execute("DELETE FROM user_profile WHERE fact_key = ?", (fact_key,))
         conn.commit()
         conn.close()
 
@@ -390,7 +437,7 @@ class StorageManager:
         cursor.execute('''
             SELECT p.fact_key, p.fact_value, p.category, p.confidence, v.fact_vector
             FROM user_profile p
-            LEFT JOIN user_profile_vectors v ON p.fact_key = v.fact_key
+            LEFT JOIN user_profile_vectors v ON p.fact_key = v.fact_key AND p.fact_value = v.fact_value
             WHERE p.confidence >= 0
         ''')
         rows = cursor.fetchall()
@@ -401,16 +448,22 @@ class StorageManager:
             results.append({"fact_key": r[0], "fact_value": r[1], "category": r[2], "confidence": r[3], "fact_vector": vec})
         return results
 
-    def get_profile_by_key(self, db_path, fact_key):
-        """查詢單筆 profile（含墓碑記錄，供墓碑化寫入時查詢舊值用）"""
+    def get_profile_by_key(self, db_path, fact_key, fact_value=None):
+        """查詢 profile（含墓碑記錄）。若指定 fact_value 則精準查詢單筆，否則回傳該 key 下所有值的 list。"""
         if not os.path.exists(db_path):
-            return None
+            return [] if fact_value is None else None
         conn = self._init_db(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT fact_key, fact_value, category, confidence FROM user_profile WHERE fact_key = ?", (fact_key,))
-        row = cursor.fetchone()
-        conn.close()
-        return {"fact_key": row[0], "fact_value": row[1], "category": row[2], "confidence": row[3]} if row else None
+        if fact_value is not None:
+            cursor.execute("SELECT fact_key, fact_value, category, confidence FROM user_profile WHERE fact_key = ? AND fact_value = ?", (fact_key, fact_value))
+            row = cursor.fetchone()
+            conn.close()
+            return {"fact_key": row[0], "fact_value": row[1], "category": row[2], "confidence": row[3]} if row else None
+        else:
+            cursor.execute("SELECT fact_key, fact_value, category, confidence FROM user_profile WHERE fact_key = ?", (fact_key,))
+            rows = cursor.fetchall()
+            conn.close()
+            return [{"fact_key": r[0], "fact_value": r[1], "category": r[2], "confidence": r[3]} for r in rows]
 
     # ==========================================
     # 話題快取 (Topic Cache) CRUD
@@ -466,9 +519,15 @@ class StorageManager:
                 channel_uid TEXT DEFAULT '',
                 created_at TEXT,
                 last_active TEXT,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                bridge_after_msg_id INTEGER DEFAULT 0
             )
         ''')
+        # 漸進式 schema 升級：舊 DB 可能缺少 bridge_after_msg_id 欄位
+        try:
+            cursor.execute("SELECT bridge_after_msg_id FROM conversation_sessions LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE conversation_sessions ADD COLUMN bridge_after_msg_id INTEGER DEFAULT 0")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS conversation_messages (
                 msg_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -509,14 +568,15 @@ class StorageManager:
         conn.commit()
         conn.close()
 
-    def load_conversation_messages(self, session_id):
+    def load_conversation_messages(self, session_id, since_msg_id: int = 0):
+        """載入對話訊息。since_msg_id > 0 時只載入該 msg_id 之後的訊息（用於 bridge 還原）。"""
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT role, content, debug_info, timestamp
-            FROM conversation_messages WHERE session_id = ?
+            FROM conversation_messages WHERE session_id = ? AND msg_id > ?
             ORDER BY msg_id ASC
-        ''', (session_id,))
+        ''', (session_id, since_msg_id))
         rows = cursor.fetchall()
         conn.close()
         results = []
@@ -529,6 +589,37 @@ class StorageManager:
                     pass
             results.append(msg)
         return results
+
+    def update_bridge_point(self, session_id: str, keep_last_n: int = 2):
+        """記錄 bridge 截斷點：保留最後 N 筆訊息，之前的訊息在 restore 時不載入。"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        # 取得倒數第 N+1 筆的 msg_id 作為截斷點
+        cursor.execute('''
+            SELECT msg_id FROM conversation_messages
+            WHERE session_id = ?
+            ORDER BY msg_id DESC LIMIT 1 OFFSET ?
+        ''', (session_id, keep_last_n))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute(
+                'UPDATE conversation_sessions SET bridge_after_msg_id = ? WHERE session_id = ?',
+                (row[0], session_id)
+            )
+            conn.commit()
+        conn.close()
+
+    def get_bridge_point(self, session_id: str) -> int:
+        """取得 session 的 bridge 截斷點（msg_id），0 表示無截斷。"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT bridge_after_msg_id FROM conversation_sessions WHERE session_id = ?',
+            (session_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else 0
 
     def load_conversation_sessions(self, channel=None, limit=50):
         conn = self._init_conversation_db()

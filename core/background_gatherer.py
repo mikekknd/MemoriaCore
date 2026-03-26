@@ -3,6 +3,7 @@ import random
 import asyncio
 import json
 from core.storage_manager import StorageManager
+from core.prompt_manager import get_prompt_manager
 from tools.tavily import search_web
 from core.llm_gateway import LLMRouter
 from datetime import datetime, timedelta
@@ -54,13 +55,9 @@ def run_background_topic_gather(db_path: str, router: LLMRouter, storage: Storag
         raw_content = result.get("search_results", "")
         
         # 2. LLM 摘要並萃取話題
-        prompt = f"""請根據以下網路搜尋結果，針對主題「{interest_keyword}」撰寫一段 50 字以內的自然話題引子。
-目標：這將用作 AI 助理後續主動物理話題的口袋話題。
-要求：語氣要自然生動，彷彿是不經意提起，絕對不能出現「根據搜尋結果」或「這裡有一篇新聞」等生硬字眼。
-
-【搜尋結果】：
-{raw_content}
-"""
+        prompt = get_prompt_manager().get("background_topic").format(
+            interest_keyword=interest_keyword, raw_content=raw_content
+        )
         messages = [{"role": "user", "content": prompt}]
         
         # 假設 router 裡面註冊了對應的通道

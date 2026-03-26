@@ -425,8 +425,8 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     with timer.step("LLM 對話生成 (Chat Generation LLM)"):
         pre_tool_message = ""
         try:
-            from tools_tavily import TAVILY_SEARCH_SCHEMA, execute_tool_call
-            from tools_weather import WEATHER_SCHEMA
+            from tools.tavily import TAVILY_SEARCH_SCHEMA, execute_tool_call
+            from tools.weather import WEATHER_SCHEMA
             tools_list = [TAVILY_SEARCH_SCHEMA, WEATHER_SCHEMA]
 
             MAX_TOOL_ROUNDS = 3
@@ -529,7 +529,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
 def _select_orchestration(user_prefs: dict):
     """根據 dual_layer_enabled 設定選擇對話編排函式。"""
     if user_prefs.get("dual_layer_enabled", False):
-        from chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator import run_dual_layer_orchestration
         return run_dual_layer_orchestration
     return _run_chat_orchestration
 

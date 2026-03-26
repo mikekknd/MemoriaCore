@@ -146,6 +146,11 @@ class ChatSyncResponseDTO(BaseModel):
     reply: str
     extracted_entities: list[str] = []
     retrieval_context: RetrievalContextDTO = RetrievalContextDTO()
+    internal_thought: Optional[str] = None
+    status_metrics: Optional[dict] = None
+    tone: Optional[str] = None
+    speech: Optional[str] = None
+    thinking_speech: Optional[str] = None
 
 
 # ── 系統設定 ──────────────────────────────────────────────
@@ -165,7 +170,11 @@ class SystemConfigDTO(BaseModel):
     reflection_threshold: int = 5
     telegram_bot_token: str = ""
     tavily_api_key: str = ""
+    openweather_api_key: str = ""
+    weather_city: str = ""
     bg_gather_interval: int = 14400
+    active_character_id: Optional[str] = "default"
+    dual_layer_enabled: bool = False
 
 
 # ── 通用錯誤 ──────────────────────────────────────────────

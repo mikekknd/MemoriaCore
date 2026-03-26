@@ -62,7 +62,11 @@ class ConfigUpdateRequest(BaseModel):
     ai_observe_enabled: Optional[bool] = None
     telegram_bot_token: Optional[str] = None
     tavily_api_key: Optional[str] = None
+    openweather_api_key: Optional[str] = None
+    weather_city: Optional[str] = None
     bg_gather_interval: Optional[int] = None
+    active_character_id: Optional[str] = None
+    dual_layer_enabled: Optional[bool] = None
 
 
 class ExpandQueryRequest(BaseModel):

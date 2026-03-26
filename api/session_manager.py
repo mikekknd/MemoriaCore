@@ -57,7 +57,9 @@ class SessionManager:
         return await self.create(channel=channel, channel_uid=channel_uid)
 
     async def restore_from_db(self, session_id: str) -> SessionState | None:
-        """從 DB 還原已過期的 session 到記憶體（含訊息歷史）"""
+        """從 DB 還原已過期的 session 到記憶體。
+        使用 bridge_after_msg_id 避免載入已被記憶管線處理過的舊訊息。
+        """
         if not self._storage:
             return None
         info = self._storage.get_session_info(session_id)
@@ -67,8 +69,9 @@ class SessionManager:
             # 已在記憶體中則直接返回
             if session_id in self._sessions:
                 return self._sessions[session_id]
-            # 從 DB 載入訊息
-            messages = self._storage.load_conversation_messages(session_id)
+            # 取得 bridge 截斷點，只載入截斷點之後的訊息
+            bridge_point = self._storage.get_bridge_point(session_id)
+            messages = self._storage.load_conversation_messages(session_id, since_msg_id=bridge_point)
             session = SessionState(
                 session_id=session_id,
                 messages=messages,
@@ -90,7 +93,7 @@ class SessionManager:
             return removed
 
     async def bridge(self, session_id: str) -> bool:
-        """橋接邏輯：保留 AI 上一句 + User 最新一句"""
+        """橋接邏輯：保留 AI 上一句 + User 最新一句，並記錄截斷點到 DB。"""
         async with self._lock:
             s = self._sessions.get(session_id)
             if not s:
@@ -102,6 +105,9 @@ class SessionManager:
                 bridged.append(s.messages[-1])
             s.messages = bridged
             s.last_active = datetime.now()
+            # 持久化截斷點，restore 時只載入這之後的訊息
+            if self._storage:
+                self._storage.update_bridge_point(session_id, keep_last_n=len(bridged))
             return True
 
     async def add_user_message(self, session_id: str, content: str) -> bool:

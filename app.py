@@ -11,6 +11,7 @@ from ui.settings import render_settings_page
 from ui.routing import render_routing_page
 from ui.log_viewer import render_log_viewer_page
 from ui.character import render_character_page
+from ui.prompts import render_prompts_page
 
 warnings.filterwarnings("ignore", message="coroutine 'expire_cache' was never awaited")
 
@@ -50,6 +51,7 @@ PAGES = [
     "💬 對話歷史",
     "⚙️ 系統設定",
     "🔀 路由映射",
+    "📝 Prompt 管理",
     "📋 Log 檢視器",
 ]
 
@@ -75,6 +77,9 @@ elif current_page == "⚙️ 系統設定":
 
 elif current_page == "🔀 路由映射":
     render_routing_page(API_BASE, user_prefs)
+
+elif current_page == "📝 Prompt 管理":
+    render_prompts_page(API_BASE, user_prefs)
 
 elif current_page == "📋 Log 檢視器":
     render_log_viewer_page(API_BASE)

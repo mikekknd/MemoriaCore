@@ -25,6 +25,7 @@ venv/
 chat_history.json
 llm_trace.jsonl
 user_prefs.json
+prompts.json
 system_prompt.txt
 ai_personality.md
 

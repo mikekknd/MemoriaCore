@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 from core.storage_manager import StorageManager
 from core.system_logger import SystemLogger
+from core.prompt_manager import get_prompt_manager
 
 class MemorySystem:
     def __init__(self):
@@ -49,18 +50,9 @@ class MemorySystem:
 
     def expand_query(self, user_query, recent_history, router, task_key="expand"):
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent_history[-6:]])
-        prompt = f"""請精準判斷使用者的「最新提問」意圖，提取檢索標籤。
-【層級 1：明確名詞或要求回憶】-> 動作：精準提取核心名詞，自動補充 1~2 個同義詞。
-【層級 2：暫態行為與閒聊】-> 動作：返回空陣列 []。
-
-[上下文]
-{history_text}
-
-[最新提問]
-{user_query}
-
-請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：
-{{ "expanded_keywords": ["標籤1", "同義詞1"], "entity_confidence": 0.0 }}"""
+        prompt = get_prompt_manager().get("query_expand").format(
+            history_text=history_text, user_query=user_query
+        )
         try:
             api_messages = [{"role": "user", "content": prompt}]
             raw_text = router.generate(task_key, api_messages, temperature=0.0)
@@ -201,18 +193,9 @@ class MemorySystem:
         # 用 LLM 將舊對話壓縮為編年史
         old_dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in old_messages])
 
-        compress_prompt = f"""將以下對話壓縮為客觀事件摘要。
-
-【核心規則】
-1. 以「使用者」為主語，用 150 字以內高密度總結核心事件與結論。嚴禁流水帳！
-2. 保留對話中的專有名詞。
-3. 嚴禁在 summary 內容中重複提及時間。
-
-[原始對話]
-{old_dialogue_text}
-
-請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：
-{{ "summary": "150字以內的客觀事件摘要" }}"""
+        compress_prompt = get_prompt_manager().get("dialogue_compress").format(
+            old_dialogue_text=old_dialogue_text
+        )
 
         try:
             comp_msg = [{"role": "user", "content": compress_prompt}]
@@ -251,31 +234,10 @@ class MemorySystem:
             existing_cores.append(f"- ID: {c['core_id']}\n  內容: {c['insight']}")
         existing_cores_text = "\n".join(existing_cores) if existing_cores else "目前尚無核心記憶。"
         
-        distill_prompt = f"""你是記憶提煉引擎。從以下 {block_count} 段情境記憶（累計權重積分 {total_weight}）提煉出「使用者的人物側寫與深層特徵 (Insight)」。
-
-【提煉目標】（重點關注以下維度）
-1. 核心價值觀：使用者在探討這些事物時，真正看重的是什麼？（例如：比起技術本身，更在乎情感連結）
-2. 行為模式：使用者解決問題或思考的習慣？（例如：偏好實作驗證、喜歡哲學思辨）
-3. 長期偏好：跨越單一事件的通用喜好。
-
-【輸出規則】
-- 必須是可跨話題適用的「廣義結論」，再輔以「具體事物」佐證。
-- 直接以「使用者...」為主語，用一句順暢的文字表達。
-- 若權重積分 ≤ 1、或對話太過瑣碎、缺乏深層特徵，直接輸出 NULL。
-【關係保留】未明確說明關係時，寫「使用者經常提及 [人物] 的 [事件特徵]」
-
-[情境記憶]
-{context_text}
-
-[現有核心記憶（供維度對齊與矛盾偵測用）]
-{existing_cores_text}
-
-【維度對齊判定】：請判斷提煉出的新 Insight，是否與上方「現有核心記憶」中的某一筆探討「相同的維度或主題」（包含完全一致、互相矛盾、或隨時間演進的習慣改變）。
-- 若有相同維度的記憶，填入該筆記憶的 ID。
-- 若無，或無法確定，填 null。
-
-請僅輸出以下 JSON 格式，禁止輸出任何額外說明、Markdown 符號或註解：
-{{ "insight": "提煉出的核心認知，若無則填 NULL", "target_core_id": "對應的現有記憶 ID，或填 null" }}"""
+        distill_prompt = get_prompt_manager().get("core_distill").format(
+            block_count=block_count, total_weight=total_weight,
+            context_text=context_text, existing_cores_text=existing_cores_text
+        )
 
         try:
             api_messages = [{"role": "user", "content": distill_prompt}]
@@ -331,21 +293,12 @@ class MemorySystem:
             old_time_str = best_match.get('timestamp', '未知時間')[:10]
             new_time_str = timestamp[:10]
 
-            fusion_prompt = f"""融合以下兩筆核心事實為一單一事實。
-
-【任務法則】
-當兩筆事實存在矛盾或轉變時，請根據「權重」與「時間」判斷使用者的真實狀態：
-1. 若時間差異大，可能是「習慣演進」（例：過去常X，但近期改為Y）。
-2. 若權重差異懸殊，以高權重為常態，低權重為例外或近期嘗試（例：通常X，但偶爾Y）。
-3. 允許保留雙重標準，將矛盾轉化為有層次的客觀敘述。若無矛盾則正常合併。
-
-【舊事實 (記錄時間：{old_time_str}，權重積分：{old_weight})】
-{best_match['insight']}
-
-【新事實 (記錄時間：{new_time_str}，權重積分：{total_weight})】
-{new_insight}
-
-請僅輸出融合後的純文字結果，以「使用者」為主語。保留宏觀事實與時間演進感，禁止微觀細節、腦補關係、Markdown 符號或解釋。"""
+            fusion_prompt = get_prompt_manager().get("core_fusion").format(
+                old_time_str=old_time_str, old_weight=old_weight,
+                old_insight=best_match['insight'],
+                new_time_str=new_time_str, total_weight=total_weight,
+                new_insight=new_insight
+            )
             try:
                 fuse_messages = [{"role": "user", "content": fusion_prompt}]
                 raw_fused = router.generate(task_key, fuse_messages, temperature=0.1).strip()
@@ -476,21 +429,9 @@ class MemorySystem:
                 SystemLogger.log_system_event("記憶壓縮閘道", f"啟動歷史記憶編年史化 (共 {len(older_blocks)} 筆舊區塊)。")
                 old_dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in old_dialogues_pool])
                 
-                compress_prompt = f"""將以下長對話按時間段壓縮為客觀事件摘要。
-
-【核心規則】
-1. 時間區塊強制聚合：同一個 [系統標記] 內發生的所有對話，必須「強行合併」為單一個陣列元素。嚴禁拆分！
-2. 摘要視角：以「使用者」為主語，用 150 字以內高密度總結該時段的核心事件與結論。嚴禁流水帳！
-3. 負面約束：絕對禁止在 summary 內容中重複提及時間，時間資訊僅能填入 timestamp 欄位。
-4. 實體保留：必須保留並提取對話中的專有名詞。
-
-[原始長對話]
-{old_dialogue_text}
-
-請僅輸出以下 JSON 陣列，禁止輸出任何額外說明、Markdown 或註解：
-[
-  {{ "timestamp": "對話原始標記的時間，如 2026-03-16 17:24", "summary": "150字以內的客觀事件摘要" }}
-]"""
+                compress_prompt = get_prompt_manager().get("history_compress").format(
+                    old_dialogue_text=old_dialogue_text
+                )
 
                 try:
                     comp_msg = [{"role": "user", "content": compress_prompt}]
@@ -545,19 +486,9 @@ class MemorySystem:
 
         dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in combined_dialogues])
         
-        episodic_prompt = f"""將以下歷史對話總結為單一的情境概覽。
-
-【核心規則】
-1. 全局強制聚合：將提供的所有歷史對話與編年史，強行合併為「一個」高密度的總結。
-2. entities：提取具體專有名詞。若無則強制提取核心概念。不可為空，禁用代名詞。
-3. summary：以「使用者」為主語，用 50 字以內進行宏觀總結，涵蓋對話的核心探討點。單刀直入，禁止 AI 視角與後設描述。
-【防呆警告】：嚴禁張冠李戴！若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」。
-
-[歷史對話紀錄]
-{dialogue_text}
-
-請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：
-{{ "entities": ["實體1", "概念1"], "summary": "以使用者為主語的摘要..." }}"""
+        episodic_prompt = get_prompt_manager().get("episodic_overview").format(
+            dialogue_text=dialogue_text
+        )
 
         try:
             ep_messages = [{"role": "user", "content": episodic_prompt}]
@@ -775,17 +706,18 @@ class MemorySystem:
                             f"'{fact_key}' → '{old_key}' (sim={best_sim:.3f})")
 
             if action == "DELETE":
-                # 墓碑模式：查出舊值，保留記錄但標記 confidence=-1.0
-                existing = self.storage.get_profile_by_key(self.db_path, resolved_key)
-                if existing:
-                    self.storage.upsert_profile(
-                        self.db_path, resolved_key,
-                        existing["fact_value"], existing["category"],
-                        justification, confidence=-1.0)
+                # 墓碑模式：查出該 key 下所有值，逐筆標記 confidence=-1.0
+                existing_rows = self.storage.get_profile_by_key(self.db_path, resolved_key)
+                if existing_rows:
+                    for existing in existing_rows:
+                        self.storage.upsert_profile(
+                            self.db_path, resolved_key,
+                            existing["fact_value"], existing["category"],
+                            justification, confidence=-1.0)
                     # 從 existing_profiles 快取中移除（墓碑不參與後續收束比對）
                     existing_profiles = [ep for ep in existing_profiles if ep["fact_key"] != resolved_key]
                     SystemLogger.log_system_event("使用者畫像-墓碑",
-                        f"{resolved_key} (原因: {justification})")
+                        f"{resolved_key} x{len(existing_rows)} (原因: {justification})")
                 else:
                     SystemLogger.log_system_event("使用者畫像-刪除跳過",
                         f"找不到 key: {resolved_key}")
@@ -798,9 +730,11 @@ class MemorySystem:
                     vec_text = f"{resolved_key}: {fact_value} ({category})"
                     vec = self.embed_provider.get_embedding(text=vec_text, model=embed_model)
                     if vec.get("dense"):
-                        self.storage.upsert_profile_vector(self.db_path, resolved_key, vec["dense"])
+                        self.storage.upsert_profile_vector(self.db_path, resolved_key, fact_value, vec["dense"])
                         # 更新記憶體快取，確保同批次後續 fact 能正確收束
-                        existing_profiles = [ep for ep in existing_profiles if ep["fact_key"] != resolved_key]
+                        # 只移除完全相同的 (fact_key, fact_value) 組合，保留同 key 不同 value 的記錄
+                        existing_profiles = [ep for ep in existing_profiles
+                                             if not (ep["fact_key"] == resolved_key and ep["fact_value"] == fact_value)]
                         existing_profiles.append({
                             "fact_key": resolved_key, "fact_value": fact_value,
                             "category": category, "confidence": 1.0, "fact_vector": vec["dense"]

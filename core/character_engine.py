@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from typing import Dict, Any, List
+from core.prompt_manager import get_prompt_manager
 
 class CharacterManager:
     """管理動態角色設定，包含存取 characters.json 及透過 LLM 生成設定"""
@@ -109,21 +110,9 @@ class CharacterManager:
             "required": ["name", "system_prompt", "metrics", "allowed_tones", "speech_rules", "tts_language"]
         }
 
-        prompt = f"""請根據以下使用者的簡短描述，生成一個完整的 AI 角色設定。
-這份設定將用於扮演 LLM 助理。
-
-[使用者描述]
-{description}
-
-[輸出要求]
-1. `name`: 生動且符合設定的名字。
-2. `system_prompt`: 詳細描述該角色的個性、身分背景、對使用者的態度，以及對話風格。
-3. `metrics`: 請設計 2~4 個能代表這個角色心理狀態的具體英文單字變數（例如傲嬌角色可用 shyness, affection；冰山角色可用 coldness, trust 等）。
-4. `allowed_tones`: 規劃 4~8 種這個角色在各種情境下會使用的情緒或語氣狀態。必須嚴格從以下標籤挑選：Neutral, Happy, Sad, Angry, Fear, Surprise, Disgust, Shame, Tense。
-5. `speech_rules`: 明確規定他的發音與文字輸出限制（例如：不准出現Emoji，語氣要傲慢，句尾要帶有「哼」...等）。
-6. `tts_language`: 如果這個角色需要用特定的外語發音（例如「日文」、「英文」），請填寫此欄位；如果沒有特殊雙語需求，請務必填寫空字串 `""`。
-
-這是一個 JSON Schema，請務必按照格式嚴格輸出 JSON，且不可包含 markdown 外框。"""
+        prompt = get_prompt_manager().get("character_generate").format(
+            description=description
+        )
 
         api_messages = [{"role": "user", "content": prompt}]
         

@@ -180,7 +180,7 @@ class PreferenceAggregator:
                     confidence=min(1.0, result["score"] / 5.0)
                 )
                 self.memory_sys.storage.upsert_profile_vector(
-                    self.memory_sys.db_path, fact_key, tag_vec
+                    self.memory_sys.db_path, fact_key, tag, tag_vec
                 )
                 written_count += 1
 

@@ -247,6 +247,7 @@ def render_chat_page(api_base, user_prefs):
 
         with st.chat_message("assistant"):
             status_placeholder = st.empty()
+            thinking_placeholder = st.empty()
             status_placeholder.info("⚡ 雙路檢索中 (情境回憶 + 核心認知)...")
             try:
                 chat_resp = requests.post(
@@ -269,9 +270,12 @@ def render_chat_page(api_base, user_prefs):
                         status_placeholder.info(f"🔍 {event.get('message', '處理中...')}")
                     elif evt_type == "thinking_speech":
                         thinking_speech_text = event.get("content", "")
-                        status_placeholder.markdown(f"*💭 {thinking_speech_text}*")
+                        # 過渡語音用獨立容器，不會被後續狀態覆蓋
+                        status_placeholder.empty()
+                        thinking_placeholder.markdown(f"*💭 {thinking_speech_text}*")
                     elif evt_type == "error":
                         status_placeholder.empty()
+                        thinking_placeholder.empty()
                         st.error(f"API 錯誤: {event.get('message', '未知錯誤')}")
                         has_error = True
                         break
@@ -279,6 +283,7 @@ def render_chat_page(api_base, user_prefs):
                         result = event
 
                 status_placeholder.empty()
+                thinking_placeholder.empty()
 
                 if result:
                     reply_text = result.get("reply", "解析錯誤")

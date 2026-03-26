@@ -25,16 +25,16 @@ async def static_prompt():
     return {"prompt": text}
 
 
-@router.get("/{fact_key}", response_model=ProfileFactDTO)
+@router.get("/{fact_key}", response_model=list[ProfileFactDTO])
 async def get_profile(fact_key: str):
     ms = get_memory_sys()
     sto = get_storage()
     if not ms.db_path:
         raise HTTPException(404, detail="Database not initialized")
-    row = await asyncio.to_thread(sto.get_profile_by_key, ms.db_path, fact_key)
-    if not row:
+    rows = await asyncio.to_thread(sto.get_profile_by_key, ms.db_path, fact_key)
+    if not rows:
         raise HTTPException(404, detail=f"Profile fact '{fact_key}' not found")
-    return ProfileFactDTO(**row)
+    return [ProfileFactDTO(**r) for r in rows]
 
 
 @router.put("/{fact_key}", response_model=ProfileFactDTO)
@@ -50,7 +50,7 @@ async def upsert_profile(fact_key: str, body: ProfileUpsertRequest):
         )
     # 重新載入快取
     await asyncio.to_thread(ms.load_user_profile)
-    row = await asyncio.to_thread(sto.get_profile_by_key, ms.db_path, fact_key)
+    row = await asyncio.to_thread(sto.get_profile_by_key, ms.db_path, fact_key, body.fact_value)
     return ProfileFactDTO(**row)
 
 

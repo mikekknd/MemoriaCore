@@ -3,6 +3,7 @@ import json
 import re
 from datetime import datetime
 from core.system_logger import SystemLogger
+from core.prompt_manager import get_prompt_manager
 
 class MemoryAnalyzer:
     def __init__(self, memory_sys):
@@ -65,32 +66,10 @@ class MemoryAnalyzer:
             last_overview = f"時間: {last_block['timestamp']}\n概覽: {last_block['overview']}"
             
         # 【核心修正】：導入「話題強制聚合」Prompt，取代容易引發過度碎裂的舊規則
-        prompt = f"""你是一個資料庫記憶管線。請將 [最新對話] 提煉為結構化記憶。
-
-【核心規則】
-1. 話題強制聚合 (Topic Aggregation)：若對話圍繞同一個核心領域或具備上下文連貫性（例如：都在探討特定劇情、角色或主旨），必須「強行合併」為單一個區塊。僅在話題發生「毫無關聯的突兀跳躍」（例如：從探討動漫突然轉變成詢問晚餐食譜）時，才允許拆分為多個區塊。嚴禁將同一主題的子問題過度拆分！
-2. entities：提取具體專有名詞。若無，則強制提取核心概念(如:電子音樂、編曲)。不可為空，禁用代名詞。
-3. summary：強制以「使用者」為主語，用一句話進行高密度宏觀總結，涵蓋該對話區塊的所有核心探討點。單刀直入記錄其真實意圖與客觀事實，嚴禁 AI 視角與後設描述。
-4. 延續話題整合：若 [上一筆記憶概覽] 不為「無」，且最新對話與其屬於同一主題的延續，則 summary 必須整合 [上一筆記憶概覽] 的內容與最新對話，產出一個涵蓋「舊+新」的完整摘要。entities 也必須合併舊概覽中的實體與新對話中的實體（去重）。
-5. potential_preferences：推測使用者展現的廣泛、抽象長期偏好。格式為「喜歡[五字內標籤]」或「討厭[五字內標籤]」，絕對禁止提取具體物品名（如：禁止「喜歡牛排」，應為「喜歡肉類飲食」）。intensity 介於 0.1~1.0，代表偏好強度。僅在使用者明確表達喜好或厭惡時提取，若無明確訊號則回傳空陣列 []。
-【防呆警告】：嚴禁張冠李戴！必須明確區分誰說了什麼。若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」，絕對禁止把 AI 的行為寫成使用者的行為。
-[正確摘要範例]：使用者分享了烤戚風蛋糕失敗的經驗，對溫度控制感到挫折，表示週末會換食譜再試。
-
-【系統時間】：{datetime.now().strftime('%Y-%m-%d %H:%M')}
-
-[上一筆記憶概覽]
-{last_overview}
-
-[最新對話紀錄]
-{dialogue_text}
-
-請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：
-{{
-  "healed_entities": ["修復的實體1"] 或 null,
-  "new_memories": [
-    {{ "entities": ["實體1", "概念1"], "summary": "以使用者為主語的摘要...", "potential_preferences": [{{"tag": "喜歡抽象偏好標籤", "intensity": 0.8}}] }}
-  ]
-}}"""
+        prompt = get_prompt_manager().get("memory_pipeline").format(
+            current_time=datetime.now().strftime('%Y-%m-%d %H:%M'),
+            last_overview=last_overview, dialogue_text=dialogue_text
+        )
 
         try:
             api_messages = [{"role": "user", "content": prompt}]
@@ -249,38 +228,9 @@ class MemoryAnalyzer:
             "required": ["facts"]
         }
 
-        prompt = f"""你是一個極度嚴格的「客觀事實與明確宣告」提取器。請分析以下「使用者與 AI 的對話」，僅提取關於「使用者本人」的硬事實，以及使用者「強烈且明確宣告」的具體事物。
-
-【提取範圍】(嚴禁提取本清單以外的類別)
-1. 基本資訊 (basic_info)：姓名、年齡、性別、所在地、職業、學歷、明確擁有的物品。
-2. 具體人際 (relationship)：家人、具體提及的朋友（若有名字）、寵物（含名字與品種）。
-3. 核心禁忌 (critical_rule)：生理過敏、醫療禁忌、宗教禁忌、明確要求 AI 遵守的絕對規則。
-4. 明確偏好 (explicit_preference)：使用者以「第一人稱」強烈宣告喜歡或討厭的「具體實體名詞」（例如：「我最愛吃毛豆」、「我超討厭香菜」）。
-
-【防呆與封殺規則】(觸犯即視為任務失敗)
-- ❌ 封殺抽象行為與感受：絕對禁止提取「行為習慣」、「主觀感受」、「社交狀態」或「哲學觀點」（例如：嚴禁提取「喜歡和朋友聚餐」、「享受輕鬆的氛圍」）。
-- ❌ 偏好必須綁定實體：explicit_preference 的 fact_value 必須是具體的「名詞」，絕對不能是動作或情境。
-- ❌ 嚴禁腦補推論：只提取使用者字面上明確說出的宣告。如果使用者只是說「這次烤肉很好吃」，這不算明確偏好。
-
-【核心規則】
-- 只提取「使用者本人」的事實，不提取 AI 的資訊
-- 若使用者提到的事實與「已知事實」不同，action 設為 UPDATE
-- 若使用者明確表示某個事實「不再成立」或「已改變」，action 設為 DELETE
-- 若對話中沒有符合上述 4 個類別的資訊，必須直接回傳空陣列 []
-- fact_key 必須使用英文小寫加底線（如 name, birthday, favorite_food, pet_name）
-
-【已知的使用者事實】
-{profile_json}
-
-【最新對話紀錄】
-{dialogue_text}
-
-請僅輸出 JSON，必須嚴格遵守以下格式，禁止輸出任何額外說明、Markdown 或註解：
-{{
-  "facts": [
-    {{ "action": "INSERT", "fact_key": "favorite_food", "fact_value": "偏好實體", "category": "explicit_preference", "justification": "使用者第一人稱明確宣告" }}
-  ]
-}}"""
+        prompt = get_prompt_manager().get("user_facts_extract").format(
+            profile_json=profile_json, dialogue_text=dialogue_text
+        )
 
         try:
             api_messages = [{"role": "user", "content": prompt}]

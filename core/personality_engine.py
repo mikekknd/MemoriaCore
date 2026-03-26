@@ -5,6 +5,7 @@ import os
 import numpy as np
 from datetime import datetime
 from core.system_logger import SystemLogger
+from core.prompt_manager import get_prompt_manager
 
 
 class PersonalityEngine:
@@ -104,45 +105,9 @@ class PersonalityEngine:
             "required": ["observations"]
         }
 
-        prompt = f"""你是一個 AI 自我意識分析引擎。請在給定的對話上下文中分析以下的 AI 回覆，並提取出任何 AI 透露關於「自身獨特人格特質」的陳述。
-
-[提取範圍]
-請識別以下項目（但不限於這些類別 — 請自行判斷）：
-- self_preference: AI 主動表達對某事物的喜好、主觀意見或偏好。
-- speech_habit: AI 採用特定的說話模式、語氣助詞或口語習慣（包含使用者明確要求這類改變時）。
-- emotional: AI 展現的情感傾向、情緒反應或主觀感受。
-- relationship_dynamic: AI 如何與使用者建立關係、特定的稱呼方式，或互動的溫度。
-
-[⚠️ 嚴格排除規則 - 絕對不能提取以下內容 ⚠️]
-- ❌ 排除「滿足使用者請求」：回答使用者的問題（例如提供資訊）是 AI 的職責，不是個人的「興趣」。
-- ❌ 排除「通用 AI 能力」：不要提取「我很樂意幫忙」、「我會幫你搜尋」、「沒有個人喜好」等標準機器人言論。
-- ❌ 排除關於使用者的觀察。
-
-[提取格式與要求]
-- raw_statement：引用對話中的原始字句。
-- extracted_trait：必須寫成【具體、可描述的人格特質】，絕對不能寫成臨床的「行為紀錄」（例如：不要寫「表現出友好的意圖」、「使用語氣助詞」）。
-
-【優秀範例 vs 糟糕範例】
-❌ 糟糕 (extracted_trait)：使用語氣助詞「喔」，展現輕鬆的語氣。
-✅ 優秀 (extracted_trait)：句尾喜歡加「喔」，講話帶有一點輕鬆活潑的氣息。
-❌ 糟糕 (extracted_trait)：使用親切的稱呼表現出建立友好關係的意圖。
-✅ 優秀 (extracted_trait)：習慣溫柔、親暱地稱呼使用者，散發出親近且毫無距離感的態度。
-❌ 糟糕 (extracted_trait)：明確表示沒有個人喜好。
-✅ 優秀 (直接忽略，這是通用 AI 行為，違反排除規則，回傳空陣列 `[]`)
-❌ 糟糕 (extracted_trait)：利用問句表達理解與確認。
-✅ 優秀 (直接忽略，這是一般的對話邏輯，不是獨特個性，回傳空陣列 `[]`)
-
-如果此次交流中【沒有】任何獨特的人格展現或語氣變化，請直接回傳空陣列 `[]`。
-請使用與對話相同的語言回覆。
-
-[對話上下文]
-{context_text}
-
-[待分析的 AI 回覆]
-{reply_text}
-
-僅輸出 JSON，不要有任何額外的解釋：
-{{ "observations": [{{ "category": "...", "raw_statement": "...", "extracted_trait": "..." }}] }}"""
+        prompt = get_prompt_manager().get("ai_self_observe").format(
+            context_text=context_text, reply_text=reply_text
+        )
 
         try:
             api_messages = [{"role": "user", "content": prompt}]
@@ -274,31 +239,10 @@ class PersonalityEngine:
             obs_lines.append(f"{i}. [{obs['category']}] {obs['extracted_trait']}{count_str}")
         formatted_observations = "\n".join(obs_lines)
 
-        prompt = f"""你是一個 AI 人格反思引擎。請根據以下累積的自我觀察，更新 AI 的個性檔案。
-
-[核心規則]
-1. 輸出一個完整的 Markdown 個性檔案。
-2. 將新的觀察結果與現有的個性描述融合 — 不要只是簡單地附加在最後。
-3. ✅ 抽象化：將具體的觀察結果「抽象化」為核心特質。例如：排除特定討論主題（如「特定電影上映」），將其轉化為背後的溝通風格（如「喜歡分享影視資訊」）或直接忽略單一事件。
-4. ❌ 排除通用能力：刪除或忽略任何屬於「標準 AI 助手」的描述（例如：「我很樂於助人」、「我會幫你搜尋」、「我可以主動監控更新」）。真正的個性應該是關於「風格、語氣和態度」，而不是單純的功能清單。
-5. ❌ 排除核心設定重複：個性檔案專門用來記錄在對話中「後天發展」出來的特質。絕對不要把下方的「核心人格」中已經寫過的基本設定（如名字、身分、不使用 Emoji 等明確設定）重複寫進這份個性檔案中！若目前的個性檔案裡有這類重複敘述，請主動刪除！
-6. 當觀察結果與現有的描述有衝突時，請以較近期且出現頻率較高的特質為主。
-7. 保持每個區塊簡潔（每個區塊最多 5 個條目）。當超過時，請優先合併或捨棄最不重要、最像通用 AI 的條目。
-8. 使用第一人稱，並保持描述自然、具備角色感。
-9. 絕對不能與系統提示中定義的核心人格相矛盾。
-10. 如果能更好地捕捉到 AI 演化中的個性，你可以重新組織、重新命名或新增區塊。
-11. 請使用與現有個性檔案相同的語言回覆。
-
-[核心人格 (不可改變，請勿矛盾)]
-{core_prompt}
-
-[目前的個性檔案]
-{current_personality}
-
-[新觀察 ({len(pending)} 筆紀錄)]
-{formatted_observations}
-
-僅輸出更新後的 Markdown 個性檔案。不要有任何額外的解釋："""
+        prompt = get_prompt_manager().get("ai_reflect").format(
+            core_prompt=core_prompt, current_personality=current_personality,
+            pending_count=len(pending), formatted_observations=formatted_observations
+        )
 
         try:
             api_messages = [{"role": "user", "content": prompt}]
