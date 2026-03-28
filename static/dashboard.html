@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+/* ===== CSS Variables (matching log_viewer theme) ===== */
+:root {
+  --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+  --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff; --accent2: #3fb950;
+  --warn: #d29922; --error: #f85149; --purple: #bc8cff;
+  --left-width: 40%;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); height:100vh; overflow:hidden; }
+
+/* ===== Top Status Bar ===== */
+.status-bar { background:var(--surface); border-bottom:1px solid var(--border); padding:6px 16px; display:flex; align-items:center; gap:12px; font-size:13px; height:36px; flex-shrink:0; }
+.status-dot { width:8px; height:8px; border-radius:50%; background:var(--error); flex-shrink:0; }
+.status-dot.ok { background:var(--accent2); }
+.status-text { color:var(--text2); }
+.status-session { color:var(--accent); margin-left:auto; font-family:'Cascadia Code','Fira Code',monospace; font-size:12px; }
+
+/* ===== Main Layout ===== */
+.dashboard { display:flex; height:calc(100vh - 36px); }
+
+/* ===== Left Panel — Chat ===== */
+.panel-left { width:var(--left-width); min-width:300px; max-width:70%; display:flex; flex-direction:column; border-right:1px solid var(--border); }
+.chat-header { background:var(--surface); padding:8px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.chat-header select { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--text); font-size:13px; outline:none; }
+.chat-header button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--text); font-size:13px; cursor:pointer; white-space:nowrap; }
+.chat-header button:hover { border-color:var(--accent); color:var(--accent); }
+
+.messages { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.msg { max-width:88%; padding:10px 14px; border-radius:12px; font-size:14px; line-height:1.65; word-wrap:break-word; }
+.msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+.msg.assistant { align-self:flex-start; background:var(--surface); border:1px solid var(--border); border-bottom-left-radius:4px; }
+.msg.assistant .md-content p { margin:0.4em 0; }
+.msg.assistant .md-content pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin:8px 0; overflow-x:auto; }
+.msg.assistant .md-content code { font-family:'Cascadia Code','Fira Code',monospace; font-size:13px; }
+.msg.assistant .md-content :not(pre)>code { background:var(--surface2); padding:1px 5px; border-radius:3px; font-size:13px; }
+.msg.system-info { align-self:center; background:none; color:var(--text2); font-size:12px; padding:4px; font-style:italic; }
+.msg.tool-status { align-self:flex-start; background:var(--surface2); border:1px solid var(--border); color:var(--warn); font-size:13px; padding:6px 12px; border-radius:8px; }
+.msg.tool-status .spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--warn); border-radius:50%; animation:spin .6s linear infinite; margin-right:6px; vertical-align:middle; }
+@keyframes spin { to{transform:rotate(360deg)} }
+
+/* Debug panel */
+.debug-toggle { font-size:11px; color:var(--text2); cursor:pointer; margin-top:6px; user-select:none; }
+.debug-toggle:hover { color:var(--accent); }
+.debug-panel { display:none; margin-top:8px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:12px; line-height:1.6; max-height:400px; overflow-y:auto; }
+.debug-panel.open { display:block; }
+.debug-section { margin-bottom:8px; }
+.debug-section-title { color:var(--accent); font-weight:600; margin-bottom:4px; }
+.debug-section pre { white-space:pre-wrap; word-break:break-all; color:var(--text2); font-family:'Cascadia Code','Fira Code',monospace; font-size:11px; }
+.perf-bar-row { display:flex; align-items:center; gap:8px; margin:2px 0; }
+.perf-bar-label { width:140px; text-align:right; color:var(--text2); font-size:11px; flex-shrink:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.perf-bar-track { flex:1; height:14px; background:var(--surface2); border-radius:3px; overflow:hidden; }
+.perf-bar-fill { height:100%; background:var(--accent); border-radius:3px; transition:width .3s; }
+.perf-bar-ms { width:60px; font-size:11px; color:var(--text2); font-family:monospace; }
+.block-detail { background:var(--surface2); border-radius:4px; padding:6px 8px; margin:4px 0; font-family:monospace; font-size:11px; }
+.block-score { display:inline-block; margin-right:8px; }
+
+/* Chat input */
+.chat-input { background:var(--surface); border-top:1px solid var(--border); padding:10px 12px; display:flex; gap:8px; flex-shrink:0; }
+.chat-input textarea { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; color:var(--text); font-size:14px; resize:none; outline:none; font-family:inherit; min-height:40px; max-height:120px; line-height:1.4; }
+.chat-input textarea:focus { border-color:var(--accent); }
+.chat-input textarea::placeholder { color:var(--text2); }
+.send-btn { background:var(--accent); border:none; border-radius:8px; padding:8px 16px; color:#fff; font-size:14px; cursor:pointer; align-self:flex-end; white-space:nowrap; }
+.send-btn:hover { opacity:.85; }
+.send-btn:disabled { opacity:.4; cursor:not-allowed; }
+
+/* ===== Resize Handle ===== */
+.resize-handle { width:4px; background:var(--border); cursor:col-resize; flex-shrink:0; transition:background .15s; }
+.resize-handle:hover, .resize-handle.active { background:var(--accent); }
+
+/* ===== Right Panel ===== */
+.panel-right { flex:1; min-width:350px; display:flex; flex-direction:column; overflow:hidden; }
+.tab-bar { background:var(--surface); border-bottom:1px solid var(--border); padding:0 12px; display:flex; gap:0; flex-shrink:0; }
+.tab-btn { background:none; border:none; border-bottom:2px solid transparent; padding:10px 16px; color:var(--text2); font-size:13px; cursor:pointer; white-space:nowrap; transition:all .15s; }
+.tab-btn:hover { color:var(--text); }
+.tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+.tab-content { flex:1; overflow:hidden; position:relative; }
+.tab-pane { display:none; position:absolute; inset:0; overflow-y:auto; }
+.tab-pane.active { display:flex; flex-direction:column; }
+
+/* ===== Log/DB Tab ===== */
+.viewer-toolbar { background:var(--surface); border-bottom:1px solid var(--border); padding:6px 12px; display:flex; gap:8px; align-items:center; flex-shrink:0; }
+.viewer-toolbar button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 12px; color:var(--text); font-size:12px; cursor:pointer; }
+.viewer-toolbar button:hover { border-color:var(--accent); color:var(--accent); }
+.viewer-toolbar button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.viewer-frames { flex:1; display:flex; min-height:0; }
+.viewer-frames iframe { border:none; flex:1; min-width:0; }
+.viewer-frames iframe.hidden { display:none; }
+
+/* ===== Routing Tab ===== */
+.routing-container { padding:16px; }
+.routing-container h2 { font-size:16px; margin-bottom:12px; font-weight:600; }
+.route-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden; }
+.route-header { padding:10px 14px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
+.route-header:hover { background:var(--surface2); }
+.route-chevron { font-size:12px; color:var(--text2); transition:transform .15s; width:16px; flex-shrink:0; }
+.route-card.expanded .route-chevron { transform:rotate(90deg); }
+.route-name { font-weight:600; font-size:14px; }
+.route-desc { color:var(--text2); font-size:12px; flex:1; }
+.route-current { font-size:11px; color:var(--accent); font-family:monospace; background:var(--surface2); padding:2px 8px; border-radius:4px; }
+.route-body { display:none; padding:0 14px 12px; }
+.route-card.expanded .route-body { display:block; }
+.route-field { display:flex; align-items:center; gap:10px; margin-top:8px; }
+.route-field label { font-size:13px; color:var(--text2); width:80px; flex-shrink:0; }
+.route-field select, .route-field input { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:13px; outline:none; }
+.route-field select:focus, .route-field input:focus { border-color:var(--accent); }
+.route-help { font-size:12px; color:var(--text2); margin-top:6px; padding:6px 8px; background:var(--bg); border-radius:4px; }
+.save-bar { position:sticky; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:10px 16px; display:flex; justify-content:flex-end; }
+.save-bar button { background:var(--accent); border:none; border-radius:6px; padding:8px 24px; color:#fff; font-size:14px; cursor:pointer; }
+.save-bar button:hover { opacity:.85; }
+
+/* ===== Prompts Tab ===== */
+.prompts-container { padding:16px; }
+.prompts-container h2 { font-size:16px; margin-bottom:4px; font-weight:600; }
+.prompts-top-bar { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.prompts-top-bar .count { color:var(--text2); font-size:13px; }
+.prompt-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden; }
+.prompt-header { padding:10px 14px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
+.prompt-header:hover { background:var(--surface2); }
+.prompt-chevron { font-size:12px; color:var(--text2); transition:transform .15s; width:16px; flex-shrink:0; }
+.prompt-card.expanded .prompt-chevron { transform:rotate(90deg); }
+.prompt-label { font-weight:600; font-size:14px; }
+.prompt-status { font-size:11px; padding:1px 8px; border-radius:4px; }
+.prompt-status.custom { background:#3d2e00; color:var(--warn); }
+.prompt-status.default { background:#0d2d0d; color:var(--accent2); }
+.prompt-body { display:none; padding:0 14px 12px; }
+.prompt-card.expanded .prompt-body { display:block; }
+.prompt-meta { font-size:12px; color:var(--text2); margin-bottom:8px; line-height:1.6; }
+.prompt-meta strong { color:var(--text); }
+.prompt-ph { display:inline-block; background:var(--surface2); padding:1px 6px; border-radius:3px; font-family:monospace; font-size:11px; margin:2px; }
+.prompt-textarea { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; color:var(--text); font-size:13px; font-family:'Cascadia Code','Fira Code',monospace; line-height:1.6; resize:vertical; min-height:120px; outline:none; }
+.prompt-textarea:focus { border-color:var(--accent); }
+.prompt-actions { display:flex; gap:8px; margin-top:8px; }
+.prompt-actions button { padding:6px 14px; border-radius:6px; font-size:13px; cursor:pointer; border:1px solid var(--border); }
+.prompt-actions .btn-save { background:var(--accent); color:#fff; border-color:var(--accent); }
+.prompt-actions .btn-reset { background:none; color:var(--warn); border-color:var(--warn); }
+.prompt-actions .btn-default { background:none; color:var(--text2); }
+.prompt-actions button:hover { opacity:.85; }
+
+/* ===== Modal ===== */
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.open { display:flex; }
+.modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:90%; max-width:700px; max-height:80vh; display:flex; flex-direction:column; }
+.modal-header { padding:14px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+.modal-header h3 { font-size:15px; }
+.modal-close { background:none; border:none; color:var(--text2); font-size:20px; cursor:pointer; padding:0 4px; }
+.modal-close:hover { color:var(--text); }
+.modal-body { padding:16px 18px; overflow-y:auto; flex:1; }
+.modal-body pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:12px; font-size:13px; font-family:'Cascadia Code','Fira Code',monospace; line-height:1.6; white-space:pre-wrap; word-break:break-all; color:var(--text); }
+
+/* ===== Toast ===== */
+.toast-container { position:fixed; bottom:16px; right:16px; z-index:2000; display:flex; flex-direction:column; gap:8px; }
+.toast { padding:10px 18px; border-radius:8px; font-size:13px; color:#fff; animation:toastIn .3s, toastOut .3s 2.7s forwards; max-width:360px; }
+.toast.success { background:var(--accent2); }
+.toast.error { background:var(--error); }
+.toast.info { background:var(--accent); }
+@keyframes toastIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:none} }
+@keyframes toastOut { to{opacity:0;transform:translateY(-10px)} }
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { width:8px; height:8px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+::-webkit-scrollbar-thumb:hover { background:var(--text2); }
+
+/* ===== Responsive ===== */
+@media (max-width:900px) {
+  .dashboard { flex-direction:column; }
+  .panel-left { width:100% !important; max-width:100%; height:50vh; border-right:none; border-bottom:1px solid var(--border); }
+  .resize-handle { display:none; }
+  .panel-right { min-width:0; }
+}
+</style>
+</head>
+<body>
+
+<!-- Status Bar -->
+<div class="status-bar">
+  <div class="status-dot" id="statusDot"></div>
+  <span class="status-text" id="statusText">connecting...</span>
+  <span class="status-session" id="statusSession"></span>
+</div>
+
+<!-- Main Dashboard -->
+<div class="dashboard">
+
+  <!-- Left Panel: Chat -->
+  <div class="panel-left" id="panelLeft">
+    <div class="chat-header">
+      <select id="sessionSelect" onchange="switchSession(this.value)">
+        <option value="">-- select session --</option>
+      </select>
+      <button onclick="createNewSession()">+ new</button>
+      <button onclick="deleteCurrentSession()" title="delete current session">x</button>
+    </div>
+    <div class="messages" id="messages"></div>
+    <div class="chat-input">
+      <textarea id="chatInput" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" rows="1" onkeydown="handleInputKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()">send</button>
+    </div>
+  </div>
+
+  <!-- Resize Handle -->
+  <div class="resize-handle" id="resizer"></div>
+
+  <!-- Right Panel: Tabs -->
+  <div class="panel-right">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="viewer" onclick="switchTab(this)">Log / DB</button>
+      <button class="tab-btn" data-tab="routing" onclick="switchTab(this)">routing</button>
+      <button class="tab-btn" data-tab="prompts" onclick="switchTab(this)">Prompts</button>
+    </div>
+    <div class="tab-content">
+
+      <!-- Tab: Log/DB Viewer -->
+      <div class="tab-pane active" data-pane="viewer">
+        <div class="viewer-toolbar">
+          <button class="active" onclick="setViewerMode('both',this)">side by side</button>
+          <button onclick="setViewerMode('log',this)">Log only</button>
+          <button onclick="setViewerMode('db',this)">DB only</button>
+          <span style="margin-left:auto"></span>
+          <button onclick="reloadLogViewer()">reload Log</button>
+        </div>
+        <div class="viewer-frames" id="viewerFrames">
+          <iframe id="logFrame" src="/static/log_viewer.html?api=true"></iframe>
+          <iframe id="dbFrame" src="/static/db_viewer.html"></iframe>
+        </div>
+      </div>
+
+      <!-- Tab: Routing -->
+      <div class="tab-pane" data-pane="routing">
+        <div class="routing-container" id="routingContainer">
+          <h2>Task Routing</h2>
+          <div id="routeList"></div>
+        </div>
+        <div class="save-bar">
+          <button onclick="saveRouting()">save routing</button>
+        </div>
+      </div>
+
+      <!-- Tab: Prompts -->
+      <div class="tab-pane" data-pane="prompts">
+        <div class="prompts-container" id="promptsContainer">
+          <div class="prompts-top-bar">
+            <h2>Prompt Management</h2>
+            <span class="count" id="promptCount"></span>
+            <span style="flex:1"></span>
+            <button style="background:none;border:1px solid var(--warn);color:var(--warn);border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;" onclick="resetAllPrompts()">reset all</button>
+          </div>
+          <div id="promptList"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Modal (for viewing default prompts) -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">Default Value</h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// =====================================================================
+//  Configuration
+// =====================================================================
+const API = '/api/v1';
+const PROVIDERS = ['Ollama (本地)', 'llama.cpp (本地)', 'OpenAI (雲端)', 'OpenRouter (雲端)'];
+const TASK_INFOS = {
+  chat:              { desc:'即時對話 (帶影子標籤)',      help:'處理玩家對話，同時伴隨生成實體標籤。建議高參數量模型。' },
+  expand:            { desc:'User意圖擴充 (秒速提取)',    help:'在提問瞬間提取使用者話語中的高密度名詞。' },
+  pipeline:          { desc:'一體化記憶管線',            help:'在背景一次性完成長文切分、摘要與圖譜修復。' },
+  compress:          { desc:'對話壓縮 (編年史化)',        help:'將過長的歷史對話壓縮為高密度編年史摘要。' },
+  distill:           { desc:'核心認知提煉 (Insight)',     help:'從情境記憶提煉使用者的深層特徵與長期價值觀。' },
+  ep_fuse:           { desc:'情境概覽縫合',              help:'將多段相關的情境記憶合併為一個高密度的綜合概覽。' },
+  profile:           { desc:'使用者畫像更新',            help:'從對話中萃取使用者的個人特徵與偏好。' },
+  ai_observe:        { desc:'AI 自我觀察提取',           help:'從對話中偵測 AI 的自我陳述與行為變化。建議快速小模型。' },
+  ai_reflect:        { desc:'AI 人格反思',              help:'綜合觀察紀錄更新 AI 個性檔案。建議高品質模型。' },
+  background_gather: { desc:'背景話題摘要',              help:'在背景將 Tavily 搜尋下來的資料摘要成主動話題。建議不需太強的模型。' },
+  character_gen:     { desc:'角色設定生成',              help:'根據簡短描述利用 AI 擴充出完整的角色系統提示詞與心理指標。' },
+  router:            { desc:'意圖路由預處理',            help:'雙層 Agent 模式的第一階段：判斷是否需要呼叫外部工具並產生過渡語音。建議使用輕量快速模型以降低延遲。' },
+};
+
+// =====================================================================
+//  State
+// =====================================================================
+let currentSessionId = null;
+let isSending = false;
+let routingConfig = {};
+
+// =====================================================================
+//  Marked config
+// =====================================================================
+marked.setOptions({
+  highlight: (code, lang) => {
+    if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, {language: lang}).value;
+    return hljs.highlightAuto(code).value;
+  },
+  breaks: true,
+});
+
+// =====================================================================
+//  Initialization
+// =====================================================================
+document.addEventListener('DOMContentLoaded', () => {
+  checkHealth();
+  setInterval(checkHealth, 15000);
+  initResizer();
+  loadSessionList().then(() => autoRestoreOrCreate());
+  loadRouting();
+  loadPrompts();
+});
+
+// =====================================================================
+//  Health Check
+// =====================================================================
+async function checkHealth() {
+  try {
+    const r = await fetch(`${API}/health`, {signal: AbortSignal.timeout(3000)});
+    if (r.ok) {
+      document.getElementById('statusDot').classList.add('ok');
+      document.getElementById('statusText').textContent = 'connected';
+    } else throw 0;
+  } catch {
+    document.getElementById('statusDot').classList.remove('ok');
+    document.getElementById('statusText').textContent = 'disconnected';
+  }
+}
+
+// =====================================================================
+//  Resizer
+// =====================================================================
+function initResizer() {
+  const resizer = document.getElementById('resizer');
+  const panel = document.getElementById('panelLeft');
+  let startX, startW;
+  resizer.addEventListener('mousedown', e => {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = panel.offsetWidth;
+    resizer.classList.add('active');
+    const onMove = ev => {
+      const w = Math.min(Math.max(startW + ev.clientX - startX, 300), window.innerWidth * 0.7);
+      panel.style.width = w + 'px';
+    };
+    const onUp = () => {
+      resizer.classList.remove('active');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// =====================================================================
+//  Tab Switching
+// =====================================================================
+function switchTab(btn) {
+  const tab = btn.dataset.tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
+}
+
+// Keyboard shortcuts: Ctrl+1/2/3
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+    const map = {'1':'viewer','2':'routing','3':'prompts'};
+    const tab = map[e.key];
+    if (tab) {
+      e.preventDefault();
+      const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+      if (btn) switchTab(btn);
+    }
+  }
+});
+
+// =====================================================================
+//  Session Management
+// =====================================================================
+async function loadSessionList() {
+  try {
+    const r = await fetch(`${API}/session/history?limit=30`);
+    const sessions = await r.json();
+    const sel = document.getElementById('sessionSelect');
+    sel.innerHTML = '<option value="">-- select session --</option>';
+    sessions.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.session_id;
+      const dt = new Date(s.created_at).toLocaleString('zh-TW', {hour12:false});
+      const ch = s.channel || '';
+      opt.textContent = `${dt} [${ch}] (${s.message_count} msgs)`;
+      if (s.session_id === currentSessionId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    return sessions;
+  } catch { return []; }
+}
+
+async function autoRestoreOrCreate() {
+  const sel = document.getElementById('sessionSelect');
+  if (sel.options.length > 1) {
+    // Try restoring the latest session
+    const latestValue = sel.options[1].value;
+    await switchSession(latestValue);
+  } else {
+    await createNewSession();
+  }
+}
+
+async function createNewSession() {
+  try {
+    const r = await fetch(`${API}/session`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channel:'html'})});
+    const data = await r.json();
+    currentSessionId = data.session_id;
+    updateSessionDisplay();
+    document.getElementById('messages').innerHTML = '';
+    await loadSessionList();
+    document.getElementById('sessionSelect').value = currentSessionId;
+    toast('New session created', 'success');
+  } catch (e) { toast('Failed to create session', 'error'); }
+}
+
+async function switchSession(sessionId) {
+  if (!sessionId) return;
+  currentSessionId = sessionId;
+  updateSessionDisplay();
+  document.getElementById('messages').innerHTML = '';
+  try {
+    // Restore session in backend
+    await fetch(`${API}/session/${sessionId}/restore`, {method:'POST'});
+    // Load messages
+    const r = await fetch(`${API}/session/history/${sessionId}`);
+    const data = await r.json();
+    const msgs = data.messages || [];
+    msgs.forEach(m => appendMessage(m.role, m.content, null, false));
+    scrollToBottom();
+  } catch (e) {
+    toast('Failed to load session', 'error');
+  }
+}
+
+async function deleteCurrentSession() {
+  if (!currentSessionId) return;
+  if (!confirm('Delete current session?')) return;
+  try {
+    await fetch(`${API}/session/history/${currentSessionId}`, {method:'DELETE'});
+    currentSessionId = null;
+    document.getElementById('messages').innerHTML = '';
+    updateSessionDisplay();
+    await loadSessionList();
+    toast('Session deleted', 'info');
+  } catch { toast('Failed to delete session', 'error'); }
+}
+
+function updateSessionDisplay() {
+  document.getElementById('statusSession').textContent = currentSessionId ? `Session: ${currentSessionId.substring(0,8)}...` : '';
+}
+
+// =====================================================================
+//  Chat — Send & SSE
+// =====================================================================
+function handleInputKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+async function sendMessage() {
+  const input = document.getElementById('chatInput');
+  const content = input.value.trim();
+  if (!content || isSending) return;
+
+  isSending = true;
+  document.getElementById('sendBtn').disabled = true;
+  input.value = '';
+  input.style.height = 'auto';
+
+  // Create session if needed
+  if (!currentSessionId) {
+    try {
+      const r = await fetch(`${API}/session`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channel:'html'})});
+      const data = await r.json();
+      currentSessionId = data.session_id;
+      updateSessionDisplay();
+      loadSessionList();
+    } catch {
+      toast('Failed to create session', 'error');
+      isSending = false;
+      document.getElementById('sendBtn').disabled = false;
+      return;
+    }
+  }
+
+  appendMessage('user', content);
+  scrollToBottom();
+
+  // Prepare assistant message container
+  const msgEl = appendMessage('assistant', '', null, false);
+  const mdDiv = msgEl.querySelector('.md-content');
+  let toolStatusEl = null;
+  let lastDebugData = null;
+
+  try {
+    const resp = await fetch(`${API}/chat/stream-sync`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({content, session_id: currentSessionId}),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let event;
+        try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (event.type === 'tool_status') {
+          if (event.action === 'calling') {
+            toolStatusEl = document.createElement('div');
+            toolStatusEl.className = 'msg system-info tool-status';
+            toolStatusEl.innerHTML = `<span class="spinner"></span>${escapeHtml(event.message || event.tool_name || 'calling tool...')}`;
+            document.getElementById('messages').insertBefore(toolStatusEl, msgEl);
+          } else if (event.action === 'complete' && toolStatusEl) {
+            toolStatusEl.innerHTML = `&#10003; ${escapeHtml(event.message || 'tool complete')}`;
+            toolStatusEl.style.color = 'var(--accent2)';
+            toolStatusEl = null;
+          }
+        } else if (event.type === 'thinking_speech') {
+          const ts = document.createElement('div');
+          ts.className = 'msg system-info';
+          ts.textContent = event.content;
+          document.getElementById('messages').insertBefore(ts, msgEl);
+        } else if (event.type === 'error') {
+          mdDiv.innerHTML = `<span style="color:var(--error)">${escapeHtml(event.message)}</span>`;
+        } else if (event.type === 'result') {
+          mdDiv.innerHTML = marked.parse(event.reply || '');
+          mdDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+          lastDebugData = event;
+        }
+        scrollToBottom();
+      }
+    }
+  } catch (e) {
+    mdDiv.innerHTML = `<span style="color:var(--error)">Connection error: ${escapeHtml(String(e))}</span>`;
+  }
+
+  // Add debug panel if we have data
+  if (lastDebugData && lastDebugData.retrieval_context) {
+    const debugPanel = buildDebugPanel(lastDebugData);
+    msgEl.appendChild(debugPanel);
+  }
+
+  isSending = false;
+  document.getElementById('sendBtn').disabled = false;
+  scrollToBottom();
+  loadSessionList();  // refresh session list to update message count
+}
+
+// =====================================================================
+//  Message Rendering
+// =====================================================================
+function appendMessage(role, content, debugData, scroll=true) {
+  const container = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+
+  if (role === 'user') {
+    div.textContent = content;
+  } else {
+    const mdDiv = document.createElement('div');
+    mdDiv.className = 'md-content';
+    if (content) {
+      mdDiv.innerHTML = marked.parse(content);
+      mdDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+    }
+    div.appendChild(mdDiv);
+  }
+
+  container.appendChild(div);
+  if (scroll) scrollToBottom();
+  return div;
+}
+
+function scrollToBottom() {
+  const m = document.getElementById('messages');
+  m.scrollTop = m.scrollHeight;
+}
+
+// =====================================================================
+//  Debug Panel
+// =====================================================================
+function buildDebugPanel(data) {
+  const ctx = data.retrieval_context || {};
+  const wrapper = document.createElement('div');
+
+  const toggle = document.createElement('div');
+  toggle.className = 'debug-toggle';
+  toggle.textContent = '[ debug info ]';
+  const panel = document.createElement('div');
+  panel.className = 'debug-panel';
+  toggle.onclick = () => panel.classList.toggle('open');
+  wrapper.appendChild(toggle);
+
+  let html = '';
+
+  // Performance timing
+  if (ctx.perf_timing && ctx.perf_timing.steps) {
+    const maxMs = Math.max(...ctx.perf_timing.steps.map(s => s.ms), 1);
+    html += `<div class="debug-section"><div class="debug-section-title">Performance (${ctx.perf_timing.total_ms?.toFixed(0) || '?'}ms)</div>`;
+    ctx.perf_timing.steps.forEach(s => {
+      const pct = (s.ms / maxMs * 100).toFixed(0);
+      html += `<div class="perf-bar-row">
+        <span class="perf-bar-label" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+        <div class="perf-bar-track"><div class="perf-bar-fill" style="width:${pct}%"></div></div>
+        <span class="perf-bar-ms">${s.ms.toFixed(0)}ms</span>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Memory blocks
+  if (ctx.block_details && ctx.block_details.length) {
+    html += `<div class="debug-section"><div class="debug-section-title">Memory Blocks (${ctx.block_count || ctx.block_details.length}, threshold: ${ctx.threshold}, hard: ${ctx.hard_base})</div>`;
+    ctx.block_details.forEach(b => {
+      html += `<div class="block-detail">
+        <strong>#${b.id}</strong> ${escapeHtml(b.overview || '')}
+        <br><span class="block-score" style="color:var(--accent)">hybrid:${b.hybrid?.toFixed(3)}</span>
+        <span class="block-score">dense:${b.dense?.toFixed(3)}</span>
+        <span class="block-score">sparse:${b.sparse?.toFixed(3)}</span>
+        <span class="block-score" style="color:var(--warn)">recency:${b.recency?.toFixed(3)}</span>
+        <span class="block-score" style="color:var(--purple)">importance:${b.importance?.toFixed(3)}</span>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Core cognition & profile
+  if (ctx.core_debug_text) {
+    html += `<div class="debug-section"><div class="debug-section-title">Core Cognition</div><pre>${escapeHtml(ctx.core_debug_text)}</pre></div>`;
+  }
+  if (ctx.profile_debug_text) {
+    html += `<div class="debug-section"><div class="debug-section-title">User Profile</div><pre>${escapeHtml(ctx.profile_debug_text)}</pre></div>`;
+  }
+
+  // Dual track
+  if (ctx.expanded_keywords || ctx.inherited_tags) {
+    html += `<div class="debug-section"><div class="debug-section-title">Retrieval Context</div><pre>`;
+    html += `query: ${escapeHtml(ctx.original_query || '')}\n`;
+    html += `expanded: ${escapeHtml(ctx.expanded_keywords || '')}\n`;
+    html += `inherited: ${escapeHtml(JSON.stringify(ctx.inherited_tags || []))}`;
+    html += `</pre></div>`;
+  }
+
+  // Entities
+  if (data.extracted_entities && data.extracted_entities.length) {
+    html += `<div class="debug-section"><div class="debug-section-title">Extracted Entities</div><div>`;
+    data.extracted_entities.forEach(e => {
+      html += `<span style="display:inline-block;background:var(--surface2);padding:2px 8px;border-radius:4px;margin:2px;font-size:11px;">${escapeHtml(e)}</span>`;
+    });
+    html += '</div></div>';
+  }
+
+  // Dynamic prompt (collapsible)
+  if (ctx.dynamic_prompt) {
+    html += `<div class="debug-section">
+      <div class="debug-section-title" style="cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+        Dynamic Prompt (click to toggle)
+      </div>
+      <pre style="display:none;max-height:300px;overflow-y:auto;">${escapeHtml(ctx.dynamic_prompt)}</pre>
+    </div>`;
+  }
+
+  panel.innerHTML = html;
+  wrapper.appendChild(panel);
+  return wrapper;
+}
+
+// =====================================================================
+//  Log/DB Viewer Tab
+// =====================================================================
+function setViewerMode(mode, btn) {
+  document.querySelectorAll('.viewer-toolbar button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const logF = document.getElementById('logFrame');
+  const dbF = document.getElementById('dbFrame');
+  logF.classList.toggle('hidden', mode === 'db');
+  dbF.classList.toggle('hidden', mode === 'log');
+}
+
+function reloadLogViewer() {
+  const frame = document.getElementById('logFrame');
+  try { frame.contentWindow.postMessage('reload-logs', '*'); } catch {}
+  // fallback: reload iframe
+  setTimeout(() => { try { frame.contentWindow.location.reload(); } catch {} }, 300);
+}
+
+// =====================================================================
+//  Routing Tab
+// =====================================================================
+async function loadRouting() {
+  try {
+    const r = await fetch(`${API}/system/config`);
+    const cfg = await r.json();
+    routingConfig = cfg.routing_config || {};
+    renderRouting();
+  } catch { toast('Failed to load routing config', 'error'); }
+}
+
+function renderRouting() {
+  const container = document.getElementById('routeList');
+  let html = '';
+  for (const [key, info] of Object.entries(TASK_INFOS)) {
+    const saved = routingConfig[key] || {};
+    const prov = saved.provider || 'Ollama (本地)';
+    const model = saved.model || 'qwen3.5';
+    const provShort = {'Ollama (本地)':'Ollama','llama.cpp (本地)':'llama.cpp','OpenAI (雲端)':'OpenAI','OpenRouter (雲端)':'OpenRouter'}[prov] || prov;
+
+    const provOptions = PROVIDERS.map(p => `<option value="${escapeHtml(p)}" ${p===prov?'selected':''}>${escapeHtml(p)}</option>`).join('');
+
+    html += `<div class="route-card" data-key="${key}">
+      <div class="route-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="route-chevron">&#9654;</span>
+        <span class="route-name">${escapeHtml(key)}</span>
+        <span class="route-desc">${escapeHtml(info.desc)}</span>
+        <span class="route-current">${escapeHtml(provShort)} / ${escapeHtml(model)}</span>
+      </div>
+      <div class="route-body">
+        <div class="route-field">
+          <label>Provider</label>
+          <select data-route="${key}" data-field="provider">${provOptions}</select>
+        </div>
+        <div class="route-field">
+          <label>Model</label>
+          <input type="text" data-route="${key}" data-field="model" value="${escapeHtml(model)}">
+        </div>
+        <div class="route-help">${escapeHtml(info.help)}</div>
+      </div>
+    </div>`;
+  }
+  container.innerHTML = html;
+}
+
+async function saveRouting() {
+  const newConfig = {};
+  for (const key of Object.keys(TASK_INFOS)) {
+    const provEl = document.querySelector(`select[data-route="${key}"][data-field="provider"]`);
+    const modelEl = document.querySelector(`input[data-route="${key}"][data-field="model"]`);
+    newConfig[key] = {
+      provider: provEl ? provEl.value : 'Ollama (本地)',
+      model: modelEl ? modelEl.value : '',
+    };
+  }
+  try {
+    const r = await fetch(`${API}/system/config`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({routing_config: newConfig}),
+    });
+    if (r.ok) {
+      routingConfig = newConfig;
+      renderRouting();
+      toast('Routing saved', 'success');
+    } else throw 0;
+  } catch { toast('Failed to save routing', 'error'); }
+}
+
+// =====================================================================
+//  Prompts Tab
+// =====================================================================
+let allPrompts = [];
+
+async function loadPrompts() {
+  try {
+    const r = await fetch(`${API}/prompts`);
+    allPrompts = await r.json();
+    renderPrompts();
+  } catch { toast('Failed to load prompts', 'error'); }
+}
+
+function renderPrompts() {
+  document.getElementById('promptCount').textContent = `${allPrompts.length} prompts`;
+  const container = document.getElementById('promptList');
+  let html = '';
+  allPrompts.forEach((p, i) => {
+    const statusCls = p.has_user_override ? 'custom' : 'default';
+    const statusText = p.has_user_override ? 'custom' : 'default';
+    const phTags = (p.placeholders || []).map(ph => `<span class="prompt-ph">${escapeHtml(ph)}</span>`).join(' ');
+
+    html += `<div class="prompt-card" data-key="${escapeHtml(p.key)}">
+      <div class="prompt-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="prompt-chevron">&#9654;</span>
+        <span class="prompt-label">${escapeHtml(p.label || p.key)}</span>
+        <span class="prompt-status ${statusCls}">${statusText}</span>
+      </div>
+      <div class="prompt-body">
+        <div class="prompt-meta">
+          ${p.description ? `<div>${escapeHtml(p.description)}</div>` : ''}
+          ${p.used_by ? `<div><strong>used by:</strong> ${escapeHtml(p.used_by)}</div>` : ''}
+          ${phTags ? `<div><strong>placeholders:</strong> ${phTags}</div>` : ''}
+        </div>
+        <textarea class="prompt-textarea" data-prompt-key="${escapeHtml(p.key)}" rows="8">${escapeHtml(p.current_template || '')}</textarea>
+        <div class="prompt-actions">
+          <button class="btn-save" onclick="savePrompt('${escapeHtml(p.key)}')">save</button>
+          <button class="btn-reset" onclick="resetPrompt('${escapeHtml(p.key)}')">reset</button>
+          ${p.has_user_override ? `<button class="btn-default" onclick="showDefault('${escapeHtml(p.key)}')">view default</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+async function savePrompt(key) {
+  const textarea = document.querySelector(`textarea[data-prompt-key="${key}"]`);
+  if (!textarea) return;
+  const template = textarea.value;
+
+  // Placeholder validation
+  const meta = allPrompts.find(p => p.key === key);
+  if (meta && meta.placeholders) {
+    const missing = meta.placeholders.filter(ph => !template.includes(ph));
+    if (missing.length) {
+      if (!confirm(`Warning: missing placeholders: ${missing.join(', ')}\nSave anyway?`)) return;
+    }
+  }
+
+  try {
+    const r = await fetch(`${API}/prompts/${key}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({template}),
+    });
+    if (r.ok) {
+      toast(`Prompt "${key}" saved`, 'success');
+      loadPrompts();
+    } else throw 0;
+  } catch { toast('Failed to save prompt', 'error'); }
+}
+
+async function resetPrompt(key) {
+  if (!confirm(`Reset "${key}" to default?`)) return;
+  try {
+    const r = await fetch(`${API}/prompts/${key}/reset`, {method:'POST'});
+    if (r.ok) {
+      toast(`Prompt "${key}" reset`, 'info');
+      loadPrompts();
+    } else throw 0;
+  } catch { toast('Failed to reset prompt', 'error'); }
+}
+
+async function resetAllPrompts() {
+  if (!confirm('Reset ALL prompts to defaults? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`${API}/prompts/reset-all`, {method:'POST'});
+    if (r.ok) {
+      toast('All prompts reset', 'info');
+      loadPrompts();
+    } else throw 0;
+  } catch { toast('Failed to reset all prompts', 'error'); }
+}
+
+function showDefault(key) {
+  const meta = allPrompts.find(p => p.key === key);
+  if (!meta) return;
+  document.getElementById('modalTitle').textContent = `Default: ${meta.label || key}`;
+  document.getElementById('modalBody').innerHTML = `<pre>${escapeHtml(meta.default_template || '')}</pre>`;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+}
+
+// Close modal on Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// =====================================================================
+//  Utilities
+// =====================================================================
+function escapeHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function toast(msg, type='info') {
+  const container = document.getElementById('toastContainer');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+</script>
+</body>
+</html>

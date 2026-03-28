@@ -1,19 +1,22 @@
 """
 FastAPI 應用程式組裝 — 唯一的 API 閘道入口。
-啟動: uvicorn api.main:app --host 0.0.0.0 --port 8000
+啟動: uvicorn api.main:app --host 0.0.0.0 --port 8088
 """
 import asyncio
 from contextlib import asynccontextmanager
 
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.dependencies import init_all, get_storage, get_router, get_memory_sys
 from api.session_manager import session_manager
 from api.telegram_bot import start_telegram_bot, stop_telegram_bot
 from core.background_gatherer import start_background_gather_loop
-from api.routers import health, memory, profile, system, session, logs, chat_ws, character
+from api.routers import health, memory, profile, system, session, logs, chat_ws, character, prompts
 
 
 # ── Lifespan：啟動 / 關機 ────────────────────────────────
@@ -97,6 +100,18 @@ app.include_router(session.router, prefix=PREFIX)
 app.include_router(logs.router, prefix=PREFIX)
 app.include_router(chat_ws.router, prefix=PREFIX)
 app.include_router(character.router, prefix=PREFIX)
+app.include_router(prompts.router, prefix=PREFIX)
+
+
+# ── 根路由 → Dashboard ───────────────────────────────────
+@app.get("/")
+async def root_redirect():
+    return RedirectResponse(url="/static/dashboard.html")
+
+
+# ── 靜態檔案服務 ──────────────────────────────────────────
+_static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+app.mount("/static", StaticFiles(directory=_static_dir, html=True), name="static")
 
 
 # ── 全域例外處理 ──────────────────────────────────────────

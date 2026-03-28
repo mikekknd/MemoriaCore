@@ -8,10 +8,10 @@ namespace LLMMemory.Network
     {
         [Header("Server")]
         [Tooltip("FastAPI 後端基礎 URL")]
-        public string BaseUrl = "http://localhost:8000/api/v1";
+        public string BaseUrl = "http://localhost:8088/api/v1";
 
         [Tooltip("WebSocket 連線 URL")]
-        public string WsUrl = "ws://localhost:8000/api/v1/chat/stream";
+        public string WsUrl = "ws://localhost:8088/api/v1/chat/stream";
 
         [Header("Timeout")]
         [Tooltip("REST 請求超時時間 (毫秒)")]

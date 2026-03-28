@@ -76,8 +76,8 @@ UnityClient/Assets/Scripts/
 
 | 欄位 | 預設值 | 說明 |
 |------|--------|------|
-| `BaseUrl` | `http://localhost:8000/api/v1` | FastAPI REST 基礎 URL |
-| `WsUrl` | `ws://localhost:8000/api/v1/chat/stream` | WebSocket 端點 |
+| `BaseUrl` | `http://localhost:8088/api/v1` | FastAPI REST 基礎 URL |
+| `WsUrl` | `ws://localhost:8088/api/v1/chat/stream` | WebSocket 端點 |
 | `TimeoutMs` | `30000` | REST 請求超時 (ms) |
 | `ReconnectBaseDelayMs` | `1000` | WebSocket 斷線重連基礎延遲 |
 | `ReconnectMaxDelayMs` | `30000` | WebSocket 斷線重連最大延遲 |
