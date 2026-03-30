@@ -313,10 +313,54 @@ class LLMRouter:
         route = self.routes.get(task_key)
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
-            
+
         SystemLogger.log_llm_prompt(task_key, route["model"], messages)
         response_text, tool_calls = route["provider"].generate_chat(messages, route["model"], temperature, response_format, tools, tool_choice)
         log_content = f"Content: {response_text}, Tools: {tool_calls}"
         SystemLogger.log_llm_response(task_key, route["model"], log_content)
-        
+
         return response_text, tool_calls
+
+    def generate_json(
+        self,
+        task_key: str,
+        messages: list,
+        schema: dict = None,
+        temperature: float = 0.1,
+    ) -> dict:
+        """嘗試取得結構化 JSON 輸出，失敗時自動降級並嘗試提取。
+
+        若有提供 schema，先以 response_format 呼叫；若 Provider 不支援則降級為純文字
+        再以 JSONDecoder 提取第一個 JSON 物件。無論何種情況失敗皆回傳空 dict {}。
+
+        Args:
+            task_key: 路由任務鍵
+            messages: 對話訊息列表 [{"role": ..., "content": ...}]
+            schema: JSON Schema（可選）
+            temperature: 溫度參數（預設 0.1）
+
+        Returns:
+            解析後的 dict，失敗時回傳 {}
+        """
+        try:
+            raw = self.generate(task_key, messages, temperature=temperature, response_format=schema)
+        except Exception:
+            if schema is not None:
+                # Provider 不支援 response_format，降級為純文字
+                try:
+                    raw = self.generate(task_key, messages, temperature=temperature)
+                except Exception:
+                    return {}
+            else:
+                return {}
+
+        start = raw.find('{')
+        if start == -1:
+            start = raw.find('[')
+        if start == -1:
+            return {}
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(raw, start)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}

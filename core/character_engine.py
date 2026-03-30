@@ -3,6 +3,7 @@ import os
 import uuid
 from typing import Dict, Any, List
 from core.prompt_manager import get_prompt_manager
+from core.system_logger import SystemLogger
 
 class CharacterManager:
     """管理動態角色設定，包含存取 characters.json 及透過 LLM 生成設定"""
@@ -115,17 +116,12 @@ class CharacterManager:
         )
 
         api_messages = [{"role": "user", "content": prompt}]
-        
+
         try:
-            # 使用我們提供的 router，並指定 response_format 給定強制輸出格式
-            result_str = router.generate(task_key, api_messages, temperature=0.7, response_format=GENERATE_SCHEMA)
-            _start = result_str.find('{')
-            if _start == -1:
+            parsed = router.generate_json(task_key, api_messages, schema=GENERATE_SCHEMA, temperature=0.7)
+            if not parsed:
                 return {"error": "Invalid JSON format"}
-            
-            parsed, _ = json.JSONDecoder().raw_decode(result_str, _start)
             return parsed
         except Exception as e:
-            from system_logger import SystemLogger
             SystemLogger.log_error("CharacterGenerate", str(e))
             return {"error": str(e)}

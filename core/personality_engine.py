@@ -111,15 +111,7 @@ class PersonalityEngine:
 
         try:
             api_messages = [{"role": "user", "content": prompt}]
-            try:
-                raw_text = router.generate(task_key, api_messages, temperature=0.1, response_format=OBSERVE_SCHEMA)
-            except Exception:
-                raw_text = router.generate(task_key, api_messages, temperature=0.1)
-
-            _start = raw_text.find('{')
-            if _start == -1:
-                return []
-            parsed, _ = json.JSONDecoder().raw_decode(raw_text, _start)
+            parsed = router.generate_json(task_key, api_messages, schema=OBSERVE_SCHEMA, temperature=0.1)
             observations = parsed.get("observations", [])
 
             # 基礎驗證：確保必要欄位存在且非空

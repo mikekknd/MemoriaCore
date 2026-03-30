@@ -55,14 +55,11 @@ class MemorySystem:
         )
         try:
             api_messages = [{"role": "user", "content": prompt}]
-            raw_text = router.generate(task_key, api_messages, temperature=0.0)
-            _start = raw_text.find('{')
-            if _start == -1: return {"original_query": user_query, "expanded_keywords": "", "entity_confidence": 0.0}
-            parsed_data, _ = json.JSONDecoder().raw_decode(raw_text, _start)
+            parsed_data = router.generate_json(task_key, api_messages, temperature=0.0)
             conf = float(parsed_data.get("entity_confidence", 0.0))
             keywords = [k for k in parsed_data.get("expanded_keywords", []) if len(k) < 15 and "標籤" not in k]
             return {"original_query": user_query, "expanded_keywords": " ".join(keywords), "entity_confidence": conf}
-        except Exception: 
+        except Exception:
             return {"original_query": user_query, "expanded_keywords": "", "entity_confidence": 0.0}
 
     def add_memory_block(self, overview, raw_dialogues, duplicate_threshold=0.85, router=None, sim_timestamp=None, potential_preferences=None):
@@ -199,19 +196,15 @@ class MemorySystem:
 
         try:
             comp_msg = [{"role": "user", "content": compress_prompt}]
-            raw_compressed = router.generate("compress", comp_msg, temperature=0.1)
-
-            start = raw_compressed.find('{')
-            if start != -1:
-                parsed, _ = json.JSONDecoder().raw_decode(raw_compressed, start)
-                summary = parsed.get("summary", "")
-                if summary:
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    chronicle_entry = {"role": "system", "content": f"[編年史紀錄 {timestamp}]:\n{summary}"}
-                    compressed = existing_chronicles + [chronicle_entry] + recent_messages
-                    SystemLogger.log_system_event("記憶壓縮閘道",
-                        f"已將 {len(old_messages)} 則舊對話壓縮為編年史，保留最近 {keep_recent_turns} 輪原文。")
-                    return compressed
+            parsed = router.generate_json("compress", comp_msg, temperature=0.1)
+            summary = parsed.get("summary", "")
+            if summary:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                chronicle_entry = {"role": "system", "content": f"[編年史紀錄 {timestamp}]:\n{summary}"}
+                compressed = existing_chronicles + [chronicle_entry] + recent_messages
+                SystemLogger.log_system_event("記憶壓縮閘道",
+                    f"已將 {len(old_messages)} 則舊對話壓縮為編年史，保留最近 {keep_recent_turns} 輪原文。")
+                return compressed
 
         except Exception as e:
             SystemLogger.log_error("記憶壓縮閘道失敗", str(e))

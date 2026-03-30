@@ -234,21 +234,7 @@ class MemoryAnalyzer:
 
         try:
             api_messages = [{"role": "user", "content": prompt}]
-
-            # 嘗試帶入 JSON Schema 強制結構化輸出；若後端不支援則降級
-            try:
-                raw_text = router.generate(task_key, api_messages, temperature=0.1, response_format=PROFILE_FACTS_SCHEMA)
-            except Exception:
-                raw_text = router.generate(task_key, api_messages, temperature=0.1)
-
-            _start = raw_text.find('{')
-            if _start == -1:
-                return []
-
-            try:
-                parsed, _ = json.JSONDecoder().raw_decode(raw_text, _start)
-            except Exception:
-                return []
+            parsed = router.generate_json(task_key, api_messages, schema=PROFILE_FACTS_SCHEMA, temperature=0.1)
             facts = parsed.get("facts", [])
 
             # 【強化驗證】：category 白名單 + fact_value 非空檢查
