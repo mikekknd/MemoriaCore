@@ -14,6 +14,7 @@ from api.dependencies import (
     get_embed_model, get_personality_engine, db_write_lock,
     get_character_manager
 )
+from core.prompt_manager import get_prompt_manager
 from api.session_manager import session_manager
 from api.models.requests import ChatSyncRequest
 from api.models.responses import ChatSyncResponseDTO, RetrievalContextDTO
@@ -241,11 +242,19 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
     memory_hard_base = user_prefs.get("memory_hard_base", 0.55)
     memory_threshold = user_prefs.get("memory_threshold", 0.5)
+    context_window = user_prefs.get("context_window", 10)
     temperature = user_prefs.get("temperature", 0.7)
 
     topic_shifted = False
     pipeline_data = None  # (msgs_to_extract, last_block) — 供背景管線使用
     timer = StepTimer()
+
+    # ─── 提取 Active UIDs ───
+    active_uids = set()
+    for m in session_messages[-4:]:
+        matches = re.findall(r'\[Ref:\s*([^\]]+)\]', m.get("content", ""))
+        for uid in matches:
+            active_uids.add(uid)
 
     # ─── 話題偏移偵測 ───
     with timer.step("話題偏移偵測 (Topic Shift Detection)"):
@@ -272,7 +281,8 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
 
     with timer.step("情境記憶檢索 (Memory Block Search)"):
-        blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
+        raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
+        blocks = [b for b in raw_blocks if b.get("block_id") not in active_uids]
 
     with timer.step("核心認知檢索 (Core Memory Search)"):
         core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45)
@@ -300,7 +310,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         for i, block in enumerate(blocks):
             raw_text = "\n".join([f"  - {m['role']}: {m['content']}" for m in block["raw_dialogues"] if "role" in m])
             formatted_blocks.append(
-                f"【情境回憶 {i + 1}】\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
+                f"【情境回憶 {i + 1}】[UID: {block.get('block_id', 'unknown')}]\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
             overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
             block_details.append({
                 "id": i + 1, "overview": overview_header,
@@ -356,32 +366,19 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         speech_instruction = f"4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{speech_rules}"
         speech_json = ""
 
+    _suffix = get_prompt_manager().get("chat_system_suffix").format(
+        mem_ctx=mem_ctx,
+        metrics_str=metrics_str, tones_str=tones_str,
+        speech_instruction=speech_instruction,
+        metrics_example=metrics[0] if metrics else 'score',
+        tones_example=allowed_tones[0] if allowed_tones else 'Neutral',
+        speech_json=speech_json,
+    )
+
     sys_prompt = f"""{char_sys_prompt}
 {personality_block}{static_profile_block}{weather_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
-【系統動態規則】
-1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。
-2. 泛化工具調用：當你需要獲取即時資訊、動態數據或客觀事實以回應使用者時，絕對禁止使用內部知識猜測。你必須自主評估並呼叫最適合的外部工具（Function Calling）。各工具的使用時機、參數限制與語言要求，請嚴格遵循系統提供的 Tool Schema Description 執行。
-
-【系統核心指令】：綜合以下情境記憶區塊來回答使用者。
-[情境記憶區]
-{mem_ctx}
-
-【心理活動與狀態評估規則】
-在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：
-1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。
-2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。
-3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。
-{speech_instruction}
-
-【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：
-{{
-  "internal_thought": "...",
-  "status_metrics": {{ "{metrics[0] if metrics else 'score'}": 50 }},
-  "tone": "{allowed_tones[0] if allowed_tones else 'Neutral'}",
-{speech_json}  "reply": "你的自然語言回覆（螢幕字幕文字）",
-  "extracted_entities": ["核心實體1"]
-}}"""
+{_suffix}"""
 
     retrieval_ctx = {
         "original_query": user_prompt,
@@ -397,6 +394,9 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         "profile_debug_text": profile_debug_text,
         "dynamic_prompt": sys_prompt,
     }
+
+    # 由系統直接標記引用的 UIDs，不依賴 LLM 回傳以避免降智或格式錯誤
+    cited_uids = [b.get("block_id") for b in blocks if "block_id" in b] if blocks else []
 
     # ─── LLM 生成 ───
     metrics_props = {m: {"type": "integer", "minimum": 0, "maximum": 100} for m in metrics}
@@ -419,7 +419,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
 
     with timer.step("上下文組裝 (Context Assembly)"):
         api_messages = [{"role": "system", "content": sys_prompt}]
-        clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-4:]]
+        clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-context_window:]]
         api_messages.extend(clean_history)
 
     with timer.step("LLM 對話生成 (Chat Generation LLM)"):
@@ -522,7 +522,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     # 將效能計時結果注入 retrieval_ctx
     retrieval_ctx["perf_timing"] = timer.summary()
 
-    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, inner_thought, status_metrics, tone, speech
+    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, inner_thought, status_metrics, tone, speech, cited_uids
 
 
 # ── 共用：選擇對話編排函式 ────────────────────────────────
@@ -535,11 +535,13 @@ def _select_orchestration(user_prefs: dict):
 
 
 def _unpack_orchestration_result(result: tuple):
-    """統一解構 9-tuple（舊）或 10-tuple（新）的編排結果。"""
+    """統一解構 9/10/11-tuple 的編排結果。"""
+    if len(result) == 11:
+        return result  # (reply, entities, ctx, shifted, pipeline, thought, metrics, tone, speech, thinking_speech, cited_uids)
     if len(result) == 10:
-        return result  # (reply, entities, ctx, shifted, pipeline, thought, metrics, tone, speech, thinking_speech)
-    # 舊版 9-tuple，補上 thinking_speech=""
-    return (*result, "")
+        return (*result, [])
+    # 舊版 9-tuple，補上 thinking_speech="" 和 cited_uids=[]
+    return (*result, "", [])
 
 
 # ── WebSocket 端點 ────────────────────────────────────────
@@ -628,7 +630,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 ws_manager.clear_active_task(sid)
 
             reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-                inner_thought, status_metrics, tone, speech, thinking_speech = \
+                inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
                 _unpack_orchestration_result(result)
 
             # 如果話題偏移，通知客戶端並在背景啟動記憶管線
@@ -653,8 +655,12 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             }
             await ws.send_json(done_payload)
 
-            # 寫入 assistant 回覆
-            await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
+            # 寫入 assistant 回覆（後端隱性掛載引用 UID）
+            saved_reply_text = reply_text
+            if cited_uids:
+                refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
+                saved_reply_text = f"{reply_text} {refs_str}"
+            await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
 
             # AI 自我觀察提取（背景非阻塞）
             if user_prefs.get("ai_observe_enabled", True):
@@ -693,10 +699,14 @@ async def chat_sync(body: ChatSyncRequest):
         list(s.messages), list(s.last_entities), body.content, user_prefs,
     )
     reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-        inner_thought, status_metrics, tone, speech, thinking_speech = \
+        inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
         _unpack_orchestration_result(result)
 
-    await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
+    saved_reply_text = reply_text
+    if cited_uids:
+        refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
+        saved_reply_text = f"{reply_text} {refs_str}"
+    await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
 
     # AI 自我觀察提取（背景非阻塞）
     if user_prefs.get("ai_observe_enabled", True):
@@ -711,6 +721,7 @@ async def chat_sync(body: ChatSyncRequest):
         reply=reply_text,
         extracted_entities=new_entities,
         retrieval_context=RetrievalContextDTO(**retrieval_ctx),
+        cited_memory_uids=cited_uids,
         internal_thought=inner_thought,
         status_metrics=status_metrics,
         tone=tone,
@@ -772,11 +783,15 @@ async def chat_stream_sync(body: ChatSyncRequest):
             return
 
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-            inner_thought, status_metrics, tone, speech, thinking_speech = \
+            inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
             _unpack_orchestration_result(result)
 
         # 寫入 session 及背景任務（與 /sync 相同）
-        await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
+        saved_reply_text = reply_text
+        if cited_uids:
+            refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
+            saved_reply_text = f"{reply_text} {refs_str}"
+        await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
 
         if user_prefs.get("ai_observe_enabled", True):
             asyncio.create_task(_extract_ai_observations_bg(reply_text, list(s.messages[-4:])))
@@ -792,6 +807,7 @@ async def chat_stream_sync(body: ChatSyncRequest):
             "reply": reply_text,
             "extracted_entities": new_entities,
             "retrieval_context": retrieval_ctx,
+            "cited_memory_uids": cited_uids,
             "internal_thought": inner_thought,
             "status_metrics": status_metrics,
             "tone": tone,

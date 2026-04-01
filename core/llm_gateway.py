@@ -33,6 +33,9 @@ class ILLMProvider:
         raise NotImplementedError
 
 class OllamaProvider(ILLMProvider):
+    def __init__(self, host: str = "http://localhost:11434"):
+        self._client = ollama.Client(host=host)
+
     def _normalize_messages(self, messages: list) -> list:
         """Ollama 格式正規化：tool 訊息只保留 role + content，arguments 維持 dict"""
         normalized = []
@@ -64,7 +67,7 @@ class OllamaProvider(ILLMProvider):
         if tools:
             kwargs["tools"] = tools
             
-        response = ollama.chat(**kwargs)
+        response = self._client.chat(**kwargs)
         
         if hasattr(response, "model_dump"):
             resp_dict = response.model_dump()
@@ -126,12 +129,12 @@ class OllamaProvider(ILLMProvider):
             return {"dense": dense_vec, "sparse": sparse_dict}
         else:
             try:
-                response = ollama.embeddings(model=model, prompt=clean_text)
+                response = self._client.embeddings(model=model, prompt=clean_text)
                 return {"dense": response['embedding'], "sparse": {}}
             except Exception:
                 try:
                     fallback_text = clean_text[:50]
-                    response = ollama.embeddings(model=model, prompt=fallback_text)
+                    response = self._client.embeddings(model=model, prompt=fallback_text)
                     return {"dense": response['embedding'], "sparse": {}}
                 except Exception:
                     return {"dense": [], "sparse": {}}

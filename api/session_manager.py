@@ -92,17 +92,13 @@ class SessionManager:
                 self._storage.deactivate_session(session_id)
             return removed
 
-    async def bridge(self, session_id: str) -> bool:
-        """橋接邏輯：保留 AI 上一句 + User 最新一句，並記錄截斷點到 DB。"""
+    async def bridge(self, session_id: str, keep_last_n: int = 6) -> bool:
+        """橋接邏輯：話題偏移後保留最近 N 條訊息（預設 6 條 = 3 輪），並記錄截斷點到 DB。"""
         async with self._lock:
             s = self._sessions.get(session_id)
             if not s:
                 return False
-            bridged = []
-            if len(s.messages) >= 2:
-                bridged.append(s.messages[-2])
-            if len(s.messages) >= 1:
-                bridged.append(s.messages[-1])
+            bridged = s.messages[-keep_last_n:] if len(s.messages) > keep_last_n else list(s.messages)
             s.messages = bridged
             s.last_active = datetime.now()
             # 持久化截斷點，restore 時只載入這之後的訊息

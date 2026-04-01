@@ -71,6 +71,7 @@ def run_router_agent(
     tools_list: list[dict],
     router,
     temperature: float = 0.7,
+    recent_history: list[dict] | None = None,
 ) -> RouterResult:
     """
     Module A — 輕量 LLM 判斷是否需要工具，並產生過渡語音。
@@ -81,6 +82,7 @@ def run_router_agent(
         tools_list: 所有可用的 Tool Schema 列表（不含 direct_chat，會自動注入）。
         router: LLMRouter 實例。
         temperature: LLM 溫度參數。
+        recent_history: 最近的對話歷史（用於提供上下文判斷意圖）。
 
     Returns:
         RouterResult — needs_tools / tool_calls / thinking_speech。
@@ -89,10 +91,14 @@ def run_router_agent(
     augmented_tools = tools_list + [DIRECT_CHAT_SCHEMA]
 
     sys_prompt = _get_router_prompt().format(char_hint=char_hint)
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
+    messages = [{"role": "system", "content": sys_prompt}]
+
+    # 注入最近對話歷史，讓 Router Agent 有上下文可判斷意圖
+    if recent_history:
+        for m in recent_history[-6:]:
+            messages.append({"role": m["role"], "content": m["content"]})
+
+    messages.append({"role": "user", "content": user_prompt})
 
     try:
         content, tool_calls = router.generate_with_tools(
@@ -316,8 +322,16 @@ def run_dual_layer_orchestration(
     memory_hard_base = user_prefs.get("memory_hard_base", 0.55)
     memory_threshold = user_prefs.get("memory_threshold", 0.5)
     temperature = user_prefs.get("temperature", 0.7)
+    context_window = user_prefs.get("context_window", 10)
 
     main_timer = StepTimer()
+
+    import re
+    active_uids = set()
+    for m in session_messages[-context_window:]:
+        matches = re.findall(r'\[Ref:\s*([^\]]+)\]', m.get("content", ""))
+        for uid in matches:
+            active_uids.add(uid)
 
     # ─── Pre-fork：載入角色資訊 + 判斷可用工具（兩條分支都需要） ───
     active_char_id = user_prefs.get("active_character_id", "default")
@@ -376,7 +390,8 @@ def run_dual_layer_orchestration(
 
         # 三軌記憶檢索
         with t.step("情境記憶檢索 (Memory Block Search)"):
-            blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
+            raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
+            blocks = [b for b in raw_blocks if b.get("block_id") not in active_uids]
 
         with t.step("核心認知檢索 (Core Memory Search)"):
             core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45)
@@ -406,7 +421,7 @@ def run_dual_layer_orchestration(
             for i, block in enumerate(blocks):
                 raw_text = "\n".join([f"  - {m['role']}: {m['content']}" for m in block["raw_dialogues"] if "role" in m])
                 formatted_blocks.append(
-                    f"【情境回憶 {i + 1}】\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
+                    f"【情境回憶 {i + 1}】[UID: {block.get('block_id', 'unknown')}]\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
                 overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
                 block_details.append({
                     "id": i + 1, "overview": overview_header,
@@ -451,34 +466,40 @@ def run_dual_layer_orchestration(
                 speech_instruction = f"4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{speech_rules}"
                 speech_json = ""
 
-            pm = get_prompt_manager()
-            _rules_block = pm.get("chat_system_rules")
-            _memory_block = pm.get("chat_memory_instruction").format(mem_ctx=mem_ctx)
-            _mental_block = pm.get("chat_mental_state").format(
+            _suffix = get_prompt_manager().get("chat_system_suffix").format(
+                mem_ctx=mem_ctx,
                 metrics_str=metrics_str, tones_str=tones_str,
-                speech_instruction=speech_instruction
-            )
-            _output_block = pm.get("chat_output_format").format(
+                speech_instruction=speech_instruction,
                 metrics_example=metrics[0] if metrics else 'score',
                 tones_example=allowed_tones[0] if allowed_tones else 'Neutral',
-                speech_json=speech_json
+                speech_json=speech_json,
             )
 
             sys_prompt = f"""{char_sys_prompt}
 {personality_block}{static_profile_block}{weather_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
-{_rules_block}
-
-{_memory_block}
-
-{_mental_block}
-
-{_output_block}"""
+{_suffix}"""
 
             # 上下文組裝
             api_messages = [{"role": "system", "content": sys_prompt}]
-            clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-4:]]
+            clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-context_window:]]
             api_messages.extend(clean_history)
+
+        retrieval_ctx = {
+            "original_query": user_prompt,
+            "expanded_keywords": expand_res['expanded_keywords'],
+            "inherited_tags": last_entities,
+            "has_memory": bool(blocks),
+            "block_count": len(blocks),
+            "threshold": memory_threshold,
+            "hard_base": f_base,
+            "confidence": expand_res["entity_confidence"],
+            "block_details": block_details,
+            "core_debug_text": core_debug_text,
+            "profile_debug_text": profile_debug_text,
+            "dynamic_prompt": sys_prompt,
+            "cited_uids": [b.get("block_id") for b in blocks if "block_id" in b] if blocks else [],
+        }
 
         # JSON Schema
         metrics_props = {m: {"type": "integer", "minimum": 0, "maximum": 100} for m in metrics}
@@ -497,21 +518,6 @@ def run_dual_layer_orchestration(
                 "extracted_entities": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["internal_thought", "status_metrics", "tone", "speech", "reply", "extracted_entities"],
-        }
-
-        retrieval_ctx = {
-            "original_query": user_prompt,
-            "expanded_keywords": expand_res['expanded_keywords'],
-            "inherited_tags": last_entities,
-            "has_memory": bool(blocks),
-            "block_count": len(blocks),
-            "threshold": memory_threshold,
-            "hard_base": f_base,
-            "confidence": expand_res["entity_confidence"],
-            "block_details": block_details,
-            "core_debug_text": core_debug_text,
-            "profile_debug_text": profile_debug_text,
-            "dynamic_prompt": sys_prompt,
         }
 
         return {
@@ -543,6 +549,7 @@ def run_dual_layer_orchestration(
                 tools_list=tools_list,
                 router=rtr,
                 temperature=temperature,
+                recent_history=session_messages[-context_window:],
             )
 
         if router_result.needs_tools:
@@ -618,6 +625,7 @@ def run_dual_layer_orchestration(
 
     reply_text = persona_result.reply_text
     new_entities = persona_result.new_entities
+    cited_uids = retrieval_ctx.get("cited_uids", [])
     inner_thought = persona_result.inner_thought
     status_metrics = persona_result.status_metrics
     tone = persona_result.tone
@@ -628,5 +636,5 @@ def run_dual_layer_orchestration(
 
     return (
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data,
-        inner_thought, status_metrics, tone, speech, thinking_speech,
+        inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids
     )
