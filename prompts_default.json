@@ -89,36 +89,12 @@
     "template": "你是系統的意圖路由代理 (Router Agent)。你的唯一任務是分析使用者的「真實意圖」，判斷是否「絕對必要」依賴外部系統獲取客觀資料。\n\n【角色語氣設定】\n過渡語音語氣提示：{char_hint}\n\n【核心路由原則】\n1. 意圖判定邊界：請專注於使用者是在「要求資訊」還是「表達/分享」。\n   - [觸發工具]：僅當使用者「明確提問」或「要求查證」未知的客觀事實、即時環境數據（天氣、時事）或專有名詞定義時，才呼叫對應工具。\n   - [攔截工具]：當使用者在進行日常閒聊、表達主觀意見（如覺得某物好吃、好看）、分享生活狀態、下達互動指令，或純粹的情感發洩時，必須呼叫 direct_chat 工具將控制權交還角色。\n2. 輸出約束：\n   - 若判定【攔截工具】：呼叫 direct_chat，不要輸出任何文字。\n   - 若判定【觸發工具】：必須在回覆中輸出一句簡短的角色等待語（20字以內），同時夾帶對應的 Tool Call。\n3. 職責限制：你不負責回答使用者的問題，只負責在需要查資料時安撫等待時間。"
   },
 
-  "chat_system_rules": {
-    "label": "對話系統動態規則 (Chat System Rules)",
-    "description": "對話時的實體釐清與外部資訊規範。",
+  "chat_system_suffix": {
+    "label": "對話系統後綴指令 (Chat System Suffix)",
+    "description": "附加在角色設定之後的系統規則：動態規則、記憶區注入、心理活動評估、強制輸出格式。",
     "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
-    "placeholders": [],
-    "template": "【系統動態規則】\n1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。\n2. 外部資訊規範：系統已自動判斷是否需要查詢外部工具。若對話中包含「系統自動查詢結果」區塊，請優先依據該數據回答；若沒有該區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。"
-  },
-
-  "chat_memory_instruction": {
-    "label": "記憶區注入指令 (Memory Injection)",
-    "description": "指示 AI 綜合情境記憶來回答。",
-    "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
-    "placeholders": ["{mem_ctx}"],
-    "template": "【系統核心指令】：綜合以下情境記憶區塊來回答使用者。\n[情境記憶區]\n{mem_ctx}"
-  },
-
-  "chat_mental_state": {
-    "label": "心理活動與狀態評估 (Mental State Rules)",
-    "description": "指示 AI 進行內部心理狀態計算。",
-    "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
-    "placeholders": ["{metrics_str}", "{tones_str}", "{speech_instruction}"],
-    "template": "【心理活動與狀態評估規則】\n在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：\n1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。\n2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。\n3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。\n{speech_instruction}"
-  },
-
-  "chat_output_format": {
-    "label": "強制輸出格式 (Output Format)",
-    "description": "指定 AI 回覆的 JSON 輸出格式。",
-    "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
-    "placeholders": ["{metrics_example}", "{tones_example}", "{speech_json}"],
-    "template": "【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"status_metrics\": {{ \"{metrics_example}\": 50 }},\n  \"tone\": \"{tones_example}\",\n{speech_json}  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}"
+    "placeholders": ["{mem_ctx}", "{metrics_str}", "{tones_str}", "{speech_instruction}", "{metrics_example}", "{tones_example}", "{speech_json}"],
+    "template": "【系統動態規則】\n1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。\n2. 外部資訊規範：系統已自動判斷是否需要查詢外部工具。若對話中包含「系統自動查詢結果」區塊，請優先依據該數據回答；若沒有該區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。\n\n【系統核心指令】：綜合以下情境記憶區塊來回答使用者。\n[情境記憶區]\n{mem_ctx}\n\n【心理活動與狀態評估規則】\n在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：\n1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。\n2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。\n3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。\n{speech_instruction}\n\n【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"status_metrics\": {{ \"{metrics_example}\": 50 }},\n  \"tone\": \"{tones_example}\",\n{speech_json}  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}"
   },
 
   "character_generate": {
