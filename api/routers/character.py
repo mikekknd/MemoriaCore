@@ -11,9 +11,12 @@ class CharacterProfileDTO(BaseModel):
     character_id: Optional[str] = None
     name: str
     system_prompt: str
+    evolved_prompt: Optional[str] = None
     metrics: List[str]
     allowed_tones: List[str]
-    speech_rules: str
+    reply_rules: str = ""
+    tts_rules: str = ""
+    tts_language: Optional[str] = None
 
 class GenerateProfileRequest(BaseModel):
     description: str
@@ -42,6 +45,16 @@ async def delete_character(character_id: str):
     mgr = get_character_manager()
     mgr.delete_character(character_id)
     return {"status": "success"}
+
+
+@router.delete("/{character_id}/evolved-prompt")
+async def clear_evolved_prompt(character_id: str):
+    """清除指定角色的 evolved_prompt，還原為使用原始 system_prompt。"""
+    mgr = get_character_manager()
+    found = mgr.clear_evolved_prompt(character_id)
+    if not found:
+        return {"status": "error", "message": "找不到指定角色"}
+    return {"status": "cleared"}
 
 @router.post("/generate")
 async def generate_character(req: GenerateProfileRequest):

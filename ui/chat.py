@@ -66,6 +66,10 @@ def _render_debug_panel(di):
                 imp_text = f", 權重加成: `{bd['importance']:.3f}`" if 'importance' in bd and bd['importance'] > 0 else ""
                 st.caption(f"└─ 綜合得分: `{bd['hybrid']:.3f}` (Dense: `{bd['dense']:.3f}`, Sparse: `{bd['sparse']:.3f}`, 時間加成: `{bd['recency']:.3f}`{imp_text})")
 
+            ctx_count = di.get('context_messages_count')
+            if ctx_count is not None:
+                st.markdown(f"**[對話紀錄窗口]** 本次 LLM 上下文包含 `{ctx_count}` 則對話紀錄（context_window 範圍內）")
+
             if di.get('dynamic_prompt', ''):
                 st.code(di.get('dynamic_prompt', ''), language="markdown")
 
@@ -178,14 +182,14 @@ def render_chat_page(api_base, user_prefs):
                         _load_session_list.clear()
                         st.rerun()
 
-    # Session 管理：首次載入時自動恢復最近有訊息的 streamlit session
+    # Session 管理：首次載入時自動恢復最近的 streamlit session
     # 若無可恢復的 session，不主動建立——等使用者發送訊息時再建
     if "api_session_id" not in st.session_state:
         sessions = _load_session_list(api_base)
         if sessions:
-            latest = sessions[0]
-            if latest.get("message_count", 0) > 0:
-                _restore_session(api_base, latest["session_id"])
+            # 無論 message_count 是否 > 0，只要 session 存在就嘗試還原
+            # （後端重啟後 message_count 可能為 0 但 DB 仍有紀錄）
+            _restore_session(api_base, sessions[0]["session_id"])
         # 無論是否恢復成功，都初始化快取（避免後續 KeyError）
         if "chat_messages_cache" not in st.session_state:
             st.session_state.chat_messages_cache = []
@@ -281,6 +285,11 @@ def render_chat_page(api_base, user_prefs):
                         break
                     elif evt_type == "result":
                         result = event
+                        # 同步伺服器實際使用的 session_id（後端重啟後可能與 UI 儲存的不同）
+                        actual_sid = event.get("session_id")
+                        if actual_sid and actual_sid != st.session_state.get("api_session_id"):
+                            st.session_state.api_session_id = actual_sid
+                            _load_session_list.clear()
 
                 status_placeholder.empty()
                 thinking_placeholder.empty()

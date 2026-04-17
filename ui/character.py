@@ -38,10 +38,14 @@ def render_character_page(api_base: str, user_prefs: dict):
             st.info("目前沒有建立任何角色。")
         else:
             for char in characters:
-                with st.expander(f"🎭 {char.get('name', '未命名')}"):
+                has_evolved = bool(char.get("evolved_prompt"))
+                evolved_badge = " 🧬" if has_evolved else ""
+                with st.expander(f"🎭 {char.get('name', '未命名')}{evolved_badge}"):
                     st.write(f"**ID:** `{char.get('character_id')}`")
-                    st.text_area("System Prompt", char.get("system_prompt", ""), height=100, disabled=True, key=f"sp_{char.get('character_id')}")
-                    
+
+                    if has_evolved:
+                        st.caption("🧬 使用 PersonaProbe 演化人設")
+
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write("**心理追蹤指標 (Metrics):**")
@@ -51,31 +55,43 @@ def render_character_page(api_base: str, user_prefs: dict):
                         st.write("**允許語氣 (Allowed Tones):**")
                         for t in char.get("allowed_tones", []):
                             st.caption(f"- {t}")
-                    
+
                     if char.get("tts_language"):
                         st.markdown(f"**🗣️ TTS 發音語言:** `{char.get('tts_language')}`")
-                    st.write("**說話規則 (Speech Rules):**")
-                    st.info(char.get("speech_rules", ""))
-                    
+                    st.write("**回覆文字規則 (Reply Rules):**")
+                    st.info(char.get("reply_rules", ""))
+                    if char.get("tts_rules"):
+                        st.write("**TTS 發音指引 (TTS Rules):**")
+                        st.info(char.get("tts_rules", ""))
+
                     is_active = user_prefs.get("active_character_id") == char.get('character_id')
                     if is_active:
                         st.success("✅ 目前指定的對話角色")
-                    
-                    col_btn1, col_btn2, col_btn3 = st.columns(3)
+
+                    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
                     with col_btn1:
                         if not is_active and st.button("🎯 設為當前角色", key=f"act_{char.get('character_id')}"):
                             new_prefs = user_prefs.copy()
                             new_prefs["active_character_id"] = char.get("character_id")
                             requests.put(f"{api_base}/system/config", json=new_prefs)
                             st.rerun()
-                            
+
                     with col_btn2:
                         if st.button("✏️ 編輯此角色", key=f"edit_{char.get('character_id')}"):
                             st.session_state["char_draft"] = char
                             st.session_state.char_tab = "✏️ 新增 / 編輯角色"
                             st.rerun()
-                    
+
                     with col_btn3:
+                        if has_evolved and st.button("🔄 重置演化", key=f"reset_{char.get('character_id')}",
+                                                     help="清除 PersonaProbe 演化人設，還原為原始 system_prompt"):
+                            try:
+                                requests.delete(f"{api_base}/character/{char.get('character_id')}/evolved-prompt")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"重置失敗: {e}")
+
+                    with col_btn4:
                         if st.button("🗑️ 刪除", key=f"del_{char.get('character_id')}"):
                             try:
                                 requests.delete(f"{api_base}/character/{char.get('character_id')}")
@@ -123,12 +139,35 @@ def render_character_page(api_base: str, user_prefs: dict):
         
         with st.form("char_edit_form"):
             c_name = st.text_input("角色名稱 (Name)", value=draft.get("name", ""))
-            c_prompt = st.text_area("系統提示詞 (System Prompt)", value=draft.get("system_prompt", ""), height=200)
+
+            prompt_tab_orig, prompt_tab_evolved = st.tabs(["📝 原始人設", "🧬 演化人設"])
+            with prompt_tab_orig:
+                st.caption("原始 System Prompt，由你手動撰寫。PersonaProbe 反思不會覆蓋此欄位。")
+                c_prompt = st.text_area("原始人設內容", value=draft.get("system_prompt", ""), height=250,
+                                        label_visibility="collapsed")
+            with prompt_tab_evolved:
+                evolved_val = draft.get("evolved_prompt") or ""
+                if evolved_val:
+                    st.caption("PersonaProbe 產出的演化版本，對話時優先使用此內容。")
+                else:
+                    st.caption("尚無演化版本。執行 PersonaProbe 反思後此欄位會自動填入。")
+                c_evolved = st.text_area("演化人設內容", value=evolved_val, height=250,
+                                         label_visibility="collapsed")
+
             c_metrics = st.text_input("心理追蹤指標 (英文，用逗號分隔)", value=",".join(draft.get("metrics", [])))
             c_tones = st.text_input("允許的語氣字眼 (英文，用逗號分隔)", value=",".join(draft.get("allowed_tones", [])))
             c_tts = st.text_input("🗣️ TTS 獨立發音語言 (例如：日文。若無雙語需求請留空)", value=draft.get("tts_language", ""))
-            c_speech = st.text_input("說話與情緒規則 (Speech Rules)", value=draft.get("speech_rules", ""))
-            
+            c_reply_rules = st.text_input(
+                "回覆文字規則 (reply_rules) — 套用於字幕文字的語言、格式與語氣強制規定",
+                value=draft.get("reply_rules", ""),
+                help="例如：必須說繁體中文、不准用 Emoji、句尾加喵。有無 TTS 都會套用。"
+            )
+            c_tts_rules = st.text_input(
+                "TTS 發音指引 (tts_rules) — 僅注入 speech 欄位的發音提示（可留空）",
+                value=draft.get("tts_rules", ""),
+                help="例如：請以輕柔緩慢的語調朗讀、避免拖音。無特殊需求請留空。"
+            )
+
             save_submit = st.form_submit_button("💾 儲存角色")
             
             if save_submit:
@@ -141,10 +180,12 @@ def render_character_page(api_base: str, user_prefs: dict):
                     payload = {
                         "name": c_name,
                         "system_prompt": c_prompt,
+                        "evolved_prompt": c_evolved.strip() or None,
                         "metrics": metrics_list,
                         "allowed_tones": tones_list,
                         "tts_language": c_tts.strip(),
-                        "speech_rules": c_speech
+                        "reply_rules": c_reply_rules,
+                        "tts_rules": c_tts_rules,
                     }
                     if "character_id" in draft:
                         payload["character_id"] = draft["character_id"]

@@ -48,11 +48,20 @@ def render_settings_page(api_base, user_prefs=None):
             "啟用異步雙層 Agent 模式", value=user_prefs.get("dual_layer_enabled", False),
             help="開啟後，對話將拆分為「意圖路由」與「角色渲染」兩階段。需要工具時會先播放過渡語音，並行執行工具查詢，消除等待空窗。")
 
-        st.header("🧬 AI 人格演化")
-        new_ai_observe_enabled = st.checkbox("啟用 AI 自我觀察", value=user_prefs.get("ai_observe_enabled", True),
-                                              help="開啟後，每輪對話結束會由 LLM 分析 AI 是否有自我陳述。")
-        new_reflection_threshold = st.slider("反思觸發閾值", 3, 20, user_prefs.get("reflection_threshold", 5), 1,
-                                              help="累積多少筆 AI 自我觀察後，在話題偏移時自動觸發人格反思。")
+        st.header("🧬 PersonaProbe 定時反思")
+        new_persona_sync_enabled = st.checkbox("啟用定時人格反思", value=user_prefs.get("persona_sync_enabled", True),
+                                               help="每 20 分鐘在系統閒置時檢查，累積足夠訊息後呼叫 PersonaProbe 進行深度分析。")
+        new_persona_sync_min_messages = st.slider("最低訊息數閾值", 10, 200, user_prefs.get("persona_sync_min_messages", 50), 10,
+                                                   help="上次反思後需累積多少筆訊息才觸發。")
+        new_persona_sync_max_per_day = st.slider("每日反思上限", 1, 5, user_prefs.get("persona_sync_max_per_day", 2), 1,
+                                                  help="每天最多執行幾次反思。")
+        new_persona_sync_idle_minutes = st.slider("閒置判定時間（分鐘）", 1, 60, user_prefs.get("persona_sync_idle_minutes", 10), 1,
+                                                   help="最後一筆訊息距今超過此時間才視為系統閒置。")
+        new_persona_sync_fragment_limit = st.slider(
+            "分析片段上限（近期 N 筆）", 100, 2000, user_prefs.get("persona_sync_fragment_limit", 400), 50,
+            help="PersonaProbe 分析時取最近 N 筆對話。數值越大分析越全面但耗時越長，建議 300-600。")
+        new_persona_probe_url = st.text_input("PersonaProbe API URL", value=user_prefs.get("persona_probe_url", "http://localhost:8089"),
+                                               help="PersonaProbe server 的位址（start.bat 啟動後預設 port 8089）。")
 
         st.header("⏳ 背景搜集設定")
         default_hours = int(user_prefs.get("bg_gather_interval", 14400)) // 3600
@@ -83,8 +92,12 @@ def render_settings_page(api_base, user_prefs=None):
             "memory_hard_base": new_memory_hard_base,
             "shift_threshold": new_shift_threshold,
             "cluster_threshold": new_cluster_threshold,
-            "ai_observe_enabled": new_ai_observe_enabled,
-            "reflection_threshold": new_reflection_threshold,
+            "persona_sync_enabled": new_persona_sync_enabled,
+            "persona_sync_min_messages": new_persona_sync_min_messages,
+            "persona_sync_max_per_day": new_persona_sync_max_per_day,
+            "persona_sync_idle_minutes": new_persona_sync_idle_minutes,
+            "persona_sync_fragment_limit": new_persona_sync_fragment_limit,
+            "persona_probe_url": new_persona_probe_url,
             "dual_layer_enabled": new_dual_layer_enabled,
         }
         try:

@@ -7,13 +7,14 @@ import requests
 from datetime import datetime
 
 CATEGORY_META = {
-    "chat":          {"label": "💬 對話",      "color": "#4A9EFF"},
-    "pipeline":      {"label": "🧠 記憶管線",  "color": "#A78BFA"},
-    "expand":        {"label": "🔍 意圖擴展",  "color": "#34D399"},
-    "fuse":          {"label": "⚡ 核心融合",  "color": "#F59E0B"},
-    "profile":       {"label": "👤 使用者畫像","color": "#EC4899"},
-    "system_event":  {"label": "🔧 系統事件",  "color": "#6B7280"},
-    "error":         {"label": "❌ 錯誤",       "color": "#EF4444"},
+    "chat":          {"label": "💬 對話生成",    "color": "#4A9EFF"},
+    "router":        {"label": "🔀 工具意圖偵測","color": "#818CF8"},
+    "pipeline":      {"label": "🧠 記憶管線",    "color": "#A78BFA"},
+    "expand":        {"label": "🔍 意圖擴展",    "color": "#34D399"},
+    "fuse":          {"label": "⚡ 核心融合",    "color": "#F59E0B"},
+    "profile":       {"label": "👤 使用者畫像",  "color": "#EC4899"},
+    "system_event":  {"label": "🔧 系統事件",    "color": "#6B7280"},
+    "error":         {"label": "❌ 錯誤",         "color": "#EF4444"},
 }
 
 
@@ -101,14 +102,37 @@ def _fmt_ts(iso_str: str) -> str:
         return iso_str[:19] if iso_str else ""
 
 
-def _fmt_messages(messages: list) -> str:
+def _fmt_messages(messages: list) -> tuple[str, int, int]:
+    """
+    回傳 (formatted_text, total_chars, message_count)。
+    所有訊息類型（system/user/assistant/tool/tool_calls）完整輸出，不做任何截斷。
+    """
     sep = "\n" + "─" * 50 + "\n"
     parts = []
+    total_chars = 0
+
     for msg in (messages or []):
-        role = msg.get("role", "").upper()
-        content = msg.get("content", "")
-        parts.append(f"[{role}]\n{content}")
-    return sep.join(parts)
+        role = msg.get("role", "unknown").upper()
+        content = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls")
+        tool_call_id = msg.get("tool_call_id")
+
+        header = f"[{role}]"
+        if tool_call_id:
+            header += f" (tool_call_id={tool_call_id})"
+
+        body_parts = []
+        if content:
+            body_parts.append(content)
+        if tool_calls:
+            import json as _json
+            body_parts.append("[TOOL_CALLS]\n" + _json.dumps(tool_calls, ensure_ascii=False, indent=2))
+
+        body = "\n".join(body_parts) if body_parts else "(empty)"
+        total_chars += len(content) + sum(len(str(tc)) for tc in (tool_calls or []))
+        parts.append(f"{header}\n{body}")
+
+    return sep.join(parts), total_chars, len(messages or [])
 
 
 # ──────────────────────────────────────────
@@ -126,20 +150,29 @@ def _render_llm_pair(block: dict, idx: int):
     label = f"{status_icon} {meta['label']}  ·  {ts}  ·  {model}"
 
     with st.expander(label, expanded=False):
-        st.markdown("**📥 Prompt**")
         prompt_block = block.get("prompt")
         if prompt_block:
             messages = prompt_block.get("messages", [])
-            prompt_text = _fmt_messages(messages)
+            prompt_text, total_chars, msg_count = _fmt_messages(messages)
+            st.markdown(
+                f"**📥 Prompt** — `{msg_count}` 則訊息　|　"
+                f"合計 `{total_chars:,}` 字元　|　"
+                f"約 `{total_chars // 4:,}` tokens（粗估）"
+            )
             st.code(prompt_text, language=None)
         else:
+            st.markdown("**📥 Prompt**")
             st.caption("（無 Prompt 紀錄）")
 
-        st.markdown("**📤 Response**")
         if has_resp:
             response_text = block["response"].get("content", "")
+            resp_chars = len(response_text)
+            st.markdown(
+                f"**📤 Response** — `{resp_chars:,}` 字元　|　約 `{resp_chars // 4:,}` tokens（粗估）"
+            )
             st.code(response_text, language=None)
         else:
+            st.markdown("**📤 Response**")
             st.warning("尚無 Response 紀錄")
 
 

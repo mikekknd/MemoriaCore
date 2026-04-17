@@ -11,7 +11,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_analyzer,
-    get_embed_model, get_personality_engine, db_write_lock,
+    get_embed_model, db_write_lock,
     get_character_manager
 )
 from core.prompt_manager import get_prompt_manager
@@ -103,25 +103,6 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
-# ── AI 自我觀察背景任務 ──────────────────────────────────
-async def _extract_ai_observations_bg(reply_text: str, context_msgs: list[dict]):
-    """背景提取 AI 自我觀察並存入 DB（非阻塞）"""
-    try:
-        pe = get_personality_engine()
-        rtr = get_router()
-        observations = await asyncio.to_thread(
-            pe.extract_self_observations, reply_text, context_msgs, rtr
-        )
-        if observations:
-            context_summary = " | ".join(
-                [f"{m['role']}: {m['content'][:50]}" for m in (context_msgs or [])[-2:]]
-            )
-            for obs in observations:
-                await asyncio.to_thread(pe.store_observation, obs, context_summary)
-    except Exception:
-        pass  # 觀察提取失敗不影響主流程
-
-
 # ── 記憶管線背景任務 ──────────────────────────────────────
 def _run_memory_pipeline_sync(msgs_to_extract: list[dict], last_block: dict | None):
     """
@@ -186,16 +167,6 @@ def _run_memory_pipeline_sync(msgs_to_extract: list[dict], last_block: dict | No
             pref_agg.write_to_profile(promoted)
             pipeline_events.append({"type": "system_event", "action": "preferences_aggregated",
                                     "promoted_count": len(promoted)})
-    except Exception:
-        pass
-
-    # ─── AI 人格反思 ───
-    try:
-        pe = get_personality_engine()
-        if pe.should_reflect():
-            reflection_ok = pe.run_reflection(rtr)
-            if reflection_ok:
-                pipeline_events.append({"type": "system_event", "action": "personality_reflected"})
     except Exception:
         pass
 
@@ -325,11 +296,6 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     static_profile = ms.get_static_profile_prompt()
     static_profile_block = f"\n{static_profile}\n" if static_profile else ""
 
-    # AI 個性檔案注入
-    pe = get_personality_engine()
-    personality_ctx = pe.get_personality_prompt()
-    personality_block = f"\n【AI個性記憶】\n{personality_ctx}\n" if personality_ctx else ""
-
     proactive_topics_block = ms.get_proactive_topics_prompt(limit=1)
     if proactive_topics_block:
         proactive_topics_block = f"\n{proactive_topics_block}\n"
@@ -344,26 +310,34 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     except Exception:
         pass
 
-    # 動態角色載入
+    # 動態角色載入（evolved_prompt 優先，否則使用 system_prompt）
     char_mgr = get_character_manager()
     active_char_id = user_prefs.get("active_character_id", "default")
     active_char = char_mgr.get_active_character(active_char_id)
     metrics = active_char.get("metrics", ["professionalism"])
     allowed_tones = active_char.get("allowed_tones", ["Neutral", "Happy", "Professional"])
-    speech_rules = active_char.get("speech_rules", "Traditional Chinese. NO EMOJIS.")
+    reply_rules = active_char.get("reply_rules", "Traditional Chinese. NO EMOJIS.")
+    tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
-    char_sys_prompt = active_char.get("system_prompt", storage.load_system_prompt())
+    char_sys_prompt = char_mgr.get_effective_prompt(active_char) or storage.load_system_prompt()
 
     metrics_str = ", ".join(metrics)
     tones_str = "/".join(allowed_tones)
 
+    pm = get_prompt_manager()
     speech_instruction = ""
     speech_json = ""
     if char_tts_lang:
-        speech_instruction = f"4. `speech`: 這是專門提供給語音合成 (TTS) 的發音文本，請嚴格遵守以下角色發音規則：[{char_tts_lang}] {speech_rules}\n5. `reply`: 這是顯示給使用者看的自然語言回覆（字幕），需對應 `speech` 的語意，可根據需要輸出翻譯視角（例如 speech 為 {char_tts_lang} 發音，reply 則為中文翻譯字幕）。"
+        speech_instruction = pm.get("chat_speech_instruction_tts").format(
+            char_tts_lang=char_tts_lang,
+            tts_rules=(" " + tts_rules) if tts_rules else "",
+            reply_rules=reply_rules,
+        )
         speech_json = f'  "speech": "符合 {char_tts_lang} 的發音文本",\n'
     else:
-        speech_instruction = f"4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{speech_rules}"
+        speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
+            reply_rules=reply_rules,
+        )
         speech_json = ""
 
     _suffix = get_prompt_manager().get("chat_system_suffix").format(
@@ -376,9 +350,21 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     )
 
     sys_prompt = f"""{char_sys_prompt}
-{personality_block}{static_profile_block}{weather_block}
+{static_profile_block}{weather_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
 {_suffix}"""
+
+    # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）
+    _ctx_preview_lines = []
+    for m in clean_history:
+        role_label = "使用者" if m["role"] == "user" else "助理"
+        preview = m["content"][:300] + ("..." if len(m["content"]) > 300 else "")
+        _ctx_preview_lines.append(f"[{role_label}]: {preview}")
+    _history_preview = (
+        f"\n\n{'─'*40}\n[對話紀錄窗口（共 {len(clean_history)} 則）]\n"
+        + "\n".join(_ctx_preview_lines)
+        if clean_history else "\n\n[對話紀錄窗口：空（首輪對話）]"
+    )
 
     retrieval_ctx = {
         "original_query": user_prompt,
@@ -392,7 +378,8 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         "block_details": block_details,
         "core_debug_text": core_debug_text,
         "profile_debug_text": profile_debug_text,
-        "dynamic_prompt": sys_prompt,
+        "dynamic_prompt": sys_prompt + _history_preview,
+        "context_messages_count": len(clean_history),
     }
 
     # 由系統直接標記引用的 UIDs，不依賴 LLM 回傳以避免降智或格式錯誤
@@ -400,53 +387,60 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
 
     # ─── LLM 生成 ───
     metrics_props = {m: {"type": "integer", "minimum": 0, "maximum": 100} for m in metrics}
+    schema_properties = {
+        "internal_thought": {"type": "string"},
+        "status_metrics": {
+            "type": "object",
+            "properties": metrics_props,
+            "required": metrics
+        },
+        "tone": {"type": "string"},
+        "reply": {"type": "string"},
+        "extracted_entities": {"type": "array", "items": {"type": "string"}},
+    }
+    schema_required = ["internal_thought", "status_metrics", "tone", "reply", "extracted_entities"]
+    if char_tts_lang:
+        schema_properties["speech"] = {"type": "string"}
+        schema_required.insert(3, "speech")
     chat_schema = {
         "type": "object",
-        "properties": {
-            "internal_thought": {"type": "string"},
-            "status_metrics": {
-                "type": "object",
-                "properties": metrics_props,
-                "required": metrics
-            },
-            "tone": {"type": "string"},
-            "speech": {"type": "string"},
-            "reply": {"type": "string"},
-            "extracted_entities": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["internal_thought", "status_metrics", "tone", "speech", "reply", "extracted_entities"],
+        "properties": schema_properties,
+        "required": schema_required,
     }
 
     with timer.step("上下文組裝 (Context Assembly)"):
         api_messages = [{"role": "system", "content": sys_prompt}]
         clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-context_window:]]
+        # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
+        # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
         api_messages.extend(clean_history)
 
     with timer.step("LLM 對話生成 (Chat Generation LLM)"):
-        pre_tool_message = ""
         try:
             from tools.tavily import TAVILY_SEARCH_SCHEMA, execute_tool_call
             from tools.weather import WEATHER_SCHEMA
             tools_list = [TAVILY_SEARCH_SCHEMA, WEATHER_SCHEMA]
 
-            MAX_TOOL_ROUNDS = 3
-            used_tools = False
+            # ── 第一輪：輕量工具偵測 ──────────────────────────
+            # 只帶最近 2 輪對話（4 則訊息）+ 極簡 system prompt，
+            # 不帶人格設定與記憶上下文，僅判斷是否需要呼叫工具。
+            # 輸出文字一律捨棄，只取 tool_calls。
+            _lite_sys = (
+                "判斷使用者最新的訊息是否需要呼叫外部工具（網路搜尋或天氣查詢）。"
+                "若需要，呼叫對應工具並帶入精確查詢參數；若不需要，不輸出任何內容。"
+            )
+            _lite_history = clean_history[-4:]  # 最近 2 輪 = 最多 4 則（含當前 user 訊息）
+            lite_messages = [{"role": "system", "content": _lite_sys}] + _lite_history
 
-            for _tool_round in range(MAX_TOOL_ROUNDS):
-                full_res, tool_calls = rtr.generate_with_tools(
-                    "chat", api_messages, tools=tools_list, temperature=temperature,
-                )
+            # ⚠️ 使用 "router" task key（非 "chat"），確保 log 中可區分
+            # "router" 已在 dependencies.py 登錄，預設 fallback 至 chat 的 provider/model
+            _, tool_calls = rtr.generate_with_tools(
+                "router", lite_messages, tools=tools_list, temperature=0.0,
+            )
 
-                if not tool_calls:
-                    break
-
-                used_tools = True
-
-                # 攔截第一輪工具呼叫前的思考文字
-                if _tool_round == 0 and full_res and full_res.strip():
-                    pre_tool_message = f"*(系統攔截 AI 思考：{full_res.strip()})*\n\n"
-
-                # 通知前端正在使用工具
+            # ── 若有工具呼叫：執行工具並將結果注入完整上下文 ──
+            if tool_calls:
+                # 通知前端
                 if on_event:
                     for tc in tool_calls:
                         tool_name = tc.get("function", {}).get("name", "unknown")
@@ -458,14 +452,12 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
                             "message": f"正在搜尋：{query}" if query else f"正在呼叫工具：{tool_name}",
                         })
 
-                # 將 assistant 的 tool_calls 加入對話歷史（provider 層會自動正規化格式）
+                # 將 tool_calls 與結果附加到完整上下文（api_messages 含完整人格與記憶）
                 api_messages.append({
                     "role": "assistant",
-                    "content": full_res or "",
+                    "content": "",
                     "tool_calls": tool_calls,
                 })
-
-                # 執行每個 tool call 並將結果回填
                 for tc in tool_calls:
                     tool_result = execute_tool_call(tc)
                     tc_id = tc.get("id", f"call_{tc.get('function', {}).get('name', 'unknown')}")
@@ -475,18 +467,19 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
                         "content": tool_result,
                     })
 
-            # 經過 tool call 後，不帶 tools 參數、帶 response_format 取得結構化回應
-            if used_tools:
                 if on_event:
                     on_event({
                         "type": "tool_status",
                         "action": "complete",
                         "message": "搜尋完成，正在整理回覆...",
                     })
-                full_res = rtr.generate(
-                    "chat", api_messages, temperature=temperature,
-                    response_format=chat_schema,
-                )
+
+            # ── 第二輪：完整人格上下文 + schema 強制格式化 ────
+            # 無論是否使用工具，都用完整 api_messages 生成最終回應。
+            full_res = rtr.generate(
+                "chat", api_messages, temperature=temperature,
+                response_format=chat_schema,
+            )
 
         except Exception as e:
             from system_logger import SystemLogger
@@ -506,17 +499,17 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
             if _start != -1:
                 try:
                     parsed, _ = json.JSONDecoder().raw_decode(full_res, _start)
-                    reply_text = pre_tool_message + parsed.get("reply", "解析錯誤")
+                    reply_text = parsed.get("reply", "解析錯誤")
                     new_entities = parsed.get("extracted_entities", [])
                     inner_thought = parsed.get("internal_thought")
                     status_metrics = parsed.get("status_metrics")
                     tone = parsed.get("tone")
                     speech = parsed.get("speech")
                 except Exception:
-                    reply_text = pre_tool_message + full_res
+                    reply_text = full_res
                     new_entities = []
             else:
-                reply_text = pre_tool_message + full_res
+                reply_text = full_res
                 new_entities = []
 
     # 將效能計時結果注入 retrieval_ctx
@@ -662,10 +655,6 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 saved_reply_text = f"{reply_text} {refs_str}"
             await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
 
-            # AI 自我觀察提取（背景非阻塞）
-            if user_prefs.get("ai_observe_enabled", True):
-                asyncio.create_task(_extract_ai_observations_bg(reply_text, list(s.messages[-4:])))
-
             # 如果話題偏移，執行橋接
             if topic_shifted:
                 await session_manager.bridge(sid)
@@ -683,7 +672,13 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 # ── 同步 REST 對話端點（供 Streamlit 使用） ──────────────
 @router.post("/sync", response_model=ChatSyncResponseDTO)
 async def chat_sync(body: ChatSyncRequest):
-    session = await session_manager.get_or_create(body.session_id, channel="rest")
+    session = None
+    if body.session_id:
+        session = await session_manager.get(body.session_id)
+        if session is None:
+            session = await session_manager.restore_from_db(body.session_id)
+    if session is None:
+        session = await session_manager.create(channel="streamlit")
     sid = session.session_id
 
     await session_manager.add_user_message(sid, body.content)
@@ -707,10 +702,6 @@ async def chat_sync(body: ChatSyncRequest):
         refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
         saved_reply_text = f"{reply_text} {refs_str}"
     await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
-
-    # AI 自我觀察提取（背景非阻塞）
-    if user_prefs.get("ai_observe_enabled", True):
-        asyncio.create_task(_extract_ai_observations_bg(reply_text, list(s.messages[-4:])))
 
     if topic_shifted:
         await session_manager.bridge(sid)
@@ -737,7 +728,15 @@ async def chat_stream_sync(body: ChatSyncRequest):
     與 /sync 功能相同，但以 SSE (Server-Sent Events) 串流回傳中間狀態。
     事件格式：data: {"type": "tool_status"|"result"|"error", ...}
     """
-    session = await session_manager.get_or_create(body.session_id, channel="rest")
+    # 優先從記憶體取得 session；找不到時先嘗試從 DB 還原（後端重啟後記憶體清空的情況）；
+    # 都沒有才建新 session（channel 統一用 streamlit，確保能出現在 UI session 列表）
+    session = None
+    if body.session_id:
+        session = await session_manager.get(body.session_id)
+        if session is None:
+            session = await session_manager.restore_from_db(body.session_id)
+    if session is None:
+        session = await session_manager.create(channel="streamlit")
     sid = session.session_id
 
     await session_manager.add_user_message(sid, body.content)
@@ -793,17 +792,15 @@ async def chat_stream_sync(body: ChatSyncRequest):
             saved_reply_text = f"{reply_text} {refs_str}"
         await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
 
-        if user_prefs.get("ai_observe_enabled", True):
-            asyncio.create_task(_extract_ai_observations_bg(reply_text, list(s.messages[-4:])))
-
         if topic_shifted:
             await session_manager.bridge(sid)
             if pipeline_data:
                 asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
 
-        # 送出最終結果
+        # 送出最終結果（含實際使用的 session_id，讓 UI 同步更新）
         final = {
             "type": "result",
+            "session_id": sid,
             "reply": reply_text,
             "extracted_entities": new_entities,
             "retrieval_context": retrieval_ctx,

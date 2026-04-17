@@ -59,7 +59,12 @@ class ConfigUpdateRequest(BaseModel):
     openai_key: Optional[str] = None
     or_key: Optional[str] = None
     llamacpp_url: Optional[str] = None
-    ai_observe_enabled: Optional[bool] = None
+    persona_sync_enabled: Optional[bool] = None
+    persona_sync_min_messages: Optional[int] = None
+    persona_sync_max_per_day: Optional[int] = None
+    persona_sync_idle_minutes: Optional[int] = None
+    persona_probe_url: Optional[str] = None
+    persona_sync_fragment_limit: Optional[int] = None
     telegram_bot_token: Optional[str] = None
     tavily_api_key: Optional[str] = None
     openweather_api_key: Optional[str] = None

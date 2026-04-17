@@ -156,6 +156,66 @@ let searchTerm = '';
 let currentFileHandle = null;   // FileSystemFileHandle（支援重新讀取磁碟最新內容）
 let currentFileName = '';
 let newestFirst = false;
+let apiMode = false;
+
+// ===== API Mode（被 iframe 嵌入時透過 ?api=true 自動拉取）=====
+(function initApiMode() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('api') !== 'true') return;
+  apiMode = true;
+  fetchLogsFromApi();
+
+  // 接收父視窗的 postMessage 指令（重新載入）
+  window.addEventListener('message', ev => {
+    if (ev.data === 'reload-logs') fetchLogsFromApi();
+  });
+})();
+
+async function fetchLogsFromApi() {
+  try {
+    const resp = await fetch('/api/v1/logs?limit=500');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    // API 回傳已是反序（最新在前），還原為正序以相容 parseAndRender
+    allEntries = data.reverse();
+    // 模擬 parseAndRender 的顯示邏輯
+    document.title = 'Log Viewer - API';
+    dropZone.style.display = 'none';
+    document.getElementById('toolbar').style.display = 'flex';
+    document.getElementById('logContainer').style.display = 'block';
+
+    // 重建分類下拉
+    const cats = new Set();
+    allEntries.forEach(e => { if (e.category) cats.add(e.category); });
+    const sel = document.getElementById('catSelect');
+    sel.innerHTML = '<option value="">所有任務類別</option>';
+    [...cats].sort().forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c; opt.textContent = c;
+      sel.appendChild(opt);
+    });
+
+    // 統計
+    const prompts = allEntries.filter(e => e.type === 'llm_call' && e.direction === 'prompt').length;
+    const responses = allEntries.filter(e => e.type === 'llm_call' && e.direction === 'response').length;
+    const events = allEntries.filter(e => e.type === 'system_event').length;
+    const errors = allEntries.filter(e => e.type === 'error').length;
+    document.getElementById('stats').innerHTML = `
+      <span>${allEntries.length} 筆紀錄</span>
+      <span class="badge llm">LLM ${prompts}/${responses}</span>
+      <span class="badge event">Event ${events}</span>
+      ${errors ? `<span class="badge err">Error ${errors}</span>` : ''}
+    `;
+
+    renderEntries();
+    applyFilters();
+
+    const sb = document.getElementById('searchBox');
+    sb.oninput = () => { searchTerm = sb.value.trim().toLowerCase(); applyFilters(); };
+  } catch (e) {
+    console.error('API Log 載入失敗:', e);
+  }
+}
 
 // ===== Drag & Drop =====
 const dropArea = document.getElementById('dropArea');
@@ -233,6 +293,7 @@ function loadFileContent(file) {
 }
 
 async function reloadFile() {
+  if (apiMode) { fetchLogsFromApi(); return; }
   if (currentFileHandle) {
     // 透過 handle 取得磁碟上的最新內容
     try {

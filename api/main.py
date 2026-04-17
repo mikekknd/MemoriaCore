@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.dependencies import init_all, get_storage, get_router, get_memory_sys
+from api.dependencies import init_all, get_storage, get_router, get_memory_sys, get_persona_sync_manager
 from api.session_manager import session_manager
 from api.telegram_bot import start_telegram_bot, stop_telegram_bot
 from core.background_gatherer import start_background_gather_loop
@@ -57,6 +57,26 @@ async def lifespan(app: FastAPI):
                 start_background_gather_loop(db_path, get_router(), get_storage(), default_interval_seconds=14400)
             )
 
+    # PersonaSync 批次反思（每 20 分鐘檢查一次觸發條件）
+    async def _persona_sync_loop():
+        while True:
+            await asyncio.sleep(1200)  # 20 分鐘
+            try:
+                psm = get_persona_sync_manager()
+                sto = get_storage()
+                prefs = sto.load_prefs()
+                should, reason = await psm.should_run(sto, prefs)
+                if should:
+                    await psm.run_sync(sto, prefs)
+                else:
+                    from core.system_logger import SystemLogger
+                    SystemLogger.log_system_event("persona_sync_skip", {"reason": reason})
+            except Exception as e:
+                from core.system_logger import SystemLogger
+                SystemLogger.log_error("persona_sync_loop", str(e))
+
+    persona_sync_task = asyncio.create_task(_persona_sync_loop())
+
     yield
 
     # Shutdown
@@ -64,11 +84,13 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     if bg_gather_task:
         bg_gather_task.cancel()
-        
+    persona_sync_task.cancel()
+
     try:
         await cleanup_task
         if bg_gather_task:
             await bg_gather_task
+        await persona_sync_task
     except asyncio.CancelledError:
         pass
 

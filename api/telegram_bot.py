@@ -10,10 +10,10 @@ from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode, ChatAction
 
 from api.dependencies import (
-    get_memory_sys, get_storage, get_router, get_personality_engine,
+    get_memory_sys, get_storage, get_router,
 )
 from api.session_manager import session_manager
-from api.routers.chat_ws import _run_chat_orchestration, _extract_ai_observations_bg
+from api.routers.chat_ws import _run_chat_orchestration
 
 logger = logging.getLogger("telegram_bot")
 
@@ -220,10 +220,6 @@ async def _handle_message(message: types.Message):
 
     # 寫入 assistant 回覆
     await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
-
-    # AI 自我觀察提取（背景非阻塞）
-    if user_prefs.get("ai_observe_enabled", True):
-        asyncio.create_task(_extract_ai_observations_bg(reply_text, list(s.messages[-4:])))
 
     # 話題偏移時執行橋接
     if topic_shifted:

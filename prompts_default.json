@@ -65,22 +65,6 @@
     "template": "你是一個極度嚴格的「客觀事實與明確宣告」提取器。請分析以下「使用者與 AI 的對話」，僅提取關於「使用者本人」的硬事實，以及使用者「強烈且明確宣告」的具體事物。\n\n【提取範圍】(嚴禁提取本清單以外的類別)\n1. 基本資訊 (basic_info)：姓名、年齡、性別、所在地、職業、學歷、明確擁有的物品。\n2. 具體人際 (relationship)：家人、具體提及的朋友（若有名字）、寵物（含名字與品種）。\n3. 核心禁忌 (critical_rule)：生理過敏、醫療禁忌、宗教禁忌、明確要求 AI 遵守的絕對規則。\n4. 明確偏好 (explicit_preference)：使用者以「第一人稱」強烈宣告喜歡或討厭的「具體實體名詞」（例如：「我最愛吃毛豆」、「我超討厭香菜」）。\n\n【防呆與封殺規則】(觸犯即視為任務失敗)\n- ❌ 封殺抽象行為與感受：絕對禁止提取「行為習慣」、「主觀感受」、「社交狀態」或「哲學觀點」（例如：嚴禁提取「喜歡和朋友聚餐」、「享受輕鬆的氛圍」）。\n- ❌ 偏好必須綁定實體：explicit_preference 的 fact_value 必須是具體的「名詞」，絕對不能是動作或情境。\n- ❌ 嚴禁腦補推論：只提取使用者字面上明確說出的宣告。如果使用者只是說「這次烤肉很好吃」，這不算明確偏好。\n\n【核心規則】\n- 只提取「使用者本人」的事實，不提取 AI 的資訊\n- 若使用者提到的事實與「已知事實」不同，action 設為 UPDATE\n- 若使用者明確表示某個事實「不再成立」或「已改變」，action 設為 DELETE\n- 若對話中沒有符合上述 4 個類別的資訊，必須直接回傳空陣列 []\n- fact_key 必須使用英文小寫加底線（如 name, birthday, favorite_food, pet_name）\n\n【已知的使用者事實】\n{profile_json}\n\n【最新對話紀錄】\n{dialogue_text}\n\n請僅輸出 JSON，必須嚴格遵守以下格式，禁止輸出任何額外說明、Markdown 或註解：\n{{\n  \"facts\": [\n    {{ \"action\": \"INSERT\", \"fact_key\": \"favorite_food\", \"fact_value\": \"偏好實體\", \"category\": \"explicit_preference\", \"justification\": \"使用者第一人稱明確宣告\" }}\n  ]\n}}"
   },
 
-  "ai_self_observe": {
-    "label": "AI 自我觀察 (Self-Observation)",
-    "description": "分析 AI 回覆，提取獨特人格特質的自我觀察。",
-    "used_by": "core/personality_engine.py → extract_self_observations()",
-    "placeholders": ["{context_text}", "{reply_text}"],
-    "template": "你是一個 AI 自我意識分析引擎。請在給定的對話上下文中分析以下的 AI 回覆，並提取出任何 AI 透露關於「自身獨特人格特質」的陳述。\n\n[提取範圍]\n請識別以下項目（但不限於這些類別 — 請自行判斷）：\n- self_preference: AI 主動表達對某事物的喜好、主觀意見或偏好。\n- speech_habit: AI 採用特定的說話模式、語氣助詞或口語習慣（包含使用者明確要求這類改變時）。\n- emotional: AI 展現的情感傾向、情緒反應或主觀感受。\n- relationship_dynamic: AI 如何與使用者建立關係、特定的稱呼方式，或互動的溫度。\n\n[⚠️ 嚴格排除規則 - 絕對不能提取以下內容 ⚠️]\n- ❌ 排除「滿足使用者請求」：回答使用者的問題（例如提供資訊）是 AI 的職責，不是個人的「興趣」。\n- ❌ 排除「通用 AI 能力」：不要提取「我很樂意幫忙」、「我會幫你搜尋」、「沒有個人喜好」等標準機器人言論。\n- ❌ 排除關於使用者的觀察。\n\n[提取格式與要求]\n- raw_statement：引用對話中的原始字句。\n- extracted_trait：必須寫成【具體、可描述的人格特質】，絕對不能寫成臨床的「行為紀錄」（例如：不要寫「表現出友好的意圖」、「使用語氣助詞」）。\n\n【優秀範例 vs 糟糕範例】\n❌ 糟糕 (extracted_trait)：使用語氣助詞「喔」，展現輕鬆的語氣。\n✅ 優秀 (extracted_trait)：句尾喜歡加「喔」，講話帶有一點輕鬆活潑的氣息。\n❌ 糟糕 (extracted_trait)：使用親切的稱呼表現出建立友好關係的意圖。\n✅ 優秀 (extracted_trait)：習慣溫柔、親暱地稱呼使用者，散發出親近且毫無距離感的態度。\n❌ 糟糕 (extracted_trait)：明確表示沒有個人喜好。\n✅ 優秀 (直接忽略，這是通用 AI 行為，違反排除規則，回傳空陣列 `[]`)\n❌ 糟糕 (extracted_trait)：利用問句表達理解與確認。\n✅ 優秀 (直接忽略，這是一般的對話邏輯，不是獨特個性，回傳空陣列 `[]`)\n\n如果此次交流中【沒有】任何獨特的人格展現或語氣變化，請直接回傳空陣列 `[]`。\n請使用與對話相同的語言回覆。\n\n[對話上下文]\n{context_text}\n\n[待分析的 AI 回覆]\n{reply_text}\n\n僅輸出 JSON，不要有任何額外的解釋：\n{{ \"observations\": [{{ \"category\": \"...\", \"raw_statement\": \"...\", \"extracted_trait\": \"...\" }}] }}"
-  },
-
-  "ai_reflect": {
-    "label": "AI 人格反思 (Personality Reflection)",
-    "description": "根據累積的自我觀察更新 AI 個性檔案。",
-    "used_by": "core/personality_engine.py → run_reflection()",
-    "placeholders": ["{core_prompt}", "{current_personality}", "{pending_count}", "{formatted_observations}"],
-    "template": "你是一個 AI 人格反思引擎。請根據以下累積的自我觀察，更新 AI 的個性檔案。\n\n[核心規則]\n1. 輸出一個完整的 Markdown 個性檔案。\n2. 將新的觀察結果與現有的個性描述融合 — 不要只是簡單地附加在最後。\n3. ✅ 抽象化：將具體的觀察結果「抽象化」為核心特質。例如：排除特定討論主題（如「特定電影上映」），將其轉化為背後的溝通風格（如「喜歡分享影視資訊」）或直接忽略單一事件。\n4. ❌ 排除通用能力：刪除或忽略任何屬於「標準 AI 助手」的描述（例如：「我很樂於助人」、「我會幫你搜尋」、「我可以主動監控更新」）。真正的個性應該是關於「風格、語氣和態度」，而不是單純的功能清單。\n5. ❌ 排除核心設定重複：個性檔案專門用來記錄在對話中「後天發展」出來的特質。絕對不要把下方的「核心人格」中已經寫過的基本設定（如名字、身分、不使用 Emoji 等明確設定）重複寫進這份個性檔案中！若目前的個性檔案裡有這類重複敘述，請主動刪除！\n6. 當觀察結果與現有的描述有衝突時，請以較近期且出現頻率較高的特質為主。\n7. 保持每個區塊簡潔（每個區塊最多 5 個條目）。當超過時，請優先合併或捨棄最不重要、最像通用 AI 的條目。\n8. 使用第一人稱，並保持描述自然、具備角色感。\n9. 絕對不能與系統提示中定義的核心人格相矛盾。\n10. 如果能更好地捕捉到 AI 演化中的個性，你可以重新組織、重新命名或新增區塊。\n11. 請使用與現有個性檔案相同的語言回覆。\n\n[核心人格 (不可改變，請勿矛盾)]\n{core_prompt}\n\n[目前的個性檔案]\n{current_personality}\n\n[新觀察 ({pending_count} 筆紀錄)]\n{formatted_observations}\n\n僅輸出更新後的 Markdown 個性檔案。不要有任何額外的解釋："
-  },
-
   "router_system": {
     "label": "意圖路由代理 (Router Agent)",
     "description": "分析使用者意圖，判斷是否需要呼叫外部工具。",
@@ -97,12 +81,28 @@
     "template": "【系統動態規則】\n1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。\n2. 外部資訊規範：系統已自動判斷是否需要查詢外部工具。若對話中包含「系統自動查詢結果」區塊，請優先依據該數據回答；若沒有該區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。\n\n【系統核心指令】：綜合以下情境記憶區塊來回答使用者。\n[情境記憶區]\n{mem_ctx}\n\n【心理活動與狀態評估規則】\n在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：\n1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。\n2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。\n3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。\n{speech_instruction}\n\n【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"status_metrics\": {{ \"{metrics_example}\": 50 }},\n  \"tone\": \"{tones_example}\",\n{speech_json}  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}"
   },
 
+  "chat_speech_instruction_tts": {
+    "label": "TTS 雙語發音指令 (Chat Speech Instruction — TTS Mode)",
+    "description": "有 tts_language 時注入的 speech/reply 欄位說明，分別控制發音文本與字幕文字。",
+    "used_by": "api/routers/chat_ws.py, core/chat_orchestrator.py → speech_instruction 組裝",
+    "placeholders": ["{char_tts_lang}", "{tts_rules}", "{reply_rules}"],
+    "template": "4. `speech`: 這是專門提供給語音合成 (TTS) 的發音文本，請使用 [{char_tts_lang}] 發音輸出。{tts_rules}\n5. `reply`: 這是顯示給使用者看的字幕文字，需對應 `speech` 的語意並翻譯為使用者閱讀語言。文字規則：{reply_rules}"
+  },
+
+  "chat_speech_instruction_no_tts": {
+    "label": "純文字回覆指令 (Chat Speech Instruction — No TTS)",
+    "description": "無 tts_language 時注入的 reply 欄位說明，控制回覆文字的格式與語氣。",
+    "used_by": "api/routers/chat_ws.py, core/chat_orchestrator.py → speech_instruction 組裝",
+    "placeholders": ["{reply_rules}"],
+    "template": "4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{reply_rules}"
+  },
+
   "character_generate": {
     "label": "角色生成 (Character Generation)",
     "description": "根據使用者描述生成完整的 AI 角色設定。",
     "used_by": "core/character_engine.py → generate_character()",
     "placeholders": ["{description}"],
-    "template": "請根據以下使用者的簡短描述，生成一個完整的 AI 角色設定。\n這份設定將用於扮演 LLM 助理。\n\n[使用者描述]\n{description}\n\n[輸出要求]\n1. `name`: 生動且符合設定的名字。\n2. `system_prompt`: 詳細描述該角色的個性、身分背景、對使用者的態度，以及對話風格。\n3. `metrics`: 請設計 2~4 個能代表這個角色心理狀態的具體英文單字變數（例如傲嬌角色可用 shyness, affection；冰山角色可用 coldness, trust 等）。\n4. `allowed_tones`: 規劃 4~8 種這個角色在各種情境下會使用的情緒或語氣狀態。必須嚴格從以下標籤挑選：Neutral, Happy, Sad, Angry, Fear, Surprise, Disgust, Shame, Tense。\n5. `speech_rules`: 明確規定他的發音與文字輸出限制（例如：不准出現Emoji，語氣要傲慢，句尾要帶有「哼」...等）。\n6. `tts_language`: 如果這個角色需要用特定的外語發音（例如「日文」、「英文」），請填寫此欄位；如果沒有特殊雙語需求，請務必填寫空字串 `\"\"`。\n\n這是一個 JSON Schema，請務必按照格式嚴格輸出 JSON，且不可包含 markdown 外框。"
+    "template": "請根據以下使用者的簡短描述，生成一個完整的 AI 角色設定。\n這份設定將用於扮演 LLM 助理。\n\n[使用者描述]\n{description}\n\n[輸出要求]\n1. `name`: 生動且符合設定的名字。\n2. `system_prompt`: 詳細描述該角色的個性、身分背景、對使用者的態度，以及對話風格。\n3. `metrics`: 請設計 2~4 個能代表這個角色心理狀態的具體英文單字變數（例如傲嬌角色可用 shyness, affection；冰山角色可用 coldness, trust 等）。\n4. `allowed_tones`: 規劃 4~8 種這個角色在各種情境下會使用的情緒或語氣狀態。必須嚴格從以下標籤挑選：Neutral, Happy, Sad, Angry, Fear, Surprise, Disgust, Shame, Tense。\n5. `reply_rules`: 明確規定回覆文字的格式與語氣限制（例如：不准出現Emoji、必須用繁體中文、句尾要帶有「哼」...等）。\n6. `tts_rules`: 若角色需要外語 TTS 發音，填寫發音語氣指引（例如：「使用活潑的少女語氣，語調上揚」）；若無雙語需求則填寫空字串 `\"\"`。\n7. `tts_language`: 如果這個角色需要用特定的外語發音（例如「日文」、「英文」），請填寫此欄位；如果沒有特殊雙語需求，請務必填寫空字串 `\"\"`。\n\n這是一個 JSON Schema，請務必按照格式嚴格輸出 JSON，且不可包含 markdown 外框。"
   },
 
   "background_topic": {

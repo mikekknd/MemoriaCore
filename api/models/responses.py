@@ -139,6 +139,7 @@ class RetrievalContextDTO(BaseModel):
     core_debug_text: str = ""
     profile_debug_text: str = ""
     dynamic_prompt: str = ""
+    context_messages_count: int = 0
     perf_timing: PerfTimingDTO = PerfTimingDTO()
 
 
@@ -146,6 +147,7 @@ class ChatSyncResponseDTO(BaseModel):
     reply: str
     extracted_entities: list[str] = []
     retrieval_context: RetrievalContextDTO = RetrievalContextDTO()
+    cited_memory_uids: list[str] = []
     internal_thought: Optional[str] = None
     status_metrics: Optional[dict] = None
     tone: Optional[str] = None
@@ -166,8 +168,12 @@ class SystemConfigDTO(BaseModel):
     openai_key: str = ""
     or_key: str = ""
     llamacpp_url: str = "http://localhost:8080"
-    ai_observe_enabled: bool = True
-    reflection_threshold: int = 5
+    persona_sync_enabled: bool = True
+    persona_sync_min_messages: int = 50
+    persona_sync_max_per_day: int = 2
+    persona_sync_idle_minutes: int = 10
+    persona_probe_url: str = "http://localhost:8089"
+    persona_sync_fragment_limit: int = 400
     telegram_bot_token: str = ""
     tavily_api_key: str = ""
     openweather_api_key: str = ""

@@ -305,7 +305,7 @@ def run_dual_layer_orchestration(
     """
     from api.dependencies import (
         get_memory_sys, get_storage, get_router, get_analyzer,
-        get_embed_model, get_personality_engine, get_character_manager,
+        get_embed_model, get_character_manager,
     )
     from api.routers.chat_ws import StepTimer
 
@@ -314,7 +314,6 @@ def run_dual_layer_orchestration(
     rtr = get_router()
     storage = get_storage()
     embed_model = get_embed_model()
-    pe = get_personality_engine()
     char_mgr = get_character_manager()
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
@@ -338,9 +337,10 @@ def run_dual_layer_orchestration(
     active_char = char_mgr.get_active_character(active_char_id)
     metrics = active_char.get("metrics", ["professionalism"])
     allowed_tones = active_char.get("allowed_tones", ["Neutral", "Happy", "Professional"])
-    speech_rules = active_char.get("speech_rules", "Traditional Chinese. NO EMOJIS.")
+    reply_rules = active_char.get("reply_rules", "Traditional Chinese. NO EMOJIS.")
+    tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
-    char_sys_prompt = active_char.get("system_prompt", storage.load_system_prompt())
+    char_sys_prompt = char_mgr.get_effective_prompt(active_char) or storage.load_system_prompt()
     char_name = active_char.get("name", "助理")
 
     tools_list = []
@@ -438,9 +438,6 @@ def run_dual_layer_orchestration(
             static_profile = ms.get_static_profile_prompt()
             static_profile_block = f"\n{static_profile}\n" if static_profile else ""
 
-            personality_ctx = pe.get_personality_prompt()
-            personality_block = f"\n【AI個性記憶】\n{personality_ctx}\n" if personality_ctx else ""
-
             proactive_topics_block = ms.get_proactive_topics_prompt(limit=1)
             if proactive_topics_block:
                 proactive_topics_block = f"\n{proactive_topics_block}\n"
@@ -457,13 +454,20 @@ def run_dual_layer_orchestration(
             metrics_str = ", ".join(metrics)
             tones_str = "/".join(allowed_tones)
 
+            pm = get_prompt_manager()
             speech_instruction = ""
             speech_json = ""
             if char_tts_lang:
-                speech_instruction = f"4. `speech`: 這是專門提供給語音合成 (TTS) 的發音文本，請嚴格遵守以下角色發音規則：[{char_tts_lang}] {speech_rules}\n5. `reply`: 這是顯示給使用者看的自然語言回覆（字幕），需對應 `speech` 的語意，可根據需要輸出翻譯視角（例如 speech 為 {char_tts_lang} 發音，reply 則為中文翻譯字幕）。"
+                speech_instruction = pm.get("chat_speech_instruction_tts").format(
+                    char_tts_lang=char_tts_lang,
+                    tts_rules=(" " + tts_rules) if tts_rules else "",
+                    reply_rules=reply_rules,
+                )
                 speech_json = f'  "speech": "符合 {char_tts_lang} 的發音文本",\n'
             else:
-                speech_instruction = f"4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{speech_rules}"
+                speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
+                    reply_rules=reply_rules,
+                )
                 speech_json = ""
 
             _suffix = get_prompt_manager().get("chat_system_suffix").format(
@@ -476,14 +480,28 @@ def run_dual_layer_orchestration(
             )
 
             sys_prompt = f"""{char_sys_prompt}
-{personality_block}{static_profile_block}{weather_block}
+{static_profile_block}{weather_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
 {_suffix}"""
 
             # 上下文組裝
             api_messages = [{"role": "system", "content": sys_prompt}]
             clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-context_window:]]
+            # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
+            # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
             api_messages.extend(clean_history)
+
+        # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）
+        _ctx_preview_lines = []
+        for m in clean_history:
+            role_label = "使用者" if m["role"] == "user" else "助理"
+            preview = m["content"][:300] + ("..." if len(m["content"]) > 300 else "")
+            _ctx_preview_lines.append(f"[{role_label}]: {preview}")
+        _history_preview = (
+            f"\n\n{'─'*40}\n[對話紀錄窗口（共 {len(clean_history)} 則）]\n"
+            + "\n".join(_ctx_preview_lines)
+            if clean_history else "\n\n[對話紀錄窗口：空（首輪對話）]"
+        )
 
         retrieval_ctx = {
             "original_query": user_prompt,
@@ -497,27 +515,32 @@ def run_dual_layer_orchestration(
             "block_details": block_details,
             "core_debug_text": core_debug_text,
             "profile_debug_text": profile_debug_text,
-            "dynamic_prompt": sys_prompt,
+            "dynamic_prompt": sys_prompt + _history_preview,
             "cited_uids": [b.get("block_id") for b in blocks if "block_id" in b] if blocks else [],
+            "context_messages_count": len(clean_history),
         }
 
         # JSON Schema
         metrics_props = {m: {"type": "integer", "minimum": 0, "maximum": 100} for m in metrics}
+        schema_properties = {
+            "internal_thought": {"type": "string"},
+            "status_metrics": {
+                "type": "object",
+                "properties": metrics_props,
+                "required": metrics
+            },
+            "tone": {"type": "string"},
+            "reply": {"type": "string"},
+            "extracted_entities": {"type": "array", "items": {"type": "string"}},
+        }
+        schema_required = ["internal_thought", "status_metrics", "tone", "reply", "extracted_entities"]
+        if char_tts_lang:
+            schema_properties["speech"] = {"type": "string"}
+            schema_required.insert(3, "speech")
         chat_schema = {
             "type": "object",
-            "properties": {
-                "internal_thought": {"type": "string"},
-                "status_metrics": {
-                    "type": "object",
-                    "properties": metrics_props,
-                    "required": metrics
-                },
-                "tone": {"type": "string"},
-                "speech": {"type": "string"},
-                "reply": {"type": "string"},
-                "extracted_entities": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["internal_thought", "status_metrics", "tone", "speech", "reply", "extracted_entities"],
+            "properties": schema_properties,
+            "required": schema_required,
         }
 
         return {
@@ -540,16 +563,19 @@ def run_dual_layer_orchestration(
         if not tools_list:
             return {"tool_context": None, "thinking_speech": "", "timer_steps": []}
 
-        char_hint = f"{char_name}（{speech_rules}）"
+        char_hint = f"{char_name}（{reply_rules}）"
 
         with t.step("[並行] 意圖路由判斷 (Router Agent LLM)"):
+            # session_messages 末尾已含當前 user_prompt（add_user_message 在 orchestration 前執行）。
+            # run_router_agent 會自行在末尾追加 user_prompt，故此處傳入 [:-1] 排除最後一筆，避免重複。
+            _recent_for_router = session_messages[-context_window:-1]
             router_result = run_router_agent(
                 user_prompt=user_prompt,
                 char_hint=char_hint,
                 tools_list=tools_list,
                 router=rtr,
                 temperature=temperature,
-                recent_history=session_messages[-context_window:],
+                recent_history=_recent_for_router if _recent_for_router else None,
             )
 
         if router_result.needs_tools:

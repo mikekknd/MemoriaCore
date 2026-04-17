@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, BackgroundTasks
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_embed_model,
-    get_personality_engine, reload_router, db_write_lock,
+    get_persona_sync_manager, get_character_manager, reload_router, db_write_lock,
 )
 from api.models.requests import (
     ConfigUpdateRequest, ConsolidateRequest,
@@ -32,8 +32,11 @@ async def get_config():
         openai_key=prefs.get("openai_key", ""),
         or_key=prefs.get("or_key", ""),
         llamacpp_url=prefs.get("llamacpp_url", "http://localhost:8080"),
-        ai_observe_enabled=prefs.get("ai_observe_enabled", True),
-        reflection_threshold=prefs.get("reflection_threshold", 5),
+        persona_sync_enabled=prefs.get("persona_sync_enabled", True),
+        persona_sync_min_messages=prefs.get("persona_sync_min_messages", 50),
+        persona_sync_max_per_day=prefs.get("persona_sync_max_per_day", 2),
+        persona_sync_idle_minutes=prefs.get("persona_sync_idle_minutes", 10),
+        persona_probe_url=prefs.get("persona_probe_url", "http://localhost:8089"),
         telegram_bot_token=prefs.get("telegram_bot_token", ""),
         tavily_api_key=prefs.get("tavily_api_key", ""),
         weather_city=prefs.get("weather_city", ""),
@@ -152,41 +155,62 @@ async def preference_aggregate(body: PreferenceAggregateRequest):
     return result
 
 
-# ── AI 個性管理 ──────────────────────────────────────────
+# ── AI 個性管理（操作 active character 的 evolved_prompt）──
 @router.get("/personality")
 async def get_personality():
-    pe = get_personality_engine()
-    content = pe.load_personality_raw()
-    return {"content": content}
+    """回傳目前 active character 的有效人設內容與演化狀態。"""
+    sto = get_storage()
+    char_mgr = get_character_manager()
+    prefs = sto.load_prefs()
+    active_id = prefs.get("active_character_id", "default")
+    char = char_mgr.get_active_character(active_id)
+    evolved = char.get("evolved_prompt") or ""
+    original = char.get("system_prompt", "")
+    has_evolved = bool(evolved)
+    return {
+        "content": evolved if has_evolved else original,
+        "has_evolved": has_evolved,
+        "character_id": char.get("character_id"),
+        "character_name": char.get("name"),
+    }
 
 
 @router.put("/personality")
 async def update_personality(body: dict):
-    pe = get_personality_engine()
-    pe.save_personality(body.get("content", ""))
+    """手動覆寫 active character 的 evolved_prompt。"""
+    sto = get_storage()
+    char_mgr = get_character_manager()
+    prefs = sto.load_prefs()
+    active_id = prefs.get("active_character_id", "default")
+    char_mgr.set_evolved_prompt(active_id, body.get("content", ""))
     return {"status": "saved"}
 
 
-@router.post("/personality/reflect")
-async def trigger_reflection():
-    pe = get_personality_engine()
-    rtr = get_router()
-    success = await asyncio.to_thread(pe.run_reflection, rtr)
-    if success:
-        return {"status": "success", "message": "個性檔案已更新"}
-    return {"status": "no_change", "message": "無待反思觀察或反思失敗"}
-
-
-@router.get("/personality/observations")
-async def get_observations():
-    pe = get_personality_engine()
-    ms = get_memory_sys()
-    if not ms.db_path:
-        return {"observations": [], "pending_count": 0}
+@router.get("/personality/sync-status")
+async def get_persona_sync_status():
+    """查詢 PersonaSync 目前狀態（上次執行時間、今日次數、距上次反思訊息數）"""
+    psm = get_persona_sync_manager()
     sto = get_storage()
-    all_obs = sto.load_all_observations(ms.db_path)
-    pending_count = sto.count_pending_observations(ms.db_path)
-    return {"observations": all_obs, "pending_count": pending_count}
+    return psm.get_sync_status(storage=sto)
+
+
+@router.post("/personality/sync-now")
+async def trigger_persona_sync_now():
+    """手動觸發一次 PersonaProbe 同步。
+    跳過所有自動觸發條件（閒置時間、訊息累積數、每日上限），
+    僅保留 persona_sync_enabled 全局開關。
+    """
+    psm = get_persona_sync_manager()
+    sto = get_storage()
+    prefs = sto.load_prefs()
+
+    if not prefs.get("persona_sync_enabled", True):
+        return {"status": "skipped", "message": "persona_sync_enabled 為 False"}
+
+    success = await psm.run_sync(sto, prefs, count_toward_daily=False)
+    if success:
+        return {"status": "success", "message": "PersonaProbe 同步完成，evolved_prompt 已更新"}
+    return {"status": "failed", "message": "同步失敗，請查看系統 Log 以了解詳細原因"}
 
 
 # ── 合成測試資料 ──────────────────────────────────────────

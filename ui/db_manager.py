@@ -10,16 +10,16 @@ def _cached_personality(api_base):
     try:
         resp = requests.get(f"{api_base}/system/personality", timeout=5)
         if resp.ok:
-            return resp.json().get("content", "")
+            return resp.json()  # 回傳完整 dict：content, has_evolved, character_name
     except Exception:
         pass
     return None
 
 
-@st.cache_data(ttl=10, show_spinner=False)
-def _cached_observations(api_base):
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_sync_status(api_base):
     try:
-        resp = requests.get(f"{api_base}/system/personality/observations", timeout=10)
+        resp = requests.get(f"{api_base}/system/personality/sync-status", timeout=5)
         if resp.ok:
             return resp.json()
     except Exception:
@@ -91,77 +91,76 @@ def render_db_manager_page(api_base, user_prefs):
     # Tab 2: AI 個性
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab_personality:
-        personality_sub, obs_sub = st.tabs(["📝 個性檔案", "🔍 觀察紀錄"])
+        # ── PersonaSync 狀態區 ──────────────────────────────
+        st.subheader("🧬 PersonaProbe 同步狀態")
+        sync_status = _cached_sync_status(api_base)
+        if sync_status:
+            col_s1, col_s2, col_s3 = st.columns(3)
+            col_s1.metric("今日已執行", f"{sync_status.get('today_run_count', 0)} 次")
+            col_s2.metric("上次反思時間", sync_status.get("last_reflection_at", "從未") or "從未")
+            col_s3.metric("距上次反思訊息數", f"{sync_status.get('messages_since_last', 0)} 筆")
+        else:
+            st.info("無法取得同步狀態（後端可能未啟動）。")
 
-        with personality_sub:
-            try:
-                current_personality = _cached_personality(api_base)
-                if current_personality is not None:
-                    edited_personality = st.text_area(
-                        "AI 個性檔案 (ai_personality.md)",
-                        value=current_personality, height=300,
-                        help="此檔案記錄 AI 的個性演化。你可以手動編輯，也可以讓系統透過反思機制自動更新。",
-                    )
-                    col_save, col_reflect = st.columns(2)
-                    with col_save:
-                        if st.button("💾 保存個性修改", use_container_width=True):
-                            try:
-                                save_resp = requests.put(
-                                    f"{api_base}/system/personality",
-                                    json={"content": edited_personality}, timeout=10,
-                                )
-                                if save_resp.ok:
-                                    st.success("個性檔案已保存！")
-                                else:
-                                    st.error(f"保存失敗: {save_resp.text}")
-                            except Exception as e:
-                                st.error(f"保存失敗: {e}")
-                    with col_reflect:
-                        if st.button("🔄 手動觸發反思", use_container_width=True, type="primary"):
-                            with st.spinner("AI 正在進行自我反思..."):
-                                try:
-                                    ref_resp = requests.post(f"{api_base}/system/personality/reflect", timeout=120)
-                                    if ref_resp.ok:
-                                        result = ref_resp.json()
-                                        if result.get("status") == "success":
-                                            st.success("反思完成！個性檔案已更新。")
-                                            st.rerun()
-                                        else:
-                                            st.info(result.get("message", "無待反思觀察"))
-                                    else:
-                                        st.error(f"反思失敗: {ref_resp.text}")
-                                except Exception as e:
-                                    st.error(f"反思失敗: {e}")
-                else:
-                    st.error("無法載入個性檔案")
-            except Exception as e:
-                st.error(f"載入個性檔案失敗: {e}")
-
-        with obs_sub:
-            try:
-                obs_data = _cached_observations(api_base)
-                if obs_data:
-                    pending_count = obs_data.get("pending_count", 0)
-                    observations = obs_data.get("observations", [])
-
-                    st.metric("待反思觀察", f"{pending_count} 筆")
-
-                    if observations:
-                        df_obs = pd.DataFrame([{
-                            "時間": o["timestamp"][:19],
-                            "類別": o["category"],
-                            "萃取特徵": o["extracted_trait"],
-                            "原文": o["raw_statement"][:80],
-                            "次數": int(o["encounter_count"]),
-                            "狀態": "✅ 已反思" if o["is_reflected"] else "⏳ 待反思",
-                        } for o in observations])
-                        st.dataframe(df_obs, use_container_width=True)
+        if st.button("🚀 立即執行 PersonaProbe 反思", use_container_width=True, type="primary"):
+            with st.spinner("正在呼叫 PersonaProbe 進行深度人格分析（約需 1-2 分鐘）..."):
+                try:
+                    ref_resp = requests.post(f"{api_base}/system/personality/sync-now", timeout=660)
+                    if ref_resp.ok:
+                        result = ref_resp.json()
+                        status = result.get("status", "")
+                        if status == "success":
+                            st.success("✅ PersonaProbe 反思完成！個性檔案已更新。")
+                            st.cache_data.clear()
+                            st.rerun()
+                        elif status == "skipped":
+                            st.info(f"⏭️ 已跳過：{result.get('reason', '')}")
+                        else:
+                            st.error(f"執行失敗：{result.get('message', ref_resp.text)}")
                     else:
-                        st.info("尚無 AI 自我觀察紀錄。開始對話後，系統會自動提取 AI 的自我陳述。")
+                        st.error(f"API 錯誤：{ref_resp.text}")
+                except Exception as e:
+                    st.error(f"請求失敗: {e}")
+
+        st.divider()
+
+        # ── 演化人設檢視 / 手動編輯 ────────────────────────
+        try:
+            personality_data = _cached_personality(api_base)
+            if personality_data is not None:
+                char_name = personality_data.get("character_name", "")
+                has_evolved = personality_data.get("has_evolved", False)
+                current_content = personality_data.get("content", "")
+
+                if has_evolved:
+                    st.subheader(f"🧬 演化人設 — {char_name}")
+                    st.caption("目前使用 PersonaProbe 產出的演化版本。儲存將覆寫演化內容。")
                 else:
-                    st.error("載入觀察紀錄失敗")
-            except Exception as e:
-                st.error(f"載入觀察紀錄失敗: {e}")
+                    st.subheader(f"📝 原始人設 — {char_name}")
+                    st.caption("尚無演化版本，目前使用原始 system_prompt。反思完成後此處將顯示演化內容。")
+
+                edited_personality = st.text_area(
+                    "人設內容",
+                    value=current_content, height=400,
+                    help="由 PersonaProbe 定期自動更新。你也可以直接在此手動調整後儲存至演化人設。",
+                )
+                if st.button("💾 保存為演化人設", use_container_width=True):
+                    try:
+                        save_resp = requests.put(
+                            f"{api_base}/system/personality",
+                            json={"content": edited_personality}, timeout=10,
+                        )
+                        if save_resp.ok:
+                            st.success("演化人設已保存！")
+                            st.cache_data.clear()
+                        else:
+                            st.error(f"保存失敗: {save_resp.text}")
+                    except Exception as e:
+                        st.error(f"保存失敗: {e}")
+            else:
+                st.error("無法載入人設資料")
+        except Exception as e:
+            st.error(f"載入人設失敗: {e}")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Tab 3: 底層資料庫

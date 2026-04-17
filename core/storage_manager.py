@@ -182,101 +182,6 @@ class StorageManager:
         conn.commit()
         return conn
 
-    # ==========================================
-    # AI 個性觀察 CRUD
-    # ==========================================
-    def insert_ai_observation(self, db_path, obs_id, category, raw_statement, extracted_trait, trait_vector, source_context=""):
-        """新增一筆 AI 自我觀察"""
-        conn = self._init_db(db_path)
-        cursor = conn.cursor()
-        timestamp = datetime.now().isoformat()
-        vector_blob = np.array(trait_vector, dtype=np.float32).tobytes() if trait_vector is not None else None
-        cursor.execute('''
-            INSERT OR REPLACE INTO ai_personality_observations
-            (obs_id, timestamp, category, raw_statement, extracted_trait, trait_vector, source_context, is_reflected, encounter_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1.0)
-        ''', (obs_id, timestamp, category, raw_statement, extracted_trait, vector_blob, source_context))
-        conn.commit()
-        conn.close()
-
-    def increment_observation_count(self, db_path, obs_id):
-        """遞增既有觀察的 encounter_count"""
-        conn = self._init_db(db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE ai_personality_observations
-            SET encounter_count = encounter_count + 1.0, timestamp = ?
-            WHERE obs_id = ?
-        ''', (datetime.now().isoformat(), obs_id))
-        conn.commit()
-        conn.close()
-
-    def load_pending_observations(self, db_path, limit=50):
-        """載入所有未反思的觀察"""
-        if not os.path.exists(db_path):
-            return []
-        conn = self._init_db(db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT obs_id, timestamp, category, raw_statement, extracted_trait, trait_vector, source_context, encounter_count
-            FROM ai_personality_observations
-            WHERE is_reflected = 0
-            ORDER BY timestamp DESC
-            LIMIT ?
-        ''', (limit,))
-        rows = cursor.fetchall()
-        conn.close()
-        results = []
-        for r in rows:
-            vec = np.frombuffer(r[5], dtype=np.float32).tolist() if r[5] else []
-            results.append({
-                "obs_id": r[0], "timestamp": r[1], "category": r[2],
-                "raw_statement": r[3], "extracted_trait": r[4],
-                "trait_vector": vec, "source_context": r[6],
-                "encounter_count": float(r[7]) if r[7] else 1.0
-            })
-        return results
-
-    def load_all_observations(self, db_path, limit=100):
-        """載入所有觀察（含已反思），供 UI 顯示"""
-        if not os.path.exists(db_path):
-            return []
-        conn = self._init_db(db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT obs_id, timestamp, category, raw_statement, extracted_trait, is_reflected, encounter_count
-            FROM ai_personality_observations
-            ORDER BY timestamp DESC
-            LIMIT ?
-        ''', (limit,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [{"obs_id": r[0], "timestamp": r[1], "category": r[2],
-                 "raw_statement": r[3], "extracted_trait": r[4],
-                 "is_reflected": bool(r[5]), "encounter_count": float(r[6]) if r[6] else 1.0} for r in rows]
-
-    def mark_observations_reflected(self, db_path, obs_ids):
-        """標記多筆觀察為已反思"""
-        if not obs_ids:
-            return
-        conn = self._init_db(db_path)
-        cursor = conn.cursor()
-        placeholders = ",".join("?" * len(obs_ids))
-        cursor.execute(f"UPDATE ai_personality_observations SET is_reflected = 1 WHERE obs_id IN ({placeholders})", obs_ids)
-        conn.commit()
-        conn.close()
-
-    def count_pending_observations(self, db_path):
-        """計算未反思觀察數"""
-        if not os.path.exists(db_path):
-            return 0
-        conn = self._init_db(db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM ai_personality_observations WHERE is_reflected = 0")
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
-
     def load_db(self, db_path):
         if not os.path.exists(db_path):
             return []
@@ -703,3 +608,37 @@ class StorageManager:
         return {"session_id": r[0], "channel": r[1], "channel_uid": r[2],
                 "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
                 "message_count": r[6]}
+
+    def get_last_message_time(self) -> "datetime | None":
+        """回傳 conversation_messages 表中最後一筆訊息的 timestamp（datetime 物件）。
+        無任何訊息時回傳 None。涵蓋所有 channel（WS + REST）。"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT timestamp FROM conversation_messages ORDER BY msg_id DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0]:
+            try:
+                return datetime.fromisoformat(row[0])
+            except ValueError:
+                return None
+        return None
+
+    def count_messages_since(self, since_iso: str) -> int:
+        """計算 since_iso 時間點之後的訊息數（含 user 與 assistant）。
+        since_iso 格式：ISO 8601 字串，例如 '2026-04-15T10:00:00'。
+        查詢失敗或格式錯誤時回傳 0。"""
+        try:
+            conn = self._init_conversation_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM conversation_messages WHERE timestamp > ?",
+                (since_iso,)
+            )
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception:
+            return 0
