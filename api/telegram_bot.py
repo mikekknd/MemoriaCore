@@ -13,7 +13,7 @@ from api.dependencies import (
     get_memory_sys, get_storage, get_router,
 )
 from api.session_manager import session_manager
-from api.routers.chat_ws import _run_chat_orchestration
+from api.routers.chat.orchestration import _run_chat_orchestration
 
 logger = logging.getLogger("telegram_bot")
 

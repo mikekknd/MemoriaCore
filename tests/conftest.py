@@ -14,6 +14,7 @@ from core.preference_aggregator import PreferenceAggregator
 from core.llm_gateway import OllamaProvider, LLMRouter
 from core.storage_manager import StorageManager
 from tests.test_config import OLLAMA_SIM_MODEL, OLLAMA_TASK_MODEL, EMBED_MODEL, OLLAMA_AVAILABLE
+from tests.mock_llm import MockRouter, MockMemorySystem, MockEmbedProvider  # noqa: F401
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -77,3 +78,111 @@ def analyzer(memory_system):
 def pref_aggregator(memory_system):
     """PreferenceAggregator 綁定至測試用 MemorySystem"""
     return PreferenceAggregator(memory_system)
+
+
+# ════════════════════════════════════════════════════════════
+# SECTION: Mock Fixtures — 脫離 Ollama/檔案 I/O 的純單元測試
+# ════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def mock_router_with_tools():
+    """MockRouter 預設含一組 tavily tool call，支援工具呼叫流程測試"""
+    from tests.mock_llm import MockRouter
+    router = MockRouter()
+    router.set_tool_calls([{
+        "id": "call_test123",
+        "type": "function",
+        "function": {
+            "name": "tavily_search",
+            "arguments": {"query": "台北天氣"}
+        }
+    }])
+    return router
+
+
+@pytest.fixture
+def mock_character_manager():
+    """回傳固定角色設定，避免 CharacterManager 檔案 I/O"""
+    from unittest.mock import MagicMock
+    cm = MagicMock()
+    cm.get_active_character.return_value = {
+        "character_id": "default",
+        "name": "測試助理",
+        "metrics": ["professionalism"],
+        "allowed_tones": ["Neutral", "Happy"],
+        "reply_rules": "Traditional Chinese. NO EMOJIS.",
+        "tts_rules": "",
+        "tts_language": "",
+        "system_prompt": "你是一個測試助理。",
+        "evolved_prompt": None,
+    }
+    cm.get_effective_prompt.return_value = "你是一個測試助理。"
+    return cm
+
+
+@pytest.fixture
+def mock_prompt_manager():
+    """回傳可控 prompt 字串，杜絕 PromptManager 檔案讀取"""
+    from unittest.mock import MagicMock
+    pm = MagicMock()
+    pm.get.side_effect = lambda key: {
+        "router_system": "根據角色 {char_hint} 判斷是否需要工具。",
+        "chat_speech_instruction_no_tts": "回覆規則：{reply_rules}",
+        "chat_speech_instruction_tts": "TTS規則：{char_tts_lang} {reply_rules} {tts_rules}",
+        "chat_system_suffix": "指標：{metrics_str} | 語氣：{tones_str}\n{speech_instruction}\n Memory: {mem_ctx}",
+        "query_expand": "擴展關鍵詞：{user_query}",
+        "memory_pipeline": "提取實體與摘要：\n對話：{dialogue_text}\n上一記憶：{last_overview}",
+        "user_facts_extract": "從以下對話提取使用者事實：\n{dialogue_text}\n已知畫像：{profile_json}",
+    }.get(key, f"MOCK_PROMPT:{key}")
+    return pm
+
+
+@pytest.fixture
+def mock_storage():
+    """StorageManager mock，回傳預設 prefs 和 system_prompt"""
+    from unittest.mock import MagicMock
+    s = MagicMock()
+    s.load_prefs.return_value = {
+        "temperature": 0.7,
+        "shift_threshold": 0.55,
+        "ui_alpha": 0.6,
+        "memory_hard_base": 0.55,
+        "memory_threshold": 0.5,
+        "context_window": 10,
+        "active_character_id": "default",
+        "dual_layer_enabled": False,
+        "tavily_api_key": "",
+        "openweather_api_key": "",
+    }
+    s.load_system_prompt.return_value = "你是一個測試助理。"
+    s.load_profile_vectors.return_value = []
+    return s
+
+
+@pytest.fixture
+def mock_memory_system():
+    """MockMemorySystem fixture — 直接代理自 tests.mock_llm"""
+    return MockMemorySystem()
+
+
+@pytest.fixture
+def mock_router():
+    """MockRouter fixture — 直接代理自 tests.mock_llm"""
+    return MockRouter()
+
+
+@pytest.fixture
+def mock_embed_provider():
+    """MockEmbedProvider fixture — 直接代理自 tests.mock_llm"""
+    return MockEmbedProvider()
+
+
+@pytest.fixture
+def mock_analyzer():
+    """Mock MemoryAnalyzer — 避免依賴真實 MemorySystem"""
+    from unittest.mock import MagicMock
+    from core.memory_analyzer import MemoryAnalyzer
+    analyzer = MagicMock(spec=MemoryAnalyzer)
+    analyzer.detect_topic_shift.return_value = (False, 0.8)
+    return analyzer

@@ -29,6 +29,7 @@ def render_routing_page(api_base, user_prefs=None):
         "background_gather": {"desc": "背景話題摘要", "help": "在背景將 Tavily 搜尋下來的資料摘要成主動話題。建議不需太強的模型。"},
         "character_gen": {"desc": "角色設定生成", "help": "根據簡短描述利用 AI 擴充出完整的角色系統提示詞與心理指標。"},
         "router": {"desc": "意圖路由預處理", "help": "雙層 Agent 模式的第一階段：判斷是否需要呼叫外部工具並產生過渡語音。建議使用輕量快速模型以降低延遲。"},
+        "translate": {"desc": "TTS 語音翻譯", "help": "將角色回覆翻譯為 TTS 目標語言（如日文），獨立於主對話 LLM 執行。預設跟隨 chat 設定，可指定較輕量的翻譯專用模型。"},
         "persona_sync": {"desc": "PersonaProbe 人格反思", "help": "定時呼叫 PersonaProbe 進行深度 6 維度人格分析（每次約 8 次 LLM 呼叫）。建議使用能力較強的模型以確保分析品質。"},
     }
 

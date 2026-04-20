@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, BackgroundTasks
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_embed_model,
-    get_persona_sync_manager, get_character_manager, reload_router, db_write_lock,
+    get_persona_sync_manager, get_character_manager, reload_router, reload_tts, db_write_lock,
 )
 from api.models.requests import (
     ConfigUpdateRequest, ConsolidateRequest,
@@ -43,6 +43,13 @@ async def get_config():
         bg_gather_interval=int(prefs.get("bg_gather_interval", 14400)),
         active_character_id=prefs.get("active_character_id", "default"),
         dual_layer_enabled=prefs.get("dual_layer_enabled", False),
+        tts_enabled=prefs.get("tts_enabled", False),
+        minimax_api_key=prefs.get("minimax_api_key", ""),
+        minimax_voice_id=prefs.get("minimax_voice_id", "moss_audio_7c2b39d9-1006-11f1-b9c4-4ea5324904c7"),
+        minimax_model=prefs.get("minimax_model", "speech-2.8-hd"),
+        minimax_speed=prefs.get("minimax_speed", 1.0),
+        minimax_vol=prefs.get("minimax_vol", 1.0),
+        minimax_pitch=prefs.get("minimax_pitch", 0),
     )
 
 
@@ -53,8 +60,9 @@ async def update_config(body: ConfigUpdateRequest):
     update = body.model_dump(exclude_none=True)
     prefs.update(update)
     sto.save_prefs(prefs)
-    # 熱重載路由
+    # 熱重載路由 + TTS
     await asyncio.to_thread(reload_router)
+    await asyncio.to_thread(reload_tts, prefs)
     return await get_config()
 
 

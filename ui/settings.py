@@ -76,6 +76,82 @@ def render_settings_page(api_base, user_prefs=None):
             except Exception as e:
                 st.error(f"連線失敗: {e}")
 
+    # ── TTS 設定（橫跨全寬） ─────────────────────────────────
+    st.divider()
+    st.header("🔊 語音合成（Minimax TTS）")
+
+    tts_col1, tts_col2 = st.columns(2)
+    with tts_col1:
+        new_tts_enabled = st.checkbox(
+            "啟用語音合成（TTS）",
+            value=user_prefs.get("tts_enabled", False),
+            help="開啟後，AI 每次回覆都會呼叫 Minimax TTS 合成語音，並透過 WebSocket 以 tts_audio 事件傳送給 client。",
+        )
+        new_minimax_key = st.text_input(
+            "Minimax API Key",
+            type="password",
+            value=user_prefs.get("minimax_api_key", ""),
+            help="從 https://platform.minimax.io 取得。",
+        )
+        new_minimax_voice = st.text_input(
+            "Voice ID",
+            value=user_prefs.get("minimax_voice_id", "moss_audio_7c2b39d9-1006-11f1-b9c4-4ea5324904c7"),
+            help="Minimax 聲音 ID，可在平台的語音庫中查看。",
+        )
+        new_minimax_model = st.selectbox(
+            "TTS 模型",
+            options=["speech-2.8-hd", "speech-2.8", "speech-2-hd", "speech-2"],
+            index=["speech-2.8-hd", "speech-2.8", "speech-2-hd", "speech-2"].index(
+                user_prefs.get("minimax_model", "speech-2.8-hd")
+            ) if user_prefs.get("minimax_model", "speech-2.8-hd") in ["speech-2.8-hd", "speech-2.8", "speech-2-hd", "speech-2"] else 0,
+            help="speech-2.8-hd 音質最高；speech-2 速度最快。",
+        )
+
+    with tts_col2:
+        new_minimax_speed = st.slider(
+            "語速（Speed）", min_value=0.5, max_value=2.0,
+            value=float(user_prefs.get("minimax_speed", 1.0)), step=0.1,
+            help="1.0 為正常語速，2.0 為兩倍速。",
+        )
+        new_minimax_vol = st.slider(
+            "音量（Volume）", min_value=0.1, max_value=2.0,
+            value=float(user_prefs.get("minimax_vol", 1.0)), step=0.1,
+            help="1.0 為正常音量。",
+        )
+        new_minimax_pitch = st.slider(
+            "音調（Pitch）", min_value=-12, max_value=12,
+            value=int(user_prefs.get("minimax_pitch", 0)), step=1,
+            help="0 為原聲音調，正值升調，負值降調。",
+        )
+
+        # TTS 連線測試
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        if st.button("🧪 測試 TTS 連線", disabled=not new_tts_enabled):
+            _test_key = new_minimax_key or user_prefs.get("minimax_api_key", "")
+            if not _test_key:
+                st.warning("請先填入 Minimax API Key。")
+            else:
+                with st.spinner("合成測試語音中…"):
+                    try:
+                        import asyncio
+                        from core.tts_client import MinimaxTTSClient
+                        _client = MinimaxTTSClient(
+                            api_key=_test_key,
+                            voice_id=new_minimax_voice,
+                            model=new_minimax_model,
+                            speed=new_minimax_speed,
+                            vol=new_minimax_vol,
+                            pitch=new_minimax_pitch,
+                        )
+                        _audio = asyncio.run(_client.synthesize("你好，TTS 連線測試成功！"))
+                        if _audio:
+                            st.success(f"✅ TTS 合成成功！音頻大小：{len(_audio):,} bytes")
+                            st.audio(_audio, format="audio/mp3")
+                        else:
+                            st.error("❌ 合成失敗，請確認 API Key 與網路連線。")
+                    except Exception as e:
+                        st.error(f"❌ 測試失敗：{e}")
+
     if st.button("💾 儲存系統設定", use_container_width=True, type="primary"):
         update_payload = {
             "openai_key": new_openai_key,
@@ -99,6 +175,14 @@ def render_settings_page(api_base, user_prefs=None):
             "persona_sync_fragment_limit": new_persona_sync_fragment_limit,
             "persona_probe_url": new_persona_probe_url,
             "dual_layer_enabled": new_dual_layer_enabled,
+            # TTS
+            "tts_enabled": new_tts_enabled,
+            "minimax_api_key": new_minimax_key,
+            "minimax_voice_id": new_minimax_voice,
+            "minimax_model": new_minimax_model,
+            "minimax_speed": new_minimax_speed,
+            "minimax_vol": new_minimax_vol,
+            "minimax_pitch": new_minimax_pitch,
         }
         try:
             resp = requests.put(f"{api_base}/system/config", json=update_payload, timeout=10)

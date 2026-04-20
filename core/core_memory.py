@@ -20,6 +20,10 @@ class MemorySystem:
         self.core_memories = []
         self.user_profiles = []
 
+    # ════════════════════════════════════════════════════════════
+    # SECTION: Embedding 模型切換 / 相似度工具
+    # ════════════════════════════════════════════════════════════
+
     def switch_embedding_model(self, provider, model_name):
         self.embed_provider = provider
         self.embed_model = model_name
@@ -48,6 +52,10 @@ class MemorySystem:
         if norm1_masked == 0 or norm2 == 0: return 0.0
         return dot / (norm1_masked * norm2)
 
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 查詢擴展（LLM Query Expansion）
+    # ════════════════════════════════════════════════════════════
+
     def expand_query(self, user_query, recent_history, router, task_key="expand"):
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent_history[-6:]])
         prompt = get_prompt_manager().get("query_expand").format(
@@ -61,6 +69,10 @@ class MemorySystem:
             return {"original_query": user_query, "expanded_keywords": " ".join(keywords), "entity_confidence": conf}
         except Exception:
             return {"original_query": user_query, "expanded_keywords": "", "entity_confidence": 0.0}
+
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 新增 Memory Block — 含去重 / 對話壓縮 / 核心認知蒸餾
+    # ════════════════════════════════════════════════════════════
 
     def add_memory_block(self, overview, raw_dialogues, duplicate_threshold=0.85, router=None, sim_timestamp=None, potential_preferences=None):
         if not self.embed_provider: return
@@ -318,6 +330,10 @@ class MemorySystem:
             self.storage.save_core_memory(self.db_path, core_id, timestamp, new_insight, new_dense, new_core_weight)
             SystemLogger.log_system_event("核心認知提煉", f"新增成功: {new_insight} (初始積分: {new_core_weight})")
 
+    # ════════════════════════════════════════════════════════════
+    # SECTION: Memory Block 更新 / 叢集偵測 / 融合壓縮
+    # ════════════════════════════════════════════════════════════
+
     def update_memory_block(self, block_id, new_overview):
         if not self.embed_provider: return False
         for block in self.memory_blocks:
@@ -532,6 +548,10 @@ class MemorySystem:
 
         return "情境縫合失敗（向量化錯誤）"
 
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 三軌檢索 — 核心認知 / 情境 Block / 使用者偏好
+    # ════════════════════════════════════════════════════════════
+
     def search_core_memories(self, query, top_k=1, threshold=0.45):
         if not self.core_memories or not self.embed_provider: return []
         
@@ -643,6 +663,10 @@ class MemorySystem:
     # ==========================================
     # 使用者畫像 (User Profile) 管理
     # ==========================================
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 使用者偏好 Profile — 載入 / 套用 / 查詢 / Prompt 組裝
+    # ════════════════════════════════════════════════════════════
+
     def load_user_profile(self):
         """從 DB 載入所有使用者事實到記憶體快取"""
         if not self.db_path:
@@ -793,6 +817,10 @@ class MemorySystem:
                 lines.append(f"- ⚠️ {f['fact_key']}: {f['fact_value']}")
 
         return "\n".join(lines)
+
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 主動話題 Prompt 注入
+    # ════════════════════════════════════════════════════════════
 
     def get_proactive_topics_prompt(self, limit=1):
         """從 topic_cache 撈取未提過的話題轉為 Prompt，並標記為已使用"""

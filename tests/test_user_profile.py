@@ -64,17 +64,24 @@ class TestUserProfileExtraction:
         memory_system.apply_profile_facts(facts_1, memory_system.embed_model)
 
         profiles_before = memory_system.storage.load_all_profiles(memory_system.db_path)
+        keys_before = [p['fact_key'] for p in profiles_before]
         assert len(profiles_before) == 1
+        assert "favorite_food" in keys_before
 
-        # 再寫入語意高度相似的 key（同樣的值，僅 key 名不同）
-        facts_2 = [{"action": "UPDATE", "fact_key": "fav_food", "fact_value": "壽司和拉麵",
+        # 再寫入語意高度相似的 key（僅 key 名不同，value 相同）
+        # 注意：因主鍵是 (fact_key, fact_value)，value 相同才能真正 UPDATE
+        facts_2 = [{"action": "UPDATE", "fact_key": "fav_food", "fact_value": "壽司",
                      "category": "explicit_preference", "justification": "使用者更新偏好"}]
         memory_system.apply_profile_facts(facts_2, memory_system.embed_model)
 
         profiles_after = memory_system.storage.load_all_profiles(memory_system.db_path)
-        # 收束後應只有一個 key（fav_food 被收束到 favorite_food）
+        keys_after = [p['fact_key'] for p in profiles_after]
+
+        # 驗證 key convergence 發生：fav_food 被收束到 favorite_food
         assert len(profiles_after) == 1, \
-            f"Key 收束失敗：預期 1 筆，但有 {len(profiles_after)} 筆 ({[p['fact_key'] for p in profiles_after]})"
+            f"Key 收束失敗：預期 1 筆，但有 {len(profiles_after)} 筆 ({keys_after})"
+        assert "fav_food" not in keys_after, "fav_food 應被收束到 favorite_food"
+        assert "favorite_food" in keys_after, "應保留 favorite_food 這個 key"
 
     def test_tombstone_delete(self, memory_system):
         """DELETE 操作應設 confidence=-1（墓碑化），而非硬刪"""

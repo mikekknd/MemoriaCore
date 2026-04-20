@@ -120,7 +120,12 @@ class SessionManager:
 
     async def add_assistant_message(self, session_id: str, content: str,
                                      debug_info: dict | None = None,
-                                     extracted_entities: list[str] | None = None) -> bool:
+                                     extracted_entities: list[str] | None = None,
+                                     persona_state: dict | None = None) -> bool:
+        """
+        persona_state: {"internal_thought": str, "status_metrics": dict, "tone": str}
+        僅存於記憶體，不持久化到 DB（伺服器重啟後情緒軌跡自然重置）。
+        """
         async with self._lock:
             s = self._sessions.get(session_id)
             if not s:
@@ -128,6 +133,8 @@ class SessionManager:
             msg = {"role": "assistant", "content": content}
             if debug_info:
                 msg["debug_info"] = debug_info
+            if persona_state:
+                msg["persona_state"] = persona_state
             s.messages.append(msg)
             if extracted_entities is not None:
                 s.last_entities = extracted_entities

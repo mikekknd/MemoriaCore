@@ -149,8 +149,6 @@ class ChatSyncResponseDTO(BaseModel):
     retrieval_context: RetrievalContextDTO = RetrievalContextDTO()
     cited_memory_uids: list[str] = []
     internal_thought: Optional[str] = None
-    status_metrics: Optional[dict] = None
-    tone: Optional[str] = None
     speech: Optional[str] = None
     thinking_speech: Optional[str] = None
 
@@ -181,6 +179,13 @@ class SystemConfigDTO(BaseModel):
     bg_gather_interval: int = 14400
     active_character_id: Optional[str] = "default"
     dual_layer_enabled: bool = False
+    tts_enabled: bool = False
+    minimax_api_key: str = ""
+    minimax_voice_id: str = "moss_audio_7c2b39d9-1006-11f1-b9c4-4ea5324904c7"
+    minimax_model: str = "speech-2.8-hd"
+    minimax_speed: float = 1.0
+    minimax_vol: float = 1.0
+    minimax_pitch: int = 0
 
 
 # ── 通用錯誤 ──────────────────────────────────────────────

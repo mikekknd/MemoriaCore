@@ -11,7 +11,23 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
 
 ## Architecture
 - `core/` — 記憶、LLM 路由、人格、儲存引擎
+  - `core/chat_orchestrator/` — 雙層 Agent 對話編排（package）
+    - `dataclasses.py` — `RouterResult` / `ToolContext` / `PersonaResult`
+    - `router_agent.py` — Module A：意圖路由（含 `DIRECT_CHAT_SCHEMA` dummy tool）
+    - `middleware.py`   — Module B：工具並行執行 + 過渡語音推播
+    - `persona_agent.py`— Module C：角色渲染（結構化 JSON 回覆）
+    - `coordinator.py`  — `run_dual_layer_orchestration` 頂層協調（兩條分支平行）
+    - `__init__.py`     — 對外 re-export，舊路徑 `from core.chat_orchestrator import run_dual_layer_orchestration` 仍可用
+  - `core/storage_manager.py` — 單檔但有 SECTION 標記分區（檔案 I/O / 模型 DB / Memory Blocks / Core Memory / Profile / Topic Cache / Conversation / 訊息統計）
+  - `core/core_memory.py` — 同上（Embedding 工具 / 查詢擴展 / Memory Block 寫入 / 叢集融合 / 三軌檢索 / Profile）
 - `api/` — FastAPI routers，singleton DI 由 `api/dependencies.py` 管理
+  - `api/routers/chat/` — WebSocket / REST 共用實作（package）
+    - `timer.py`         — `StepTimer` 計時工具
+    - `ws_manager.py`    — `ConnectionManager` WebSocket 連線池 + `ws_manager` singleton
+    - `pipeline.py`      — 記憶管線同步/背景執行
+    - `orchestration.py` — `_run_chat_orchestration` 單層編排與雙層編排選擇器
+  - `api/routers/chat_ws.py`  — WebSocket 端點（slim，re-export 內部相容）
+  - `api/routers/chat_rest.py`— REST `/chat/sync` 與 SSE `/chat/stream-sync` 端點
 - `tools/` — LLM tool 實作
 - `ui/` — Streamlit 頁面；透過 API 與後端溝通，不直接 import core
 - `tests/` — Pytest 測試套件
@@ -21,6 +37,7 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
   - `llm_client.py` — 自有 LLM 抽象層（`LLMClient(config).chat()`，與主專案 `llm_gateway.py` 各自獨立）
 
 LLM routing (`core/llm_gateway.py`) 分派 9 種 task type 到可設定 provider（Ollama/OpenAI/OpenRouter/llama.cpp），設定存於 `user_prefs.json`。
+若任務帶 `response_format` 但模型回傳純文字（無 `{`），`LLMRouter.generate()` 會自動以警告 prompt + 降溫重試一次（針對 cloud-proxied 模型忽略 schema 的問題）。
 
 ## Constraints
 - Python 3.12，NumPy < 2.0.0
@@ -43,7 +60,7 @@ LLM routing (`core/llm_gateway.py`) 分派 9 種 task type 到可設定 provider
 Pydantic model 統一放 `api/models/`，不可在 router 檔內定義新 model。
 
 **Tool 實作**
-每個 tool 需提供 `*_SCHEMA`（`{"type": "function", ...}`）與執行函式（回傳 `str`）；新增後在 `chat_orchestrator.py` 的 tool 清單登記。
+每個 tool 需提供 `*_SCHEMA`（`{"type": "function", ...}`）與執行函式（回傳 `str`）；新增後在 `core/chat_orchestrator/coordinator.py` 內 Pre-fork 區段的 `tools_list` 登記。
 
 **Prompt Templates**
 所有 LLM prompt 模板統一存放於 `prompts_default.json`，禁止在 Python 程式碼中硬寫 prompt 字串。
@@ -58,7 +75,20 @@ api_messages.extend(clean_history)   # ← 禁止移除此行
 ```
 每次修改 `sys_prompt` 組裝邏輯（例如增減人格區塊、speech_rules 等）後，**必須確認 `api_messages.extend(clean_history)` 仍然存在且在 sys_prompt 賦值之後**。
 此行一旦遺漏，LLM 僅收到系統提示，對話紀錄完全消失，但不會有任何報錯，只會讓模型失憶。
-涉及檔案：`api/routers/chat_ws.py`、`core/chat_orchestrator.py`（兩處都要確認）。
+涉及檔案：`api/routers/chat/orchestration.py`（單層）、`core/chat_orchestrator/coordinator.py` 內 `_memory_branch()`（雙層）— 兩處都要確認。
+
+**Router Agent 對話歷史不可重複末筆 user 訊息（高頻踩坑）**
+`run_router_agent` 內部會把 `user_prompt` 自行 append 到 messages 末尾。若 `recent_history` 已包含當前 user_prompt（例如在 `add_user_message` 後直接傳 `session_messages[-context_window:]`），就會形成兩筆相同的 user 訊息，導致路由判斷被汙染。
+正確寫法（見 `coordinator.py` 的 `_tool_branch`）：
+```python
+_recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
+```
+
+**模組拆分 + SECTION 標記原則**
+為了降低修檔時的 context 消耗，採以下策略：
+- 高頻修改的大檔 → 拆成 package（如 `chat/`、`chat_orchestrator/`），並在 `__init__.py` re-export 維持向後相容。
+- 穩定但仍大的 class 介面檔（如 `storage_manager.py`、`core_memory.py`）→ 不拆檔，但用 `# ════…` 加 `# SECTION: …` 分區，方便 Grep 定位。
+新增方法時請放在語意對應的 SECTION 內；新增 SECTION 請維持與現有相同的視覺樣式。
 
 **Streamlit UI 與 dashboard.html 必須同步修改**
 對話介面、debug 資訊、session 管理、路由設定有兩個並行前端：

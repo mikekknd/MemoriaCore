@@ -77,8 +77,8 @@
     "label": "對話系統後綴指令 (Chat System Suffix)",
     "description": "附加在角色設定之後的系統規則：動態規則、記憶區注入、心理活動評估、強制輸出格式。",
     "used_by": "core/chat_orchestrator.py → sys_prompt 組裝",
-    "placeholders": ["{mem_ctx}", "{metrics_str}", "{tones_str}", "{speech_instruction}", "{metrics_example}", "{tones_example}", "{speech_json}"],
-    "template": "【系統動態規則】\n1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。\n2. 外部資訊規範：系統已自動判斷是否需要查詢外部工具。若對話中包含「系統自動查詢結果」區塊，請優先依據該數據回答；若沒有該區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。\n\n【系統核心指令】：綜合以下情境記憶區塊來回答使用者。\n[情境記憶區]\n{mem_ctx}\n\n【心理活動與狀態評估規則】\n在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算，這將決定你的說話語氣與態度：\n1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。\n2. `status_metrics`: 根據當下情境為你的心理指標打分 (0-100)。目前的追蹤指標有：[{metrics_str}]。\n3. `tone`: 從 [{tones_str}] 中選出一個最符合當下心境的語氣。\n{speech_instruction}\n\n【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"status_metrics\": {{ \"{metrics_example}\": 50 }},\n  \"tone\": \"{tones_example}\",\n{speech_json}  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}"
+    "placeholders": ["{mem_ctx}", "{speech_instruction}"],
+    "template": "【系統動態規則】\n1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。\n2. 外部資訊規範：系統已自動判斷是否需要查詢外部工具。若對話中包含「系統自動查詢結果」區塊，請優先依據該數據回答；若沒有該區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。\n\n【系統核心指令】：綜合以下情境記憶區塊來回答使用者。\n[情境記憶區]\n{mem_ctx}\n\n【心理活動與輸出規則】\n在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算：\n1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。\n{speech_instruction}\n\n【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}"
   },
 
   "chat_speech_instruction_tts": {
@@ -86,15 +86,39 @@
     "description": "有 tts_language 時注入的 speech/reply 欄位說明，分別控制發音文本與字幕文字。",
     "used_by": "api/routers/chat_ws.py, core/chat_orchestrator.py → speech_instruction 組裝",
     "placeholders": ["{char_tts_lang}", "{tts_rules}", "{reply_rules}"],
-    "template": "4. `speech`: 這是專門提供給語音合成 (TTS) 的發音文本，請使用 [{char_tts_lang}] 發音輸出。{tts_rules}\n5. `reply`: 這是顯示給使用者看的字幕文字，需對應 `speech` 的語意並翻譯為使用者閱讀語言。文字規則：{reply_rules}"
+    "template": "4. `reply`: 這是顯示給使用者看的字幕文字。文字規則：{reply_rules}\n5. `speech`: 將 `reply` 的內容翻譯為 [{char_tts_lang}]，作為 TTS 語音合成的朗讀文本。語意必須與 `reply` 完全對應，禁止自行改寫或在 `reply` 之外添加額外內容。{tts_rules}"
   },
 
   "chat_speech_instruction_no_tts": {
     "label": "純文字回覆指令 (Chat Speech Instruction — No TTS)",
-    "description": "無 tts_language 時注入的 reply 欄位說明，控制回覆文字的格式與語氣。",
+    "description": "注入的 reply 欄位說明，控制回覆文字的格式與語氣。speech 欄位已移至獨立翻譯 subagent，不再由主對話 LLM 產生。",
     "used_by": "api/routers/chat_ws.py, core/chat_orchestrator.py → speech_instruction 組裝",
     "placeholders": ["{reply_rules}"],
-    "template": "4. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{reply_rules}"
+    "template": "2. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{reply_rules}"
+  },
+
+  "tts_speech_translate": {
+    "label": "TTS 語音翻譯 (TTS Speech Translation)",
+    "description": "獨立 TTS 翻譯 subagent：將 reply 精確翻譯為指定語言的朗讀文本，不依賴主對話 LLM。",
+    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → _generate_tts_speech()",
+    "placeholders": ["{tts_lang}", "{tts_rules}", "{reply_text}"],
+    "template": "你是專業翻譯引擎。將以下原文精確翻譯為【{tts_lang}】，作為 TTS 語音合成的朗讀文本。\n\n【翻譯規則】\n- 語意必須與原文完全對應，禁止添加或刪減內容。\n- 僅輸出翻譯結果，不加任何解釋或額外說明。{tts_rules}\n\n【原文】\n{reply_text}\n\n翻譯結果："
+  },
+
+  "environment_context_block": {
+    "label": "環境上下文區塊 (Environment Context Block)",
+    "description": "注入在使用者訊息前的動態環境資訊（時間等）。放在 user message 前綴而非 system prompt，避免破壞 prefix cache。",
+    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → _build_user_prefix()",
+    "placeholders": ["{current_time}"],
+    "template": "<environment_context>\nCurrent Time: {current_time}\n</environment_context>"
+  },
+
+  "emotional_trajectory_block": {
+    "label": "情緒軌跡區塊 (Emotional Trajectory Block)",
+    "description": "注入上一輪的情緒狀態，幫助 LLM 維持角色情緒節奏的連貫性。無前輪紀錄時省略整個區塊。",
+    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → _build_user_prefix()",
+    "placeholders": ["{internal_thought}"],
+    "template": "<emotional_trajectory>\n[上一輪] 「{internal_thought}」\n</emotional_trajectory>"
   },
 
   "character_generate": {

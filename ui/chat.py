@@ -265,6 +265,7 @@ def render_chat_page(api_base, user_prefs):
                 result = None
                 has_error = False
                 thinking_speech_text = None
+                tts_audio_b64 = None   # TTS 音頻 base64，在 result 之後才會到
                 for line in chat_resp.iter_lines(decode_unicode=True):
                     if not line or not line.startswith("data: "):
                         continue
@@ -290,11 +291,14 @@ def render_chat_page(api_base, user_prefs):
                         if actual_sid and actual_sid != st.session_state.get("api_session_id"):
                             st.session_state.api_session_id = actual_sid
                             _load_session_list.clear()
+                    elif evt_type == "tts_audio":
+                        tts_audio_b64 = event.get("data")
 
                 status_placeholder.empty()
                 thinking_placeholder.empty()
 
                 if result:
+                    import base64 as _b64
                     reply_text = result.get("reply", "解析錯誤")
                     retrieval_ctx = result.get("retrieval_context", {})
 
@@ -306,6 +310,14 @@ def render_chat_page(api_base, user_prefs):
 
                     _render_debug_panel(retrieval_ctx)
                     st.markdown(reply_text)
+
+                    # TTS 播放器（瀏覽器安全策略不允許自動播放，顯示控制列讓使用者手動點擊）
+                    if tts_audio_b64:
+                        try:
+                            audio_bytes = _b64.b64decode(tts_audio_b64)
+                            st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+                        except Exception:
+                            pass
 
             except requests.Timeout:
                 status_placeholder.empty()

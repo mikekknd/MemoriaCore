@@ -11,6 +11,10 @@ class StorageManager:
         self.prefs_file = prefs_file
         self.history_file = history_file
 
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 檔案 I/O — 偏好 / 對話歷史 / System Prompt
+    # ════════════════════════════════════════════════════════════
+
     def load_prefs(self):
         if os.path.exists(self.prefs_file):
             try:
@@ -46,6 +50,10 @@ class StorageManager:
     def save_system_prompt(self, prompt_text, prompt_file="system_prompt.txt"):
         with open(prompt_file, "w", encoding="utf-8") as f:
             f.write(prompt_text)
+
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 模型 DB — 路徑解析 / Schema 初始化（含 Schema Evolution）
+    # ════════════════════════════════════════════════════════════
 
     def get_db_path(self, model_name):
         safe_model_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', model_name)
@@ -182,6 +190,10 @@ class StorageManager:
         conn.commit()
         return conn
 
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 情境記憶 Memory Blocks — 載入 / 儲存
+    # ════════════════════════════════════════════════════════════
+
     def load_db(self, db_path):
         if not os.path.exists(db_path):
             return []
@@ -238,6 +250,10 @@ class StorageManager:
         finally:
             conn.close()
 
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 核心認知 Core Memory — 載入 / Upsert
+    # ════════════════════════════════════════════════════════════
+
     def load_core_db(self, db_path):
         if not os.path.exists(db_path):
             return []
@@ -273,6 +289,10 @@ class StorageManager:
     # ==========================================
     # 使用者畫像 (User Profile) CRUD
     # ==========================================
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 使用者偏好 Profile Facts — Upsert / 刪除 / 查詢 / 向量
+    # ════════════════════════════════════════════════════════════
+
     def upsert_profile(self, db_path, fact_key, fact_value, category, source_context="", confidence=1.0):
         """新增或更新一筆使用者事實"""
         conn = self._init_db(db_path)
@@ -373,6 +393,10 @@ class StorageManager:
     # ==========================================
     # 話題快取 (Topic Cache) CRUD
     # ==========================================
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 主動話題 Topic Cache — 插入 / 查未提及 / 標記已提
+    # ════════════════════════════════════════════════════════════
+
     def insert_topic_cache(self, db_path, topic_id, interest_keyword, summary_content):
         conn = self._init_db(db_path)
         cursor = conn.cursor()
@@ -411,6 +435,10 @@ class StorageManager:
     # 對話紀錄持久化 (conversation.db)
     # ==========================================
     _CONV_DB = "conversation.db"
+
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 對話 conversation.db — Schema / Sessions / Messages / Bridge Point
+    # ════════════════════════════════════════════════════════════
 
     def _init_conversation_db(self):
         conn = sqlite3.connect(self._CONV_DB, timeout=15.0)
@@ -608,6 +636,10 @@ class StorageManager:
         return {"session_id": r[0], "channel": r[1], "channel_uid": r[2],
                 "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
                 "message_count": r[6]}
+
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 訊息統計 — 給 PersonaSync 等背景任務查閱閒置 / 訊息量
+    # ════════════════════════════════════════════════════════════
 
     def get_last_message_time(self) -> "datetime | None":
         """回傳 conversation_messages 表中最後一筆訊息的 timestamp（datetime 物件）。

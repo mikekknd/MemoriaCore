@@ -18,6 +18,7 @@ from core.core_memory import MemorySystem
 from core.memory_analyzer import MemoryAnalyzer
 from core.character_engine import CharacterManager
 from core.persona_sync import PersonaSyncManager
+from core.tts_client import MinimaxTTSClient
 
 # ── Module-level singletons ──────────────────────────────
 memory_sys: MemorySystem | None = None
@@ -26,6 +27,7 @@ analyzer: MemoryAnalyzer | None = None
 global_router: LLMRouter | None = None
 character_mgr: CharacterManager | None = None
 persona_sync_mgr: PersonaSyncManager | None = None
+tts_client: MinimaxTTSClient | None = None
 embed_model: str = ""
 
 # SQLite 寫入序列化鎖
@@ -37,7 +39,7 @@ _startup_time: float = 0.0
 
 def init_all():
     """在 FastAPI lifespan startup 時呼叫一次，初始化全部核心物件。"""
-    global memory_sys, storage, analyzer, global_router, character_mgr, persona_sync_mgr, embed_model, _startup_time
+    global memory_sys, storage, analyzer, global_router, character_mgr, persona_sync_mgr, tts_client, embed_model, _startup_time
     import time
     _startup_time = time.time()
 
@@ -48,6 +50,7 @@ def init_all():
     persona_sync_mgr = PersonaSyncManager()
 
     user_prefs = storage.load_prefs()
+    tts_client = MinimaxTTSClient.from_prefs(user_prefs)  # None 若未啟用
     embed_model = user_prefs.get("embed_model", "bge-m3:latest")
 
     # 建立 Provider 實例
@@ -70,10 +73,10 @@ def init_all():
     # 路由註冊
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate"]
     for task_key in tasks:
-        # router 預設跟隨 chat 的 provider/model 設定
-        fallback = routing_config.get("chat", {}) if task_key == "router" else {}
+        # router / translate 預設跟隨 chat 的 provider/model 設定
+        fallback = routing_config.get("chat", {}) if task_key in ("router", "translate") else {}
         cfg = routing_config.get(task_key, fallback)
         p_name = cfg.get("provider", "Ollama (本地)")
         m_name = cfg.get("model", "qwen3.5")
@@ -97,6 +100,14 @@ def init_all():
     # 注入 storage 給 session_manager（持久化對話紀錄）
     from api.session_manager import session_manager
     session_manager.set_storage(storage)
+
+
+def reload_tts(prefs: dict | None = None) -> None:
+    """熱重載 TTS 設定（PUT /system/config 時呼叫）。"""
+    global tts_client
+    if prefs is None and storage is not None:
+        prefs = storage.load_prefs()
+    tts_client = MinimaxTTSClient.from_prefs(prefs or {})
 
 
 def reload_router():
@@ -125,9 +136,9 @@ def reload_router():
 
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate"]
     for task_key in tasks:
-        fallback = routing_config.get("chat", {}) if task_key == "router" else {}
+        fallback = routing_config.get("chat", {}) if task_key in ("router", "translate") else {}
         cfg = routing_config.get(task_key, fallback)
         p_name = cfg.get("provider", "Ollama (本地)")
         m_name = cfg.get("model", "qwen3.5")
@@ -167,6 +178,11 @@ def get_router() -> LLMRouter:
 def get_character_manager() -> CharacterManager:
     assert character_mgr is not None, "CharacterManager not initialized"
     return character_mgr
+
+
+def get_tts_client() -> MinimaxTTSClient | None:
+    """回傳 TTS client，未啟用時為 None。"""
+    return tts_client
 
 
 def get_persona_sync_manager() -> PersonaSyncManager:

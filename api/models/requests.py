@@ -72,6 +72,13 @@ class ConfigUpdateRequest(BaseModel):
     bg_gather_interval: Optional[int] = None
     active_character_id: Optional[str] = None
     dual_layer_enabled: Optional[bool] = None
+    tts_enabled: Optional[bool] = None
+    minimax_api_key: Optional[str] = None
+    minimax_voice_id: Optional[str] = None
+    minimax_model: Optional[str] = None
+    minimax_speed: Optional[float] = None
+    minimax_vol: Optional[float] = None
+    minimax_pitch: Optional[int] = None
 
 
 class ExpandQueryRequest(BaseModel):

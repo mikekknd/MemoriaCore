@@ -16,7 +16,7 @@ from api.dependencies import init_all, get_storage, get_router, get_memory_sys, 
 from api.session_manager import session_manager
 from api.telegram_bot import start_telegram_bot, stop_telegram_bot
 from core.background_gatherer import start_background_gather_loop
-from api.routers import health, memory, profile, system, session, logs, chat_ws, character, prompts
+from api.routers import health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts
 
 
 # ── Lifespan：啟動 / 關機 ────────────────────────────────
@@ -121,6 +121,7 @@ app.include_router(system.router, prefix=PREFIX)
 app.include_router(session.router, prefix=PREFIX)
 app.include_router(logs.router, prefix=PREFIX)
 app.include_router(chat_ws.router, prefix=PREFIX)
+app.include_router(chat_rest.router, prefix=PREFIX)
 app.include_router(character.router, prefix=PREFIX)
 app.include_router(prompts.router, prefix=PREFIX)
 
