@@ -29,6 +29,7 @@ prompts.json
 system_prompt.txt
 ai_personality.md
 persona_sync_state.json
+characters.json
 
 # Build & Dist
 build/
