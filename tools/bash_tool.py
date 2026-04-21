@@ -3,6 +3,7 @@ import subprocess
 import shlex
 import json
 import platform
+import locale
 from core.system_logger import SystemLogger
 
 # 拒絕包含 shell 指令串接符的輸入（allowlist 模式下）
@@ -87,6 +88,24 @@ def run_bash(command: str) -> str:
     if not allow_all and not allowed:
         return json.dumps({"error": "Bash Tool 尚未設定允許指令清單，請至設定頁啟用並勾選允許的指令。"}, ensure_ascii=False)
 
+    # Windows 原生命令 → 對應 Unix 別名（用於 allowlist 反向查詢）
+    # 讓 LLM 直接使用 Windows 命令時，仍能匹配以 Unix 名稱登記的 allowlist
+    _WIN_TO_UNIX_ALIAS = {
+        "del": "rm",
+        "erase": "rm",
+        "type": "cat",
+        "dir": "ls",
+        "move": "mv",
+        "copy": "cp",
+        "cls": "clear",
+        "where": "which",
+        "findstr": "grep",
+        "tasklist": "ps",
+        "taskkill": "kill",
+        "ver": "uname",
+        "timeout": "sleep",
+    }
+
     try:
         if not allow_all:
             # 先攔截 shell 注入串接符（; && || ` $()），再做 allowlist 檢查
@@ -104,7 +123,9 @@ def run_bash(command: str) -> str:
             if base_cmd.endswith(".exe"):
                 base_cmd = base_cmd[:-4]
 
-            if base_cmd not in allowed:
+            # 查 allowlist 時同時查 Windows 別名（如 move → mv）
+            unix_alias = _WIN_TO_UNIX_ALIAS.get(base_cmd, base_cmd)
+            if base_cmd not in allowed and unix_alias not in allowed:
                 return json.dumps(
                     {"error": f"指令 '{base_cmd}' 不在允許清單內（目前允許：{', '.join(allowed)}）"},
                     ensure_ascii=False,
@@ -125,11 +146,11 @@ def run_bash(command: str) -> str:
             "pwd": "cd" if _IS_WINDOWS else "pwd",
             "clear": "cls" if _IS_WINDOWS else "clear",
             "touch": "type nul >" if _IS_WINDOWS else "touch",
-            "head": "more +1" if _IS_WINDOWS else "head",
-            "tail": "more +1" if _IS_WINDOWS else "tail",
+            "head": "powershell -c \"Get-Content\" " if _IS_WINDOWS else "head",
+            "tail": "powershell -c \"Get-Content\" " if _IS_WINDOWS else "tail",
             "diff": "fc" if _IS_WINDOWS else "diff",
-            "sort": "sort /r" if _IS_WINDOWS else "sort",
-            "wc": "findstr /n $" if _IS_WINDOWS else "wc",
+            "sort": "sort" if _IS_WINDOWS else "sort",
+            "wc": "findstr /n /r \".\"" if _IS_WINDOWS else "wc",
             "date": "date /t" if _IS_WINDOWS else "date",
             "sleep": "timeout /t" if _IS_WINDOWS else "sleep",
             "uname": "ver" if _IS_WINDOWS else "uname",
@@ -144,39 +165,36 @@ def run_bash(command: str) -> str:
             "mkdir": "mkdir" if _IS_WINDOWS else "mkdir",
             "curl": "curl" if _IS_WINDOWS else "curl",
             "wget": "curl -O" if _IS_WINDOWS else "wget",
-            "bc": "powershell -c \" & { $b = [double]($args[0]); switch ($args[1]) { '+' { $b + [double]$args[2] } '-' { $b - [double]$args[2] } '*' { $b * [double]$args[2] } '/' { $b / [double]$args[2] } } }\"",
-            "expr": "powershell -c \" & { $b = [double]($args[0]); switch ($args[1]) { '+' { $b + [double]$args[2] } '-' { $b - [double]$args[2] } '*' { $b * [double]$args[2] } '/' { $b / [double]$args[2] } } }\"",
-            "seq": "powershell -c \"1..$args[0]\"" if _IS_WINDOWS else "seq",
+            "seq": "powershell -c \"1..\" " if _IS_WINDOWS else "seq",
         }
 
         translated_cmd = command
         for unix_cmd, win_cmd in _UNIX_TO_WINDOWS.items():
             if parts and parts[0].lower() == unix_cmd:
                 parts = list(parts)
-                parts[0] = win_cmd
-                translated_cmd = " ".join(parts)
+                # rm：若含 -r/-rf 旗標則刪目錄，否則刪檔案
+                if unix_cmd == "rm" and _IS_WINDOWS:
+                    flags = [p for p in parts[1:] if p.startswith("-")]
+                    targets = [p for p in parts[1:] if not p.startswith("-")]
+                    if any("r" in f for f in flags):
+                        translated_cmd = "rmdir /s /q " + " ".join(targets)
+                    else:
+                        translated_cmd = "del /f " + " ".join(targets)
+                else:
+                    parts[0] = win_cmd
+                    translated_cmd = " ".join(parts)
                 break
 
-        # 若 base_cmd（原始命令）不在允許清單，檢查翻譯後的命令是否在允許清單
-        if not allow_all:
-            translated_parts = shlex.split(translated_cmd, posix=False)
-            translated_base = translated_parts[0].lower().replace("\\", "/").split("/")[-1] if translated_parts else ""
-            if translated_base.endswith(".exe"):
-                translated_base = translated_base[:-4]
-            # 若翻譯後的 base_cmd 也不在允許清單，拒絕
-            if base_cmd not in allowed and translated_base not in allowed:
-                return json.dumps(
-                    {"error": f"指令 '{base_cmd}' 不在允許清單內（目前允許：{', '.join(allowed)}）"},
-                    ensure_ascii=False,
-                )
-
+        # Windows cmd.exe 使用系統 codepage（CP950/Big5 等），不是 UTF-8
+        # 強制用 UTF-8 會導致中文路徑/檔名傳遞失敗
+        _encoding = locale.getpreferredencoding(False) if _IS_WINDOWS else "utf-8"
         result = subprocess.run(
             translated_cmd,
             shell=True,
             capture_output=True,
             text=True,
             timeout=15,
-            encoding="utf-8",
+            encoding=_encoding,
             errors="replace",
         )
         output = result.stdout or result.stderr or ""
