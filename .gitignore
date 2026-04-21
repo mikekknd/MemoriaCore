@@ -30,6 +30,7 @@ system_prompt.txt
 ai_personality.md
 persona_sync_state.json
 characters.json
+weather_cache.json
 PersonaProbe/result/
 
 # Build & Dist
