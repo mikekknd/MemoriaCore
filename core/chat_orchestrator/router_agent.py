@@ -64,12 +64,15 @@ def run_router_agent(
     sys_prompt = _get_router_prompt()
     messages = [{"role": "system", "content": sys_prompt}]
 
-    # 注入最近對話歷史（只取 user 訊息），讓 Router Agent 有上下文可判斷意圖
-    # 過濾 assistant 訊息：角色扮演回覆會污染路由判斷，誘導 LLM 用 echo 輸出台詞
+    # 注入最近對話歷史，保留 user/assistant 交替結構以還原對話節奏。
+    # assistant 訊息以 "[已回覆]" 替代全文：讓 router 知道上一輪已完成 exchange，
+    # 避免將「對結果的後續回應」誤判為新工具需求；同時防止角色扮演台詞污染路由判斷。
     if recent_history:
-        user_only = [m for m in recent_history if m["role"] == "user"]
-        for m in user_only[-4:]:
-            messages.append({"role": "user", "content": m["content"]})
+        for m in recent_history[-8:]:
+            if m["role"] == "user":
+                messages.append({"role": "user", "content": m["content"]})
+            elif m["role"] == "assistant":
+                messages.append({"role": "assistant", "content": "[已回覆]"})
 
     messages.append({"role": "user", "content": user_prompt})
 
