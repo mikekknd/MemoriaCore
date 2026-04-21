@@ -321,9 +321,20 @@ class LLMRouter:
         SystemLogger.log_llm_prompt(task_key, route["model"], messages)
         response_text, _ = route["provider"].generate_chat(messages, route["model"], temperature, response_format)
 
-        # 若有 response_format 但模型回傳純文字（未含 JSON），自動重試一次。
+        # 若有 response_format 但模型回傳無法解析的純文字，自動重試一次。
         # 雲端代理模型（如 deepseek-v3.1:671b-cloud）有時會忽略 format 參數直接回覆純文字。
-        if response_format and (not response_text or '{' not in response_text):
+        # 注意：合法回傳可能是 [] 或 {}，需用 json.loads 驗證而非單純檢查 { 是否存在。
+        def _is_valid_json(text: str) -> bool:
+            if not text:
+                return False
+            try:
+                import json as _json
+                _json.loads(text)
+                return True
+            except (ValueError, TypeError):
+                return False
+
+        if response_format and not _is_valid_json(response_text):
             SystemLogger.log_error(
                 "LLMRouter",
                 f"[{task_key}] 非 JSON 回應，自動重試。前100字: {response_text[:100]!r}"
@@ -331,8 +342,8 @@ class LLMRouter:
             retry_msgs = list(messages) + [{
                 "role": "user",
                 "content": (
-                    "[系統警告] 你的上一則回覆格式錯誤，未偵測到 JSON 物件。"
-                    "請直接以 { 開頭輸出合法的 JSON，禁止任何前導文字、說明或 Markdown 格式。"
+                    "[系統警告] 你的上一則回覆格式錯誤，無法解析為合法 JSON。"
+                    "請直接輸出合法的 JSON（物件或陣列皆可），禁止任何前導文字、說明或 Markdown 格式。"
                 ),
             }]
             response_text, _ = route["provider"].generate_chat(
