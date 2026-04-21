@@ -198,9 +198,21 @@ class OpenAICompatibleProvider(ILLMProvider):
                 response = self.client.chat.completions.create(**kwargs)
             else:
                 raise
-        msg = response.choices[0].message
+        choice = response.choices[0]
+        msg = choice.message
+        finish_reason = getattr(choice, 'finish_reason', 'unknown')
         content = msg.content or ''
-        
+
+        # 記錄 finish_reason，協助診斷模型為何不繼續呼叫工具
+        if tools and finish_reason not in ('tool_calls', 'stop'):
+            SystemLogger.log_system_event(
+                "LLMRouter", f"[{model}] finish_reason={finish_reason}（非預期值）"
+            )
+        elif tools and finish_reason == 'stop' and not content.strip():
+            SystemLogger.log_system_event(
+                "LLMRouter", f"[{model}] finish_reason=stop 且 content 為空，模型可能拒絕繼續"
+            )
+
         tool_calls_out = []
         if getattr(msg, 'tool_calls', None):
             import json  # fallback if not imported

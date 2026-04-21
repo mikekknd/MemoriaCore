@@ -37,3 +37,6 @@ class PersonaResult:
     new_entities: list[str] = field(default_factory=list)
     inner_thought: str | None = None
     speech: str | None = None
+    # status_metrics / tone 已從 LLM schema 移除，保留欄位供向後相容（值永遠為 None）
+    status_metrics: dict | None = None
+    tone: str | None = None

@@ -152,6 +152,67 @@ def render_settings_page(api_base, user_prefs=None):
                     except Exception as e:
                         st.error(f"❌ 測試失敗：{e}")
 
+    # ── Bash Tool 設定（橫跨全寬） ─────────────────────────────
+    st.divider()
+    st.header("💻 Bash Tool（本機指令執行）")
+
+    from tools.bash_tool import PRESET_GROUPS
+
+    bash_enabled = st.checkbox(
+        "啟用 Bash Tool",
+        value=user_prefs.get("bash_tool_enabled", False),
+        help="開啟後 AI 可執行本機 shell 指令。僅允許下方勾選或手動填入的指令前綴，其餘一律拒絕。",
+    )
+
+    current_allowed: list[str] = user_prefs.get("bash_tool_allowed_commands", [])
+
+    bash_col1, bash_col2 = st.columns(2)
+    group_selected: list[str] = []
+
+    with st.container():
+        st.markdown("**預設允許指令群組：**")
+        cols = st.columns(2)
+        for i, (label, cmds) in enumerate(PRESET_GROUPS):
+            default_checked = any(c in current_allowed for c in cmds)
+            checked = cols[i % 2].checkbox(
+                f"{label}  `{'`, `'.join(cmds)}`",
+                value=default_checked,
+                key=f"bash_group_{i}",
+                disabled=not bash_enabled,
+            )
+            if checked:
+                group_selected.extend(cmds)
+
+    # 自訂指令：顯示不在任何 preset 群組中的已存指令
+    preset_all = [c for _, cmds in PRESET_GROUPS for c in cmds]
+    custom_existing = [c for c in current_allowed if c not in preset_all]
+    custom_input = st.text_input(
+        "自訂允許指令（逗號分隔，如：npm, cargo, ffmpeg）",
+        value=", ".join(custom_existing),
+        disabled=not bash_enabled,
+        help="填入不在預設群組中的指令名稱（僅填指令本身，不含參數）。",
+    )
+
+    # 即時預覽合併後清單
+    custom_cmds = [c.strip().lower() for c in custom_input.split(",") if c.strip()]
+    merged = sorted(set(group_selected) | set(custom_cmds))
+    if bash_enabled:
+        if merged:
+            st.caption(f"⚠️ 目前允許清單：`{'`, `'.join(merged)}`")
+        else:
+            st.caption("⚠️ 尚未勾選任何指令，Bash Tool 將不會被載入。")
+
+    # ── Browser Agent 設定 ──────────────────────────────────────
+    st.divider()
+    st.header("🌐 Browser Agent（瀏覽器自動化）")
+    new_browser_agent_enabled = st.checkbox(
+        "啟用 Browser Agent",
+        value=user_prefs.get("browser_agent_enabled", False),
+        help="開啟後 AI 可控制本機瀏覽器執行自動化任務（填表、導航、截圖等）。需預先安裝 agent-browser CLI 並加入 PATH。",
+    )
+    if new_browser_agent_enabled:
+        st.info("確認安裝：在終端機執行 `agent-browser --version` 應可看到版本號。", icon="ℹ️")
+
     if st.button("💾 儲存系統設定", use_container_width=True, type="primary"):
         update_payload = {
             "openai_key": new_openai_key,
@@ -175,6 +236,11 @@ def render_settings_page(api_base, user_prefs=None):
             "persona_sync_fragment_limit": new_persona_sync_fragment_limit,
             "persona_probe_url": new_persona_probe_url,
             "dual_layer_enabled": new_dual_layer_enabled,
+            # Bash Tool
+            "bash_tool_enabled": bash_enabled,
+            "bash_tool_allowed_commands": merged,
+            # Browser Agent
+            "browser_agent_enabled": new_browser_agent_enabled,
             # TTS
             "tts_enabled": new_tts_enabled,
             "minimax_api_key": new_minimax_key,

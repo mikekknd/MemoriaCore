@@ -48,14 +48,21 @@ def run_persona_agent(
                 "content": tool_context.thinking_speech_sent,
             })
 
-        # 在 user message 之後追加工具結果（獨立的 user 訊息，明確標記為系統工具回傳）
-        final_messages.append({
-            "role": "user",
-            "content": (
-                f"[系統通知：以下是根據你的工具查詢自動回傳的外部數據，請依據此數據回答使用者的問題]\n"
-                f"{tool_context.tool_results_formatted}"
-            ),
-        })
+        # 工具結果合併進最後一條 user 訊息，避免連續兩條 user 訊息。
+        # 部分 provider（Ollama strict mode 等）要求 user/assistant 嚴格交替，
+        # 連續兩條 user 訊息會觸發 400 錯誤或被靜默忽略。
+        tool_notice = (
+            f"\n\n[系統通知：以下是根據你的工具查詢自動回傳的外部數據，請依據此數據回答使用者的問題]\n"
+            f"{tool_context.tool_results_formatted}"
+        )
+        if final_messages and final_messages[-1]["role"] == "user":
+            final_messages[-1] = {
+                **final_messages[-1],
+                "content": final_messages[-1]["content"] + tool_notice,
+            }
+        else:
+            # 防禦性 fallback：末尾非 user 訊息時（理論上不應發生）補上
+            final_messages.append({"role": "user", "content": tool_notice.lstrip()})
 
     # 呼叫 LLM — 不帶 tools，帶 response_format
     try:

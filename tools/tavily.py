@@ -97,9 +97,17 @@ def execute_tool_call(tool_call: dict) -> str:
         return search_web(query, topic)
 
     if func_name == "get_weather":
-        from tools_weather import get_weather
+        from tools.weather import get_weather
         city = args.get("city", "")
         mode = args.get("mode", "current")
         return get_weather(city, mode)
+
+    if func_name == "run_bash":
+        from tools.bash_tool import run_bash
+        return run_bash(args.get("command", ""))
+
+    if func_name == "browser_task":
+        from tools.browser_agent import run_browser_agent
+        return run_browser_agent(args.get("task", ""))
 
     return json.dumps({"error": f"找不到工具 {func_name}"}, ensure_ascii=False)

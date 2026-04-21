@@ -50,6 +50,9 @@ async def get_config():
         minimax_speed=prefs.get("minimax_speed", 1.0),
         minimax_vol=prefs.get("minimax_vol", 1.0),
         minimax_pitch=prefs.get("minimax_pitch", 0),
+        browser_agent_enabled=prefs.get("browser_agent_enabled", False),
+        bash_tool_enabled=prefs.get("bash_tool_enabled", False),
+        bash_tool_allowed_commands=prefs.get("bash_tool_allowed_commands", []),
     )
 
 

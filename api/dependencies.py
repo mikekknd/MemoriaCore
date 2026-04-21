@@ -73,7 +73,7 @@ def init_all():
     # 路由註冊
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate", "browser"]
     for task_key in tasks:
         # router / translate 預設跟隨 chat 的 provider/model 設定
         fallback = routing_config.get("chat", {}) if task_key in ("router", "translate") else {}
@@ -136,7 +136,7 @@ def reload_router():
 
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate", "browser"]
     for task_key in tasks:
         fallback = routing_config.get("chat", {}) if task_key in ("router", "translate") else {}
         cfg = routing_config.get(task_key, fallback)

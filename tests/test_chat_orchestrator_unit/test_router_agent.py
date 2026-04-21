@@ -12,7 +12,7 @@ def mock_pm():
     """mock_prompt_manager 專門為 router_agent 設定"""
     from unittest.mock import MagicMock
     pm = MagicMock()
-    pm.get.return_value.format.return_value = "根據角色 {char_hint} 判斷是否需要工具。"
+    pm.get.return_value.format.return_value = "判斷是否需要工具。"
     return pm
 
 
@@ -31,7 +31,6 @@ class TestRunRouterAgent:
         with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
             result = run_router_agent(
                 user_prompt="今天天氣真好",
-                char_hint="助理",
                 tools_list=[],
                 router=router,
             )
@@ -52,7 +51,6 @@ class TestRunRouterAgent:
         with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
             result = run_router_agent(
                 user_prompt="比特幣現在多少錢",
-                char_hint="助理",
                 tools_list=[{"type": "function", "function": {"name": "tavily_search"}}],
                 router=router,
             )
@@ -74,7 +72,6 @@ class TestRunRouterAgent:
         with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
             result = run_router_agent(
                 user_prompt="你好",
-                char_hint="助理",
                 tools_list=[],
                 router=router,
             )
@@ -96,7 +93,6 @@ class TestRunRouterAgent:
         with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
             result = run_router_agent(
                 user_prompt="今天天氣如何",
-                char_hint="助理",
                 tools_list=[],
                 router=router,
             )
@@ -120,7 +116,6 @@ class TestRunRouterAgent:
         with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
             run_router_agent(
                 user_prompt=current_prompt,
-                char_hint="助理",
                 tools_list=[],
                 router=router,
                 recent_history=history,
@@ -150,7 +145,6 @@ class TestRunRouterAgent:
         with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
             run_router_agent(
                 user_prompt="天氣",
-                char_hint="助理",
                 tools_list=real_tools,
                 router=router,
             )

@@ -79,6 +79,9 @@ class ConfigUpdateRequest(BaseModel):
     minimax_speed: Optional[float] = None
     minimax_vol: Optional[float] = None
     minimax_pitch: Optional[int] = None
+    browser_agent_enabled: Optional[bool] = None
+    bash_tool_enabled: Optional[bool] = None
+    bash_tool_allowed_commands: Optional[list[str]] = None
 
 
 class ExpandQueryRequest(BaseModel):

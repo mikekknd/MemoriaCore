@@ -48,18 +48,12 @@ if %errorlevel% neq 0 (
 set API_PORT=8088
 set STREAMLIT_PORT=8501
 
-:: -- Check if API port is occupied --
-netstat -ano | findstr ":%API_PORT% " | findstr "LISTENING" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [WARN] Port %API_PORT% is already in use.
-    echo        If FastAPI is already running, Streamlit will connect to it.
-    echo.
-    goto :start_streamlit
-)
+:: -- 清掉佔用 API port 的舊進程（PowerShell 隔離，避免 taskkill 把 Ctrl+C 傳回 batch）--
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort %API_PORT% -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 
 :: -- Start FastAPI backend --
 echo [1/2] Starting FastAPI backend on port %API_PORT% ...
-start /B "" "%VENV_PYTHON%" -m uvicorn api.main:app --host 0.0.0.0 --port %API_PORT%
+start /B "" "%VENV_PYTHON%" run_server.py
 
 :: -- Wait for FastAPI to be ready --
 echo      Waiting for backend to be ready ...

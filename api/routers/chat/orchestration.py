@@ -5,39 +5,14 @@
 """
 import json
 import re
-from datetime import datetime, timezone, timedelta
 
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_analyzer,
     get_embed_model, get_character_manager,
 )
 from core.prompt_manager import get_prompt_manager
+from core.prompt_utils import build_user_prefix
 from api.routers.chat.timer import StepTimer
-
-
-# ════════════════════════════════════════════════════════════
-# SECTION: 工具函式
-# ════════════════════════════════════════════════════════════
-
-def _build_user_prefix(session_messages: list[dict]) -> str:
-    """組裝使用者訊息前綴：環境上下文（時間）+ 情緒軌跡（若有前輪紀錄）。
-    結果為純文字，接在 api_messages 最後一則 user content 之前。
-    """
-    pm = get_prompt_manager()
-    current_time = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S CST")
-    env_block = pm.get("environment_context_block").format(current_time=current_time)
-
-    emo_block = ""
-    for msg in reversed(session_messages):
-        if msg.get("role") == "assistant" and msg.get("persona_state"):
-            ps = msg["persona_state"]
-            internal_thought = ps.get("internal_thought") or "—"
-            emo_block = "\n" + pm.get("emotional_trajectory_block").format(
-                internal_thought=internal_thought,
-            )
-            break
-
-    return env_block + emo_block + "\n\n"
 
 
 # ════════════════════════════════════════════════════════════
@@ -197,7 +172,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
 
         # 注入環境上下文 + 情緒軌跡前綴到當前使用者訊息（不放 system prompt，以保留 prefix cache）
         if api_messages and api_messages[-1]["role"] == "user":
-            _prefix = _build_user_prefix(session_messages)
+            _prefix = build_user_prefix(session_messages)
             api_messages[-1] = {**api_messages[-1], "content": _prefix + api_messages[-1]["content"]}
 
     # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）

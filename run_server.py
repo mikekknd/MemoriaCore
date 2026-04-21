@@ -1,8 +1,17 @@
 # 【環境假設】：Python 3.12, uvicorn, PyInstaller 打包環境
+import signal
 import sys
 import os
-import uvicorn
+import warnings
 import multiprocessing
+
+# huggingface_hub 舊版內部呼叫 resume_download 的 FutureWarning，來自第三方套件無法修改
+warnings.filterwarnings("ignore", message=".*resume_download.*", category=FutureWarning)
+
+# import 期間暫時忽略 SIGINT，防止 Windows console 把 Ctrl+C 傳播給剛啟動的子進程
+_original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+import uvicorn
+signal.signal(signal.SIGINT, _original_sigint)  # 還原，讓 uvicorn 自行管理
 
 # ── PyInstaller 路徑修正 ──────────────────────────────────
 # 打包後 __file__ 指向 _internal/ 內部，相對路徑（user_prefs.json、

@@ -1,9 +1,9 @@
-"""Module A — Router Agent：輕量 LLM 判斷是否需要呼叫工具，並產生過渡語音。
+"""Module A — Router Agent：輕量 LLM 判斷是否需要呼叫工具。
 
 關鍵設計：
 - 注入 dummy `direct_chat` tool，讓 LLM 在「真工具」與「純聊天」之間做多選，
   避免單選 schema 下的 hallucination。
-- LLM 輸出的 content 視為過渡語（thinking_speech），由 Module B 立刻推播給前端 TTS。
+- 只輸出 tool call，不產生文字；thinking_speech 由 coordinator 用模板生成。
 """
 from core.system_logger import SystemLogger
 from core.prompt_manager import get_prompt_manager
@@ -14,8 +14,8 @@ from core.chat_orchestrator.dataclasses import RouterResult
 # SECTION: 路由器 Prompt 與 Dummy Tool Schema
 # ════════════════════════════════════════════════════════════
 
-def _get_router_prompt():
-    return get_prompt_manager().get("router_system")
+def _get_router_prompt() -> str:
+    return get_prompt_manager().get("router_system").format()
 
 
 # Dummy Tool Schema — 利用 function calling 的多選機制穩定意圖判定
@@ -39,18 +39,16 @@ DIRECT_CHAT_SCHEMA = {
 
 def run_router_agent(
     user_prompt: str,
-    char_hint: str,
     tools_list: list[dict],
     router,
     temperature: float = 0.7,
     recent_history: list[dict] | None = None,
 ) -> RouterResult:
     """
-    Module A — 輕量 LLM 判斷是否需要工具，並產生過渡語音。
+    Module A — 輕量 LLM 判斷是否需要工具。只輸出 tool call，不產生文字。
 
     Args:
         user_prompt: 使用者的原始輸入。
-        char_hint: 角色語氣的一行描述（例如「傲嬌女僕，語氣帶點不耐煩但其實很認真」）。
         tools_list: 所有可用的 Tool Schema 列表（不含 direct_chat，會自動注入）。
         router: LLMRouter 實例。
         temperature: LLM 溫度參數。
@@ -58,12 +56,12 @@ def run_router_agent(
                         ⚠️ 不應包含當前 user_prompt（會自行追加），否則重複。
 
     Returns:
-        RouterResult — needs_tools / tool_calls / thinking_speech。
+        RouterResult — needs_tools / tool_calls。
     """
     # 注入 dummy tool，讓 LLM 在「真工具」與「純聊天」之間做多選
     augmented_tools = tools_list + [DIRECT_CHAT_SCHEMA]
 
-    sys_prompt = _get_router_prompt().format(char_hint=char_hint)
+    sys_prompt = _get_router_prompt()
     messages = [{"role": "system", "content": sys_prompt}]
 
     # 注入最近對話歷史，讓 Router Agent 有上下文可判斷意圖
@@ -88,11 +86,6 @@ def run_router_agent(
             if tc.get("function", {}).get("name") != "direct_chat"
         ]
         if real_tool_calls:
-            thinking_speech = (content or "").strip()
-            return RouterResult(
-                needs_tools=True,
-                tool_calls=real_tool_calls,
-                thinking_speech=thinking_speech,
-            )
+            return RouterResult(needs_tools=True, tool_calls=real_tool_calls)
 
     return RouterResult(needs_tools=False)

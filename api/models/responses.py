@@ -186,6 +186,9 @@ class SystemConfigDTO(BaseModel):
     minimax_speed: float = 1.0
     minimax_vol: float = 1.0
     minimax_pitch: int = 0
+    browser_agent_enabled: bool = False
+    bash_tool_enabled: bool = False
+    bash_tool_allowed_commands: list[str] = []
 
 
 # ── 通用錯誤 ──────────────────────────────────────────────

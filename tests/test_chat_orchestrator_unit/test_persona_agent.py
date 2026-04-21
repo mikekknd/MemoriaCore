@@ -156,13 +156,16 @@ class TestRunPersonaAgent:
 
 class TestParsePersonaResponse:
     def test_valid_json_parses_correctly(self):
-        """有效 JSON 應正確解析"""
-        raw = '{"reply": "比特幣約 95000", "extracted_entities": ["比特幣"], "tone": "Professional", "internal_thought": "思考", "status_metrics": {"professionalism": 80}}'
+        """有效 JSON 應正確解析（tone/status_metrics 已從 LLM schema 移除，不由 _parse_persona_response 填入）"""
+        raw = '{"reply": "比特幣約 95000", "extracted_entities": ["比特幣"], "internal_thought": "思考"}'
         result = _parse_persona_response(raw)
 
         assert result.reply_text == "比特幣約 95000"
         assert "比特幣" in result.new_entities
-        assert result.tone == "Professional"
+        assert result.inner_thought == "思考"
+        # tone / status_metrics 永遠為 None（已移除，向後相容欄位）
+        assert result.tone is None
+        assert result.status_metrics is None
 
     def test_invalid_json_returns_raw_text(self):
         """非 JSON 回應應 fallback 為原始文字"""
