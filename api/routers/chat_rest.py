@@ -80,7 +80,7 @@ async def chat_sync(body: ChatSyncRequest):
 
     # /sync 為完整請求-回應週期，翻譯同步執行
     if not speech:
-        from core.chat_orchestrator import _generate_tts_speech
+        from core.chat_orchestrator.coordinator import _generate_tts_speech
         _char = get_character_manager().get_active_character(
             user_prefs.get("active_character_id", "default"))
         speech = _generate_tts_speech(
@@ -193,7 +193,7 @@ async def chat_stream_sync(body: ChatSyncRequest):
         # TTS 合成（若啟用）：result 事件已送出，翻譯 + 合成在此背景執行，不阻塞文字顯示
         tts = get_tts_client()
         if tts:
-            from core.chat_orchestrator import _generate_tts_speech
+            from core.chat_orchestrator.coordinator import _generate_tts_speech
             _char = get_character_manager().get_active_character(
                 user_prefs.get("active_character_id", "default"))
             _tts_lang = _char.get("tts_language", "")

@@ -184,7 +184,7 @@ async def _translate_and_tts_send(
 ) -> None:
     """背景翻譯 + TTS 合成：文字回覆已送出後才執行，不阻塞顯示。"""
     from api.routers.chat_rest import _strip_markdown
-    from core.chat_orchestrator import _generate_tts_speech
+    from core.chat_orchestrator.coordinator import _generate_tts_speech
 
     if char_tts_lang:
         speech = await asyncio.to_thread(
