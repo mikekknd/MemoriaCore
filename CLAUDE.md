@@ -17,7 +17,7 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
     - `middleware.py`   — Module B：工具並行執行 + 過渡語音推播
     - `persona_agent.py`— Module C：角色渲染（結構化 JSON 回覆）
     - `coordinator.py`  — `run_dual_layer_orchestration` 頂層協調（兩條分支平行）
-    - `__init__.py`     — 對外 re-export，舊路徑 `from core.chat_orchestrator import run_dual_layer_orchestration` 仍可用
+    - `__init__.py`     — package 識別檔，docstring 內有直接 import 範例
   - `core/storage_manager.py` — 單檔但有 SECTION 標記分區（檔案 I/O / 模型 DB / Memory Blocks / Core Memory / Profile / Topic Cache / Conversation / 訊息統計）
   - `core/core_memory.py` — 同上（Embedding 工具 / 查詢擴展 / Memory Block 寫入 / 叢集融合 / 三軌檢索 / Profile）
 - `api/` — FastAPI routers，singleton DI 由 `api/dependencies.py` 管理
