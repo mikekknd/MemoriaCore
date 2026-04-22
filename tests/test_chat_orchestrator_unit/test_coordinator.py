@@ -50,7 +50,7 @@ def sample_user_prefs():
 class TestDualLayerCoordinator:
     def test_returns_11_tuple(self, mock_deps, sample_user_prefs):
         """雙層編排應回傳 11-tuple"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
             session_messages=[{"role": "user", "content": "你好"}],
@@ -64,7 +64,7 @@ class TestDualLayerCoordinator:
 
     def test_reply_in_result(self, mock_deps, mock_router_with_tools, sample_user_prefs):
         """11-tuple 的第一個元素應是回覆文字"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
             session_messages=[{"role": "user", "content": "你好"}],
@@ -79,7 +79,7 @@ class TestDualLayerCoordinator:
 
     def test_retrieval_ctx_is_dict(self, mock_deps, sample_user_prefs):
         """retrieval_ctx (index 2) 應為 dict"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
             session_messages=[{"role": "user", "content": "你好"}],
@@ -93,7 +93,7 @@ class TestDualLayerCoordinator:
 
     def test_retrieval_ctx_has_required_fields(self, mock_deps, sample_user_prefs):
         """retrieval_ctx 應包含所有必要欄位"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
             session_messages=[{"role": "user", "content": "你好"}],
@@ -112,7 +112,7 @@ class TestDualLayerCoordinator:
 
     def test_topic_shifted_flag_reflects_analyzer(self, mock_deps, mock_analyzer, sample_user_prefs):
         """topic_shifted (index 3) 應反映 analyzer.detect_topic_shift 的回傳值"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         # 模擬偵測到話題偏移
         mock_analyzer.detect_topic_shift.return_value = (True, 0.3)
@@ -133,7 +133,7 @@ class TestDualLayerCoordinator:
 
     def test_no_shift_when_below_threshold(self, mock_deps, mock_analyzer, sample_user_prefs):
         """話題連貫時 topic_shifted 應為 False"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         mock_analyzer.detect_topic_shift.return_value = (False, 0.8)
 
@@ -153,7 +153,7 @@ class TestDualLayerCoordinator:
 
     def test_pipeline_data_set_when_shifted(self, mock_deps, mock_analyzer, sample_user_prefs):
         """話題偏移時 pipeline_data (index 4) 不為 None"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         mock_analyzer.detect_topic_shift.return_value = (True, 0.3)
 
@@ -173,7 +173,7 @@ class TestDualLayerCoordinator:
 
     def test_active_uids_extracted_from_history(self, mock_deps, sample_user_prefs):
         """session_messages 中的 [Ref: uid] 應被正確解析"""
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         session_messages = [
             {"role": "user", "content": "上次說的 [Ref: abc123]"},

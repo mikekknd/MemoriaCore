@@ -13,12 +13,12 @@ from api.dependencies import get_storage, get_tts_client
 from api.session_manager import session_manager
 from api.routers.chat.ws_manager import ws_manager
 from api.routers.chat.orchestration import (
-    _run_chat_orchestration,  # noqa: F401 — 供外部 import 使用（telegram_bot 等）
+    _run_chat_orchestration,
     _select_orchestration,
     _unpack_orchestration_result,
 )
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
-from api.routers.chat.timer import StepTimer  # noqa: F401 — 對外相容（chat_orchestrator）
+from api.routers.chat.timer import StepTimer
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])

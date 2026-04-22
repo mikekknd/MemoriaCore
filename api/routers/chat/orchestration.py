@@ -328,7 +328,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
 def _select_orchestration(user_prefs: dict):
     """根據 dual_layer_enabled 設定選擇對話編排函式。"""
     if user_prefs.get("dual_layer_enabled", False):
-        from core.chat_orchestrator import run_dual_layer_orchestration
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
         return run_dual_layer_orchestration
     return _run_chat_orchestration
 
