@@ -218,6 +218,7 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
       <button class="tab-btn active" data-tab="viewer" onclick="switchTab(this)">Log / DB</button>
       <button class="tab-btn" data-tab="routing" onclick="switchTab(this)">routing</button>
       <button class="tab-btn" data-tab="prompts" onclick="switchTab(this)">Prompts</button>
+      <button class="tab-btn" data-tab="persona" onclick="switchTab(this)">人格演化</button>
     </div>
     <div class="tab-content">
 
@@ -258,6 +259,11 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
           </div>
           <div id="promptList"></div>
         </div>
+      </div>
+
+      <!-- Tab: Persona Evolution -->
+      <div class="tab-pane" data-pane="persona">
+        <iframe id="personaTreeFrame" src="/static/persona_tree.html" style="border:none;width:100%;height:100%;flex:1;"></iframe>
       </div>
 
     </div>
@@ -381,10 +387,10 @@ function switchTab(btn) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
 }
 
-// Keyboard shortcuts: Ctrl+1/2/3
+// Keyboard shortcuts: Ctrl+1/2/3/4
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && !e.shiftKey && !e.altKey) {
-    const map = {'1':'viewer','2':'routing','3':'prompts'};
+    const map = {'1':'viewer','2':'routing','3':'prompts','4':'persona'};
     const tab = map[e.key];
     if (tab) {
       e.preventDefault();

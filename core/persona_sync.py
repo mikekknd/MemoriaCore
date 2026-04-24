@@ -36,34 +36,54 @@ STATE_FILE = "persona_sync_state.json"
 
 def _run_probe_sync(db_path: str, existing_persona: str, llm_provider: str,
                     model_name: str, ollama_url: str, or_key: str,
+                    active_character_id: str,
                     fragment_limit: int = 400) -> dict:
+    """Path D pipeline：3 次 LLM 呼叫（trait_diff → report → persona.md）。
+
+    分支判斷：若目前無活躍 trait（V1），走 ``build_trait_v1_prompt``；否則走
+    ``build_trait_vn_prompt`` 帶入活躍清單。兩者都只有一次 LLM 呼叫。
+
+    回傳 ``{"persona", "trait_diff", "active_traits", "summary", "output_dir"}``：
+    - ``trait_diff`` 為 ``TraitDiff`` 實例（Vn）或包 V1 new_traits 的 TraitDiff
+    - ``active_traits`` 為本輪進 prompt 的活躍清單（供 report builder / 日誌）
+    - ``summary`` 為 LLM 報告的首段純文字（去 # 標頭）
+
+    失敗時拋出例外由 ``run_sync`` 捕捉。
     """
-    在同步執行緒中直接呼叫 PersonaProbe 核心函式，完成 8 次 LLM 分析。
-    回傳 {"persona": str, "dimensions_found": list[str], "output_dir": str}，
-    失敗時拋出例外。
-    """
-    import json as _json
     from pathlib import Path
     from datetime import datetime as _dt
 
     from llm_client import LLMClient, LLMConfig
     from probe_engine import (
-        DIMENSION_SPECS,
         _messages_to_text,
-        build_fragment_aggregation_prompt,
-        build_fragment_extraction_prompt,
         build_persona_md_prompt,
+        build_trait_report_prompt,
+        build_trait_v1_prompt,
+        build_trait_vn_prompt,
         load_fragments_from_db,
     )
+    from api.dependencies import get_storage
+    from core.persona_evolution.extractor import (
+        TRAIT_V1_SCHEMA,
+        TRAIT_VN_SCHEMA,
+        parse_trait_v1,
+        parse_trait_vn,
+    )
+    from core.persona_evolution.snapshot_store import PersonaSnapshotStore
+    from core.persona_evolution.trait_diff import TraitDiff
 
     # 1. 讀取對話片段（近期優先滑動窗口）
     messages = load_fragments_from_db(db_path, limit=fragment_limit)
     if not messages:
         raise ValueError("conversation.db 中沒有對話記錄")
-
     fragments_text = _messages_to_text(messages)
 
-    # 2. 建立 LLM Client
+    # 2. 查當前活躍 trait → 決定 V1 / Vn 分支
+    store = PersonaSnapshotStore(get_storage())
+    active_traits = store.list_active_traits(active_character_id)
+    is_v1 = len(active_traits) == 0
+
+    # 3. 建立 LLM Client
     config = LLMConfig(
         provider=llm_provider,
         model=model_name,
@@ -73,26 +93,27 @@ def _run_probe_sync(db_path: str, existing_persona: str, llm_provider: str,
     )
     client = LLMClient(config)
 
-    # 3. 6 維度提取（6 次 LLM 呼叫）
-    extraction_results: dict = {}
-    for dim_id in sorted(DIMENSION_SPECS.keys()):
-        prompt_msgs = build_fragment_extraction_prompt(dim_id, fragments_text, existing_persona)
-        try:
-            raw = client.chat(prompt_msgs)
-            result = _json.loads(raw)
-        except _json.JSONDecodeError:
-            result = {"confidence": "none"}
-        extraction_results[dim_id] = result
+    # 4. 第 1 次 LLM：trait diff
+    if is_v1:
+        prompt_msgs = build_trait_v1_prompt(fragments_text, existing_persona)
+        raw = client.chat(prompt_msgs, response_format=TRAIT_V1_SCHEMA)
+        trait_diff = TraitDiff(updates=[], new_traits=parse_trait_v1(raw))
+    else:
+        prompt_msgs = build_trait_vn_prompt(fragments_text, existing_persona, active_traits)
+        raw = client.chat(prompt_msgs, response_format=TRAIT_VN_SCHEMA)
+        trait_diff = parse_trait_vn(raw)
 
-    # 4. 聚合生成完整報告（1 次 LLM 呼叫）
-    agg_msgs = build_fragment_aggregation_prompt(extraction_results, fragments_text, existing_persona)
-    full_report = client.chat(agg_msgs)
+    # 5. 第 2 次 LLM：敘事報告（Markdown）
+    report_msgs = build_trait_report_prompt(
+        trait_diff.model_dump(), active_traits, fragments_text
+    )
+    full_report = client.chat(report_msgs)
 
-    # 5. 萃取 persona.md（1 次 LLM 呼叫）
+    # 6. 第 3 次 LLM：更新 persona.md（沿用既有 builder，它以報告分析區塊驅動更新）
     persona_msgs = build_persona_md_prompt(full_report, existing_persona)
     persona_content = client.chat(persona_msgs)
 
-    # 6. 寫入 PersonaProbe result 目錄（留存備份）
+    # 7. 寫入 PersonaProbe result 目錄（留存備份）
     output_root = Path(_PROBE_DIR) / "result"
     timestamp = _dt.now().strftime("%Y%m%d-%H%M%S")
     out_dir = output_root / f"fragment-{timestamp}"
@@ -103,15 +124,20 @@ def _run_probe_sync(db_path: str, existing_persona: str, llm_provider: str,
         f"# 原始輸入片段\n\n{fragments_text}", encoding="utf-8"
     )
 
-    dimensions_found = [
-        DIMENSION_SPECS[dim_id]["name"]
-        for dim_id, result in extraction_results.items()
-        if result.get("confidence", "none") != "none"
-    ]
+    # 取 probe-report 的首段純文字作為 summary（跳過 Markdown 標頭行與空行）
+    summary = ""
+    for line in full_report.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        summary = s
+        break
 
     return {
         "persona": persona_content,
-        "dimensions_found": dimensions_found,
+        "trait_diff": trait_diff,
+        "active_traits": active_traits,
+        "summary": summary,
         "output_dir": str(out_dir),
     }
 
@@ -253,6 +279,7 @@ class PersonaSyncManager:
                 _run_probe_sync,
                 db_path, existing_persona, llm_provider,
                 model_name, ollama_url, or_key,
+                active_char_id,
                 fragment_limit,
             )
         except Exception as e:
@@ -283,6 +310,30 @@ class PersonaSyncManager:
             SystemLogger.log_error("persona_sync", f"Character not found: {active_char_id}")
             return False
 
+        # 寫入結構化 snapshot（失敗不回滾 evolved_prompt，對話體驗優先）
+        snapshot_id = None
+        try:
+            from api.dependencies import get_storage
+            from core.persona_evolution.snapshot_store import PersonaSnapshotStore
+            from core.persona_evolution.trait_diff import TraitDiff
+
+            trait_diff = data.get("trait_diff") or TraitDiff()
+            store = PersonaSnapshotStore(get_storage())
+            snapshot_id = store.save_snapshot(
+                character_id=active_char_id,
+                trait_diff=trait_diff,
+                summary=data.get("summary", ""),
+                evolved_prompt=new_persona,
+            )
+            SystemLogger.log_system_event("persona_snapshot_saved", {
+                "character_id": active_char_id,
+                "snapshot_id": snapshot_id,
+                "trait_updates": len(trait_diff.updates),
+                "trait_new": len(trait_diff.new_traits),
+            })
+        except Exception as e:
+            SystemLogger.log_error("persona_snapshot", f"snapshot write failed: {e}")
+
         # 更新狀態（手動觸發不佔每日次數）
         state = self._load_state()
         state = self._reset_daily_count_if_needed(state)
@@ -291,7 +342,10 @@ class PersonaSyncManager:
             state["today_run_count"] = state.get("today_run_count", 0) + 1
         self._save_state(state)
 
-        dimensions_found = data.get("dimensions_found", [])
+        trait_diff = data.get("trait_diff")
+        trait_updates = len(trait_diff.updates) if trait_diff else 0
+        trait_new = len(trait_diff.new_traits) if trait_diff else 0
+        active_count = len(data.get("active_traits", []))
         SystemLogger.log_system_event("persona_sync_complete", {
             "character_id": active_char_id,
             "character_name": active_char.get("name", ""),
@@ -299,10 +353,13 @@ class PersonaSyncManager:
             "llm_model": model_name,
             "elapsed_sec": round(elapsed_sec, 1),
             "new_persona_length": len(new_persona),
-            "dimensions_found": dimensions_found,
-            "dimensions_count": len(dimensions_found),
+            "active_traits_before": active_count,
+            "trait_updates": trait_updates,
+            "trait_new": trait_new,
+            "is_v1": active_count == 0,
             "today_run_count": state["today_run_count"],
             "output_dir": data.get("output_dir", ""),
+            "snapshot_id": snapshot_id,
         })
         return True
 

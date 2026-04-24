@@ -64,15 +64,13 @@ def run_router_agent(
     sys_prompt = _get_router_prompt()
     messages = [{"role": "system", "content": sys_prompt}]
 
-    # 注入最近對話歷史，保留 user/assistant 交替結構以還原對話節奏。
-    # assistant 訊息以 "[已回覆]" 替代全文：讓 router 知道上一輪已完成 exchange，
-    # 避免將「對結果的後續回應」誤判為新工具需求；同時防止角色扮演台詞污染路由判斷。
+    # 注入最近對話歷史（僅 user 訊息），在歷史訊息後附加 [已處理] 標記，
+    # 讓 router 知道該輪已有 AI 回覆，避免對後續回應誤判為新工具需求。
+    # 不注入 assistant 角色訊息，防止 router LLM 模仿該模式輸出文字而非工具呼叫。
     if recent_history:
-        for m in recent_history[-8:]:
-            if m["role"] == "user":
-                messages.append({"role": "user", "content": m["content"]})
-            elif m["role"] == "assistant":
-                messages.append({"role": "assistant", "content": "[已回覆]"})
+        user_msgs = [m for m in recent_history[-8:] if m["role"] == "user"]
+        for m in user_msgs:
+            messages.append({"role": "user", "content": f"{m['content']} [已處理]"})
 
     messages.append({"role": "user", "content": user_prompt})
 

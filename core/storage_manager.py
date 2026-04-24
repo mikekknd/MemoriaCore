@@ -7,9 +7,15 @@ import numpy as np
 from datetime import datetime, timedelta
 
 class StorageManager:
-    def __init__(self, prefs_file="user_prefs.json", history_file="chat_history.json"):
+    def __init__(
+        self,
+        prefs_file="user_prefs.json",
+        history_file="chat_history.json",
+        persona_snapshot_db_path="persona_snapshots.db",
+    ):
         self.prefs_file = prefs_file
         self.history_file = history_file
+        self.persona_snapshot_db_path = persona_snapshot_db_path
 
     # ════════════════════════════════════════════════════════════
     # SECTION: 檔案 I/O — 偏好 / 對話歷史 / System Prompt
@@ -674,3 +680,526 @@ class StorageManager:
             return count
         except Exception:
             return 0
+
+    # ════════════════════════════════════════════════════════════
+    # SECTION: 人格演化 Snapshots — 版本儲存 / 血統查詢 / 時間序列
+    # ════════════════════════════════════════════════════════════
+
+    def _init_persona_snapshot_db(self):
+        """初始化人格演化 snapshot 資料表 — PRAGMA user_version 驅動的 schema migration。
+
+        Schema 版本：
+        - ``user_version == 0`` — 空 DB 或舊 6 維度 prototype。自動 DROP 舊表 + 建 v2 新表。
+        - ``user_version == 2`` — Path D trait tree schema（``persona_traits`` 真實血統
+          表 + ``persona_dimensions`` 版本快照明細）。
+        - 其他值 — 拒絕啟動（防止半毀 DB）。
+
+        Drop-rebuild 策略：舊 prototype 資料為 seed 腳本產物，確認可 drop；以
+        ``BEGIN IMMEDIATE`` 取得寫鎖避免啟動期 race（多執行緒啟動時只有第一個會真的 drop）。
+        """
+        conn = sqlite3.connect(self.persona_snapshot_db_path, timeout=15.0)
+        cur = conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute("PRAGMA user_version")
+        user_version = cur.fetchone()[0]
+
+        if user_version == 0:
+            try:
+                cur.execute("BEGIN IMMEDIATE")
+                # 雙重檢查：若另一執行緒已搶先升級過，這裡會讀到 2，直接跳過 drop
+                cur.execute("PRAGMA user_version")
+                if cur.fetchone()[0] == 0:
+                    # 順序：child(dimensions) → self-ref(traits) → parent(snapshots)
+                    cur.execute("DROP TABLE IF EXISTS persona_dimensions")
+                    cur.execute("DROP TABLE IF EXISTS persona_traits")
+                    cur.execute("DROP TABLE IF EXISTS persona_snapshots")
+                    self._create_persona_v2_schema(cur)
+                    # PRAGMA 不支援 parameter binding，版本號為常數拼接安全無 injection 風險
+                    cur.execute("PRAGMA user_version = 2")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        elif user_version == 2:
+            # 已是 v2（或剛升級完），確保表存在（新 DB 或併發創建情境）
+            self._create_persona_v2_schema(cur)
+            conn.commit()
+        else:
+            raise RuntimeError(
+                f"persona_snapshots.db 發現無法識別的 user_version={user_version}"
+                f"（預期 0 或 2）— 拒絕啟動以防半毀 DB"
+            )
+        return conn
+
+    def _create_persona_v2_schema(self, cur):
+        """Path D schema：``persona_traits`` 是跨版本真實血統表；``persona_dimensions``
+        是各版 snapshot 的明細（``dimension_key`` 語意為 trait UUID）。
+
+        ``persona_dimensions.is_active`` 欄位永久寫 1（歷史 artefact，實際活躍狀態由
+        ``persona_traits.is_active`` 持有）。讀取時以 JOIN 取得真正值。
+        """
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS persona_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                summary TEXT,
+                evolved_prompt TEXT,
+                UNIQUE(character_id, version)
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS persona_traits (
+                trait_key TEXT PRIMARY KEY,
+                character_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_version INTEGER NOT NULL,
+                last_active_version INTEGER NOT NULL,
+                parent_key TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (parent_key) REFERENCES persona_traits(trait_key) ON DELETE SET NULL
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS persona_dimensions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                confidence_label TEXT,
+                description TEXT NOT NULL,
+                parent_name TEXT,
+                is_active INTEGER DEFAULT 1,
+                FOREIGN KEY (snapshot_id) REFERENCES persona_snapshots(id) ON DELETE CASCADE
+            )
+        ''')
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_persona_dim_snapshot "
+            "ON persona_dimensions(snapshot_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_persona_snap_char_ver "
+            "ON persona_snapshots(character_id, version DESC)"
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trait_char_key "
+            "ON persona_traits(character_id, trait_key)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trait_char_active "
+            "ON persona_traits(character_id, is_active, last_active_version DESC)"
+        )
+
+    def get_next_persona_version(self, character_id: str) -> int:
+        """回傳該角色下一個應使用的 version 號；無紀錄則為 1。"""
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM persona_snapshots WHERE character_id = ?",
+                (character_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) + 1 if row else 1
+        finally:
+            conn.close()
+
+    def _row_to_snapshot(self, row, dimensions):
+        return {
+            "id": row[0],
+            "character_id": row[1],
+            "version": row[2],
+            "timestamp": row[3],
+            "summary": row[4],
+            "evolved_prompt": row[5],
+            "dimensions": dimensions,
+        }
+
+    def _load_dimensions_for(self, cursor, snapshot_id: int) -> list:
+        """讀指定 snapshot 的所有維度明細；``is_active`` / ``parent_key`` 來自
+        ``persona_traits`` 表（跨版本真實狀態），未建 trait 列的筆（防禦性情境）
+        預設 active、無 parent_key。
+        """
+        cursor.execute(
+            "SELECT d.dimension_key, d.name, d.confidence, d.confidence_label, "
+            "       d.description, d.parent_name, "
+            "       COALESCE(t.is_active, 1) AS is_active, "
+            "       t.parent_key "
+            "FROM persona_dimensions d "
+            "LEFT JOIN persona_traits t ON t.trait_key = d.dimension_key "
+            "WHERE d.snapshot_id = ? ORDER BY d.id",
+            (snapshot_id,),
+        )
+        return [
+            {
+                "dimension_key": r[0],
+                "name": r[1],
+                "confidence": float(r[2]),
+                "confidence_label": r[3],
+                "description": r[4],
+                "parent_name": r[5],
+                "is_active": bool(r[6]),
+                "parent_key": r[7],
+            }
+            for r in cursor.fetchall()
+        ]
+
+    def get_latest_persona_snapshot(self, character_id: str) -> dict | None:
+        """回傳該角色最新一筆 snapshot（含 dimensions）；無紀錄回 None。"""
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, character_id, version, timestamp, summary, evolved_prompt "
+                "FROM persona_snapshots WHERE character_id = ? "
+                "ORDER BY version DESC LIMIT 1",
+                (character_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            dims = self._load_dimensions_for(cur, row[0])
+            return self._row_to_snapshot(row, dims)
+        finally:
+            conn.close()
+
+    def get_persona_snapshot(self, character_id: str, version: int) -> dict | None:
+        """回傳指定版本的 snapshot（含 dimensions）；找不到回 None。"""
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, character_id, version, timestamp, summary, evolved_prompt "
+                "FROM persona_snapshots WHERE character_id = ? AND version = ?",
+                (character_id, version),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            dims = self._load_dimensions_for(cur, row[0])
+            return self._row_to_snapshot(row, dims)
+        finally:
+            conn.close()
+
+    def list_persona_snapshots(self, character_id: str) -> list:
+        """回傳該角色所有 snapshot 的摘要（不含 dimensions 內容），版本遞增。"""
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT s.id, s.version, s.timestamp, s.summary, "
+                "       (SELECT COUNT(*) FROM persona_dimensions d WHERE d.snapshot_id = s.id) "
+                "FROM persona_snapshots s WHERE s.character_id = ? "
+                "ORDER BY s.version ASC",
+                (character_id,),
+            )
+            return [
+                {
+                    "id": r[0],
+                    "version": r[1],
+                    "timestamp": r[2],
+                    "summary": r[3],
+                    "dimensions_count": int(r[4]),
+                }
+                for r in cur.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def delete_persona_snapshots_by_character(self, character_id: str) -> int:
+        """清空指定角色所有 snapshot（含 dimensions，靠 CASCADE）。回傳刪除列數。
+
+        用於管理工具 / 測試 seeding 時的覆寫場景。
+        """
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM persona_snapshots WHERE character_id = ?",
+                (character_id,),
+            )
+            deleted = cur.rowcount
+            conn.commit()
+            return int(deleted or 0)
+        finally:
+            conn.close()
+
+    def save_trait_snapshot(
+        self,
+        character_id: str,
+        timestamp: str,
+        summary: str,
+        evolved_prompt: str,
+        updates: list,
+        new_traits: list,
+        dormancy_idle_versions: int = 3,
+        dormancy_confidence_threshold: float = 5.0,
+    ) -> int:
+        """Path D 原子寫入：一筆 snapshot + updates/new_traits 同交易 + 尾端 B' sweep。
+
+        ``updates`` 每筆格式（對既有 trait）::
+            {
+                "trait_key": str,
+                "name": str,                    # denormalised 顯示用
+                "description": str,
+                "confidence": float,            # 0.0~10.0
+                "confidence_label": str,        # high/medium/low/none
+                "parent_name": str | None,      # denormalised 顯示用
+            }
+          - ``confidence_label == "none"`` 時不寫 persona_dimensions 列，但仍 bump
+            ``last_active_version``（代表「本輪 LLM 有注意到這個 trait」）。
+
+        ``new_traits`` 每筆格式（新建 trait）::
+            {
+                "trait_key": str,              # uuid4().hex，由呼叫端生成
+                "name": str,
+                "description": str,
+                "confidence": float,
+                "confidence_label": str,
+                "parent_key": str | None,      # 指向 persona_traits.trait_key，NULL 表 root
+                "parent_name": str | None,     # denormalised 顯示用
+            }
+          - ``parent_key`` 指定的 trait 會被 reactivate 並 bump last_active_version。
+
+        B' 休眠規則（同交易內 sweep）：
+          ``(current_version - last_active_version) >= dormancy_idle_versions`` AND
+          最近一次 ``confidence <= dormancy_confidence_threshold`` → ``is_active = 0``。
+          本輪 update / 新建 / 被引用為 parent 的 trait 不會被掃（它們的
+          ``last_active_version == current_version``，差值為 0）。
+
+        回傳：``snapshot_id``。
+        """
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+
+            # 版本號在寫鎖內計算，避免併發 sync 搶同一版本
+            cur.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM persona_snapshots WHERE character_id = ?",
+                (character_id,),
+            )
+            current_version = int(cur.fetchone()[0]) + 1
+
+            cur.execute(
+                "INSERT INTO persona_snapshots "
+                "(character_id, version, timestamp, summary, evolved_prompt) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (character_id, current_version, timestamp, summary, evolved_prompt),
+            )
+            sid = cur.lastrowid
+
+            # ── updates：既有 trait 的 confidence 變動 ──
+            for u in updates:
+                trait_key = str(u["trait_key"])
+                cur.execute(
+                    "UPDATE persona_traits "
+                    "SET last_active_version = ?, is_active = 1 "
+                    "WHERE trait_key = ? AND character_id = ?",
+                    (current_version, trait_key, character_id),
+                )
+                if u.get("confidence_label") != "none":
+                    cur.execute(
+                        "INSERT INTO persona_dimensions "
+                        "(snapshot_id, dimension_key, name, confidence, "
+                        " confidence_label, description, parent_name, is_active) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+                        (
+                            sid,
+                            trait_key,
+                            str(u["name"]),
+                            float(u["confidence"]),
+                            u.get("confidence_label"),
+                            str(u.get("description", "")),
+                            u.get("parent_name"),
+                        ),
+                    )
+
+            # ── new_traits：本版新建 trait（INSERT 血統表 + 明細表） ──
+            for n in new_traits:
+                trait_key = str(n["trait_key"])
+                parent_key = n.get("parent_key")
+                cur.execute(
+                    "INSERT INTO persona_traits "
+                    "(trait_key, character_id, name, created_version, last_active_version, "
+                    " parent_key, is_active, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                    (
+                        trait_key,
+                        character_id,
+                        str(n["name"]),
+                        current_version,
+                        current_version,
+                        parent_key,
+                        timestamp,
+                    ),
+                )
+                cur.execute(
+                    "INSERT INTO persona_dimensions "
+                    "(snapshot_id, dimension_key, name, confidence, "
+                    " confidence_label, description, parent_name, is_active) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+                    (
+                        sid,
+                        trait_key,
+                        str(n["name"]),
+                        float(n["confidence"]),
+                        n.get("confidence_label"),
+                        str(n.get("description", "")),
+                        n.get("parent_name"),
+                    ),
+                )
+                # 被引用為 parent 的 trait 自動 reactivate + bump
+                if parent_key:
+                    cur.execute(
+                        "UPDATE persona_traits "
+                        "SET last_active_version = ?, is_active = 1 "
+                        "WHERE trait_key = ? AND character_id = ?",
+                        (current_version, parent_key, character_id),
+                    )
+
+            # ── B' sweep：同交易尾端掃描休眠候選 ──
+            # 條件：is_active=1 AND 閒置版本 >= N AND 最近一次 confidence <= threshold
+            cur.execute(
+                "SELECT t.trait_key FROM persona_traits t "
+                "WHERE t.character_id = ? AND t.is_active = 1 "
+                "  AND (? - t.last_active_version) >= ? "
+                "  AND COALESCE(("
+                "    SELECT d.confidence FROM persona_dimensions d "
+                "    JOIN persona_snapshots s ON s.id = d.snapshot_id "
+                "    WHERE s.character_id = ? AND d.dimension_key = t.trait_key "
+                "    ORDER BY s.version DESC LIMIT 1"
+                "  ), 0.0) <= ?",
+                (
+                    character_id,
+                    current_version,
+                    dormancy_idle_versions,
+                    character_id,
+                    dormancy_confidence_threshold,
+                ),
+            )
+            dormant_keys = [r[0] for r in cur.fetchall()]
+            for tk in dormant_keys:
+                cur.execute(
+                    "UPDATE persona_traits SET is_active = 0 "
+                    "WHERE trait_key = ? AND character_id = ?",
+                    (tk, character_id),
+                )
+
+            conn.commit()
+            return sid
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_active_traits(self, character_id: str, limit: int | None = None) -> list:
+        """回傳該角色當前活躍 trait（``is_active = 1``）清單，按
+        ``last_active_version DESC`` 排序，附帶最近一次 description（供 prompt 注入）。
+
+        等價於 ``_get_traits(character_id, active_only=True, limit=limit)``。
+        """
+        return self._get_traits(character_id, active_only=True, limit=limit)
+
+    def get_all_traits(self, character_id: str, limit: int | None = None) -> list:
+        """回傳該角色所有 trait（**含已休眠**）清單，按 ``last_active_version DESC`` 排序。
+
+        用途：``PersonaSnapshotStore`` 驗證 LLM 回傳的 ``parent_key`` / ``trait_key``
+        是否存在於歷史（已 sweep 的 trait 仍可被引用 → 自動 reactivate）。
+        """
+        return self._get_traits(character_id, active_only=False, limit=limit)
+
+    def _get_traits(
+        self,
+        character_id: str,
+        active_only: bool,
+        limit: int | None,
+    ) -> list:
+        """內部共用查詢，透過 ``active_only`` flag 決定是否過濾 ``is_active = 1``。
+
+        回傳格式（與 ``get_active_traits`` 一致）::
+            [{
+                "trait_key": str,
+                "name": str,
+                "last_description": str,
+                "created_version": int,
+                "last_active_version": int,
+                "parent_key": str | None,
+                "is_active": bool,
+            }, ...]
+        """
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            sql = (
+                "SELECT "
+                "  t.trait_key, t.name, t.created_version, t.last_active_version, "
+                "  t.parent_key, t.is_active, "
+                "  COALESCE(("
+                "    SELECT d.description FROM persona_dimensions d "
+                "    JOIN persona_snapshots s ON s.id = d.snapshot_id "
+                "    WHERE s.character_id = t.character_id AND d.dimension_key = t.trait_key "
+                "    ORDER BY s.version DESC LIMIT 1"
+                "  ), '') AS last_description "
+                "FROM persona_traits t "
+                "WHERE t.character_id = ?"
+            )
+            if active_only:
+                sql += " AND t.is_active = 1"
+            sql += " ORDER BY t.last_active_version DESC"
+
+            params: tuple = (character_id,)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (character_id, int(limit))
+            cur.execute(sql, params)
+            return [
+                {
+                    "trait_key": r[0],
+                    "name": r[1],
+                    "created_version": int(r[2]),
+                    "last_active_version": int(r[3]),
+                    "parent_key": r[4],
+                    "is_active": bool(r[5]),
+                    "last_description": r[6],
+                }
+                for r in cur.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_trait_timeline(self, character_id: str, trait_key: str) -> list:
+        """回傳指定 trait 在所有版本的 confidence 變化序列（折線圖用）。
+
+        回傳：``[{"version": int, "timestamp": str, "confidence": float,
+        "confidence_label": str}, ...]``，版本遞增排序。confidence 為 none 的版本
+        因不寫 ``persona_dimensions`` 列，在此序列中會缺席（代表該版 LLM 仍注意到，
+        但未顯著表現）。
+        """
+        conn = self._init_persona_snapshot_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT s.version, s.timestamp, d.confidence, d.confidence_label "
+                "FROM persona_snapshots s "
+                "JOIN persona_dimensions d ON d.snapshot_id = s.id "
+                "WHERE s.character_id = ? AND d.dimension_key = ? "
+                "ORDER BY s.version ASC",
+                (character_id, trait_key),
+            )
+            return [
+                {
+                    "version": int(r[0]),
+                    "timestamp": r[1],
+                    "confidence": float(r[2]),
+                    "confidence_label": r[3],
+                }
+                for r in cur.fetchall()
+            ]
+        finally:
+            conn.close()

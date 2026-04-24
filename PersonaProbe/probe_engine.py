@@ -735,6 +735,134 @@ def _messages_to_text(messages: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+# ── Trait Evolution (Path D) — Prompt Builders ──────────────────────────────
+#
+# 三個 builder 對應 persona_sync pipeline 的 3 次 LLM 呼叫。與既有 Fragment
+# Analysis 區塊（8 次 LLM）並存：互動式採集仍走舊 6 維度路徑，背景 persona_sync
+# 走 Path D。system prompt 常數於 ``prompts_trait.py``，責任劃分乾淨。
+
+def _format_active_traits(active_traits: list[dict], max_desc_chars: int = 80) -> str:
+    """把活躍 trait 清單轉為 Markdown bullet（注入 prompt 用）。
+
+    每筆格式：``- `<trait_key>` <name>：<description 截斷>``。
+    description 超過 max_desc_chars 會截斷並加 ``…``，避免 prompt 爆 context。
+    """
+    if not active_traits:
+        return "（目前無活躍 trait — 這是首版）"
+    lines: list[str] = []
+    for t in active_traits:
+        desc = (t.get("last_description") or "").strip().replace("\n", " ")
+        if len(desc) > max_desc_chars:
+            desc = desc[:max_desc_chars] + "…"
+        lines.append(f"- `{t['trait_key']}` {t['name']}：{desc}")
+    return "\n".join(lines)
+
+
+def build_trait_v1_prompt(fragments_text: str, existing_persona: str = "") -> list[dict]:
+    """V1（首版）trait 萃取 prompt。輸出 ``{"new_traits": [...]}``。
+
+    ``existing_persona`` 為選填背景（若有從別管道帶入的初始人設，可供 LLM 對齊語氣）。
+    """
+    from prompts_trait import TRAIT_V1_SYSTEM
+
+    user_parts = [
+        "【對話片段】",
+        fragments_text,
+        (
+            '請嚴格輸出以下 JSON 格式：\n'
+            '{\n'
+            '  "new_traits": [\n'
+            '    {"name": "trait 名稱", "description": "底層機制描述", "confidence": "high|medium|low"}\n'
+            '  ]\n'
+            '}'
+        ),
+    ]
+    if existing_persona.strip():
+        user_parts.insert(
+            1,
+            "【背景人設參考（可作為語氣與已知資訊的對齊，不取代對話證據）】\n"
+            f"{existing_persona.strip()}",
+        )
+    return [
+        {"role": "system", "content": TRAIT_V1_SYSTEM},
+        {"role": "user", "content": "\n\n".join(user_parts)},
+    ]
+
+
+def build_trait_vn_prompt(
+    fragments_text: str,
+    existing_persona: str,
+    active_traits: list[dict],
+) -> list[dict]:
+    """Vn（增量）trait diff prompt。輸出 ``{"updates": [...], "new_traits": [...]}``。
+
+    ``active_traits`` 由 ``PersonaSnapshotStore.list_active_traits`` 提供，已限筆數。
+    LLM 收到 trait_key（UUID）後可在 updates / new_traits.parent_key 中精準引用。
+    """
+    from prompts_trait import TRAIT_VN_SYSTEM
+
+    active_md = _format_active_traits(active_traits)
+
+    user_parts = [
+        "【當前活躍 trait 清單】",
+        active_md,
+        "【新對話片段】",
+        fragments_text,
+        (
+            '請嚴格輸出以下 JSON 格式：\n'
+            '{\n'
+            '  "updates": [\n'
+            '    {"trait_key": "<上方清單的 key>", "confidence": "high|medium|low|none"}\n'
+            '  ],\n'
+            '  "new_traits": [\n'
+            '    {"name": "...", "description": "...", '
+            '"parent_key": "<可為 null 或上方清單的 key>", '
+            '"confidence": "high|medium|low"}\n'
+            '  ]\n'
+            '}'
+        ),
+    ]
+    if existing_persona.strip():
+        user_parts.insert(
+            2,
+            "【目前 persona.md 參考】\n" + existing_persona.strip(),
+        )
+    return [
+        {"role": "system", "content": TRAIT_VN_SYSTEM},
+        {"role": "user", "content": "\n\n".join(user_parts)},
+    ]
+
+
+def build_trait_report_prompt(
+    trait_diff: dict,
+    active_traits: list[dict],
+    fragments_text: str,
+) -> list[dict]:
+    """根據 ``trait_diff`` 與活躍 trait 清單撰寫 Markdown 心智模型報告。
+
+    ``trait_diff`` 為 ``TraitDiff.model_dump()`` 的 dict 形式（updates / new_traits）。
+    """
+    from prompts_trait import TRAIT_REPORT_SYSTEM
+    import json as _json
+
+    active_md = _format_active_traits(active_traits)
+    diff_json = _json.dumps(trait_diff, ensure_ascii=False, indent=2)
+
+    user = (
+        "【本輪 trait 變化（trait_diff）】\n"
+        f"```json\n{diff_json}\n```\n\n"
+        "【活躍 trait 清單（寫作時可引用 name / trait_key）】\n"
+        f"{active_md}\n\n"
+        "【對話片段（供引用原文證據）】\n"
+        f"{fragments_text}\n\n"
+        "請按規定結構輸出 Markdown 報告。"
+    )
+    return [
+        {"role": "system", "content": TRAIT_REPORT_SYSTEM},
+        {"role": "user", "content": user},
+    ]
+
+
 # ── Fragment Analysis — Prompt Builders ───────────────────────────────────────
 
 def build_fragment_extraction_prompt(

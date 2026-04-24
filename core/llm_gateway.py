@@ -339,13 +339,17 @@ class LLMRouter:
                 "LLMRouter",
                 f"[{task_key}] 非 JSON 回應，自動重試。前100字: {response_text[:100]!r}"
             )
-            retry_msgs = list(messages) + [{
-                "role": "user",
-                "content": (
-                    "[系統警告] 你的上一則回覆格式錯誤，無法解析為合法 JSON。"
-                    "請直接輸出合法的 JSON（物件或陣列皆可），禁止任何前導文字、說明或 Markdown 格式。"
-                ),
-            }]
+            retry_msgs = list(messages) + [
+                {"role": "assistant", "content": response_text},
+                {
+                    "role": "user",
+                    "content": (
+                        "[系統警告] 你的上一則回覆格式錯誤，無法解析為合法 JSON。"
+                        "請將上一則回覆的內容原封不動地重新包裝為合法 JSON 格式，"
+                        "禁止修改內容、禁止重新生成新的回覆、禁止任何前導文字或 Markdown 格式。"
+                    ),
+                },
+            ]
             response_text, _ = route["provider"].generate_chat(
                 retry_msgs, route["model"], max(temperature * 0.5, 0.1), response_format
             )

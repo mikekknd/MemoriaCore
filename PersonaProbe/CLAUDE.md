@@ -12,6 +12,7 @@ PersonaProbe/
 ├── app.py            # Streamlit UI（port 8502）
 ├── server.py         # FastAPI API server（port 8089）
 ├── llm_client.py     # LLM 抽象層（Ollama / OpenRouter）
+├── prompts_trait.py  # Path D trait 演化 system prompt 常數
 ├── requirements.txt
 └── result/           # 輸出目錄，各案例放在子目錄
 ```
@@ -55,7 +56,7 @@ phase=0（校準 5 題）
 - `state.respondent_memory` — 受訪者記憶，存短句事實而非完整訊息（防格式污染）
 - `state.current_dim_qa` — 當前維度 Q&A，維度切換時重置
 
-## 片段分析流程（非互動式）
+## 片段分析流程（非互動式，舊 6 維度路徑）
 
 ```
 輸入片段（純文字或 DB）
@@ -66,6 +67,62 @@ phase=0（校準 5 題）
 ```
 
 **LLM 呼叫次數：6（提取）+ 1（聚合）+ 1（persona 更新）= 8 次**
+
+> ⚠️ 此流程保留供 `app.py` / `server.py` 的互動式採集 + 片段分析 UI
+> 使用；主專案的人格演化 pipeline（`core/persona_sync.py`）已改走下一節的
+> **Trait Evolution (Path D)**。
+
+## Trait Evolution (Path D)
+
+主專案 `core/persona_sync.py::_run_probe_sync` 現在呼叫 Path D 的增量 trait
+演化流程，把原先的 6 維度硬編改為**跨版本真實 trait 血統樹**，LLM 呼叫數從 8
+降到 3：
+
+```
+V1（首版）:
+  build_trait_v1_prompt → LLM → parse_trait_v1 → list[NewTrait] (3-5 個 root)
+
+Vn（增量 diff）:
+  list_active_traits (上限 MAX_ACTIVE_TRAITS_IN_PROMPT=20)
+  → build_trait_vn_prompt (注入活躍 trait_key/name/description)
+  → LLM → parse_trait_vn → TraitDiff(updates, new_traits)
+
+共同後段:
+  build_trait_report_prompt → LLM → 存敘事報告
+  build_persona_md_prompt   → LLM → 更新 persona.md
+```
+
+### 關鍵檔案
+
+| 檔案 | 內容 |
+|---|---|
+| `prompts_trait.py` | `TRAIT_V1_SYSTEM` / `TRAIT_VN_SYSTEM` / `TRAIT_REPORT_SYSTEM` 三段 system prompt 純 Python 常數。**不接 PromptManager**（和既有 `FAST_PERSONA_BEHAVIORAL_TEMPLATE` 放置風格一致） |
+| `probe_engine.py` 的 `build_trait_v1_prompt` / `build_trait_vn_prompt` / `build_trait_report_prompt` | prompt builder；輸出 `list[dict]` messages 格式，和 6 維度 builder 同介面 |
+| `core/persona_evolution/extractor.py` 的 `TRAIT_V1_SCHEMA` / `TRAIT_VN_SCHEMA` + `parse_trait_v1` / `parse_trait_vn` | JSON mode schema + 解析器 |
+| `core/persona_evolution/trait_diff.py` | `TraitDiff` / `TraitUpdate` / `NewTrait` Pydantic 資料結構 |
+
+### V1 vs Vn 分支判斷
+
+在 `_run_probe_sync` 內：
+
+```python
+active_traits = store.list_active_traits(active_char_id)
+is_v1 = len(active_traits) == 0
+```
+
+即「該角色 `persona_traits` 表尚無任何活躍 trait」→ 走 V1；否則走 Vn。
+
+### 新增 trait 的身份持久化
+
+每個 new_trait 由 `PersonaSnapshotStore.save_snapshot` 生成 `trait_key =
+uuid4().hex`（32 字元）作為跨版本穩定識別碼。Vn 的 `parent_key` 可指向**任何
+歷史 trait_key**（含已 B' 休眠者，被引用會自動 reactivate）。
+
+### 互動式採集路徑不受影響
+
+`DIMENSION_SPECS` 與既有 6 維度 builder 仍完整保留，`app.py` 的互動式採集
+（`phase=1~6`）與片段分析 UI 皆照舊運作——Path D 只取代了 `core/persona_sync.py`
+的調用路徑，不碰 PersonaProbe Streamlit / FastAPI 介面。
 
 ### 重要：persona.md 更新邏輯
 

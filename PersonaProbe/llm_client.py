@@ -41,16 +41,40 @@ class LLMClient:
         stream: bool = False,
         temperature: float = None,
         max_tokens: int = None,
+        response_format: dict | None = None,
     ) -> str | Iterator:
+        """呼叫 chat completion。
+
+        若傳入 ``response_format`` (JSON Schema dict)，會依 provider 轉換：
+        - ``ollama``：經 OpenAI 相容端點時透過 ``extra_body={"format": schema}``
+          對應 Ollama 原生 ``format`` 參數。
+        - ``openrouter``：包成 OpenAI 的 ``response_format.json_schema``。
+
+        ``strict=False`` 是故意的：避免某些代理模型因 strict schema 直接拒絕，
+        若需嚴格模式可在呼叫端另行指定。
+        """
         temp = temperature if temperature is not None else self.config.temperature
         tok = max_tokens if max_tokens is not None else self.config.max_tokens
-        response = self._client.chat.completions.create(
-            model=self.config.model,
-            messages=messages,
-            temperature=temp,
-            max_tokens=tok,
-            stream=stream,
-        )
+        kwargs: dict = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": temp,
+            "max_tokens": tok,
+            "stream": stream,
+        }
+        if response_format is not None:
+            if self.config.provider == "ollama":
+                kwargs["extra_body"] = {"format": response_format}
+            else:
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "dynamic_schema",
+                        "schema": response_format,
+                        "strict": False,
+                    },
+                }
+        response = self._client.chat.completions.create(**kwargs)
         if stream:
             return _stream_generator(response)
         return response.choices[0].message.content

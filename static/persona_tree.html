@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Persona Evolution Tree</title>
+<!--
+  Persona Evolution 前端視覺化（D3.js Force-Directed Graph）
+  - 本頁為 dashboard 第 4 tab 的 iframe 內容，刻意不進 Streamlit (ui/chat.py)
+    因此屬於單純讀取型 dashboard 擴展，不影響對話/session/routing 的雙前端同步。
+  - 輪詢間隔 5 分鐘（PersonaSyncManager 本身 20 分鐘檢查一次，過密輪詢無意義）。
+  - 節點穩定識別碼用 dimension_key（後端回傳的 id 欄位，語意已為 trait_key UUID），
+    以支援增量動畫。
+  - parent_key 為跨版本真實血統；parent_name 是單版 denormalised cache（顯示用）。
+-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+:root {
+  --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+  --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff; --accent2: #3fb950;
+  --warn: #d29922; --error: #f85149; --purple: #bc8cff;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+
+.header { background:var(--surface); border-bottom:1px solid var(--border); padding:8px 12px; display:flex; align-items:center; gap:10px; flex-shrink:0; font-size:13px; }
+.header label { color:var(--text2); }
+.header select, .header button, .header input { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--text); font-size:13px; outline:none; }
+.header select, .header button { cursor:pointer; }
+.header input[type="text"] { cursor:text; font-family:'Cascadia Code','Fira Code',monospace; width:180px; }
+.header input[type="range"] { width:200px; padding:0; cursor:pointer; }
+.header input[type="range"]:disabled { cursor:not-allowed; opacity:.4; }
+.header select:focus, .header input:focus, .header button:hover { border-color:var(--accent); color:var(--accent); }
+.header .divider { width:1px; height:18px; background:var(--border); margin:0 4px; }
+.version-info { color:var(--text2); font-family:'Cascadia Code','Fira Code',monospace; font-size:12px; margin-left:auto; }
+.version-label { color:var(--text2); font-family:'Cascadia Code','Fira Code',monospace; font-size:12px; min-width:56px; text-align:center; }
+.status-msg { color:var(--warn); font-size:12px; }
+
+.body { flex:1; display:flex; min-height:0; }
+.graph-area { flex:1; position:relative; min-width:0; background:var(--bg); }
+.graph-area svg { width:100%; height:100%; display:block; cursor:grab; }
+.graph-area svg:active { cursor:grabbing; }
+
+.detail-panel { width:320px; border-left:1px solid var(--border); background:var(--surface); padding:12px; overflow-y:auto; flex-shrink:0; }
+.detail-panel h3 { font-size:13px; color:var(--accent); margin-bottom:8px; font-weight:600; }
+.detail-panel .summary { font-size:12px; color:var(--text2); line-height:1.6; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--border); white-space:pre-wrap; }
+.detail-panel .node-detail { font-size:13px; line-height:1.6; }
+.detail-panel .node-detail .name { color:var(--accent); font-weight:600; font-size:14px; margin-bottom:4px; }
+.detail-panel .node-detail .meta { color:var(--text2); font-size:11px; margin-bottom:8px; font-family:'Cascadia Code',monospace; }
+.detail-panel .node-detail .desc { color:var(--text); white-space:pre-wrap; }
+.detail-panel .empty { color:var(--text2); font-size:12px; font-style:italic; }
+
+/* Node color by confidence_label */
+.node-circle.high { fill:var(--accent2); }
+.node-circle.medium { fill:var(--accent); }
+.node-circle.low { fill:var(--warn); }
+.node-circle.none { fill:var(--text2); }
+.node-circle { stroke:var(--surface); stroke-width:1.5px; cursor:pointer; transition:stroke .2s; }
+.node-circle:hover { stroke:var(--accent); stroke-width:2.5px; }
+.node-circle.selected { stroke:#fff; stroke-width:3px; }
+
+.node-label { fill:var(--text); font-size:11px; font-family:'Segoe UI',sans-serif; pointer-events:none; text-shadow:0 0 4px var(--bg),0 0 2px var(--bg); }
+.node-circle.inactive { opacity:.3; }
+.node-label.inactive { opacity:.45; font-style:italic; }
+
+.link { stroke:var(--border); stroke-opacity:.7; stroke-width:1.2px; }
+.link.inactive { stroke-opacity:.25; stroke-dasharray:3,3; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <label>角色：</label>
+  <select id="charSelect" onchange="onCharacterChange()"></select>
+  <div class="divider"></div>
+  <label>手動：</label>
+  <input id="charManual" type="text" placeholder="例：catgirl-fragment" spellcheck="false">
+  <button onclick="loadManualCharacter()" title="載入指定 character_id">載入</button>
+  <button onclick="refreshNow()" title="立即重新整理">⟳</button>
+  <div class="divider"></div>
+  <label>版本：</label>
+  <input id="versionSlider" type="range" min="1" max="1" value="1" step="1" disabled title="拖拉切換版本">
+  <span id="versionLabel" class="version-label">v-/-</span>
+  <button onclick="jumpLatest()" title="跳到最新版">⇥</button>
+  <span id="statusMsg" class="status-msg"></span>
+  <span id="versionInfo" class="version-info"></span>
+</div>
+
+<div class="body">
+  <div class="graph-area">
+    <svg id="forceSvg"></svg>
+  </div>
+  <div class="detail-panel">
+    <h3>版本摘要</h3>
+    <div id="summary" class="summary empty">尚未載入資料</div>
+    <h3>節點詳情</h3>
+    <div id="nodeDetail" class="node-detail"><span class="empty">點擊任一節點查看</span></div>
+  </div>
+</div>
+
+<script>
+// =====================================================================
+//  Constants
+// =====================================================================
+const API = '/api/v1';
+const POLL_INTERVAL_MS = 5 * 60 * 1000;  // 5 分鐘
+const RADIUS_SCALE = 4;                   // confidence (0-10) → 半徑 (0-40)
+
+// =====================================================================
+//  State
+// =====================================================================
+let currentCharacterId = null;
+let currentVersion = null;
+let pollTimer = null;
+let selectedNodeId = null;
+let allVersions = [];          // [{version, timestamp, summary, dimensions_count, id}, ...]
+let viewMode = 'live';         // 'live' = 跟隨最新；'pinned' = 固定在特定版本（slider 拖拉後）
+
+// =====================================================================
+//  D3 setup
+// =====================================================================
+const svg = d3.select('#forceSvg');
+
+// SVG defs — 方向性箭頭（含 inactive 淡化版）
+const defs = svg.append('defs');
+['arrow', 'arrow-inactive'].forEach((id, i) => {
+  defs.append('marker')
+    .attr('id', id)
+    .attr('viewBox', '0 -5 10 10').attr('refX', 6).attr('refY', 0)
+    .attr('markerWidth', 6).attr('markerHeight', 6)
+    .attr('orient', 'auto').attr('markerUnits', 'strokeWidth')
+    .append('path').attr('d', 'M0,-4L10,0L0,4')
+    .attr('fill', '#8b949e').attr('opacity', i === 0 ? 1 : 0.4);
+});
+
+const container = svg.append('g');  // zoom-pan 容器
+const linkGroup = container.append('g').attr('class', 'links');
+const nodeGroup = container.append('g').attr('class', 'nodes');
+
+// Zoom / pan
+svg.call(
+  d3.zoom()
+    .scaleExtent([0.3, 3])
+    .on('zoom', (event) => container.attr('transform', event.transform))
+);
+
+// Force simulation（節點資料在 engine.update 時替換）
+// forceCenter 只平移整體重心；forceX/Y 額外對每個節點施加向心力，
+// 避免分支多 + charge 排斥強時節點被慢慢推出畫面。
+const simulation = d3.forceSimulation()
+  .force('link', d3.forceLink().id(d => d.id).distance(120).strength(0.7))
+  .force('charge', d3.forceManyBody().strength(-280))
+  .force('center', d3.forceCenter())   // 每次 resize 時設定中心
+  .force('x', d3.forceX().strength(0.06))
+  .force('y', d3.forceY().strength(0.06))
+  .force('collide', d3.forceCollide().radius(d => (d.confidence || 1) * RADIUS_SCALE + 8))
+  .on('tick', ticked);
+
+// 目前 simulation 裡的 nodes / links（以 id / source-target 為索引）
+const nodeIndex = new Map();  // id -> node object (含 x, y, vx, vy)
+const linkIndex = new Map();  // "src-tgt" -> link object
+
+// =====================================================================
+//  Entry
+// =====================================================================
+document.addEventListener('DOMContentLoaded', async () => {
+  resizeSvg();
+  window.addEventListener('resize', resizeSvg);
+  document.getElementById('charManual').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadManualCharacter();
+  });
+  // Slider：input 事件即時更新 label；change 事件（放開滑鼠）才真的切版本
+  const slider = document.getElementById('versionSlider');
+  slider.addEventListener('input', (e) => {
+    const v = parseInt(e.target.value);
+    const max = allVersions.length ? allVersions[allVersions.length - 1].version : v;
+    document.getElementById('versionLabel').textContent = `v${v}/${max}`;
+  });
+  slider.addEventListener('change', (e) => {
+    const v = parseInt(e.target.value);
+    const max = allVersions.length ? allVersions[allVersions.length - 1].version : v;
+    viewMode = (v === max) ? 'live' : 'pinned';
+    fetchSpecificVersion(v);
+  });
+  await loadCharacterList();
+  if (currentCharacterId) {
+    await Promise.all([loadVersionList(), fetchAndUpdate()]);
+    pollTimer = setInterval(onPollTick, POLL_INTERVAL_MS);
+  }
+});
+
+// 輪詢 tick：live 模式才追最新；pinned 模式只刷新版本清單（讓 slider 上限跟上）
+async function onPollTick() {
+  if (!currentCharacterId) return;
+  await loadVersionList();
+  if (viewMode === 'live') await fetchAndUpdate();
+}
+
+function jumpLatest() {
+  if (!allVersions.length) return;
+  viewMode = 'live';
+  fetchAndUpdate();
+}
+
+function resizeSvg() {
+  const rect = document.querySelector('.graph-area').getBoundingClientRect();
+  const cx = rect.width / 2, cy = rect.height / 2;
+  simulation.force('center', d3.forceCenter(cx, cy));
+  simulation.force('x').x(cx);
+  simulation.force('y').y(cy);
+  simulation.alpha(0.3).restart();
+}
+
+// =====================================================================
+//  Character list
+// =====================================================================
+async function loadCharacterList() {
+  try {
+    const r = await fetch(`${API}/character`);
+    const chars = await r.json();
+    const sel = document.getElementById('charSelect');
+    sel.innerHTML = '';
+    if (!chars.length) {
+      sel.innerHTML = '<option value="">（尚無角色）</option>';
+      setStatus('請先建立角色', 'warn');
+      return;
+    }
+    chars.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.character_id;
+      opt.textContent = `${c.name} (${c.character_id})`;
+      sel.appendChild(opt);
+    });
+    currentCharacterId = chars[0].character_id;
+    sel.value = currentCharacterId;
+  } catch (e) {
+    console.error('Failed to load character list:', e);
+    setStatus('無法載入角色清單', 'error');
+  }
+}
+
+async function onCharacterChange() {
+  const val = document.getElementById('charSelect').value;
+  await switchCharacter(val);
+}
+
+async function loadManualCharacter() {
+  const val = document.getElementById('charManual').value.trim();
+  if (!val) {
+    setStatus('請輸入 character_id', 'warn');
+    return;
+  }
+  // 同步下拉：若值在清單中則選中；否則插入臨時選項作為「自訂」標記
+  const sel = document.getElementById('charSelect');
+  const existing = Array.from(sel.options).find(o => o.value === val);
+  if (existing) {
+    sel.value = val;
+  } else {
+    let custom = Array.from(sel.options).find(o => o.dataset.custom === '1');
+    if (!custom) {
+      custom = document.createElement('option');
+      custom.dataset.custom = '1';
+      sel.appendChild(custom);
+    }
+    custom.value = val;
+    custom.textContent = `（自訂）${val}`;
+    sel.value = val;
+  }
+  await switchCharacter(val);
+}
+
+async function switchCharacter(id) {
+  currentCharacterId = id;
+  currentVersion = null;
+  selectedNodeId = null;
+  viewMode = 'live';
+  allVersions = [];
+  updateSliderUI();
+  nodeIndex.clear();
+  linkIndex.clear();
+  render();
+  document.getElementById('nodeDetail').innerHTML = '<span class="empty">點擊任一節點查看</span>';
+  if (currentCharacterId) await Promise.all([loadVersionList(), fetchAndUpdate()]);
+}
+
+async function refreshNow() {
+  if (currentCharacterId) await fetchAndUpdate();
+}
+
+// =====================================================================
+//  Fetch & Update
+// =====================================================================
+async function fetchAndUpdate() {
+  if (!currentCharacterId) return;
+  try {
+    const r = await fetch(`${API}/system/personality/snapshots/latest/tree?character_id=${encodeURIComponent(currentCharacterId)}`);
+    if (r.status === 404) {
+      setStatus('此角色尚無 snapshot', 'warn');
+      document.getElementById('summary').textContent = '（尚無演化資料）';
+      nodeIndex.clear();
+      linkIndex.clear();
+      render();
+      return;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const tree = await r.json();
+    if (tree.version === currentVersion) {
+      setStatus(`已是最新版 v${tree.version}`, 'ok');
+      return;
+    }
+    applyTree(tree);
+    setStatus(`已更新至 v${tree.version}`, 'ok');
+  } catch (e) {
+    console.error('Failed to fetch tree:', e);
+    setStatus('連線失敗', 'error');
+  }
+}
+
+// 增量比對：保留既有節點位置，更新 confidence；新節點從 parent 座標初始化；消失節點移除
+function applyTree(tree) {
+  currentVersion = tree.version;
+  document.getElementById('versionInfo').textContent = `v${tree.version} · ${tree.timestamp}`;
+  document.getElementById('summary').textContent = tree.summary || '（無摘要）';
+  document.getElementById('summary').classList.remove('empty');
+
+  const newIds = new Set(tree.nodes.map(n => n.id));
+  // Exit：移除不在新版的節點
+  for (const id of Array.from(nodeIndex.keys())) {
+    if (!newIds.has(id)) nodeIndex.delete(id);
+  }
+  // Enter / Update
+  const width = document.querySelector('.graph-area').getBoundingClientRect().width;
+  const height = document.querySelector('.graph-area').getBoundingClientRect().height;
+  for (const n of tree.nodes) {
+    const existing = nodeIndex.get(n.id);
+    if (existing) {
+      // 沿用座標 / 速度，更新資料
+      Object.assign(existing, n);
+    } else {
+      // 新節點：若有 parent 且 parent 已在，從 parent 座標生成；否則中心 + 微擾
+      const parentKey = tree.links.find(l => l.target === n.id)?.source;
+      const parent = parentKey ? nodeIndex.get(parentKey) : null;
+      const x = parent ? parent.x + (Math.random() - 0.5) * 30 : width / 2 + (Math.random() - 0.5) * 50;
+      const y = parent ? parent.y + (Math.random() - 0.5) * 30 : height / 2 + (Math.random() - 0.5) * 50;
+      nodeIndex.set(n.id, { ...n, x, y });
+    }
+  }
+  // Links：整批重建（數量小，直接替換成本低；D3 會自動 resolve source/target 指標）
+  linkIndex.clear();
+  for (const l of tree.links) {
+    linkIndex.set(`${l.source}-${l.target}`, { source: l.source, target: l.target });
+  }
+  render();
+  simulation.alpha(0.5).restart();
+  updateSliderUI();
+}
+
+// =====================================================================
+//  Render (D3 data join)
+// =====================================================================
+function render() {
+  const nodes = Array.from(nodeIndex.values());
+  const links = Array.from(linkIndex.values());
+
+  simulation.nodes(nodes);
+  simulation.force('link').links(links);
+
+  // Links
+  const linkSel = linkGroup.selectAll('line.link')
+    .data(links, d => `${typeof d.source === 'object' ? d.source.id : d.source}-${typeof d.target === 'object' ? d.target.id : d.target}`);
+  linkSel.exit().remove();
+  const linkEnter = linkSel.enter().append('line').attr('class', 'link');
+  linkEnter.merge(linkSel)
+    .attr('class', d => `link${isLinkInactive(d) ? ' inactive' : ''}`)
+    .attr('marker-end', d => isLinkInactive(d) ? 'url(#arrow-inactive)' : 'url(#arrow)');
+
+  // Nodes（group: circle + label）
+  const nodeSel = nodeGroup.selectAll('g.node').data(nodes, d => d.id);
+  nodeSel.exit().transition().duration(300).style('opacity', 0).remove();
+
+  const enter = nodeSel.enter().append('g').attr('class', 'node')
+    .call(d3.drag()
+      .on('start', dragStart)
+      .on('drag', dragMove)
+      .on('end', dragEnd))
+    .on('click', (event, d) => selectNode(d));
+  enter.append('circle').attr('class', d => `node-circle ${d.confidence_label || 'none'}`).attr('r', 0);
+  enter.append('text').attr('class', 'node-label').attr('dy', '.35em').attr('text-anchor', 'middle').text(d => d.name);
+
+  // Merge: update existing + new
+  const merged = enter.merge(nodeSel);
+  merged.select('circle')
+    .attr('class', d => `node-circle ${d.confidence_label || 'none'}${d.is_active === false ? ' inactive' : ''}${d.id === selectedNodeId ? ' selected' : ''}`)
+    .transition().duration(500)
+    .attr('r', d => Math.max(4, d.confidence * RADIUS_SCALE));
+  merged.select('text')
+    .attr('class', d => `node-label${d.is_active === false ? ' inactive' : ''}`)
+    .text(d => d.name);
+}
+
+function isLinkInactive(d) {
+  const src = typeof d.source === 'object' ? d.source : nodeIndex.get(d.source);
+  const tgt = typeof d.target === 'object' ? d.target : nodeIndex.get(d.target);
+  return (src && src.is_active === false) || (tgt && tgt.is_active === false);
+}
+
+function ticked() {
+  linkGroup.selectAll('line.link')
+    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+    .attr('x2', d => {
+      const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const r = Math.max(4, (d.target.confidence || 1) * RADIUS_SCALE) + 5;
+      return d.target.x - (dx / len) * r;
+    })
+    .attr('y2', d => {
+      const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const r = Math.max(4, (d.target.confidence || 1) * RADIUS_SCALE) + 5;
+      return d.target.y - (dy / len) * r;
+    });
+  nodeGroup.selectAll('g.node')
+    .attr('transform', d => `translate(${d.x},${d.y})`);
+}
+
+// =====================================================================
+//  Interaction
+// =====================================================================
+function dragStart(event, d) { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }
+function dragMove(event, d) { d.fx = event.x; d.fy = event.y; }
+function dragEnd(event, d) { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }
+
+function selectNode(d) {
+  selectedNodeId = d.id;
+  nodeGroup.selectAll('circle').attr('class', n => `node-circle ${n.confidence_label || 'none'}${n.is_active === false ? ' inactive' : ''}${n.id === selectedNodeId ? ' selected' : ''}`);
+  const detail = document.getElementById('nodeDetail');
+  const stateTag = d.is_active === false ? ' · <span style="color:var(--warn)">休眠中</span>' : '';
+  detail.innerHTML = `
+    <div class="name">${escapeHtml(d.name)}</div>
+    <div class="meta">key: ${escapeHtml((d.dimension_key || '').slice(0, 8))}… · confidence: ${d.confidence.toFixed(1)} (${escapeHtml(d.confidence_label || '-')})${d.parent_name ? ' · parent: ' + escapeHtml(d.parent_name) : ''}${stateTag}</div>
+    <div class="desc">${escapeHtml(d.description || '')}</div>
+  `;
+}
+
+function setStatus(msg, kind) {
+  const el = document.getElementById('statusMsg');
+  el.textContent = msg;
+  const colorMap = { ok: 'var(--accent2)', warn: 'var(--warn)', error: 'var(--error)' };
+  el.style.color = colorMap[kind] || 'var(--text2)';
+  // 3 秒後淡去（保留 error/warn）
+  if (kind === 'ok') setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 3000);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// =====================================================================
+//  Version slider
+// =====================================================================
+async function loadVersionList() {
+  if (!currentCharacterId) { allVersions = []; updateSliderUI(); return; }
+  try {
+    const r = await fetch(`${API}/system/personality/snapshots?character_id=${encodeURIComponent(currentCharacterId)}`);
+    if (!r.ok) { allVersions = []; updateSliderUI(); return; }
+    const list = await r.json();
+    allVersions = Array.isArray(list) ? list.slice().sort((a, b) => a.version - b.version) : [];
+    updateSliderUI();
+  } catch (e) {
+    console.error('loadVersionList:', e);
+    allVersions = [];
+    updateSliderUI();
+  }
+}
+
+function updateSliderUI() {
+  const slider = document.getElementById('versionSlider');
+  const label = document.getElementById('versionLabel');
+  if (!allVersions.length) {
+    slider.disabled = true;
+    slider.min = 1; slider.max = 1; slider.value = 1;
+    label.textContent = 'v-/-';
+    return;
+  }
+  const minV = allVersions[0].version;
+  const maxV = allVersions[allVersions.length - 1].version;
+  slider.disabled = false;
+  slider.min = minV; slider.max = maxV;
+  const pos = (currentVersion != null && currentVersion >= minV && currentVersion <= maxV) ? currentVersion : maxV;
+  slider.value = pos;
+  label.textContent = `v${pos}/${maxV}`;
+}
+
+async function fetchSpecificVersion(v) {
+  if (!currentCharacterId) return;
+  try {
+    const r = await fetch(`${API}/system/personality/snapshots/${v}/tree?character_id=${encodeURIComponent(currentCharacterId)}`);
+    if (!r.ok) { setStatus(`v${v} 讀取失敗`, 'error'); return; }
+    const tree = await r.json();
+    applyTree(tree);
+    const tag = viewMode === 'pinned' ? '（固定檢視）' : '';
+    setStatus(`已切換至 v${tree.version}${tag}`, 'ok');
+  } catch (e) {
+    console.error('fetchSpecificVersion:', e);
+    setStatus('讀取失敗', 'error');
+  }
+}
+</script>
+
+</body>
+</html>

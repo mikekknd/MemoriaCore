@@ -207,7 +207,8 @@ async def _handle_message(message: types.Message):
 
     try:
         # 在執行緒池中跑完整編排（與 chat_ws.py 共用同一函式）
-        reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events = \
+        reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events, \
+            _inner_thought, _status_metrics, _tone, _speech, _cited_uids = \
             await asyncio.to_thread(
                 _run_chat_orchestration,
                 list(s.messages), list(s.last_entities), user_text, user_prefs,

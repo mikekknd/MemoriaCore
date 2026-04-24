@@ -18,6 +18,7 @@ from core.core_memory import MemorySystem
 from core.memory_analyzer import MemoryAnalyzer
 from core.character_engine import CharacterManager
 from core.persona_sync import PersonaSyncManager
+from core.persona_evolution.snapshot_store import PersonaSnapshotStore
 from core.tts_client import MinimaxTTSClient
 
 # ── Module-level singletons ──────────────────────────────
@@ -27,6 +28,7 @@ analyzer: MemoryAnalyzer | None = None
 global_router: LLMRouter | None = None
 character_mgr: CharacterManager | None = None
 persona_sync_mgr: PersonaSyncManager | None = None
+persona_snapshot_store: PersonaSnapshotStore | None = None
 tts_client: MinimaxTTSClient | None = None
 embed_model: str = ""
 
@@ -39,7 +41,7 @@ _startup_time: float = 0.0
 
 def init_all():
     """在 FastAPI lifespan startup 時呼叫一次，初始化全部核心物件。"""
-    global memory_sys, storage, analyzer, global_router, character_mgr, persona_sync_mgr, tts_client, embed_model, _startup_time
+    global memory_sys, storage, analyzer, global_router, character_mgr, persona_sync_mgr, persona_snapshot_store, tts_client, embed_model, _startup_time
     import time
     _startup_time = time.time()
 
@@ -48,6 +50,7 @@ def init_all():
     analyzer = MemoryAnalyzer(memory_sys)
     character_mgr = CharacterManager()
     persona_sync_mgr = PersonaSyncManager()
+    persona_snapshot_store = PersonaSnapshotStore(storage)
 
     user_prefs = storage.load_prefs()
     tts_client = MinimaxTTSClient.from_prefs(user_prefs)  # None 若未啟用
@@ -188,6 +191,11 @@ def get_tts_client() -> MinimaxTTSClient | None:
 def get_persona_sync_manager() -> PersonaSyncManager:
     assert persona_sync_mgr is not None, "PersonaSyncManager not initialized"
     return persona_sync_mgr
+
+
+def get_persona_snapshot_store() -> PersonaSnapshotStore:
+    assert persona_snapshot_store is not None, "PersonaSnapshotStore not initialized"
+    return persona_snapshot_store
 
 
 def get_embed_model() -> str:
