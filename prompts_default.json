@@ -107,10 +107,10 @@
 
   "environment_context_block": {
     "label": "環境上下文區塊 (Environment Context Block)",
-    "description": "注入在使用者訊息前的動態環境資訊（時間等）。放在 user message 前綴而非 system prompt，避免破壞 prefix cache。",
+    "description": "注入在使用者訊息前的動態環境資訊（時間、天氣）。放在 user message 前綴而非 system prompt，避免破壞 prefix cache。",
     "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → _build_user_prefix()",
-    "placeholders": ["{current_time}"],
-    "template": "<environment_context>\nCurrent Time: {current_time}\n</environment_context>"
+    "placeholders": ["{current_time}", "{weather_block}"],
+    "template": "<environment_context>\nCurrent Time: {current_time}{weather_block}\n</environment_context>"
   },
 
   "emotional_trajectory_block": {

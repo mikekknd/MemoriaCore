@@ -77,6 +77,7 @@ def run_router_agent(
     try:
         content, tool_calls = router.generate_with_tools(
             "router", messages, tools=augmented_tools, temperature=temperature,
+            tool_choice="required",
         )
     except Exception as e:
         SystemLogger.log_error("RouterAgent", f"{type(e).__name__}: {e}")

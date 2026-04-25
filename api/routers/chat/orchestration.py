@@ -12,6 +12,7 @@ from api.dependencies import (
 )
 from core.prompt_manager import get_prompt_manager
 from core.prompt_utils import build_user_prefix
+from core.chat_orchestrator.router_agent import run_router_agent
 from api.routers.chat.timer import StepTimer
 
 
@@ -126,16 +127,6 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     if proactive_topics_block:
         proactive_topics_block = f"\n{proactive_topics_block}\n"
 
-    # 天氣快取注入（直接讀本地 JSON，無 HTTP 開銷）
-    weather_block = ""
-    try:
-        from tools.weather_cache import WeatherCache
-        weather_summary = WeatherCache().get_current_slot()
-        if weather_summary:
-            weather_block = f"\n【即時天氣資訊】\n{weather_summary}\n"
-    except Exception:
-        pass
-
     # 動態角色載入（evolved_prompt 優先，否則使用 system_prompt）
     char_mgr = get_character_manager()
     active_char_id = user_prefs.get("active_character_id", "default")
@@ -158,7 +149,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     )
 
     sys_prompt = f"""{char_sys_prompt}
-{static_profile_block}{weather_block}
+{static_profile_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
 {_suffix}"""
 
@@ -222,25 +213,38 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     with timer.step("LLM 對話生成 (Chat Generation LLM)"):
         try:
             from tools.tavily import TAVILY_SEARCH_SCHEMA, execute_tool_call
-            from tools.weather import WEATHER_SCHEMA
-            tools_list = [TAVILY_SEARCH_SCHEMA, WEATHER_SCHEMA]
+            tools_list = []
+            if user_prefs.get("tavily_api_key"):
+                tools_list.append(TAVILY_SEARCH_SCHEMA)
+            try:
+                from tools.weather import WEATHER_SCHEMA
+                if user_prefs.get("openweather_api_key"):
+                    tools_list.append(WEATHER_SCHEMA)
+            except ImportError:
+                pass
+            try:
+                from tools.bash_tool import BASH_TOOL_SCHEMA
+                if user_prefs.get("bash_tool_enabled"):
+                    tools_list.append(BASH_TOOL_SCHEMA)
+            except ImportError:
+                pass
+            try:
+                from tools.browser_agent import BROWSER_AGENT_SCHEMA
+                if user_prefs.get("browser_agent_enabled"):
+                    tools_list.append(BROWSER_AGENT_SCHEMA)
+            except ImportError:
+                pass
 
-            # ── 第一輪：輕量工具偵測 ──────────────────────────
-            # 只帶最近 2 輪對話（4 則訊息）+ 極簡 system prompt，
-            # 不帶人格設定與記憶上下文，僅判斷是否需要呼叫工具。
-            # 輸出文字一律捨棄，只取 tool_calls。
-            _lite_sys = (
-                "判斷使用者最新的訊息是否需要呼叫外部工具（網路搜尋或天氣查詢）。"
-                "若需要，呼叫對應工具並帶入精確查詢參數；若不需要，不輸出任何內容。"
+            # ── 第一輪：輕量工具偵測（共用 run_router_agent）──────
+            # clean_history 末尾含當前 user_prompt，傳 [:-1] 避免重複追加。
+            router_result = run_router_agent(
+                user_prompt=user_prompt,
+                tools_list=tools_list,
+                router=rtr,
+                temperature=0.0,
+                recent_history=clean_history[-5:-1] or None,
             )
-            _lite_history = clean_history[-4:]  # 最近 2 輪 = 最多 4 則（含當前 user 訊息）
-            lite_messages = [{"role": "system", "content": _lite_sys}] + _lite_history
-
-            # ⚠️ 使用 "router" task key（非 "chat"），確保 log 中可區分
-            # "router" 已在 dependencies.py 登錄，預設 fallback 至 chat 的 provider/model
-            _, tool_calls = rtr.generate_with_tools(
-                "router", lite_messages, tools=tools_list, temperature=0.0,
-            )
+            tool_calls = router_result.tool_calls if router_result.needs_tools else []
 
             # ── 若有工具呼叫：執行工具並將結果注入完整上下文 ──
             if tool_calls:

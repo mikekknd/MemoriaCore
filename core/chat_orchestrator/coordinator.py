@@ -208,15 +208,6 @@ def run_dual_layer_orchestration(
             if proactive_topics_block:
                 proactive_topics_block = f"\n{proactive_topics_block}\n"
 
-            weather_block = ""
-            try:
-                from tools.weather_cache import WeatherCache
-                weather_summary = WeatherCache().get_current_slot()
-                if weather_summary:
-                    weather_block = f"\n【即時天氣資訊】\n{weather_summary}\n"
-            except Exception:
-                pass
-
             pm = get_prompt_manager()
             speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
                 reply_rules=reply_rules,
@@ -228,7 +219,7 @@ def run_dual_layer_orchestration(
             )
 
             sys_prompt = f"""{char_sys_prompt}
-{static_profile_block}{weather_block}
+{static_profile_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
 {_suffix}"""
 

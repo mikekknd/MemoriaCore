@@ -66,7 +66,8 @@ class OllamaProvider(ILLMProvider):
             kwargs["format"] = response_format
         if tools:
             kwargs["tools"] = tools
-            
+            # Ollama 不支援 tool_choice 參數，由 system prompt 指示模型行為
+
         response = self._client.chat(**kwargs)
         
         if hasattr(response, "model_dump"):
