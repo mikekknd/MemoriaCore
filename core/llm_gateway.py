@@ -362,7 +362,7 @@ class LLMRouter:
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
-        SystemLogger.log_llm_prompt(task_key, route["model"], messages)
+        SystemLogger.log_llm_prompt(task_key, route["model"], messages, tools)
         response_text, tool_calls = route["provider"].generate_chat(messages, route["model"], temperature, response_format, tools, tool_choice)
         log_content = f"Content: {response_text}, Tools: {tool_calls}"
         SystemLogger.log_llm_response(task_key, route["model"], log_content)

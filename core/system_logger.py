@@ -128,7 +128,7 @@ class SystemLogger:
         })
 
     @staticmethod
-    def log_llm_prompt(task_key, model_name, api_messages):
+    def log_llm_prompt(task_key, model_name, api_messages, tools: list | None = None):
         """紀錄發送給 LLM 的完整 Prompt"""
         ts = SystemLogger._get_time()
         print(f"\n[{ts}] >>> 發送至 LLM [任務: {task_key} | 模型: {model_name}]")
@@ -142,16 +142,23 @@ class SystemLogger:
             for line in preview.split("\n"):
                 print(f"    {line}")
             print()
+        if tools:
+            tool_names = [t.get("function", {}).get("name", "?") for t in tools]
+            print(f"  [TOOLS]: {', '.join(tool_names)}")
+            print()
         print(f"{'-'*60}\n")
 
-        SystemLogger._write_entry({
+        entry: dict = {
             "timestamp": SystemLogger._get_iso_time(),
             "type": "llm_call",
             "direction": "prompt",
             "category": task_key,
             "model": model_name,
             "messages": api_messages,
-        })
+        }
+        if tools:
+            entry["tools"] = tools
+        SystemLogger._write_entry(entry)
 
     @staticmethod
     def log_llm_response(task_key, model_name, response_text):

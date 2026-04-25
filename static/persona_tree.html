@@ -65,6 +65,12 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 
 .link { stroke:var(--border); stroke-opacity:.7; stroke-width:1.2px; }
 .link.inactive { stroke-opacity:.25; stroke-dasharray:3,3; }
+
+/* 自動播放控制列 */
+#playBtn { min-width:32px; font-size:14px; }
+#loopBtn { min-width:32px; font-size:14px; }
+#loopBtn.active { border-color:var(--accent); color:var(--accent); }
+#playSpeed { padding:4px 6px; width:72px; }
 </style>
 </head>
 <body>
@@ -82,6 +88,16 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
   <input id="versionSlider" type="range" min="1" max="1" value="1" step="1" disabled title="拖拉切換版本">
   <span id="versionLabel" class="version-label">v-/-</span>
   <button onclick="jumpLatest()" title="跳到最新版">⇥</button>
+  <div class="divider"></div>
+  <button id="playBtn" onclick="togglePlay()" title="自動播放版本">▶</button>
+  <button id="loopBtn" onclick="toggleLoop()" title="循環播放">↺</button>
+  <select id="playSpeed" title="每版停留時間">
+    <option value="500">0.5s</option>
+    <option value="1000" selected>1s</option>
+    <option value="2000">2s</option>
+    <option value="3000">3s</option>
+    <option value="5000">5s</option>
+  </select>
   <span id="statusMsg" class="status-msg"></span>
   <span id="versionInfo" class="version-info"></span>
 </div>
@@ -145,6 +161,12 @@ let pollTimer = null;
 let selectedNodeId = null;
 let allVersions = [];          // [{version, timestamp, summary, dimensions_count, id}, ...]
 let viewMode = 'live';         // 'live' = 跟隨最新；'pinned' = 固定在特定版本（slider 拖拉後）
+
+// 自動播放狀態
+let isPlaying = false;
+let loopEnabled = false;
+let playTimer = null;
+let playVersionIndex = 0;
 
 // =====================================================================
 //  D3 setup
@@ -316,7 +338,60 @@ async function loadManualCharacter() {
   await switchCharacter(val);
 }
 
+// =====================================================================
+//  Auto-play
+// =====================================================================
+function togglePlay() {
+  if (isPlaying) {
+    stopPlayback();
+  } else {
+    startPlayback();
+  }
+}
+
+function toggleLoop() {
+  loopEnabled = !loopEnabled;
+  document.getElementById('loopBtn').classList.toggle('active', loopEnabled);
+}
+
+function startPlayback() {
+  if (!allVersions.length) { setStatus('尚無版本可播放', 'warn'); return; }
+  isPlaying = true;
+  viewMode = 'pinned';
+  document.getElementById('playBtn').textContent = '⏸';
+  // 從目前版本開始，若已在最後則從頭
+  const curIdx = allVersions.findIndex(v => v.version === currentVersion);
+  playVersionIndex = (curIdx >= 0 && curIdx < allVersions.length - 1) ? curIdx : 0;
+  runPlayStep();
+}
+
+function stopPlayback() {
+  isPlaying = false;
+  if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+  document.getElementById('playBtn').textContent = '▶';
+}
+
+async function runPlayStep() {
+  if (!isPlaying || !allVersions.length) return;
+  const v = allVersions[playVersionIndex];
+  await fetchSpecificVersion(v.version);
+  if (!isPlaying) return;  // 播放期間被手動停止
+
+  playVersionIndex++;
+  if (playVersionIndex >= allVersions.length) {
+    if (loopEnabled) {
+      playVersionIndex = 0;
+    } else {
+      stopPlayback();
+      return;
+    }
+  }
+  const speed = parseInt(document.getElementById('playSpeed').value);
+  playTimer = setTimeout(runPlayStep, speed);
+}
+
 async function switchCharacter(id) {
+  stopPlayback();
   currentCharacterId = id;
   localStorage.setItem('persona_tree_character', id);
   currentVersion = null;
