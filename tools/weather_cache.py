@@ -14,7 +14,7 @@
 import json
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from core.system_logger import SystemLogger
 
 
@@ -116,12 +116,14 @@ class WeatherCache:
 
         country = data.get("city", {}).get("country", "")
         today_str = datetime.now().strftime("%Y-%m-%d")
+        tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
         slots = []
         for item in data.get("list", []):
             # 用 Unix timestamp 轉本地時間，避免 UTC 跨日問題
             dt_local = datetime.fromtimestamp(item["dt"])
-            if dt_local.strftime("%Y-%m-%d") != today_str:
+            # 若今日 slots 為空（深夜/跨日邊界），一併列入明日的預報
+            if dt_local.strftime("%Y-%m-%d") not in (today_str, tomorrow_str):
                 continue
 
             slots.append({
