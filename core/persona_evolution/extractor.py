@@ -108,6 +108,14 @@ def _coerce_to_dict(raw: str | dict | None) -> dict | None:
         text = raw.strip()
         if not text:
             return None
+        # 剝除 LLM 可能包裹的 markdown code fence（```json ... ``` 或 ``` ... ```）
+        if text.startswith("```"):
+            lines = text.splitlines()
+            # 移除首行（```json 或 ```）與末行（```）
+            inner = lines[1:] if lines[-1].strip() == "```" else lines[1:]
+            if inner and inner[-1].strip() == "```":
+                inner = inner[:-1]
+            text = "\n".join(inner).strip()
         try:
             data = json.loads(text)
         except json.JSONDecodeError:

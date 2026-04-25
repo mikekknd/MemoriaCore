@@ -75,6 +75,11 @@ class PersonaSnapshotStore:
             timestamp: ISO 8601；未提供時用 ``datetime.now().isoformat()``。
         """
         ts = timestamp or datetime.now().isoformat()
+        if not trait_diff.updates and not trait_diff.new_traits:
+            raise ValueError(
+                f"save_snapshot({character_id}): trait_diff 為空，拒絕寫入孤兒 snapshot。"
+                " 請確認 LLM 萃取結果非空後再呼叫。"
+            )
         # 活躍清單：供 updates 驗證 + fallback cosine 的候選池（只拿活躍的做 embedding 比對）
         active_traits = self.storage.get_active_traits(character_id)
         active_by_key = {t["trait_key"]: t for t in active_traits}

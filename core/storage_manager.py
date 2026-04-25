@@ -819,10 +819,21 @@ class StorageManager:
             "dimensions": dimensions,
         }
 
-    def _load_dimensions_for(self, cursor, snapshot_id: int) -> list:
+    def _load_dimensions_for(
+        self,
+        cursor,
+        snapshot_id: int,
+        character_id: str | None = None,
+        version: int | None = None,
+    ) -> list:
         """讀指定 snapshot 的所有維度明細；``is_active`` / ``parent_key`` 來自
         ``persona_traits`` 表（跨版本真實狀態），未建 trait 列的筆（防禦性情境）
         預設 active、無 parent_key。
+
+        當傳入 ``character_id`` + ``version`` 時，額外補入「存在於 ``persona_traits``
+        但此版 snapshot 沒有 dimension 記錄」的 trait（例如 confidence=none 未寫入的
+        節點），以其最近一次已知的 confidence 值顯示、保持當前 ``is_active`` 狀態。
+        這樣 deactivated trait 在樹裡會以淡化節點呈現，而非直接消失。
         """
         cursor.execute(
             "SELECT d.dimension_key, d.name, d.confidence, d.confidence_label, "
@@ -834,7 +845,7 @@ class StorageManager:
             "WHERE d.snapshot_id = ? ORDER BY d.id",
             (snapshot_id,),
         )
-        return [
+        result = [
             {
                 "dimension_key": r[0],
                 "name": r[1],
@@ -847,6 +858,43 @@ class StorageManager:
             }
             for r in cursor.fetchall()
         ]
+
+        if character_id is None or version is None:
+            return result
+
+        # 補入此版 snapshot 沒有 dimension 記錄的歷史 trait
+        have_keys = {item["dimension_key"] for item in result}
+        cursor.execute(
+            "SELECT t.trait_key, t.name, t.is_active, t.parent_key "
+            "FROM persona_traits t "
+            "WHERE t.character_id = ? AND t.created_version <= ?",
+            (character_id, version),
+        )
+        missing = [r for r in cursor.fetchall() if r[0] not in have_keys]
+        for r in missing:
+            trait_key = r[0]
+            # 取截至此版本最近一次有記錄的 confidence/description
+            cursor.execute(
+                "SELECT pd.confidence, pd.confidence_label, pd.description, pd.parent_name "
+                "FROM persona_dimensions pd "
+                "JOIN persona_snapshots ps ON ps.id = pd.snapshot_id "
+                "WHERE pd.dimension_key = ? AND ps.character_id = ? AND ps.version <= ? "
+                "ORDER BY ps.version DESC LIMIT 1",
+                (trait_key, character_id, version),
+            )
+            last = cursor.fetchone()
+            result.append({
+                "dimension_key": trait_key,
+                "name": r[1],
+                "confidence": float(last[0]) if last else 0.0,
+                "confidence_label": last[1] if last else "none",
+                "description": last[2] if last else "",
+                "parent_name": last[3] if last else None,
+                "is_active": bool(r[2]),
+                "parent_key": r[3],
+            })
+
+        return result
 
     def get_latest_persona_snapshot(self, character_id: str) -> dict | None:
         """回傳該角色最新一筆 snapshot（含 dimensions）；無紀錄回 None。"""
@@ -862,7 +910,7 @@ class StorageManager:
             row = cur.fetchone()
             if not row:
                 return None
-            dims = self._load_dimensions_for(cur, row[0])
+            dims = self._load_dimensions_for(cur, row[0], row[1], row[2])
             return self._row_to_snapshot(row, dims)
         finally:
             conn.close()
@@ -880,7 +928,7 @@ class StorageManager:
             row = cur.fetchone()
             if not row:
                 return None
-            dims = self._load_dimensions_for(cur, row[0])
+            dims = self._load_dimensions_for(cur, row[0], row[1], row[2])
             return self._row_to_snapshot(row, dims)
         finally:
             conn.close()

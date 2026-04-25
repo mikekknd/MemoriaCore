@@ -50,17 +50,17 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 .detail-panel .node-detail .desc { color:var(--text); white-space:pre-wrap; }
 .detail-panel .empty { color:var(--text2); font-size:12px; font-style:italic; }
 
-/* Node color by confidence_label */
-.node-circle.high { fill:var(--accent2); }
-.node-circle.medium { fill:var(--accent); }
-.node-circle.low { fill:var(--warn); }
-.node-circle.none { fill:var(--text2); }
+/* Node circles — fill 由 JS depthColor() 動態設定，CSS 只管 stroke / state */
 .node-circle { stroke:var(--surface); stroke-width:1.5px; cursor:pointer; transition:stroke .2s; }
 .node-circle:hover { stroke:var(--accent); stroke-width:2.5px; }
 .node-circle.selected { stroke:#fff; stroke-width:3px; }
+.node-circle.inactive { opacity:.3; }
+
+/* 同心光環（高連結度樞紐節點） */
+.node-ring { pointer-events:none; fill:none; stroke-width:1.5px; }
+.node-ring.inactive { opacity:.15 !important; }
 
 .node-label { fill:var(--text); font-size:11px; font-family:'Segoe UI',sans-serif; pointer-events:none; text-shadow:0 0 4px var(--bg),0 0 2px var(--bg); }
-.node-circle.inactive { opacity:.3; }
 .node-label.inactive { opacity:.45; font-style:italic; }
 
 .link { stroke:var(--border); stroke-opacity:.7; stroke-width:1.2px; }
@@ -104,7 +104,37 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 // =====================================================================
 const API = '/api/v1';
 const POLL_INTERVAL_MS = 5 * 60 * 1000;  // 5 分鐘
-const RADIUS_SCALE = 4;                   // confidence (0-10) → 半徑 (0-40)
+const BASE_RADIUS       = 6;   // 最小半徑
+const CHILD_SCALE       = 7;   // 每多一個子節點增加的半徑
+const CONFIDENCE_SCALE  = 2;   // confidence (0-10) 的補充加成
+const MAX_RADIUS        = 42;  // 上限
+
+function nodeRadius(d) {
+  // 子節點數主導大小；無層級結構時 confidence 提供差異化
+  const structural = (d.childCount || 0) * CHILD_SCALE;
+  const conf       = (d.confidence || 0) * CONFIDENCE_SCALE;
+  return Math.min(MAX_RADIUS, BASE_RADIUS + structural + conf);
+}
+
+// 世代深度 → 顏色（root=暖金，子代依深度漸層至深紫）
+const DEPTH_COLORS = ['#f5a623', '#e8507a', '#9b59b6', '#6c3483', '#4a235a'];
+function depthColor(d) {
+  const depth = (typeof d === 'object' && d !== null) ? (d.depth || 0) : 0;
+  return DEPTH_COLORS[Math.min(depth, DEPTH_COLORS.length - 1)];
+}
+
+// 活躍節點呼吸動畫（±5% 正弦脈動）
+function startBreathing(sel) {
+  sel.transition('breathe')
+    .duration(2200).ease(d3.easeSinInOut)
+    .attr('r', d => nodeRadius(d) * 1.05)
+    .transition('breathe-back')
+    .duration(2200).ease(d3.easeSinInOut)
+    .attr('r', d => nodeRadius(d))
+    .on('end', function(d) {
+      if (d.is_active !== false) startBreathing(d3.select(this));
+    });
+}
 
 // =====================================================================
 //  State
@@ -121,8 +151,9 @@ let viewMode = 'live';         // 'live' = 跟隨最新；'pinned' = 固定在�
 // =====================================================================
 const svg = d3.select('#forceSvg');
 
-// SVG defs — 方向性箭頭（含 inactive 淡化版）
+// SVG defs — 方向性箭頭 + glow 濾鏡
 const defs = svg.append('defs');
+
 ['arrow', 'arrow-inactive'].forEach((id, i) => {
   defs.append('marker')
     .attr('id', id)
@@ -131,6 +162,25 @@ const defs = svg.append('defs');
     .attr('orient', 'auto').attr('markerUnits', 'strokeWidth')
     .append('path').attr('d', 'M0,-4L10,0L0,4')
     .attr('fill', '#8b949e').attr('opacity', i === 0 ? 1 : 0.4);
+});
+
+// Confidence 驅動的 glow 濾鏡（高 confidence → 光暈越強）
+[
+  { id: 'glow-high',   dev: 6   },
+  { id: 'glow-medium', dev: 4   },
+  { id: 'glow-low',    dev: 2.5 },
+  { id: 'glow-none',   dev: 1   },
+].forEach(({ id, dev }) => {
+  const f = defs.append('filter').attr('id', id)
+    .attr('x', '-60%').attr('y', '-60%')
+    .attr('width', '220%').attr('height', '220%');
+  f.append('feGaussianBlur')
+    .attr('in', 'SourceGraphic')
+    .attr('stdDeviation', dev)
+    .attr('result', 'blur');
+  const merge = f.append('feMerge');
+  merge.append('feMergeNode').attr('in', 'blur');
+  merge.append('feMergeNode').attr('in', 'SourceGraphic');
 });
 
 const container = svg.append('g');  // zoom-pan 容器
@@ -145,18 +195,16 @@ svg.call(
 );
 
 // Force simulation（節點資料在 engine.update 時替換）
-// forceCenter 只平移整體重心；forceX/Y 額外對每個節點施加向心力，
-// 避免分支多 + charge 排斥強時節點被慢慢推出畫面。
 const simulation = d3.forceSimulation()
   .force('link', d3.forceLink().id(d => d.id).distance(120).strength(0.7))
   .force('charge', d3.forceManyBody().strength(-280))
-  .force('center', d3.forceCenter())   // 每次 resize 時設定中心
+  .force('center', d3.forceCenter())
   .force('x', d3.forceX().strength(0.06))
   .force('y', d3.forceY().strength(0.06))
-  .force('collide', d3.forceCollide().radius(d => (d.confidence || 1) * RADIUS_SCALE + 8))
+  .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 8))
   .on('tick', ticked);
 
-// 目前 simulation 裡的 nodes / links（以 id / source-target 為索引）
+// 目前 simulation 裡的 nodes / links
 const nodeIndex = new Map();  // id -> node object (含 x, y, vx, vy)
 const linkIndex = new Map();  // "src-tgt" -> link object
 
@@ -169,7 +217,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('charManual').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') loadManualCharacter();
   });
-  // Slider：input 事件即時更新 label；change 事件（放開滑鼠）才真的切版本
   const slider = document.getElementById('versionSlider');
   slider.addEventListener('input', (e) => {
     const v = parseInt(e.target.value);
@@ -189,7 +236,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-// 輪詢 tick：live 模式才追最新；pinned 模式只刷新版本清單（讓 slider 上限跟上）
 async function onPollTick() {
   if (!currentCharacterId) return;
   await loadVersionList();
@@ -231,7 +277,9 @@ async function loadCharacterList() {
       opt.textContent = `${c.name} (${c.character_id})`;
       sel.appendChild(opt);
     });
-    currentCharacterId = chars[0].character_id;
+    const saved = localStorage.getItem('persona_tree_character');
+    const match = chars.find(c => c.character_id === saved);
+    currentCharacterId = match ? match.character_id : chars[0].character_id;
     sel.value = currentCharacterId;
   } catch (e) {
     console.error('Failed to load character list:', e);
@@ -250,7 +298,6 @@ async function loadManualCharacter() {
     setStatus('請輸入 character_id', 'warn');
     return;
   }
-  // 同步下拉：若值在清單中則選中；否則插入臨時選項作為「自訂」標記
   const sel = document.getElementById('charSelect');
   const existing = Array.from(sel.options).find(o => o.value === val);
   if (existing) {
@@ -271,6 +318,7 @@ async function loadManualCharacter() {
 
 async function switchCharacter(id) {
   currentCharacterId = id;
+  localStorage.setItem('persona_tree_character', id);
   currentVersion = null;
   selectedNodeId = null;
   viewMode = 'live';
@@ -324,20 +372,16 @@ function applyTree(tree) {
   document.getElementById('summary').classList.remove('empty');
 
   const newIds = new Set(tree.nodes.map(n => n.id));
-  // Exit：移除不在新版的節點
   for (const id of Array.from(nodeIndex.keys())) {
     if (!newIds.has(id)) nodeIndex.delete(id);
   }
-  // Enter / Update
   const width = document.querySelector('.graph-area').getBoundingClientRect().width;
   const height = document.querySelector('.graph-area').getBoundingClientRect().height;
   for (const n of tree.nodes) {
     const existing = nodeIndex.get(n.id);
     if (existing) {
-      // 沿用座標 / 速度，更新資料
       Object.assign(existing, n);
     } else {
-      // 新節點：若有 parent 且 parent 已在，從 parent 座標生成；否則中心 + 微擾
       const parentKey = tree.links.find(l => l.target === n.id)?.source;
       const parent = parentKey ? nodeIndex.get(parentKey) : null;
       const x = parent ? parent.x + (Math.random() - 0.5) * 30 : width / 2 + (Math.random() - 0.5) * 50;
@@ -345,11 +389,37 @@ function applyTree(tree) {
       nodeIndex.set(n.id, { ...n, x, y });
     }
   }
-  // Links：整批重建（數量小，直接替換成本低；D3 會自動 resolve source/target 指標）
   linkIndex.clear();
   for (const l of tree.links) {
     linkIndex.set(`${l.source}-${l.target}`, { source: l.source, target: l.target });
   }
+
+  // 子節點數（主導節點大小）
+  const childCountMap = new Map();
+  for (const l of tree.links) {
+    childCountMap.set(l.source, (childCountMap.get(l.source) || 0) + 1);
+  }
+  for (const node of nodeIndex.values()) {
+    node.childCount = childCountMap.get(node.id) || 0;
+  }
+
+  // BFS 計算世代深度（root = 0，每層 +1）
+  const childKeys = new Set(tree.links.map(l => l.target));
+  const roots = [...nodeIndex.keys()].filter(k => !childKeys.has(k));
+  const depthMap = new Map();
+  const bfsQueue = roots.map(r => [r, 0]);
+  while (bfsQueue.length) {
+    const [id, d] = bfsQueue.shift();
+    if (depthMap.has(id)) continue;
+    depthMap.set(id, d);
+    for (const l of tree.links) {
+      if (l.source === id) bfsQueue.push([l.target, d + 1]);
+    }
+  }
+  for (const node of nodeIndex.values()) {
+    node.depth = depthMap.get(node.id) ?? 0;
+  }
+
   render();
   simulation.alpha(0.5).restart();
   updateSliderUI();
@@ -368,13 +438,35 @@ function render() {
   // Links
   const linkSel = linkGroup.selectAll('line.link')
     .data(links, d => `${typeof d.source === 'object' ? d.source.id : d.source}-${typeof d.target === 'object' ? d.target.id : d.target}`);
-  linkSel.exit().remove();
+
+  // 清理消失連結對應的漸層
+  linkSel.exit().each(function(d) {
+    const src = typeof d.source === 'object' ? d.source.id : d.source;
+    const tgt = typeof d.target === 'object' ? d.target.id : d.target;
+    defs.select(`#grad-${src}-${tgt}`).remove();
+  }).remove();
+
   const linkEnter = linkSel.enter().append('line').attr('class', 'link');
+
+  // 為每條新連結建立 linearGradient（座標由 ticked 即時更新）
+  linkEnter.each(function(d) {
+    const src = typeof d.source === 'object' ? d.source.id : d.source;
+    const tgt = typeof d.target === 'object' ? d.target.id : d.target;
+    const gradId = `grad-${src}-${tgt}`;
+    if (defs.select(`#${gradId}`).empty()) {
+      const grad = defs.append('linearGradient')
+        .attr('id', gradId)
+        .attr('gradientUnits', 'userSpaceOnUse');
+      grad.append('stop').attr('offset', '0%');
+      grad.append('stop').attr('offset', '100%');
+    }
+  });
+
   linkEnter.merge(linkSel)
     .attr('class', d => `link${isLinkInactive(d) ? ' inactive' : ''}`)
     .attr('marker-end', d => isLinkInactive(d) ? 'url(#arrow-inactive)' : 'url(#arrow)');
 
-  // Nodes（group: circle + label）
+  // Nodes（group: ring + circle + label）
   const nodeSel = nodeGroup.selectAll('g.node').data(nodes, d => d.id);
   nodeSel.exit().transition().duration(300).style('opacity', 0).remove();
 
@@ -384,18 +476,55 @@ function render() {
       .on('drag', dragMove)
       .on('end', dragEnd))
     .on('click', (event, d) => selectNode(d));
-  enter.append('circle').attr('class', d => `node-circle ${d.confidence_label || 'none'}`).attr('r', 0);
-  enter.append('text').attr('class', 'node-label').attr('dy', '.35em').attr('text-anchor', 'middle').text(d => d.name);
 
-  // Merge: update existing + new
+  // 同心光環（先 append → 渲染在 circle 下方）
+  enter.append('circle')
+    .attr('class', 'node-ring')
+    .attr('r', 0)
+    .style('opacity', 0);
+
+  // 主節點圓（fill 由 depthColor 動態設定）
+  enter.append('circle')
+    .attr('class', 'node-circle')
+    .attr('r', d => nodeRadius(d))
+    .style('fill', d => depthColor(d))
+    .attr('filter', d => d.is_active !== false ? `url(#glow-${d.confidence_label || 'none'})` : null);
+
+  enter.append('text')
+    .attr('class', 'node-label')
+    .attr('dy', '.35em')
+    .attr('text-anchor', 'middle')
+    .text(d => d.name);
+
+  // Merge: 更新所有節點（enter + update）
   const merged = enter.merge(nodeSel);
-  merged.select('circle')
-    .attr('class', d => `node-circle ${d.confidence_label || 'none'}${d.is_active === false ? ' inactive' : ''}${d.id === selectedNodeId ? ' selected' : ''}`)
+
+  // 光環：childCount >= 2 時顯示，跟隨 depthColor
+  merged.select('.node-ring')
+    .attr('class', d => `node-ring${d.is_active === false ? ' inactive' : ''}`)
+    .style('stroke', d => depthColor(d))
+    .style('opacity', d => d.is_active === false ? 0.15 : (d.childCount >= 2 ? 0.4 : 0))
     .transition().duration(500)
-    .attr('r', d => Math.max(4, d.confidence * RADIUS_SCALE));
-  merged.select('text')
+    .attr('r', d => d.childCount >= 2 ? nodeRadius(d) + 10 : 0);
+
+  // 主圓：class（inactive / selected）+ 世代色 + glow 濾鏡 + 半徑動畫
+  merged.select('.node-circle')
+    .attr('class', d => `node-circle${d.is_active === false ? ' inactive' : ''}${d.id === selectedNodeId ? ' selected' : ''}`)
+    .style('fill', d => depthColor(d))
+    .attr('filter', d => d.is_active !== false ? `url(#glow-${d.confidence_label || 'none'})` : null)
+    .transition().duration(500)
+    .attr('r', d => nodeRadius(d));
+
+  merged.select('.node-label')
     .attr('class', d => `node-label${d.is_active === false ? ' inactive' : ''}`)
     .text(d => d.name);
+
+  // 呼吸動畫：活躍節點啟動；非活躍節點中斷並歸位
+  merged.filter(d => d.is_active !== false).select('.node-circle')
+    .call(startBreathing);
+  merged.filter(d => d.is_active === false).select('.node-circle')
+    .interrupt('breathe').interrupt('breathe-back')
+    .attr('r', d => nodeRadius(d));
 }
 
 function isLinkInactive(d) {
@@ -406,17 +535,31 @@ function isLinkInactive(d) {
 
 function ticked() {
   linkGroup.selectAll('line.link')
+    .each(function(d) {
+      if (!d.source || !d.target || typeof d.source !== 'object') return;
+      const gradId = `grad-${d.source.id}-${d.target.id}`;
+      const grad = defs.select(`#${gradId}`);
+      if (!grad.empty()) {
+        // 更新漸層端點座標（跟隨節點位置）
+        grad.attr('x1', d.source.x).attr('y1', d.source.y)
+            .attr('x2', d.target.x).attr('y2', d.target.y);
+        // 更新漸層顏色（以 depth 世代色為準）
+        grad.select('stop:first-child').attr('stop-color', depthColor(d.source));
+        grad.select('stop:last-child').attr('stop-color', depthColor(d.target));
+        d3.select(this).attr('stroke', `url(#${gradId})`);
+      }
+    })
     .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
     .attr('x2', d => {
       const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
       const len = Math.hypot(dx, dy) || 1;
-      const r = Math.max(4, (d.target.confidence || 1) * RADIUS_SCALE) + 5;
+      const r = nodeRadius(d.target) + 5;
       return d.target.x - (dx / len) * r;
     })
     .attr('y2', d => {
       const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
       const len = Math.hypot(dx, dy) || 1;
-      const r = Math.max(4, (d.target.confidence || 1) * RADIUS_SCALE) + 5;
+      const r = nodeRadius(d.target) + 5;
       return d.target.y - (dy / len) * r;
     });
   nodeGroup.selectAll('g.node')
@@ -432,7 +575,10 @@ function dragEnd(event, d) { if (!event.active) simulation.alphaTarget(0); d.fx 
 
 function selectNode(d) {
   selectedNodeId = d.id;
-  nodeGroup.selectAll('circle').attr('class', n => `node-circle ${n.confidence_label || 'none'}${n.is_active === false ? ' inactive' : ''}${n.id === selectedNodeId ? ' selected' : ''}`);
+  nodeGroup.selectAll('.node-circle')
+    .attr('class', n => `node-circle${n.is_active === false ? ' inactive' : ''}${n.id === selectedNodeId ? ' selected' : ''}`)
+    .style('fill', n => depthColor(n))
+    .attr('filter', n => n.is_active !== false ? `url(#glow-${n.confidence_label || 'none'})` : null);
   const detail = document.getElementById('nodeDetail');
   const stateTag = d.is_active === false ? ' · <span style="color:var(--warn)">休眠中</span>' : '';
   detail.innerHTML = `
@@ -447,7 +593,6 @@ function setStatus(msg, kind) {
   el.textContent = msg;
   const colorMap = { ok: 'var(--accent2)', warn: 'var(--warn)', error: 'var(--error)' };
   el.style.color = colorMap[kind] || 'var(--text2)';
-  // 3 秒後淡去（保留 error/warn）
   if (kind === 'ok') setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 3000);
 }
 
