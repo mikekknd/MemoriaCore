@@ -76,7 +76,7 @@ CREATE TABLE user_profile_vectors (
 );
 INSERT INTO user_profile_vectors
 SELECT 'default', fact_key, fact_value, fact_vector FROM _user_profile_vectors_old;
-DROP TABLE _user_profile_old;
+DROP TABLE _user_profile_vectors_old;
 ```
 
 ### 1.2 `_init_conversation_db()` 加 Schema Evolution
