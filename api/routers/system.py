@@ -62,12 +62,18 @@ async def get_config():
 async def update_config(body: ConfigUpdateRequest):
     sto = get_storage()
     prefs = sto.load_prefs()
+    old_tg_token = prefs.get("telegram_bot_token", "")
     update = body.model_dump(exclude_none=True)
     prefs.update(update)
     sto.save_prefs(prefs)
     # 熱重載路由 + TTS
     await asyncio.to_thread(reload_router)
     await asyncio.to_thread(reload_tts, prefs)
+    # Telegram token 有變動時熱重載 bot
+    new_tg_token = prefs.get("telegram_bot_token", "")
+    if new_tg_token != old_tg_token:
+        from api.telegram_bot import reload_telegram_bot
+        await reload_telegram_bot(new_tg_token)
     return await get_config()
 
 

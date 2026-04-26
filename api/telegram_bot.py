@@ -286,3 +286,9 @@ async def stop_telegram_bot():
         _bot = None
 
     logger.info("Telegram Bot stopped.")
+
+
+async def reload_telegram_bot(new_token: str):
+    """以新 token 熱重載 Telegram Bot（PUT /system/config 時呼叫）。"""
+    await stop_telegram_bot()
+    await start_telegram_bot(new_token)
