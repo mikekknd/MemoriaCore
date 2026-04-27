@@ -14,7 +14,7 @@ def render_character_page(api_base: str, user_prefs: dict):
         characters = []
 
     # Prepare navigation via radio to allow programmatic switching
-    tab_options = ["📋 角色列表", "✏️ 新增 / 編輯角色"]
+    tab_options = ["📋 角色列表", "✏️ 新增 / 編輯角色", "🧬 PersonaProbe"]
     if "char_tab" not in st.session_state:
         st.session_state.char_tab = "📋 角色列表"
 
@@ -45,6 +45,14 @@ def render_character_page(api_base: str, user_prefs: dict):
 
                     if has_evolved:
                         st.caption("🧬 使用 PersonaProbe 演化人設")
+                        ep = char.get("evolved_prompt", {})
+                        if isinstance(ep, dict):
+                            pub = ep.get("public")
+                            priv = ep.get("private")
+                            st.markdown(f"- 🌐 public: `{'已設定' if pub else '未設定'}`")
+                            st.markdown(f"- 🔐 private: `{'已設定' if priv else '未設定'}`")
+                        else:
+                            st.markdown("- 🌐 public: `已設定`（舊格式）")
 
                     col1, col2 = st.columns(2)
                     with col1:
@@ -146,13 +154,29 @@ def render_character_page(api_base: str, user_prefs: dict):
                 c_prompt = st.text_area("原始人設內容", value=draft.get("system_prompt", ""), height=250,
                                         label_visibility="collapsed")
             with prompt_tab_evolved:
-                evolved_val = draft.get("evolved_prompt") or ""
-                if evolved_val:
-                    st.caption("PersonaProbe 產出的演化版本，對話時優先使用此內容。")
+                ep_raw = draft.get("evolved_prompt") or {}
+                if isinstance(ep_raw, str):
+                    ep_dict = {"public": ep_raw, "private": None}
+                elif isinstance(ep_raw, dict):
+                    ep_dict = ep_raw
                 else:
-                    st.caption("尚無演化版本。執行 PersonaProbe 反思後此欄位會自動填入。")
-                c_evolved = st.text_area("演化人設內容", value=evolved_val, height=250,
-                                         label_visibility="collapsed")
+                    ep_dict = {"public": None, "private": None}
+
+                st.caption("📌 演化人設分為 **public** 與 **private** 兩份，各自獨立演化。SU 身份使用 private 分支。")
+                c_evolved_public = st.text_area(
+                    "🌐 Public Face（公開頻道使用）",
+                    value=ep_dict.get("public") or "",
+                    height=150,
+                    label_visibility="collapsed",
+                    placeholder="public face 演化內容（留空則使用原始人設）"
+                )
+                c_evolved_private = st.text_area(
+                    "🔐 Private Face（SU 身份使用）",
+                    value=ep_dict.get("private") or "",
+                    height=150,
+                    label_visibility="collapsed",
+                    placeholder="private face 演化內容（留空則使用原始人設）"
+                )
 
             c_metrics = st.text_input("心理追蹤指標 (英文，用逗號分隔)", value=",".join(draft.get("metrics", [])))
             c_tones = st.text_input("允許的語氣字眼 (英文，用逗號分隔)", value=",".join(draft.get("allowed_tones", [])))
@@ -177,10 +201,17 @@ def render_character_page(api_base: str, user_prefs: dict):
                     metrics_list = [m.strip() for m in c_metrics.split(",") if m.strip()]
                     tones_list = [t.strip() for t in c_tones.split(",") if t.strip()]
                     
+                    evolved_public_val = c_evolved_public.strip() or None
+                    evolved_private_val = c_evolved_private.strip() or None
+                    if evolved_public_val is None and evolved_private_val is None:
+                        evolved_payload = None
+                    else:
+                        evolved_payload = {"public": evolved_public_val, "private": evolved_private_val}
+
                     payload = {
                         "name": c_name,
                         "system_prompt": c_prompt,
-                        "evolved_prompt": c_evolved.strip() or None,
+                        "evolved_prompt": evolved_payload,
                         "metrics": metrics_list,
                         "allowed_tones": tones_list,
                         "tts_language": c_tts.strip(),
@@ -202,3 +233,70 @@ def render_character_page(api_base: str, user_prefs: dict):
                             st.error(f"儲存失敗: {res.text}")
                     except Exception as e:
                         st.error(f"請求發生錯誤: {e}")
+
+    # === Tab 3: PersonaProbe ===
+    elif st.session_state.char_tab == "🧬 PersonaProbe":
+        st.subheader("🧬 PersonaProbe 同步")
+        st.caption("同步結果會寫入 active character 的演化人設。")
+
+        try:
+            res = requests.get(f"{api_base}/character", timeout=5)
+            if res.ok:
+                all_chars = res.json()
+        except Exception:
+            all_chars = []
+
+        active_char_id = user_prefs.get("active_character_id", "default")
+        active_char_name = next((c.get("name", c.get("character_id")) for c in all_chars if c.get("character_id") == active_char_id), active_char_id)
+
+        col_a, col_b = st.columns([1, 2])
+        with col_a:
+            st.info(f"📌 目前活跃角色：**{active_char_name}**")
+        with col_b:
+            char_options = [(c.get("character_id"), c.get("name", c.get("character_id"))) for c in all_chars]
+            selected = st.selectbox(
+                "切換目標角色",
+                options=[cid for cid, _ in char_options],
+                format_func=lambda cid: next((name for cid_, name in char_options if cid_ == cid), cid),
+                index=[cid for cid, _ in char_options].index(active_char_id) if active_char_id in [cid for cid, _ in char_options] else 0,
+                key="probe_target_char",
+            )
+            if selected != active_char_id:
+                new_prefs = user_prefs.copy()
+                new_prefs["active_character_id"] = selected
+                requests.put(f"{api_base}/system/config", json=new_prefs)
+                st.rerun()
+
+        st.divider()
+
+        try:
+            sync_resp = requests.get(f"{api_base}/system/personality/sync-status", timeout=5)
+            if sync_resp.ok:
+                sync_status = sync_resp.json()
+                col1, col2, col3 = st.columns(3)
+                col1.metric("今日已執行", f"{sync_status.get('today_run_count', 0)} 次")
+                col2.metric("上次反思時間", sync_status.get("last_reflection_at") or "從未")
+                col3.metric("距上次反思訊息數", f"{sync_status.get('messages_since_last', 0)} 筆")
+        except Exception:
+            st.info("無法取得同步狀態（後端可能未啟動）。")
+
+        st.divider()
+
+        if st.button("🚀 立即執行 PersonaProbe 反思", use_container_width=True, type="primary"):
+            with st.spinner("正在呼叫 PersonaProbe 進行深度人格分析（約需 1-2 分鐘）..."):
+                try:
+                    ref_resp = requests.post(f"{api_base}/system/personality/sync-now", timeout=660)
+                    if ref_resp.ok:
+                        result = ref_resp.json()
+                        status = result.get("status", "")
+                        if status == "success":
+                            st.success("✅ PersonaProbe 反思完成！演化人設已更新。")
+                            st.rerun()
+                        elif status == "skipped":
+                            st.info(f"⏭️ 已跳過：{result.get('reason', '')}")
+                        else:
+                            st.error(f"執行失敗：{result.get('message', ref_resp.text)}")
+                    else:
+                        st.error(f"API 錯誤：{ref_resp.text}")
+                except Exception as e:
+                    st.error(f"請求失敗: {e}")

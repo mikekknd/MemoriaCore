@@ -183,18 +183,29 @@ async def preference_aggregate(body: PreferenceAggregateRequest):
 # ── AI 個性管理（操作 active character 的 evolved_prompt）──
 @router.get("/personality")
 async def get_personality():
-    """回傳目前 active character 的有效人設內容與演化狀態。"""
+    """回傳目前 active character 的 public 與 private 演化人設。"""
     sto = get_storage()
     char_mgr = get_character_manager()
     prefs = sto.load_prefs()
     active_id = prefs.get("active_character_id", "default")
     char = char_mgr.get_active_character(active_id)
-    evolved = char.get("evolved_prompt") or ""
-    original = char.get("system_prompt", "")
-    has_evolved = bool(evolved)
+    ep = char.get("evolved_prompt") or {}
+
+    # 向後相容：舊格式是純字串
+    if isinstance(ep, str):
+        public_content = ep
+        private_content = None
+    elif isinstance(ep, dict):
+        public_content = ep.get("public")
+        private_content = ep.get("private")
+    else:
+        public_content = None
+        private_content = None
+
     return {
-        "content": evolved if has_evolved else original,
-        "has_evolved": has_evolved,
+        "public": public_content or char.get("system_prompt", ""),
+        "private": private_content,
+        "original_prompt": char.get("system_prompt", ""),
         "character_id": char.get("character_id"),
         "character_name": char.get("name"),
     }
@@ -202,12 +213,15 @@ async def get_personality():
 
 @router.put("/personality")
 async def update_personality(body: dict):
-    """手動覆寫 active character 的 evolved_prompt。"""
+    """手動覆寫 active character 的 evolved_prompt（public 與 private 各自更新）。"""
     sto = get_storage()
     char_mgr = get_character_manager()
     prefs = sto.load_prefs()
     active_id = prefs.get("active_character_id", "default")
-    char_mgr.set_evolved_prompt(active_id, body.get("content", ""))
+    if "public" in body:
+        char_mgr.set_evolved_prompt(active_id, body["public"] or "", persona_face="public")
+    if "private" in body:
+        char_mgr.set_evolved_prompt(active_id, body["private"] or "", persona_face="private")
     return {"status": "saved"}
 
 

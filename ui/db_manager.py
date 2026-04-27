@@ -5,17 +5,6 @@ import pandas as pd
 import requests
 
 
-@st.cache_data(ttl=10, show_spinner=False)
-def _cached_personality(api_base):
-    try:
-        resp = requests.get(f"{api_base}/system/personality", timeout=5)
-        if resp.ok:
-            return resp.json()  # 回傳完整 dict：content, has_evolved, character_name
-    except Exception:
-        pass
-    return None
-
-
 @st.cache_data(ttl=30, show_spinner=False)
 def _cached_sync_status(api_base):
     try:
@@ -30,8 +19,8 @@ def _cached_sync_status(api_base):
 def render_db_manager_page(api_base, user_prefs):
     st.title("🧠 記憶庫管理")
 
-    tab_memory, tab_personality, tab_raw_db, tab_dev = st.tabs([
-        "🌌 記憶操作", "🧬 AI 個性", "🗄️ 底層資料庫", "🧪 開發者工具",
+    tab_memory, tab_raw_db, tab_dev = st.tabs([
+        "🌌 記憶操作", "🗄️ 底層資料庫", "🧪 開發者工具",
     ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -88,82 +77,7 @@ def render_db_manager_page(api_base, user_prefs):
                 st.error(f"聚合失敗: {e}")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Tab 2: AI 個性
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with tab_personality:
-        # ── PersonaSync 狀態區 ──────────────────────────────
-        st.subheader("🧬 PersonaProbe 同步狀態")
-        sync_status = _cached_sync_status(api_base)
-        if sync_status:
-            col_s1, col_s2, col_s3 = st.columns(3)
-            col_s1.metric("今日已執行", f"{sync_status.get('today_run_count', 0)} 次")
-            col_s2.metric("上次反思時間", sync_status.get("last_reflection_at", "從未") or "從未")
-            col_s3.metric("距上次反思訊息數", f"{sync_status.get('messages_since_last', 0)} 筆")
-        else:
-            st.info("無法取得同步狀態（後端可能未啟動）。")
-
-        if st.button("🚀 立即執行 PersonaProbe 反思", use_container_width=True, type="primary"):
-            with st.spinner("正在呼叫 PersonaProbe 進行深度人格分析（約需 1-2 分鐘）..."):
-                try:
-                    ref_resp = requests.post(f"{api_base}/system/personality/sync-now", timeout=660)
-                    if ref_resp.ok:
-                        result = ref_resp.json()
-                        status = result.get("status", "")
-                        if status == "success":
-                            st.success("✅ PersonaProbe 反思完成！個性檔案已更新。")
-                            st.cache_data.clear()
-                            st.rerun()
-                        elif status == "skipped":
-                            st.info(f"⏭️ 已跳過：{result.get('reason', '')}")
-                        else:
-                            st.error(f"執行失敗：{result.get('message', ref_resp.text)}")
-                    else:
-                        st.error(f"API 錯誤：{ref_resp.text}")
-                except Exception as e:
-                    st.error(f"請求失敗: {e}")
-
-        st.divider()
-
-        # ── 演化人設檢視 / 手動編輯 ────────────────────────
-        try:
-            personality_data = _cached_personality(api_base)
-            if personality_data is not None:
-                char_name = personality_data.get("character_name", "")
-                has_evolved = personality_data.get("has_evolved", False)
-                current_content = personality_data.get("content", "")
-
-                if has_evolved:
-                    st.subheader(f"🧬 演化人設 — {char_name}")
-                    st.caption("目前使用 PersonaProbe 產出的演化版本。儲存將覆寫演化內容。")
-                else:
-                    st.subheader(f"📝 原始人設 — {char_name}")
-                    st.caption("尚無演化版本，目前使用原始 system_prompt。反思完成後此處將顯示演化內容。")
-
-                edited_personality = st.text_area(
-                    "人設內容",
-                    value=current_content, height=400,
-                    help="由 PersonaProbe 定期自動更新。你也可以直接在此手動調整後儲存至演化人設。",
-                )
-                if st.button("💾 保存為演化人設", use_container_width=True):
-                    try:
-                        save_resp = requests.put(
-                            f"{api_base}/system/personality",
-                            json={"content": edited_personality}, timeout=10,
-                        )
-                        if save_resp.ok:
-                            st.success("演化人設已保存！")
-                            st.cache_data.clear()
-                        else:
-                            st.error(f"保存失敗: {save_resp.text}")
-                    except Exception as e:
-                        st.error(f"保存失敗: {e}")
-            else:
-                st.error("無法載入人設資料")
-        except Exception as e:
-            st.error(f"載入人設失敗: {e}")
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Tab 3: 底層資料庫
+    # Tab 2: 底層資料庫
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab_raw_db:
         if st.button("🔄 載入目前資料庫內容", key="load_raw_db"):
