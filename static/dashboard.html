@@ -4,131 +4,35 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MemoriaCore Dashboard</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
 <style>
-/* ===== CSS Variables (matching log_viewer theme) ===== */
-:root {
-  --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
-  --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff; --accent2: #3fb950;
-  --warn: #d29922; --error: #f85149; --purple: #bc8cff;
-  --left-width: 40%;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); height:100vh; overflow:hidden; }
-
-/* ===== Top Status Bar ===== */
+:root { --left-width: 40%; }
+body { height:100vh; overflow:hidden; }
 .status-bar { background:var(--surface); border-bottom:1px solid var(--border); padding:6px 16px; display:flex; align-items:center; gap:12px; font-size:13px; height:36px; flex-shrink:0; }
 .status-dot { width:8px; height:8px; border-radius:50%; background:var(--error); flex-shrink:0; }
 .status-dot.ok { background:var(--accent2); }
 .status-text { color:var(--text2); }
-.status-session { color:var(--accent); margin-left:auto; font-family:'Cascadia Code','Fira Code',monospace; font-size:12px; }
-
-/* ===== Main Layout ===== */
 .dashboard { display:flex; height:calc(100vh - 36px); }
-
-/* ===== Left Panel — Chat Frame ===== */
 .panel-left { width:var(--left-width); min-width:300px; max-width:70%; display:flex; flex-direction:column; border-right:1px solid var(--border); }
 .panel-left iframe { border:none; width:100%; height:100%; flex:1; min-height:0; background:var(--bg); }
-
-/* ===== Resize Handle ===== */
 .resize-handle { width:4px; background:var(--border); cursor:col-resize; flex-shrink:0; transition:background .15s; }
 .resize-handle:hover, .resize-handle.active { background:var(--accent); }
-
-/* ===== Right Panel ===== */
 .panel-right { flex:1; min-width:350px; display:flex; flex-direction:column; overflow:hidden; }
 .tab-bar { background:var(--surface); border-bottom:1px solid var(--border); padding:0 12px; display:flex; gap:0; flex-shrink:0; }
 .tab-btn { background:none; border:none; border-bottom:2px solid transparent; padding:10px 16px; color:var(--text2); font-size:13px; cursor:pointer; white-space:nowrap; transition:all .15s; }
 .tab-btn:hover { color:var(--text); }
-.tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+.tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); opacity:1; }
 .tab-content { flex:1; overflow:hidden; position:relative; }
-.tab-pane { display:none; position:absolute; inset:0; overflow-y:auto; }
+.tab-pane { display:none; position:absolute; inset:0; overflow:hidden; }
 .tab-pane.active { display:flex; flex-direction:column; }
-
-/* ===== Log/DB Tab ===== */
+.tab-pane iframe { border:none; width:100%; height:100%; flex:1; min-height:0; background:var(--bg); }
 .viewer-toolbar { background:var(--surface); border-bottom:1px solid var(--border); padding:6px 12px; display:flex; gap:8px; align-items:center; flex-shrink:0; }
-.viewer-toolbar button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 12px; color:var(--text); font-size:12px; cursor:pointer; }
-.viewer-toolbar button:hover { border-color:var(--accent); color:var(--accent); }
-.viewer-toolbar button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.viewer-toolbar button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 12px; color:var(--text); font-size:12px; }
+.viewer-toolbar button:hover { border-color:var(--accent); color:var(--accent); opacity:1; }
+.viewer-toolbar button.active { background:var(--accent); color:#fff; border-color:var(--accent); opacity:1; }
 .viewer-frames { flex:1; display:flex; min-height:0; }
-.viewer-frames iframe { border:none; flex:1; min-width:0; }
+.viewer-frames iframe { flex:1; min-width:0; }
 .viewer-frames iframe.hidden { display:none; }
-
-/* ===== Routing Tab ===== */
-.routing-container { padding:16px; }
-.routing-container h2 { font-size:16px; margin-bottom:12px; font-weight:600; }
-.route-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden; }
-.route-header { padding:10px 14px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
-.route-header:hover { background:var(--surface2); }
-.route-chevron { font-size:12px; color:var(--text2); transition:transform .15s; width:16px; flex-shrink:0; }
-.route-card.expanded .route-chevron { transform:rotate(90deg); }
-.route-name { font-weight:600; font-size:14px; }
-.route-desc { color:var(--text2); font-size:12px; flex:1; }
-.route-current { font-size:11px; color:var(--accent); font-family:monospace; background:var(--surface2); padding:2px 8px; border-radius:4px; }
-.route-body { display:none; padding:0 14px 12px; }
-.route-card.expanded .route-body { display:block; }
-.route-field { display:flex; align-items:center; gap:10px; margin-top:8px; }
-.route-field label { font-size:13px; color:var(--text2); width:80px; flex-shrink:0; }
-.route-field select, .route-field input { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:13px; outline:none; }
-.route-field select:focus, .route-field input:focus { border-color:var(--accent); }
-.route-help { font-size:12px; color:var(--text2); margin-top:6px; padding:6px 8px; background:var(--bg); border-radius:4px; }
-.save-bar { position:sticky; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:10px 16px; display:flex; justify-content:flex-end; }
-.save-bar button { background:var(--accent); border:none; border-radius:6px; padding:8px 24px; color:#fff; font-size:14px; cursor:pointer; }
-.save-bar button:hover { opacity:.85; }
-
-/* ===== Prompts Tab ===== */
-.prompts-container { padding:16px; }
-.prompts-container h2 { font-size:16px; margin-bottom:4px; font-weight:600; }
-.prompts-top-bar { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
-.prompts-top-bar .count { color:var(--text2); font-size:13px; }
-.prompt-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden; }
-.prompt-header { padding:10px 14px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
-.prompt-header:hover { background:var(--surface2); }
-.prompt-chevron { font-size:12px; color:var(--text2); transition:transform .15s; width:16px; flex-shrink:0; }
-.prompt-card.expanded .prompt-chevron { transform:rotate(90deg); }
-.prompt-label { font-weight:600; font-size:14px; }
-.prompt-status { font-size:11px; padding:1px 8px; border-radius:4px; }
-.prompt-status.custom { background:#3d2e00; color:var(--warn); }
-.prompt-status.default { background:#0d2d0d; color:var(--accent2); }
-.prompt-body { display:none; padding:0 14px 12px; }
-.prompt-card.expanded .prompt-body { display:block; }
-.prompt-meta { font-size:12px; color:var(--text2); margin-bottom:8px; line-height:1.6; }
-.prompt-meta strong { color:var(--text); }
-.prompt-ph { display:inline-block; background:var(--surface2); padding:1px 6px; border-radius:3px; font-family:monospace; font-size:11px; margin:2px; }
-.prompt-textarea { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; color:var(--text); font-size:13px; font-family:'Cascadia Code','Fira Code',monospace; line-height:1.6; resize:vertical; min-height:120px; outline:none; }
-.prompt-textarea:focus { border-color:var(--accent); }
-.prompt-actions { display:flex; gap:8px; margin-top:8px; }
-.prompt-actions button { padding:6px 14px; border-radius:6px; font-size:13px; cursor:pointer; border:1px solid var(--border); }
-.prompt-actions .btn-save { background:var(--accent); color:#fff; border-color:var(--accent); }
-.prompt-actions .btn-reset { background:none; color:var(--warn); border-color:var(--warn); }
-.prompt-actions .btn-default { background:none; color:var(--text2); }
-.prompt-actions button:hover { opacity:.85; }
-
-/* ===== Modal ===== */
-.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:1000; align-items:center; justify-content:center; }
-.modal-overlay.open { display:flex; }
-.modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:90%; max-width:700px; max-height:80vh; display:flex; flex-direction:column; }
-.modal-header { padding:14px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
-.modal-header h3 { font-size:15px; }
-.modal-close { background:none; border:none; color:var(--text2); font-size:20px; cursor:pointer; padding:0 4px; }
-.modal-close:hover { color:var(--text); }
-.modal-body { padding:16px 18px; overflow-y:auto; flex:1; }
-.modal-body pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:12px; font-size:13px; font-family:'Cascadia Code','Fira Code',monospace; line-height:1.6; white-space:pre-wrap; word-break:break-all; color:var(--text); }
-
-/* ===== Toast ===== */
-.toast-container { position:fixed; bottom:16px; right:16px; z-index:2000; display:flex; flex-direction:column; gap:8px; }
-.toast { padding:10px 18px; border-radius:8px; font-size:13px; color:#fff; animation:toastIn .3s, toastOut .3s 2.7s forwards; max-width:360px; }
-.toast.success { background:var(--accent2); }
-.toast.error { background:var(--error); }
-.toast.info { background:var(--accent); }
-@keyframes toastIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:none} }
-@keyframes toastOut { to{opacity:0;transform:translateY(-10px)} }
-
-/* ===== Scrollbar ===== */
-::-webkit-scrollbar { width:8px; height:8px; }
-::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
-::-webkit-scrollbar-thumb:hover { background:var(--text2); }
-
-/* ===== Responsive ===== */
 @media (max-width:900px) {
   .dashboard { flex-direction:column; }
   .panel-left { width:100% !important; max-width:100%; height:50vh; border-right:none; border-bottom:1px solid var(--border); }
@@ -138,25 +42,18 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 </style>
 </head>
 <body>
-
-<!-- Status Bar -->
 <div class="status-bar">
   <div class="status-dot" id="statusDot"></div>
   <span class="status-text" id="statusText">connecting...</span>
 </div>
 
-<!-- Main Dashboard -->
 <div class="dashboard">
-
-  <!-- Left Panel: Chat -->
   <div class="panel-left" id="panelLeft">
     <iframe id="chatFrame" src="/static/chat.html" title="MemoriaCore Chat"></iframe>
   </div>
 
-  <!-- Resize Handle -->
   <div class="resize-handle" id="resizer"></div>
 
-  <!-- Right Panel: Tabs -->
   <div class="panel-right">
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="viewer" onclick="switchTab(this)">Log / DB</button>
@@ -165,8 +62,6 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
       <button class="tab-btn" data-tab="persona" onclick="switchTab(this)">人格演化</button>
     </div>
     <div class="tab-content">
-
-      <!-- Tab: Log/DB Viewer -->
       <div class="tab-pane active" data-pane="viewer">
         <div class="viewer-toolbar">
           <button class="active" onclick="setViewerMode('both',this)">side by side</button>
@@ -176,115 +71,49 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
           <button onclick="reloadLogViewer()">reload Log</button>
         </div>
         <div class="viewer-frames" id="viewerFrames">
-          <iframe id="logFrame" src="/static/log_viewer.html?api=true"></iframe>
-          <iframe id="dbFrame" src="/static/db_viewer.html"></iframe>
+          <iframe id="logFrame" src="/static/log_viewer.html?api=true" title="Log Viewer"></iframe>
+          <iframe id="dbFrame" src="/static/db_viewer.html" title="DB Viewer"></iframe>
         </div>
       </div>
 
-      <!-- Tab: Routing -->
       <div class="tab-pane" data-pane="routing">
-        <div class="routing-container" id="routingContainer">
-          <h2>Task Routing</h2>
-          <div id="routeList"></div>
-        </div>
-        <div class="save-bar">
-          <button onclick="saveRouting()">save routing</button>
-        </div>
+        <iframe src="/static/routing.html" title="Task Routing"></iframe>
       </div>
 
-      <!-- Tab: Prompts -->
       <div class="tab-pane" data-pane="prompts">
-        <div class="prompts-container" id="promptsContainer">
-          <div class="prompts-top-bar">
-            <h2>Prompt Management</h2>
-            <span class="count" id="promptCount"></span>
-            <span style="flex:1"></span>
-            <button style="background:none;border:1px solid var(--warn);color:var(--warn);border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;" onclick="resetAllPrompts()">reset all</button>
-          </div>
-          <div id="promptList"></div>
-        </div>
+        <iframe src="/static/prompts.html" title="Prompt Management"></iframe>
       </div>
 
-      <!-- Tab: Persona Evolution -->
       <div class="tab-pane" data-pane="persona">
-        <iframe id="personaTreeFrame" src="/static/persona_tree.html" style="border:none;width:100%;height:100%;flex:1;"></iframe>
+        <iframe id="personaTreeFrame" src="/static/persona_tree.html" title="Persona Evolution"></iframe>
       </div>
-
     </div>
   </div>
 </div>
 
-<!-- Modal (for viewing default prompts) -->
-<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
-  <div class="modal">
-    <div class="modal-header">
-      <h3 id="modalTitle">Default Value</h3>
-      <button class="modal-close" onclick="closeModal()">&times;</button>
-    </div>
-    <div class="modal-body" id="modalBody"></div>
-  </div>
-</div>
-
-<!-- Toast Container -->
-<div class="toast-container" id="toastContainer"></div>
-
+<script src="/static/shared/common.js"></script>
 <script>
-// =====================================================================
-//  Configuration
-// =====================================================================
-const API = '/api/v1';
-const PROVIDERS = ['Ollama (本地)', 'llama.cpp (本地)', 'OpenAI (雲端)', 'OpenRouter (雲端)'];
-const TASK_INFOS = {
-  chat:              { desc:'即時對話 (帶影子標籤)',      help:'處理玩家對話，同時伴隨生成實體標籤。建議高參數量模型。' },
-  expand:            { desc:'User意圖擴充 (秒速提取)',    help:'在提問瞬間提取使用者話語中的高密度名詞。' },
-  pipeline:          { desc:'一體化記憶管線',            help:'在背景一次性完成長文切分、摘要與圖譜修復。' },
-  compress:          { desc:'對話壓縮 (編年史化)',        help:'將過長的歷史對話壓縮為高密度編年史摘要。' },
-  distill:           { desc:'核心認知提煉 (Insight)',     help:'從情境記憶提煉使用者的深層特徵與長期價值觀。' },
-  ep_fuse:           { desc:'情境概覽縫合',              help:'將多段相關的情境記憶合併為一個高密度的綜合概覽。' },
-  profile:           { desc:'使用者畫像更新',            help:'從對話中萃取使用者的個人特徵與偏好。' },
-  persona_sync:      { desc:'PersonaProbe 人格反思',     help:'定時批次分析對話片段並更新 AI 人格演化。建議使用能力較強的模型以確保分析品質。' },
-  background_gather: { desc:'背景話題摘要',              help:'在背景將 Tavily 搜尋下來的資料摘要成主動話題。建議不需太強的模型。' },
-  character_gen:     { desc:'角色設定生成',              help:'根據簡短描述利用 AI 擴充出完整的角色系統提示詞與心理指標。' },
-  router:            { desc:'意圖路由預處理',            help:'工具意圖偵測：判斷是否需要呼叫外部工具並產生過渡語音。建議使用輕量快速模型以降低延遲。' },
-  translate:         { desc:'TTS 語音翻譯',              help:'將角色回覆翻譯為 TTS 目標語言（如日文），獨立於主對話執行。預設跟隨 chat 設定，可指定較輕量的翻譯專用模型。' },
-  browser:           { desc:'Browser Agent 瀏覽器代理',  help:'多輪瀏覽器自動化 Subagent，逐步執行網頁操作任務。建議使用支援 Function Calling 的模型。' },
-};
-
-// =====================================================================
-//  State
-// =====================================================================
-let routingConfig = {};
-
-// =====================================================================
-//  Initialization
-// =====================================================================
 document.addEventListener('DOMContentLoaded', () => {
   checkHealth();
   setInterval(checkHealth, 15000);
   initResizer();
-  loadRouting();
-  loadPrompts();
 });
 
-// =====================================================================
-//  Health Check
-// =====================================================================
 async function checkHealth() {
   try {
     const r = await fetch(`${API}/health`, {signal: AbortSignal.timeout(3000)});
     if (r.ok) {
       document.getElementById('statusDot').classList.add('ok');
       document.getElementById('statusText').textContent = 'connected';
-    } else throw 0;
+    } else {
+      throw 0;
+    }
   } catch {
     document.getElementById('statusDot').classList.remove('ok');
     document.getElementById('statusText').textContent = 'disconnected';
   }
 }
 
-// =====================================================================
-//  Resizer
-// =====================================================================
 function initResizer() {
   const resizer = document.getElementById('resizer');
   const panel = document.getElementById('panelLeft');
@@ -308,16 +137,12 @@ function initResizer() {
   });
 }
 
-// =====================================================================
-//  Tab Switching
-// =====================================================================
 function switchTab(btn) {
   const tab = btn.dataset.tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
 }
 
-// Keyboard shortcuts: Ctrl+1/2/3/4
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && !e.shiftKey && !e.altKey) {
     const map = {'1':'viewer','2':'routing','3':'prompts','4':'persona'};
@@ -330,220 +155,17 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// =====================================================================
-//  Log/DB Viewer Tab
-// =====================================================================
 function setViewerMode(mode, btn) {
   document.querySelectorAll('.viewer-toolbar button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  const logF = document.getElementById('logFrame');
-  const dbF = document.getElementById('dbFrame');
-  logF.classList.toggle('hidden', mode === 'db');
-  dbF.classList.toggle('hidden', mode === 'log');
+  document.getElementById('logFrame').classList.toggle('hidden', mode === 'db');
+  document.getElementById('dbFrame').classList.toggle('hidden', mode === 'log');
 }
 
 function reloadLogViewer() {
   const frame = document.getElementById('logFrame');
   try { frame.contentWindow.postMessage('reload-logs', '*'); } catch {}
-  // fallback: reload iframe
   setTimeout(() => { try { frame.contentWindow.location.reload(); } catch {} }, 300);
-}
-
-// =====================================================================
-//  Routing Tab
-// =====================================================================
-async function loadRouting() {
-  try {
-    const r = await fetch(`${API}/system/config`);
-    const cfg = await r.json();
-    routingConfig = cfg.routing_config || {};
-    renderRouting();
-  } catch { toast('Failed to load routing config', 'error'); }
-}
-
-function renderRouting() {
-  const container = document.getElementById('routeList');
-  let html = '';
-  for (const [key, info] of Object.entries(TASK_INFOS)) {
-    const saved = routingConfig[key] || {};
-    const prov = saved.provider || 'Ollama (本地)';
-    const model = saved.model || 'qwen3.5';
-    const provShort = {'Ollama (本地)':'Ollama','llama.cpp (本地)':'llama.cpp','OpenAI (雲端)':'OpenAI','OpenRouter (雲端)':'OpenRouter'}[prov] || prov;
-
-    const provOptions = PROVIDERS.map(p => `<option value="${escapeHtml(p)}" ${p===prov?'selected':''}>${escapeHtml(p)}</option>`).join('');
-
-    html += `<div class="route-card" data-key="${key}">
-      <div class="route-header" onclick="this.parentElement.classList.toggle('expanded')">
-        <span class="route-chevron">&#9654;</span>
-        <span class="route-name">${escapeHtml(key)}</span>
-        <span class="route-desc">${escapeHtml(info.desc)}</span>
-        <span class="route-current">${escapeHtml(provShort)} / ${escapeHtml(model)}</span>
-      </div>
-      <div class="route-body">
-        <div class="route-field">
-          <label>Provider</label>
-          <select data-route="${key}" data-field="provider">${provOptions}</select>
-        </div>
-        <div class="route-field">
-          <label>Model</label>
-          <input type="text" data-route="${key}" data-field="model" value="${escapeHtml(model)}">
-        </div>
-        <div class="route-help">${escapeHtml(info.help)}</div>
-      </div>
-    </div>`;
-  }
-  container.innerHTML = html;
-}
-
-async function saveRouting() {
-  const newConfig = {};
-  for (const key of Object.keys(TASK_INFOS)) {
-    const provEl = document.querySelector(`select[data-route="${key}"][data-field="provider"]`);
-    const modelEl = document.querySelector(`input[data-route="${key}"][data-field="model"]`);
-    newConfig[key] = {
-      provider: provEl ? provEl.value : 'Ollama (本地)',
-      model: modelEl ? modelEl.value : '',
-    };
-  }
-  try {
-    const r = await fetch(`${API}/system/config`, {
-      method: 'PUT',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({routing_config: newConfig}),
-    });
-    if (r.ok) {
-      routingConfig = newConfig;
-      renderRouting();
-      toast('Routing saved', 'success');
-    } else throw 0;
-  } catch { toast('Failed to save routing', 'error'); }
-}
-
-// =====================================================================
-//  Prompts Tab
-// =====================================================================
-let allPrompts = [];
-
-async function loadPrompts() {
-  try {
-    const r = await fetch(`${API}/prompts`);
-    allPrompts = await r.json();
-    renderPrompts();
-  } catch { toast('Failed to load prompts', 'error'); }
-}
-
-function renderPrompts() {
-  document.getElementById('promptCount').textContent = `${allPrompts.length} prompts`;
-  const container = document.getElementById('promptList');
-  let html = '';
-  allPrompts.forEach((p, i) => {
-    const statusCls = p.has_user_override ? 'custom' : 'default';
-    const statusText = p.has_user_override ? 'custom' : 'default';
-    const phTags = (p.placeholders || []).map(ph => `<span class="prompt-ph">${escapeHtml(ph)}</span>`).join(' ');
-
-    html += `<div class="prompt-card" data-key="${escapeHtml(p.key)}">
-      <div class="prompt-header" onclick="this.parentElement.classList.toggle('expanded')">
-        <span class="prompt-chevron">&#9654;</span>
-        <span class="prompt-label">${escapeHtml(p.label || p.key)}</span>
-        <span class="prompt-status ${statusCls}">${statusText}</span>
-      </div>
-      <div class="prompt-body">
-        <div class="prompt-meta">
-          ${p.description ? `<div>${escapeHtml(p.description)}</div>` : ''}
-          ${p.used_by ? `<div><strong>used by:</strong> ${escapeHtml(p.used_by)}</div>` : ''}
-          ${phTags ? `<div><strong>placeholders:</strong> ${phTags}</div>` : ''}
-        </div>
-        <textarea class="prompt-textarea" data-prompt-key="${escapeHtml(p.key)}" rows="8">${escapeHtml(p.current_template || '')}</textarea>
-        <div class="prompt-actions">
-          <button class="btn-save" onclick="savePrompt('${escapeHtml(p.key)}')">save</button>
-          <button class="btn-reset" onclick="resetPrompt('${escapeHtml(p.key)}')">reset</button>
-          ${p.has_user_override ? `<button class="btn-default" onclick="showDefault('${escapeHtml(p.key)}')">view default</button>` : ''}
-        </div>
-      </div>
-    </div>`;
-  });
-  container.innerHTML = html;
-}
-
-async function savePrompt(key) {
-  const textarea = document.querySelector(`textarea[data-prompt-key="${key}"]`);
-  if (!textarea) return;
-  const template = textarea.value;
-
-  // Placeholder validation
-  const meta = allPrompts.find(p => p.key === key);
-  if (meta && meta.placeholders) {
-    const missing = meta.placeholders.filter(ph => !template.includes(ph));
-    if (missing.length) {
-      if (!confirm(`Warning: missing placeholders: ${missing.join(', ')}\nSave anyway?`)) return;
-    }
-  }
-
-  try {
-    const r = await fetch(`${API}/prompts/${key}`, {
-      method: 'PUT',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({template}),
-    });
-    if (r.ok) {
-      toast(`Prompt "${key}" saved`, 'success');
-      loadPrompts();
-    } else throw 0;
-  } catch { toast('Failed to save prompt', 'error'); }
-}
-
-async function resetPrompt(key) {
-  if (!confirm(`Reset "${key}" to default?`)) return;
-  try {
-    const r = await fetch(`${API}/prompts/${key}/reset`, {method:'POST'});
-    if (r.ok) {
-      toast(`Prompt "${key}" reset`, 'info');
-      loadPrompts();
-    } else throw 0;
-  } catch { toast('Failed to reset prompt', 'error'); }
-}
-
-async function resetAllPrompts() {
-  if (!confirm('Reset ALL prompts to defaults? This cannot be undone.')) return;
-  try {
-    const r = await fetch(`${API}/prompts/reset-all`, {method:'POST'});
-    if (r.ok) {
-      toast('All prompts reset', 'info');
-      loadPrompts();
-    } else throw 0;
-  } catch { toast('Failed to reset all prompts', 'error'); }
-}
-
-function showDefault(key) {
-  const meta = allPrompts.find(p => p.key === key);
-  if (!meta) return;
-  document.getElementById('modalTitle').textContent = `Default: ${meta.label || key}`;
-  document.getElementById('modalBody').innerHTML = `<pre>${escapeHtml(meta.default_template || '')}</pre>`;
-  document.getElementById('modalOverlay').classList.add('open');
-}
-
-function closeModal() {
-  document.getElementById('modalOverlay').classList.remove('open');
-}
-
-// Close modal on Escape
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-
-// =====================================================================
-//  Utilities
-// =====================================================================
-function escapeHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function toast(msg, type='info') {
-  const container = document.getElementById('toastContainer');
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.textContent = msg;
-  container.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
 }
 </script>
 </body>

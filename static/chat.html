@@ -4,17 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MemoriaCore Chat</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
-:root {
-  --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
-  --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff; --accent2: #3fb950;
-  --warn: #d29922; --error: #f85149; --purple: #bc8cff;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); height:100vh; overflow:hidden; }
+body { height:100vh; overflow:hidden; }
 .chat-shell { height:100vh; display:flex; flex-direction:column; }
 .chat-header { background:var(--surface); padding:8px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); flex-shrink:0; }
 .chat-header select { flex:1; min-width:0; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--text); font-size:13px; outline:none; }
@@ -54,17 +49,6 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 .send-btn { background:var(--accent); border:none; border-radius:8px; padding:8px 16px; color:#fff; font-size:14px; cursor:pointer; align-self:flex-end; white-space:nowrap; }
 .send-btn:hover { opacity:.85; }
 .send-btn:disabled { opacity:.4; cursor:not-allowed; }
-.toast-container { position:fixed; bottom:16px; right:16px; z-index:2000; display:flex; flex-direction:column; gap:8px; }
-.toast { padding:10px 18px; border-radius:8px; font-size:13px; color:#fff; animation:toastIn .3s, toastOut .3s 2.7s forwards; max-width:360px; }
-.toast.success { background:var(--accent2); }
-.toast.error { background:var(--error); }
-.toast.info { background:var(--accent); }
-@keyframes toastIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:none} }
-@keyframes toastOut { to{opacity:0;transform:translateY(-10px)} }
-::-webkit-scrollbar { width:8px; height:8px; }
-::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
-::-webkit-scrollbar-thumb:hover { background:var(--text2); }
 </style>
 </head>
 <body>
@@ -85,8 +69,8 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 </div>
 <div class="toast-container" id="toastContainer"></div>
 
+<script src="/static/shared/common.js"></script>
 <script>
-const API = '/api/v1';
 let currentSessionId = null;
 let isSending = false;
 let suUserId = null;
@@ -475,19 +459,6 @@ function buildDebugPanel(data) {
   return wrapper;
 }
 
-function escapeHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function toast(msg, type='info') {
-  const container = document.getElementById('toastContainer');
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.textContent = msg;
-  container.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
-}
 </script>
 </body>
 </html>

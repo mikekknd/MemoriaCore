@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore Prompts</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
+<style>
+body { height:100vh; overflow:hidden; }
+.page { height:100vh; display:flex; flex-direction:column; }
+.prompts-container { flex:1; overflow-y:auto; padding:16px; }
+.prompts-container h2 { font-size:16px; margin-bottom:4px; font-weight:600; }
+.prompts-top-bar { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.prompts-top-bar .count { color:var(--text2); font-size:13px; }
+.reset-all { background:none; border:1px solid var(--warn); color:var(--warn); border-radius:6px; padding:4px 12px; font-size:12px; }
+.prompt-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden; }
+.prompt-header { padding:10px 14px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
+.prompt-header:hover { background:var(--surface2); }
+.prompt-chevron { font-size:12px; color:var(--text2); transition:transform .15s; width:16px; flex-shrink:0; }
+.prompt-card.expanded .prompt-chevron { transform:rotate(90deg); }
+.prompt-label { font-weight:600; font-size:14px; }
+.prompt-status { font-size:11px; padding:1px 8px; border-radius:4px; }
+.prompt-status.custom { background:#3d2e00; color:var(--warn); }
+.prompt-status.default { background:#0d2d0d; color:var(--accent2); }
+.prompt-body { display:none; padding:0 14px 12px; }
+.prompt-card.expanded .prompt-body { display:block; }
+.prompt-meta { font-size:12px; color:var(--text2); margin-bottom:8px; line-height:1.6; }
+.prompt-meta strong { color:var(--text); }
+.prompt-ph { display:inline-block; background:var(--surface2); padding:1px 6px; border-radius:3px; font-family:monospace; font-size:11px; margin:2px; }
+.prompt-textarea { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; color:var(--text); font-size:13px; font-family:'Cascadia Code','Fira Code',monospace; line-height:1.6; resize:vertical; min-height:120px; outline:none; }
+.prompt-textarea:focus { border-color:var(--accent); }
+.prompt-actions { display:flex; gap:8px; margin-top:8px; }
+.prompt-actions button { padding:6px 14px; border-radius:6px; font-size:13px; border:1px solid var(--border); }
+.prompt-actions .btn-save { background:var(--accent); color:#fff; border-color:var(--accent); }
+.prompt-actions .btn-reset { background:none; color:var(--warn); border-color:var(--warn); }
+.prompt-actions .btn-default { background:none; color:var(--text2); }
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.open { display:flex; }
+.modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:90%; max-width:700px; max-height:80vh; display:flex; flex-direction:column; }
+.modal-header { padding:14px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+.modal-header h3 { font-size:15px; }
+.modal-close { background:none; border:none; color:var(--text2); font-size:20px; cursor:pointer; padding:0 4px; }
+.modal-close:hover { color:var(--text); opacity:1; }
+.modal-body { padding:16px 18px; overflow-y:auto; flex:1; }
+.modal-body pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:12px; font-size:13px; font-family:'Cascadia Code','Fira Code',monospace; line-height:1.6; white-space:pre-wrap; word-break:break-all; color:var(--text); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="prompts-container">
+    <div class="prompts-top-bar">
+      <h2>Prompt Management</h2>
+      <span class="count" id="promptCount"></span>
+      <span style="flex:1"></span>
+      <button class="reset-all" onclick="resetAllPrompts()">reset all</button>
+    </div>
+    <div id="promptList"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">Default Value</h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="/static/shared/common.js"></script>
+<script>
+let allPrompts = [];
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadPrompts();
+});
+
+async function loadPrompts() {
+  try {
+    const r = await fetch(`${API}/prompts`);
+    allPrompts = await r.json();
+    renderPrompts();
+  } catch {
+    toast('Failed to load prompts', 'error');
+  }
+}
+
+function renderPrompts() {
+  document.getElementById('promptCount').textContent = `${allPrompts.length} prompts`;
+  const container = document.getElementById('promptList');
+  let html = '';
+  allPrompts.forEach(p => {
+    const statusCls = p.has_user_override ? 'custom' : 'default';
+    const statusText = p.has_user_override ? 'custom' : 'default';
+    const phTags = (p.placeholders || []).map(ph => `<span class="prompt-ph">${escapeHtml(ph)}</span>`).join(' ');
+
+    html += `<div class="prompt-card" data-key="${escapeHtml(p.key)}">
+      <div class="prompt-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="prompt-chevron">&#9654;</span>
+        <span class="prompt-label">${escapeHtml(p.label || p.key)}</span>
+        <span class="prompt-status ${statusCls}">${statusText}</span>
+      </div>
+      <div class="prompt-body">
+        <div class="prompt-meta">
+          ${p.description ? `<div>${escapeHtml(p.description)}</div>` : ''}
+          ${p.used_by ? `<div><strong>used by:</strong> ${escapeHtml(p.used_by)}</div>` : ''}
+          ${phTags ? `<div><strong>placeholders:</strong> ${phTags}</div>` : ''}
+        </div>
+        <textarea class="prompt-textarea" data-prompt-key="${escapeHtml(p.key)}" rows="8">${escapeHtml(p.current_template || '')}</textarea>
+        <div class="prompt-actions">
+          <button class="btn-save" onclick="savePrompt('${escapeHtml(p.key)}')">save</button>
+          <button class="btn-reset" onclick="resetPrompt('${escapeHtml(p.key)}')">reset</button>
+          ${p.has_user_override ? `<button class="btn-default" onclick="showDefault('${escapeHtml(p.key)}')">view default</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+async function savePrompt(key) {
+  const textarea = document.querySelector(`textarea[data-prompt-key="${key}"]`);
+  if (!textarea) return;
+  const template = textarea.value;
+  const meta = allPrompts.find(p => p.key === key);
+  if (meta && meta.placeholders) {
+    const missing = meta.placeholders.filter(ph => !template.includes(ph));
+    if (missing.length && !confirm(`Warning: missing placeholders: ${missing.join(', ')}\nSave anyway?`)) return;
+  }
+
+  try {
+    const r = await fetch(`${API}/prompts/${key}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({template}),
+    });
+    if (!r.ok) throw 0;
+    toast(`Prompt "${key}" saved`, 'success');
+    loadPrompts();
+  } catch {
+    toast('Failed to save prompt', 'error');
+  }
+}
+
+async function resetPrompt(key) {
+  if (!confirm(`Reset "${key}" to default?`)) return;
+  try {
+    const r = await fetch(`${API}/prompts/${key}/reset`, {method:'POST'});
+    if (!r.ok) throw 0;
+    toast(`Prompt "${key}" reset`, 'info');
+    loadPrompts();
+  } catch {
+    toast('Failed to reset prompt', 'error');
+  }
+}
+
+async function resetAllPrompts() {
+  if (!confirm('Reset ALL prompts to defaults? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`${API}/prompts/reset-all`, {method:'POST'});
+    if (!r.ok) throw 0;
+    toast('All prompts reset', 'info');
+    loadPrompts();
+  } catch {
+    toast('Failed to reset all prompts', 'error');
+  }
+}
+
+function showDefault(key) {
+  const meta = allPrompts.find(p => p.key === key);
+  if (!meta) return;
+  document.getElementById('modalTitle').textContent = `Default: ${meta.label || key}`;
+  document.getElementById('modalBody').innerHTML = `<pre>${escapeHtml(meta.default_template || '')}</pre>`;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+});
+</script>
+</body>
+</html>
