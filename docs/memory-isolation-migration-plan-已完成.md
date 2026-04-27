@@ -1,4 +1,4 @@
-# 記憶隔離遷移計畫：三維度正交隔離（user_id × visibility × persona_face）
+# 記憶隔離遷移計畫（已完成）：三維度正交隔離（user_id × visibility × persona_face）
 
 ## 0. 背景與目標
 

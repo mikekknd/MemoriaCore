@@ -11,6 +11,7 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
 
 ## Architecture
 - `core/` — 記憶、LLM 路由、人格、儲存引擎
+  - `core/persona_evolution/` — 人格演化系統（Path D 增量 trait 架構）；詳見 `docs/persona-tree-architecture.md`
   - `core/chat_orchestrator/` — 雙層 Agent 對話編排（package）
     - `dataclasses.py` — `RouterResult` / `ToolContext` / `PersonaResult`
     - `router_agent.py` — Module A：意圖路由（含 `DIRECT_CHAT_SCHEMA` dummy tool）
@@ -18,6 +19,7 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
     - `persona_agent.py`— Module C：角色渲染（結構化 JSON 回覆）
     - `coordinator.py`  — `run_dual_layer_orchestration` 頂層協調（兩條分支平行）
     - `__init__.py`     — package 識別檔，docstring 內有直接 import 範例
+  - `core/deployment_config.py` — 三維度隔離入口（`resolve_context`）；新增 channel 需在此登記
   - `core/storage_manager.py` — 單檔但有 SECTION 標記分區（檔案 I/O / 模型 DB / Memory Blocks / Core Memory / Profile / Topic Cache / Conversation / 訊息統計）
   - `core/core_memory.py` — 同上（Embedding 工具 / 查詢擴展 / Memory Block 寫入 / 叢集融合 / 三軌檢索 / Profile）
 - `api/` — FastAPI routers，singleton DI 由 `api/dependencies.py` 管理
@@ -89,6 +91,13 @@ _recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
 - 高頻修改的大檔 → 拆成 package（如 `chat/`、`chat_orchestrator/`），並在 `__init__.py` re-export 維持向後相容。
 - 穩定但仍大的 class 介面檔（如 `storage_manager.py`、`core_memory.py`）→ 不拆檔，但用 `# ════…` 加 `# SECTION: …` 分區，方便 Grep 定位。
 新增方法時請放在語意對應的 SECTION 內；新增 SECTION 請維持與現有相同的視覺樣式。
+
+**記憶隔離三維度（高頻踩坑）**
+任何涉及多使用者、公私可見性、雙 face 人格演化問題，應先查 `docs/memory-isolation-architecture.md`。
+核心原則：
+- 所有 DB 讀寫**必須** scope 到 `(user_id, character_id, visibility)` 三維度
+- `resolve_context(user_id, channel)` 決定 `persona_face` 與 `write_visibility`
+- public face **只能**讀到 `visibility='public'` 的記憶；private face 可讀兩者
 
 **Streamlit UI 與 dashboard.html 必須同步修改**
 對話介面、debug 資訊、session 管理、路由設定有兩個並行前端：
