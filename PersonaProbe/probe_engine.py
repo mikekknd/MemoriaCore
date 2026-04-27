@@ -663,43 +663,69 @@ def load_fragments_from_db(
     db_path: str,
     session_id: Optional[str] = None,
     limit: Optional[int] = None,
+    user_id: Optional[str] = None,
+    channel_class_filter: Optional[list] = None,
 ) -> list[dict]:
     """從 MemoriaCore conversation.db 載入對話訊息。
 
     若指定 session_id 則只載入該 session；否則載入全部 session（按 msg_id 排序）。
     若指定 limit，則以近期優先取最後 N 筆（先 DESC 取 limit，再反轉回正序）。
+    user_id / channel_class_filter：JOIN conversation_sessions 做範圍過濾，
+    供 PersonaSync 按 persona_face 分開載入。
     回傳 [{role, content}]。
     """
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
+        needs_join = user_id is not None or bool(channel_class_filter)
+
+        conds: list[str] = []
+        params: list = []
         if session_id:
+            conds.append("cm.session_id = ?" if needs_join else "session_id = ?")
+            params.append(session_id)
+        if user_id is not None:
+            conds.append("cs.user_id = ?")
+            params.append(user_id)
+        if channel_class_filter:
+            placeholders = ",".join("?" * len(channel_class_filter))
+            conds.append(f"cs.channel_class IN ({placeholders})")
+            params.extend(channel_class_filter)
+
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+        if needs_join:
             if limit:
                 cursor.execute(
                     "SELECT role, content FROM ("
-                    "  SELECT role, content, msg_id FROM conversation_messages"
-                    "  WHERE session_id=? ORDER BY msg_id DESC LIMIT ?"
+                    "  SELECT cm.role, cm.content, cm.msg_id"
+                    "  FROM conversation_messages cm"
+                    "  JOIN conversation_sessions cs ON cm.session_id = cs.session_id"
+                    f"  {where} ORDER BY cm.msg_id DESC LIMIT ?"
                     ") ORDER BY msg_id",
-                    (session_id, limit),
+                    params + [limit],
                 )
             else:
                 cursor.execute(
-                    "SELECT role, content FROM conversation_messages"
-                    " WHERE session_id=? ORDER BY msg_id",
-                    (session_id,),
+                    "SELECT cm.role, cm.content"
+                    " FROM conversation_messages cm"
+                    " JOIN conversation_sessions cs ON cm.session_id = cs.session_id"
+                    f" {where} ORDER BY cm.msg_id",
+                    params,
                 )
         else:
             if limit:
                 cursor.execute(
                     "SELECT role, content FROM ("
-                    "  SELECT role, content, msg_id FROM conversation_messages"
+                    f"  SELECT role, content, msg_id FROM conversation_messages {where}"
                     "  ORDER BY msg_id DESC LIMIT ?"
                     ") ORDER BY msg_id",
-                    (limit,),
+                    params + [limit],
                 )
             else:
                 cursor.execute(
-                    "SELECT role, content FROM conversation_messages ORDER BY msg_id"
+                    f"SELECT role, content FROM conversation_messages {where} ORDER BY msg_id",
+                    params,
                 )
         return [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
     finally:

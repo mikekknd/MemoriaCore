@@ -56,9 +56,16 @@ async def chat_sync(body: ChatSyncRequest):
     user_prefs = get_storage().load_prefs()
     orchestration_fn = _select_orchestration(user_prefs)
 
+    session_ctx = {
+        "user_id": session.user_id,
+        "character_id": session.character_id,
+        "persona_face": session.persona_face,
+    }
+
     result = await asyncio.to_thread(
         orchestration_fn,
         list(s.messages), list(s.last_entities), body.content, user_prefs,
+        session_ctx=session_ctx,
     )
     reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
         inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
@@ -76,7 +83,7 @@ async def chat_sync(body: ChatSyncRequest):
     if topic_shifted:
         await session_manager.bridge(sid)
         if pipeline_data:
-            asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
+            asyncio.create_task(_run_memory_pipeline_bg(sid, pipeline_data))
 
     # /sync 為完整請求-回應週期，翻譯同步執行
     if not speech:
@@ -127,15 +134,20 @@ async def chat_stream_sync(body: ChatSyncRequest):
     event_q = sync_queue.Queue()
     orchestration_fn = _select_orchestration(user_prefs)
 
+    session_ctx_sse = {
+        "user_id": session.user_id,
+        "character_id": session.character_id,
+        "persona_face": session.persona_face,
+    }
+
     def on_event(data: dict):
         event_q.put(data)
 
     async def event_generator():
-        # 在背景執行緒中啟動對話編排
         orch_task = asyncio.create_task(asyncio.to_thread(
             orchestration_fn,
             list(s.messages), list(s.last_entities), body.content, user_prefs,
-            on_event=on_event,
+            on_event=on_event, session_ctx=session_ctx_sse,
         ))
 
         # 持續輪詢 event queue，即時串流中間狀態給前端
@@ -175,7 +187,7 @@ async def chat_stream_sync(body: ChatSyncRequest):
         if topic_shifted:
             await session_manager.bridge(sid)
             if pipeline_data:
-                asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
+                asyncio.create_task(_run_memory_pipeline_bg(sid, pipeline_data))
 
         # 送出最終結果（含實際使用的 session_id，讓 UI 同步更新）
         final = {

@@ -8,6 +8,8 @@ import asyncio
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
+from core.deployment_config import resolve_context
+
 
 @dataclass
 class SessionState:
@@ -18,6 +20,10 @@ class SessionState:
     last_active: datetime = field(default_factory=datetime.now)
     channel: str = "rest"
     channel_uid: str = ""
+    user_id: str = "default"
+    character_id: str = "default"
+    persona_face: str = "public"
+    channel_class: str = "public"
 
 
 class SessionManager:
@@ -31,14 +37,31 @@ class SessionManager:
         """延遲注入 storage（解決循環依賴時使用）"""
         self._storage = storage
 
-    async def create(self, channel: str = "rest", channel_uid: str = "") -> SessionState:
+    async def create(
+        self,
+        channel: str = "rest",
+        channel_uid: str = "",
+        user_id: str = "default",
+        character_id: str = "default",
+        channel_class: str = "public",
+    ) -> SessionState:
         async with self._lock:
             sid = str(uuid.uuid4())
-            session = SessionState(session_id=sid, channel=channel, channel_uid=channel_uid)
+            persona_face, _ = resolve_context(user_id, channel)
+            session = SessionState(
+                session_id=sid,
+                channel=channel,
+                channel_uid=channel_uid,
+                user_id=user_id,
+                character_id=character_id,
+                persona_face=persona_face,
+                channel_class=channel_class,
+            )
             self._sessions[sid] = session
-            # 持久化
             if self._storage:
-                self._storage.create_conversation_session(sid, channel, channel_uid)
+                self._storage.create_conversation_session(
+                    sid, channel, channel_uid, user_id=user_id, channel_class=channel_class
+                )
             return session
 
     async def get(self, session_id: str) -> SessionState | None:
@@ -48,17 +71,31 @@ class SessionManager:
                 s.last_active = datetime.now()
             return s
 
-    async def get_or_create(self, session_id: str | None,
-                            channel: str = "rest", channel_uid: str = "") -> SessionState:
+    async def get_or_create(
+        self,
+        session_id: str | None,
+        channel: str = "rest",
+        channel_uid: str = "",
+        user_id: str = "default",
+        character_id: str = "default",
+        channel_class: str = "public",
+    ) -> SessionState:
         if session_id:
             s = await self.get(session_id)
             if s:
                 return s
-        return await self.create(channel=channel, channel_uid=channel_uid)
+        return await self.create(
+            channel=channel,
+            channel_uid=channel_uid,
+            user_id=user_id,
+            character_id=character_id,
+            channel_class=channel_class,
+        )
 
     async def restore_from_db(self, session_id: str) -> SessionState | None:
         """從 DB 還原已過期的 session 到記憶體。
         使用 bridge_after_msg_id 避免載入已被記憶管線處理過的舊訊息。
+        還原時從 DB 取 user_id / channel_class，並重新計算 persona_face。
         """
         if not self._storage:
             return None
@@ -66,22 +103,26 @@ class SessionManager:
         if not info:
             return None
         async with self._lock:
-            # 已在記憶體中則直接返回
             if session_id in self._sessions:
                 return self._sessions[session_id]
-            # 取得 bridge 截斷點，只載入截斷點之後的訊息
             bridge_point = self._storage.get_bridge_point(session_id)
             messages = self._storage.load_conversation_messages(session_id, since_msg_id=bridge_point)
+            channel = info.get("channel", "rest")
+            user_id = info.get("user_id", "default")
+            channel_class = info.get("channel_class", "public")
+            persona_face, _ = resolve_context(user_id, channel)
             session = SessionState(
                 session_id=session_id,
                 messages=messages,
-                channel=info.get("channel", "rest"),
+                channel=channel,
                 channel_uid=info.get("channel_uid", ""),
+                user_id=user_id,
+                channel_class=channel_class,
+                persona_face=persona_face,
                 created_at=datetime.fromisoformat(info["created_at"]) if info.get("created_at") else datetime.now(),
                 last_active=datetime.now(),
             )
             self._sessions[session_id] = session
-            # 重新標記為活躍
             self._storage.reactivate_session(session_id)
             return session
 
@@ -101,7 +142,6 @@ class SessionManager:
             bridged = s.messages[-keep_last_n:] if len(s.messages) > keep_last_n else list(s.messages)
             s.messages = bridged
             s.last_active = datetime.now()
-            # 持久化截斷點，restore 時只載入這之後的訊息
             if self._storage:
                 self._storage.update_bridge_point(session_id, keep_last_n=len(bridged))
             return True
@@ -113,15 +153,18 @@ class SessionManager:
                 return False
             s.messages.append({"role": "user", "content": content})
             s.last_active = datetime.now()
-            # 持久化
             if self._storage:
                 self._storage.save_conversation_message(session_id, "user", content)
             return True
 
-    async def add_assistant_message(self, session_id: str, content: str,
-                                     debug_info: dict | None = None,
-                                     extracted_entities: list[str] | None = None,
-                                     persona_state: dict | None = None) -> bool:
+    async def add_assistant_message(
+        self,
+        session_id: str,
+        content: str,
+        debug_info: dict | None = None,
+        extracted_entities: list[str] | None = None,
+        persona_state: dict | None = None,
+    ) -> bool:
         """
         persona_state: {"internal_thought": str, "status_metrics": dict, "tone": str}
         僅存於記憶體，不持久化到 DB（伺服器重啟後情緒軌跡自然重置）。
@@ -139,7 +182,6 @@ class SessionManager:
             if extracted_entities is not None:
                 s.last_entities = extracted_entities
             s.last_active = datetime.now()
-            # 持久化
             if self._storage:
                 self._storage.save_conversation_message(session_id, "assistant", content, debug_info)
             return True
@@ -160,7 +202,6 @@ class SessionManager:
                        if (now - s.last_active) > self._ttl]
             for sid in expired:
                 del self._sessions[sid]
-                # 持久化：標記為非活躍（不刪除紀錄）
                 if self._storage:
                     self._storage.deactivate_session(sid)
             return expired

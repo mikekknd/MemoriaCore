@@ -105,6 +105,9 @@ class MockMemorySystem:
         self._search_results = []
         self._core_search_results = []
 
+    def _get_memory_blocks(self, user_id="default", character_id="default", visibility="public"):
+        return self.memory_blocks
+
     def cosine_similarity(self, vec_a, vec_b):
         """模擬餘弦相似度計算（使用全部維度）"""
         if not vec_a or not vec_b:
@@ -122,15 +125,17 @@ class MockMemorySystem:
         # 確保結果在 [0, 1] 之間（餘弦相似度範圍是 [-1, 1]，但我們主要用正相似度）
         return max(0.0, similarity)
 
-    def search_blocks(self, query, keywords, top_k, alpha, beta, threshold, base):
+    def search_blocks(self, query, keywords, top_k, alpha, beta, threshold, base,
+                      user_id="default", character_id="default", visibility_filter=None):
         """模擬記憶區塊搜尋"""
         return self._search_results[:top_k] if self._search_results else []
 
-    def search_core_memories(self, query, top_k=1, threshold=0.45):
+    def search_core_memories(self, query, top_k=1, threshold=0.45,
+                             user_id="default", character_id="default", visibility_filter=None):
         """模擬核心記憶搜尋"""
         return self._core_search_results[:top_k] if self._core_search_results else []
 
-    def search_profile_by_query(self, query, top_k=3, threshold=0.5):
+    def search_profile_by_query(self, query, top_k=3, threshold=0.5, user_id="default"):
         """模擬使用者畫像搜尋"""
         return []
 
@@ -138,7 +143,9 @@ class MockMemorySystem:
         """模擬查詢擴展"""
         return {"expanded_keywords": "", "entity_confidence": 0.5}
 
-    def add_memory_block(self, overview, dialogues, router=None, sim_timestamp=None, potential_preferences=None):
+    def add_memory_block(self, overview, dialogues, router=None, sim_timestamp=None,
+                         potential_preferences=None, user_id="default",
+                         character_id="default", visibility="public"):
         """模擬新增記憶區塊"""
         import uuid
         block = {
@@ -153,19 +160,20 @@ class MockMemorySystem:
         self.memory_blocks.append(block)
         return block
 
-    def apply_profile_facts(self, facts, embed_model):
+    def apply_profile_facts(self, facts, embed_model, user_id="default", visibility="public"):
         """模擬套用使用者事實"""
         pass
 
-    def load_user_profile(self):
+    def load_user_profile(self, user_id="default"):
         """模擬載入使用者畫像"""
         pass
 
-    def get_static_profile_prompt(self):
+    def get_static_profile_prompt(self, user_id="default", visibility_filter=None):
         """模擬載入靜態畫像提示"""
         return ""
 
-    def get_proactive_topics_prompt(self, limit=1):
+    def get_proactive_topics_prompt(self, limit=1, user_id="default",
+                                    character_id="default", visibility_filter=None):
         """模擬載入主動話題提示"""
         return ""
 

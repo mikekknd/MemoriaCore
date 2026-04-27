@@ -11,7 +11,14 @@ from core.system_logger import SystemLogger
 
 _next_gather_time = None
 
-def run_background_topic_gather(db_path: str, router: LLMRouter, storage: StorageManager):
+def run_background_topic_gather(
+    db_path: str,
+    router: LLMRouter,
+    storage: StorageManager,
+    user_id: str = "default",
+    character_id: str = "default",
+    visibility: str = "public",
+):
     """
     背景搜集引擎邏輯：
     1. 從 DB 讀取使用者的 user_profile（偏好/事實）
@@ -22,7 +29,7 @@ def run_background_topic_gather(db_path: str, router: LLMRouter, storage: Storag
     """
     try:
         sm = storage
-        profiles = sm.load_all_profiles(db_path)
+        profiles = sm.load_all_profiles(db_path, user_id=user_id, visibility_filter=[visibility])
         
         if not profiles:
             print("[TopicGather] 找不到任何使用者畫像，無法生成話題。")
@@ -70,7 +77,10 @@ def run_background_topic_gather(db_path: str, router: LLMRouter, storage: Storag
         if summary:
             # 3. 存入資料庫
             topic_id = f"topic_{int(time.time())}_{random.randint(100, 999)}"
-            sm.insert_topic_cache(db_path, topic_id, interest_keyword, summary.strip())
+            sm.insert_topic_cache(
+                db_path, topic_id, interest_keyword, summary.strip(),
+                user_id=user_id, character_id=character_id, visibility=visibility,
+            )
             print(f"[TopicGather] 成功產生並快取話題: {summary.strip()}")
             
     except Exception as e:
@@ -82,7 +92,15 @@ def force_gather_now():
     _next_gather_time = datetime.now()
 
 
-async def start_background_gather_loop(db_path: str, router: LLMRouter, storage: StorageManager, default_interval_seconds: int = 14400):
+async def start_background_gather_loop(
+    db_path: str,
+    router: LLMRouter,
+    storage: StorageManager,
+    default_interval_seconds: int = 14400,
+    user_id: str = "default",
+    character_id: str = "default",
+    visibility: str = "public",
+):
     """
     啟動無限迴圈定時執行搜集。
     第一次啟動時會等待 interval 秒才執行，避免一開機就觸發。
@@ -104,7 +122,10 @@ async def start_background_gather_loop(db_path: str, router: LLMRouter, storage:
             now = datetime.now()
             if _next_gather_time and now >= _next_gather_time:
                 SystemLogger.log_system_event("BackgroundGather","觸發背景話題蒐集任務...")
-                await asyncio.to_thread(run_background_topic_gather, db_path, router, storage)
+                await asyncio.to_thread(
+                    run_background_topic_gather, db_path, router, storage,
+                    user_id, character_id, visibility,
+                )
 
                 # 執行完畢後，重新讀取最新頻率，並以「此刻 + N 小時」重新計算下次發動時間
                 prefs = storage.load_prefs()

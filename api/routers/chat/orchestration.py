@@ -14,27 +14,42 @@ from core.prompt_manager import get_prompt_manager
 from core.prompt_utils import build_user_prefix
 from core.chat_orchestrator.router_agent import run_router_agent
 from api.routers.chat.timer import StepTimer
+from api.routers.chat.pipeline import PipelineContext
 
 
 # ════════════════════════════════════════════════════════════
 # SECTION: 單層對話編排（_run_chat_orchestration）
 # ════════════════════════════════════════════════════════════
 
-def _run_chat_orchestration(session_messages: list[dict], last_entities: list[str],
-                            user_prompt: str, user_prefs: dict, on_event=None):
+def _run_chat_orchestration(
+    session_messages: list[dict],
+    last_entities: list[str],
+    user_prompt: str,
+    user_prefs: dict,
+    on_event=None,
+    session_ctx: dict | None = None,
+):
     """
     同步執行對話編排的關鍵路徑（在執行緒池中跑）。
     話題偏移時的記憶管線已拆至背景，此處只做偵測 → 檢索 → 生成。
     回傳 (reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data,
           inner_thought, status_metrics, tone, speech, cited_uids)
-    pipeline_data: 若話題偏移，包含 (msgs_to_extract, last_block) 供呼叫端發起背景任務。
+    pipeline_data: 若話題偏移，回傳 PipelineContext 供呼叫端發起背景任務；否則為 None。
     on_event: 可選的 callback，用於即時推送中間狀態（如工具呼叫通知）給前端。
+    session_ctx: {"user_id": str, "character_id": str, "persona_face": str}
     """
     ms = get_memory_sys()
     analyzer = get_analyzer()
     rtr = get_router()
     storage = get_storage()
     embed_model = get_embed_model()
+
+    ctx = session_ctx or {}
+    user_id = ctx.get("user_id", "default")
+    character_id = ctx.get("character_id", "default")
+    persona_face = ctx.get("persona_face", "public")
+    write_visibility = persona_face  # persona_face == write_visibility（由 resolve_context 保證）
+    visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -44,7 +59,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     temperature = user_prefs.get("temperature", 0.7)
 
     topic_shifted = False
-    pipeline_data = None  # (msgs_to_extract, last_block) — 供背景管線使用
+    pipeline_data: PipelineContext | None = None
     timer = StepTimer()
 
     # ─── 提取 Active UIDs ───
@@ -66,8 +81,13 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         import copy
         msgs_to_extract = [{"role": m["role"], "content": m["content"]}
                            for m in session_messages[:-1]]
-        last_block = copy.deepcopy(ms.memory_blocks[-1]) if ms.memory_blocks else None
-        pipeline_data = (msgs_to_extract, last_block)
+        _user_blocks = ms._get_memory_blocks(user_id, character_id, write_visibility)
+        last_block = copy.deepcopy(_user_blocks[-1]) if _user_blocks else None
+        pipeline_data = PipelineContext(
+            msgs_to_extract=msgs_to_extract,
+            last_block=last_block,
+            session_ctx=session_ctx or {},
+        )
 
     # ─── 雙軌檢索 ───
     with timer.step("查詢擴展 (Query Expansion LLM)"):
@@ -79,11 +99,14 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
 
     with timer.step("情境記憶檢索 (Memory Block Search)"):
-        raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base)
+        raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base,
+                                      user_id=user_id, character_id=character_id, visibility_filter=visibility_filter)
         blocks = [b for b in raw_blocks if b.get("block_id") not in active_uids]
 
     with timer.step("核心認知檢索 (Core Memory Search)"):
-        core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45)
+        core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45,
+                                                user_id=user_id, character_id=character_id,
+                                                visibility_filter=visibility_filter)
 
     core_ctx = ""
     core_debug_text = "未觸發核心認知。"
@@ -92,7 +115,8 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
         core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
 
     with timer.step("使用者偏好檢索 (Profile Search)"):
-        profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5)
+        profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5,
+                                                     user_id=user_id)
     profile_ctx = ""
     profile_debug_text = "未觸發使用者偏好。"
     if profile_matches:
@@ -120,10 +144,11 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
             })
         mem_ctx = "\n\n".join(formatted_blocks)
 
-    static_profile = ms.get_static_profile_prompt()
+    static_profile = ms.get_static_profile_prompt(user_id=user_id, visibility_filter=visibility_filter)
     static_profile_block = f"\n{static_profile}\n" if static_profile else ""
 
-    proactive_topics_block = ms.get_proactive_topics_prompt(limit=1)
+    proactive_topics_block = ms.get_proactive_topics_prompt(limit=1, user_id=user_id, character_id=character_id,
+                                                             visibility_filter=visibility_filter)
     if proactive_topics_block:
         proactive_topics_block = f"\n{proactive_topics_block}\n"
 
@@ -136,7 +161,7 @@ def _run_chat_orchestration(session_messages: list[dict], last_entities: list[st
     reply_rules = active_char.get("reply_rules", "Traditional Chinese. NO EMOJIS.")
     tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
-    char_sys_prompt = char_mgr.get_effective_prompt(active_char) or storage.load_system_prompt()
+    char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or storage.load_system_prompt()
 
     pm = get_prompt_manager()
     speech_instruction = pm.get("chat_speech_instruction_no_tts").format(

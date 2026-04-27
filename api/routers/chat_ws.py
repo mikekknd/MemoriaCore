@@ -59,8 +59,20 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 
             if frame_type == "clear_context":
                 await ws_manager.cancel_active_task(sid)
+                # 保留原 session 的隔離身份，重建乾淨的對話歷史
+                old_channel = session.channel
+                old_channel_uid = session.channel_uid
+                old_user_id = session.user_id
+                old_character_id = session.character_id
+                old_channel_class = session.channel_class
                 await session_manager.delete(sid)
-                session = await session_manager.create()
+                session = await session_manager.create(
+                    channel=old_channel,
+                    channel_uid=old_channel_uid,
+                    user_id=old_user_id,
+                    character_id=old_character_id,
+                    channel_class=old_channel_class,
+                )
                 sid = session.session_id
                 ws_manager._connections[sid] = ws
                 await ws.send_json({"type": "session_init", "session_id": sid})
@@ -87,6 +99,12 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 
             user_prefs = get_storage().load_prefs()
 
+            session_ctx = {
+                "user_id": s.user_id,
+                "character_id": s.character_id,
+                "persona_face": s.persona_face,
+            }
+
             # 建立即時事件推送 callback（從工作執行緒安全呼叫 async WS send）
             loop = asyncio.get_running_loop()
 
@@ -100,7 +118,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             task = asyncio.create_task(asyncio.to_thread(
                 orchestration_fn,
                 list(s.messages), list(s.last_entities), content, user_prefs,
-                on_event=_ws_event_cb,
+                on_event=_ws_event_cb, session_ctx=session_ctx,
             ))
             ws_manager.set_active_task(sid, task)
 
@@ -120,7 +138,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             if topic_shifted:
                 await ws.send_json({"type": "system_event", "action": "topic_shift"})
                 if pipeline_data:
-                    asyncio.create_task(_run_memory_pipeline_bg(sid, *pipeline_data))
+                    asyncio.create_task(_run_memory_pipeline_bg(sid, pipeline_data))
 
             # 推送檢索上下文
             await ws.send_json({"type": "retrieval_context", "data": retrieval_ctx})

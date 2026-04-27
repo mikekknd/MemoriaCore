@@ -78,17 +78,20 @@ def _upd(trait_key, confidence):
 # ──────────────────────────────────────────────
 
 class TestMigration:
-    def test_fresh_db_upgrades_to_v2(self, storage):
-        # 觸發 _init_persona_snapshot_db
+    def test_fresh_db_upgrades_to_v3(self, storage):
+        # 觸發 _init_persona_snapshot_db（v3 雙 face schema）
         storage.get_active_traits(CHAR)
         import sqlite3
         conn = sqlite3.connect(storage.persona_snapshot_db_path)
         cur = conn.cursor()
         cur.execute("PRAGMA user_version")
-        assert cur.fetchone()[0] == 2
-        # persona_traits 表存在
+        assert cur.fetchone()[0] == 3
+        # persona_traits 表存在且含 persona_face 欄位
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='persona_traits'")
         assert cur.fetchone() is not None
+        cur.execute("PRAGMA table_info(persona_traits)")
+        cols = [r[1] for r in cur.fetchall()]
+        assert "persona_face" in cols
         conn.close()
 
 
@@ -176,8 +179,12 @@ class TestVnUpdates:
         d2 = TraitDiff(updates=[_upd("nonexistent_key_1234", "high")])
         store.save_snapshot(CHAR, d2, "v2", "p2")
         v2 = storage.get_latest_persona_snapshot(CHAR)
-        # v2 無 dim row（update 被略過）
-        assert len(v2["dimensions"]) == 0
+        # nonexistent key 被略過，不應出現在 dimensions
+        assert not any(d["dimension_key"] == "nonexistent_key_1234" for d in v2["dimensions"])
+        # "依戀錨定" 從 V1 補入是正確行為（trait 未被此版觸及）
+        active = store.list_active_traits(CHAR)
+        assert len(active) == 1
+        assert active[0]["last_active_version"] == 1
 
 
 # ──────────────────────────────────────────────

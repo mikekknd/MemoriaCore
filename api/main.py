@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
                 start_background_gather_loop(db_path, get_router(), get_storage(), default_interval_seconds=14400)
             )
 
-    # PersonaSync 批次反思（每 20 分鐘檢查一次觸發條件）
+    # PersonaSync 批次反思（每 20 分鐘檢查一次觸發條件，雙 face 分開執行）
     async def _persona_sync_loop():
         while True:
             await asyncio.sleep(1200)  # 20 分鐘
@@ -65,12 +65,15 @@ async def lifespan(app: FastAPI):
                 psm = get_persona_sync_manager()
                 sto = get_storage()
                 prefs = sto.load_prefs()
-                should, reason = await psm.should_run(sto, prefs)
-                if should:
-                    await psm.run_sync(sto, prefs)
-                else:
-                    from core.system_logger import SystemLogger
-                    SystemLogger.log_system_event("persona_sync_skip", {"reason": reason})
+                from core.system_logger import SystemLogger
+                for face in ("public", "private"):
+                    should, reason = await psm.should_run(sto, prefs, persona_face=face)
+                    if should:
+                        await psm.run_sync(sto, prefs, persona_face=face)
+                    else:
+                        SystemLogger.log_system_event(
+                            "persona_sync_skip", {"reason": reason, "persona_face": face}
+                        )
             except Exception as e:
                 from core.system_logger import SystemLogger
                 SystemLogger.log_error("persona_sync_loop", str(e))

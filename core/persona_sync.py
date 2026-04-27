@@ -37,7 +37,8 @@ STATE_FILE = "persona_sync_state.json"
 def _run_probe_sync(db_path: str, existing_persona: str, llm_provider: str,
                     model_name: str, ollama_url: str, or_key: str,
                     active_character_id: str,
-                    fragment_limit: int = 400) -> dict:
+                    fragment_limit: int = 400,
+                    persona_face: str = "public") -> dict:
     """Path D pipeline：3 次 LLM 呼叫（trait_diff → report → persona.md）。
 
     分支判斷：若目前無活躍 trait（V1），走 ``build_trait_v1_prompt``；否則走
@@ -73,14 +74,18 @@ def _run_probe_sync(db_path: str, existing_persona: str, llm_provider: str,
     from core.persona_evolution.trait_diff import TraitDiff
 
     # 1. 讀取對話片段（近期優先滑動窗口）
-    messages = load_fragments_from_db(db_path, limit=fragment_limit)
+    # 各 face 只取對應 channel_class 的訊息，嚴格隔離
+    channel_class_filter = ["private"] if persona_face == "private" else ["public"]
+    messages = load_fragments_from_db(
+        db_path, limit=fragment_limit, channel_class_filter=channel_class_filter
+    )
     if not messages:
         raise ValueError("conversation.db 中沒有對話記錄")
     fragments_text = _messages_to_text(messages)
 
-    # 2. 查當前活躍 trait → 決定 V1 / Vn 分支
+    # 2. 查當前活躍 trait → 決定 V1 / Vn 分支（依 persona_face 取對應血統樹）
     store = PersonaSnapshotStore(get_storage())
-    active_traits = store.list_active_traits(active_character_id)
+    active_traits = store.list_active_traits(active_character_id, persona_face=persona_face)
     is_v1 = len(active_traits) == 0
 
     # 3. 建立 LLM Client
@@ -152,11 +157,7 @@ class PersonaSyncManager:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            return {
-                "last_reflection_at": None,
-                "today_date": "",
-                "today_run_count": 0,
-            }
+            return {}
 
     def _save_state(self, state: dict) -> None:
         try:
@@ -164,6 +165,23 @@ class PersonaSyncManager:
                 json.dump(state, f, ensure_ascii=False, indent=2)
         except Exception as e:
             SystemLogger.log_error("persona_sync_state_save", str(e))
+
+    _FACE_STATE_DEFAULT = staticmethod(lambda: {
+        "last_reflection_at": None,
+        "today_date": "",
+        "today_run_count": 0,
+    })
+
+    def _load_face_state(self, face: str) -> dict:
+        """讀取指定 persona_face 的獨立觸發狀態。"""
+        raw = self._load_state()
+        return dict(raw.get("faces", {}).get(face, self._FACE_STATE_DEFAULT()))
+
+    def _save_face_state(self, face: str, face_state: dict) -> None:
+        """寫入指定 persona_face 的觸發狀態。"""
+        raw = self._load_state()
+        raw.setdefault("faces", {})[face] = face_state
+        self._save_state(raw)
 
     def _reset_daily_count_if_needed(self, state: dict) -> dict:
         today_str = date.today().isoformat()
@@ -174,25 +192,27 @@ class PersonaSyncManager:
 
     # ── 觸發條件判斷 ──────────────────────────────────────
 
-    async def should_run(self, storage, prefs: dict) -> tuple[bool, str]:
+    async def should_run(self, storage, prefs: dict, persona_face: str = "public") -> tuple[bool, str]:
         """
         依序檢查所有觸發條件，回傳 (should_run, reason)。
         reason 為跳過原因（skip 時）或 ok 描述（執行時）。
+        persona_face 決定獨立計算哪條 face 的訊息閾值與每日次數。
         """
         # 1. 全局開關
         if not prefs.get("persona_sync_enabled", True):
             return False, "disabled"
 
-        # 2. 每日上限
-        state = self._load_state()
+        # 2. 每日上限（per face）
+        state = self._load_face_state(persona_face)
         state = self._reset_daily_count_if_needed(state)
         max_per_day = prefs.get("persona_sync_max_per_day", 2)
         if state.get("today_run_count", 0) >= max_per_day:
             return False, f"daily_limit_reached({state['today_run_count']}/{max_per_day})"
 
-        # 3. 閒置檢查
+        # 3. 閒置檢查（per face：只計該 face 對應 channel_class 的最後訊息時間）
+        channel_class = "private" if persona_face == "private" else "public"
         try:
-            last_msg_time = storage.get_last_message_time()
+            last_msg_time = storage.get_last_message_time_by_channel_class(channel_class)
         except Exception as e:
             return False, f"storage_error({e})"
 
@@ -204,25 +224,30 @@ class PersonaSyncManager:
         if elapsed < idle_minutes:
             return False, f"not_idle({elapsed:.1f}min < {idle_minutes}min)"
 
-        # 4. 最低訊息數
+        # 4. 最低訊息數（per face：private face 只計 private channel 訊息）
         min_messages = prefs.get("persona_sync_min_messages", 50)
         since_iso = state.get("last_reflection_at") or "1970-01-01T00:00:00"
         try:
-            new_count = storage.count_messages_since(since_iso)
+            if persona_face == "private":
+                new_count = storage.count_messages_since_by_channel_class(since_iso, "private")
+            else:
+                new_count = storage.count_messages_since(since_iso)
         except Exception as e:
             return False, f"count_error({e})"
 
         if new_count < min_messages:
             return False, f"insufficient_messages({new_count}/{min_messages})"
 
-        return True, f"ok(new_msgs={new_count}, idle={elapsed:.1f}min)"
+        return True, f"ok(face={persona_face}, new_msgs={new_count}, idle={elapsed:.1f}min)"
 
     # ── 主執行流程 ────────────────────────────────────────
 
-    async def run_sync(self, storage, prefs: dict, count_toward_daily: bool = True) -> bool:
+    async def run_sync(self, storage, prefs: dict, count_toward_daily: bool = True,
+                       persona_face: str = "public") -> bool:
         """
         直接呼叫 PersonaProbe probe_engine 執行人格分析，並將結果寫入 evolved_prompt。
         count_toward_daily=False 時不佔用每日執行次數（手動觸發專用）。
+        persona_face 決定從哪條 channel 取訊息、寫哪條血統樹。
         回傳 True 表示成功，False 表示失敗（不更新檔案）。
         """
         import asyncio
@@ -263,6 +288,7 @@ class PersonaSyncManager:
         SystemLogger.log_system_event("persona_sync_start", {
             "character_id": active_char_id,
             "character_name": active_char.get("name", ""),
+            "persona_face": persona_face,
             "llm_provider": llm_provider,
             "llm_model": model_name,
             "ollama_base_url": ollama_url,
@@ -281,6 +307,7 @@ class PersonaSyncManager:
                 model_name, ollama_url, or_key,
                 active_char_id,
                 fragment_limit,
+                persona_face,
             )
         except Exception as e:
             SystemLogger.log_error("persona_sync", f"Probe execution failed: {e}")
@@ -304,8 +331,8 @@ class PersonaSyncManager:
                 SystemLogger.log_error("persona_sync", "Invalid persona format, skipping write")
                 return False
 
-        # 寫入 active character 的 evolved_prompt
-        success = char_mgr.set_evolved_prompt(active_char_id, new_persona)
+        # 寫入 active character 的 evolved_prompt（per-face）
+        success = char_mgr.set_evolved_prompt(active_char_id, new_persona, persona_face=persona_face)
         if not success:
             SystemLogger.log_error("persona_sync", f"Character not found: {active_char_id}")
             return False
@@ -324,9 +351,11 @@ class PersonaSyncManager:
                 trait_diff=trait_diff,
                 summary=data.get("summary", ""),
                 evolved_prompt=new_persona,
+                persona_face=persona_face,
             )
             SystemLogger.log_system_event("persona_snapshot_saved", {
                 "character_id": active_char_id,
+                "persona_face": persona_face,
                 "snapshot_id": snapshot_id,
                 "trait_updates": len(trait_diff.updates),
                 "trait_new": len(trait_diff.new_traits),
@@ -334,13 +363,13 @@ class PersonaSyncManager:
         except Exception as e:
             SystemLogger.log_error("persona_snapshot", f"snapshot write failed: {e}")
 
-        # 更新狀態（手動觸發不佔每日次數）
-        state = self._load_state()
-        state = self._reset_daily_count_if_needed(state)
-        state["last_reflection_at"] = datetime.now().isoformat()
+        # 更新 per-face 狀態（手動觸發不佔每日次數）
+        face_state = self._load_face_state(persona_face)
+        face_state = self._reset_daily_count_if_needed(face_state)
+        face_state["last_reflection_at"] = datetime.now().isoformat()
         if count_toward_daily:
-            state["today_run_count"] = state.get("today_run_count", 0) + 1
-        self._save_state(state)
+            face_state["today_run_count"] = face_state.get("today_run_count", 0) + 1
+        self._save_face_state(persona_face, face_state)
 
         trait_diff = data.get("trait_diff")
         trait_updates = len(trait_diff.updates) if trait_diff else 0
@@ -349,6 +378,7 @@ class PersonaSyncManager:
         SystemLogger.log_system_event("persona_sync_complete", {
             "character_id": active_char_id,
             "character_name": active_char.get("name", ""),
+            "persona_face": persona_face,
             "llm_provider": llm_provider,
             "llm_model": model_name,
             "elapsed_sec": round(elapsed_sec, 1),
@@ -357,7 +387,7 @@ class PersonaSyncManager:
             "trait_updates": trait_updates,
             "trait_new": trait_new,
             "is_v1": active_count == 0,
-            "today_run_count": state["today_run_count"],
+            "today_run_count": face_state["today_run_count"],
             "output_dir": data.get("output_dir", ""),
             "snapshot_id": snapshot_id,
         })
@@ -365,20 +395,24 @@ class PersonaSyncManager:
 
     # ── 狀態查詢（供 REST API 使用） ──────────────────────
 
-    def get_sync_status(self, storage=None) -> dict:
+    def get_sync_status(self, storage=None, persona_face: str = "public") -> dict:
         """回傳目前的同步狀態，供 GET /system/personality/sync-status 使用。
 
         Args:
             storage: 選填，StorageManager 實例；提供時會額外計算距上次反思的訊息數。
+            persona_face: 要查詢的 face（public / private），預設 public。
         """
-        state = self._load_state()
+        state = self._load_face_state(persona_face)
         state = self._reset_daily_count_if_needed(state)
         since_iso = state.get("last_reflection_at") or "1970-01-01T00:00:00"
 
         messages_since = 0
         if storage is not None:
             try:
-                messages_since = storage.count_messages_since(since_iso)
+                if persona_face == "private":
+                    messages_since = storage.count_messages_since_by_channel_class(since_iso, "private")
+                else:
+                    messages_since = storage.count_messages_since(since_iso)
             except Exception:
                 pass
 
@@ -387,4 +421,5 @@ class PersonaSyncManager:
             "today_date": state.get("today_date", ""),
             "today_run_count": state.get("today_run_count", 0),
             "messages_since_last": messages_since,
+            "persona_face": persona_face,
         }

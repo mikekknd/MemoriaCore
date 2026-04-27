@@ -16,9 +16,74 @@ class MemorySystem:
         self.embed_provider = None
         self.embed_model = ""
         self.db_path = ""
-        self.memory_blocks = []
-        self.core_memories = []
-        self.user_profiles = []
+        # Keyed caches — (user_id, character_id, visibility) → list[dict]
+        self._memory_blocks_cache: dict[tuple[str, str, str], list] = {}
+        self._core_memories_cache: dict[tuple[str, str, str], list] = {}
+        # user_id → list[dict]
+        self._user_profiles_cache: dict[str, list] = {}
+
+    # ── 向後相容屬性（指向 default 使用者 public 快取）─────────────────
+    @property
+    def memory_blocks(self) -> list:
+        return self._get_memory_blocks("default", "default", "public")
+
+    @memory_blocks.setter
+    def memory_blocks(self, value: list):
+        self._memory_blocks_cache[("default", "default", "public")] = value
+
+    @property
+    def core_memories(self) -> list:
+        return self._get_core_memories("default", "default", "public")
+
+    @core_memories.setter
+    def core_memories(self, value: list):
+        self._core_memories_cache[("default", "default", "public")] = value
+
+    @property
+    def user_profiles(self) -> list:
+        return self._get_user_profiles("default")
+
+    @user_profiles.setter
+    def user_profiles(self, value: list):
+        self._user_profiles_cache["default"] = value
+
+    # ── 懶載入內部方法 ─────────────────────────────────────────────────
+
+    def _get_memory_blocks(
+        self, user_id: str, character_id: str, visibility: str = "public"
+    ) -> list:
+        key = (user_id, character_id, visibility)
+        if key not in self._memory_blocks_cache:
+            self._memory_blocks_cache[key] = (
+                self.storage.load_db(
+                    self.db_path, user_id=user_id, character_id=character_id,
+                    visibility_filter=[visibility],
+                )
+                if self.db_path else []
+            )
+        return self._memory_blocks_cache[key]
+
+    def _get_core_memories(
+        self, user_id: str, character_id: str, visibility: str = "public"
+    ) -> list:
+        key = (user_id, character_id, visibility)
+        if key not in self._core_memories_cache:
+            self._core_memories_cache[key] = (
+                self.storage.load_core_db(
+                    self.db_path, user_id=user_id, character_id=character_id,
+                    visibility_filter=[visibility],
+                )
+                if self.db_path else []
+            )
+        return self._core_memories_cache[key]
+
+    def _get_user_profiles(self, user_id: str) -> list:
+        if user_id not in self._user_profiles_cache:
+            self._user_profiles_cache[user_id] = (
+                self.storage.load_all_profiles(self.db_path, user_id=user_id)
+                if self.db_path else []
+            )
+        return self._user_profiles_cache[user_id]
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Embedding 模型切換 / 相似度工具
@@ -28,9 +93,18 @@ class MemorySystem:
         self.embed_provider = provider
         self.embed_model = model_name
         self.db_path = self.storage.get_db_path(model_name)
-        self.memory_blocks = self.storage.load_db(self.db_path)
-        self.core_memories = self.storage.load_core_db(self.db_path)
-        self.user_profiles = self.storage.load_all_profiles(self.db_path)
+        # 清空所有快取，懶載入會在首次存取時自動觸發
+        self._memory_blocks_cache.clear()
+        self._core_memories_cache.clear()
+        self._user_profiles_cache.clear()
+        # 預先載入 default 使用者 public 資料，嚴格限定 visibility 以防 private 資料洩入 public cache
+        self._memory_blocks_cache[("default", "default", "public")] = self.storage.load_db(
+            self.db_path, visibility_filter=["public"]
+        )
+        self._core_memories_cache[("default", "default", "public")] = self.storage.load_core_db(
+            self.db_path, visibility_filter=["public"]
+        )
+        self._user_profiles_cache["default"] = self.storage.load_all_profiles(self.db_path)
 
     def cosine_similarity(self, v1, v2):
         vec1 = v1.get("dense", []) if isinstance(v1, dict) else v1
@@ -74,7 +148,11 @@ class MemorySystem:
     # SECTION: 新增 Memory Block — 含去重 / 對話壓縮 / 核心認知蒸餾
     # ════════════════════════════════════════════════════════════
 
-    def add_memory_block(self, overview, raw_dialogues, duplicate_threshold=0.85, router=None, sim_timestamp=None, potential_preferences=None):
+    def add_memory_block(
+        self, overview, raw_dialogues, duplicate_threshold=0.85, router=None,
+        sim_timestamp=None, potential_preferences=None,
+        user_id="default", character_id="default", visibility="public",
+    ):
         if not self.embed_provider: return
         new_features = self.embed_provider.get_embedding(text=overview, model=self.embed_model)
         if not new_features.get("dense"): return
@@ -97,7 +175,9 @@ class MemorySystem:
 
         new_weight = max(0.5, round(new_weight, 1))
 
-        for block in self.memory_blocks:
+        memory_blocks = self._get_memory_blocks(user_id, character_id, visibility)
+
+        for block in memory_blocks:
             if len(new_features["dense"]) == len(block.get("overview_vector", [])):
                 if self.cosine_similarity(new_features["dense"], block["overview_vector"]) >= duplicate_threshold:
                     block["timestamp"] = effective_timestamp
@@ -143,7 +223,8 @@ class MemorySystem:
                             block["raw_dialogues"], COMPRESS_TURN_LIMIT, router
                         )
 
-                    self.storage.save_db(self.db_path, self.memory_blocks)
+                    self.storage.save_db(self.db_path, memory_blocks,
+                                         user_id=user_id, character_id=character_id, visibility=visibility)
                     SystemLogger.log_system_event("情境記憶合併", f"{overview.split(chr(10))[0]} (遭遇: {block['encounter_count']})")
 
                     # ==========================================
@@ -152,7 +233,8 @@ class MemorySystem:
                     # ==========================================
                     if router and block["encounter_count"] > 1.0:
                         context_text = f"時間: {block['timestamp']}\n概覽: {block['overview']}"
-                        self._distill_core_memory(context_text, block["encounter_count"], router)
+                        self._distill_core_memory(context_text, block["encounter_count"], router,
+                                                  user_id=user_id, character_id=character_id, visibility=visibility)
 
                     return block
 
@@ -167,8 +249,9 @@ class MemorySystem:
             "encounter_count": new_weight,
             "potential_preferences": potential_preferences or []
         }
-        self.memory_blocks.append(block_item)
-        self.storage.save_db(self.db_path, self.memory_blocks)
+        memory_blocks.append(block_item)
+        self.storage.save_db(self.db_path, memory_blocks,
+                              user_id=user_id, character_id=character_id, visibility=visibility)
 
         SystemLogger.log_system_event("情境記憶寫入", f"{overview.split(chr(10))[0]} (新建)")
         return block_item
@@ -224,7 +307,10 @@ class MemorySystem:
         # 壓縮失敗時回傳原始資料，不做任何變更
         return dialogues
 
-    def _distill_core_memory(self, context_text, total_weight, router, task_key="distill", fusion_threshold=0.72):
+    def _distill_core_memory(
+        self, context_text, total_weight, router, task_key="distill", fusion_threshold=0.72,
+        user_id="default", character_id="default", visibility="public",
+    ):
         """從情境記憶概覽提煉核心認知 Insight，並寫入/融合 core_memories。
         context_text: 一或多筆記憶概覽的文字（\n\n 分隔）
         total_weight: 此次提煉的權重積分（通常為 encounter_count）
@@ -233,12 +319,14 @@ class MemorySystem:
             return
 
         block_count = context_text.count("概覽:") or 1
-        
+
+        core_memories = self._get_core_memories(user_id, character_id, visibility)
+
         existing_cores = []
-        for c in self.core_memories:
+        for c in core_memories:
             existing_cores.append(f"- ID: {c['core_id']}\n  內容: {c['insight']}")
         existing_cores_text = "\n".join(existing_cores) if existing_cores else "目前尚無核心記憶。"
-        
+
         distill_prompt = get_prompt_manager().get("core_distill").format(
             block_count=block_count, total_weight=total_weight,
             context_text=context_text, existing_cores_text=existing_cores_text
@@ -248,7 +336,7 @@ class MemorySystem:
             api_messages = [{"role": "user", "content": distill_prompt}]
             raw_generated = router.generate(task_key, api_messages, temperature=0.1).strip()
             clean_generated = re.sub(r'<think>.*?</think>', '', raw_generated, flags=re.DOTALL).strip()
-            
+
             _start = clean_generated.find('{')
             if _start == -1:
                 new_insight = clean_generated
@@ -257,7 +345,7 @@ class MemorySystem:
                 parsed_data, _ = json.JSONDecoder().raw_decode(clean_generated, _start)
                 new_insight = parsed_data.get("insight", "NULL").strip()
                 target_core_id = parsed_data.get("target_core_id")
-                
+
             if not new_insight:
                 new_insight = "NULL"
         except Exception as e:
@@ -276,21 +364,21 @@ class MemorySystem:
         timestamp = datetime.now().isoformat()
 
         best_match = None
-        
+
         if target_core_id:
-            for core in self.core_memories:
+            for core in core_memories:
                 if core["core_id"] == target_core_id:
                     best_match = core
                     break
-                    
+
         if not best_match:
             highest_sim = 0.0
-            for core in self.core_memories:
+            for core in core_memories:
                 sim = self.cosine_similarity(new_dense, core.get("insight_vector", []))
                 if sim > highest_sim:
                     highest_sim = sim
             if highest_sim >= fusion_threshold:
-                best_match = next((c for c in self.core_memories if self.cosine_similarity(new_dense, c.get("insight_vector", [])) == highest_sim), None)
+                best_match = next((c for c in core_memories if self.cosine_similarity(new_dense, c.get("insight_vector", [])) == highest_sim), None)
 
         if best_match:
             old_weight = float(best_match.get("encounter_count", 1.0))
@@ -317,7 +405,11 @@ class MemorySystem:
                     best_match["insight_vector"] = fused_features["dense"]
                 best_match["timestamp"] = timestamp
                 best_match["encounter_count"] = new_core_weight
-                self.storage.save_core_memory(self.db_path, best_match["core_id"], timestamp, fused_insight, best_match.get("insight_vector", []), new_core_weight)
+                self.storage.save_core_memory(
+                    self.db_path, best_match["core_id"], timestamp, fused_insight,
+                    best_match.get("insight_vector", []), new_core_weight,
+                    user_id=user_id, character_id=character_id, visibility=visibility,
+                )
                 SystemLogger.log_system_event("核心認知提煉", f"時間權重融合成功: {fused_insight} (總積分: {new_core_weight})")
             except Exception as e:
                 SystemLogger.log_error("核心認知融合失敗", str(e))
@@ -326,35 +418,47 @@ class MemorySystem:
             core_id = str(uuid.uuid4())
             core_item = {"core_id": core_id, "timestamp": timestamp, "insight": new_insight,
                          "insight_vector": new_dense, "encounter_count": new_core_weight}
-            self.core_memories.append(core_item)
-            self.storage.save_core_memory(self.db_path, core_id, timestamp, new_insight, new_dense, new_core_weight)
+            core_memories.append(core_item)
+            self.storage.save_core_memory(
+                self.db_path, core_id, timestamp, new_insight, new_dense, new_core_weight,
+                user_id=user_id, character_id=character_id, visibility=visibility,
+            )
             SystemLogger.log_system_event("核心認知提煉", f"新增成功: {new_insight} (初始積分: {new_core_weight})")
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Memory Block 更新 / 叢集偵測 / 融合壓縮
     # ════════════════════════════════════════════════════════════
 
-    def update_memory_block(self, block_id, new_overview):
+    def update_memory_block(
+        self, block_id, new_overview,
+        user_id="default", character_id="default", visibility="public",
+    ):
         if not self.embed_provider: return False
-        for block in self.memory_blocks:
+        memory_blocks = self._get_memory_blocks(user_id, character_id, visibility)
+        for block in memory_blocks:
             if block["block_id"] == block_id:
                 new_features = self.embed_provider.get_embedding(text=new_overview, model=self.embed_model)
                 if new_features.get("dense"):
                     block["overview"] = new_overview
                     block["overview_vector"] = new_features["dense"]
                     block["sparse_vector"] = new_features.get("sparse", {})
-                    self.storage.save_db(self.db_path, self.memory_blocks)
+                    self.storage.save_db(self.db_path, memory_blocks,
+                                         user_id=user_id, character_id=character_id, visibility=visibility)
                     return True
         return False
 
-    def find_pending_clusters(self, cluster_threshold=0.75, min_group_size=2):
+    def find_pending_clusters(
+        self, cluster_threshold=0.75, min_group_size=2,
+        user_id="default", character_id="default", visibility="public",
+    ):
+        memory_blocks = self._get_memory_blocks(user_id, character_id, visibility)
         clusters = []
         visited = set()
-        for i, b1 in enumerate(self.memory_blocks):
+        for i, b1 in enumerate(memory_blocks):
             if i in visited: continue
             current_cluster = [b1]
             visited.add(i)
-            for j, b2 in enumerate(self.memory_blocks[i+1:], start=i+1):
+            for j, b2 in enumerate(memory_blocks[i+1:], start=i+1):
                 if j in visited: continue
                 if self.cosine_similarity(b1["overview_vector"], b2["overview_vector"]) >= cluster_threshold:
                     current_cluster.append(b2)
@@ -363,21 +467,24 @@ class MemorySystem:
                 clusters.append(current_cluster)
         return clusters
 
-    def consolidate_and_fuse(self, related_blocks, router, task_key="compress", fusion_threshold=0.72):
+    def consolidate_and_fuse(
+        self, related_blocks, router, task_key="compress", fusion_threshold=0.72,
+        user_id="default", character_id="default", visibility="public",
+    ):
         if not related_blocks or not self.embed_provider: return "無需處理"
-        
+
         sorted_blocks = sorted(related_blocks, key=lambda x: x.get("timestamp", ""))
-        
+
         # ==========================================
         # 記憶累積權重計算 (S 型曲線已移至 add_memory_block 計算保障)
         # ==========================================
         total_weight = 0.0
         last_valid_time = None
         session_gap_seconds = 1200 # 20分鐘
-        
+
         for b in sorted_blocks:
             base_count = float(b.get("encounter_count", 1.0))
-            
+
             try:
                 b_time = datetime.fromisoformat(b["timestamp"])
                 if last_valid_time is None or (b_time - last_valid_time).total_seconds() > session_gap_seconds:
@@ -388,22 +495,24 @@ class MemorySystem:
                     # 這裡我們信任已計算的權重，不做惡意扣減。S曲線天生防切碎膨脹。
                     contribution = base_count
             except ValueError:
-                contribution = base_count 
-                
+                contribution = base_count
+
             total_weight += contribution
-            
+
         # 最終權重四捨五入至小數點第一位，保底至少 0.5 確保不會歸零
         total_weight = max(0.5, round(total_weight, 1))
-        
+
         SystemLogger.log_system_event("大腦反芻啟動", f"開始融合 {len(sorted_blocks)} 筆區塊，校準後權重積分: {total_weight}...")
-        
+
         timestamp = datetime.now().isoformat()
 
         # ==========================================
         # 階段一：核心認知提煉（委託 _distill_core_memory 共用方法）
         # ==========================================
         context_text = "\n\n".join([f"時間: {b['timestamp']}\n概覽: {b['overview']}" for b in sorted_blocks])
-        self._distill_core_memory(context_text, total_weight, router, task_key="distill", fusion_threshold=fusion_threshold)
+        self._distill_core_memory(context_text, total_weight, router, task_key="distill",
+                                   fusion_threshold=fusion_threshold,
+                                   user_id=user_id, character_id=character_id, visibility=visibility)
 
         # ==========================================
         # 階段二：情境記憶縫合 (Episodic Fusion) - 近因保留與歷史編年史化
@@ -422,14 +531,14 @@ class MemorySystem:
                     time_str = dt.strftime("%Y-%m-%d %H:%M")
                 except:
                     time_str = b_time_str
-                    
+
                 block_dialogues = []
                 for msg in b.get("raw_dialogues", []):
                     dedup_key = f"{msg.get('role', '')}:{msg.get('content', '')}"
                     if dedup_key not in seen_dialogues:
                         seen_dialogues.add(dedup_key)
                         block_dialogues.append(msg)
-                        
+
                 if block_dialogues:
                     old_dialogues_pool.append({"role": "system", "content": f"[系統標記：以下對話發生於 {time_str}]"})
                     old_dialogues_pool.extend(block_dialogues)
@@ -437,7 +546,7 @@ class MemorySystem:
             if old_dialogues_pool:
                 SystemLogger.log_system_event("記憶壓縮閘道", f"啟動歷史記憶編年史化 (共 {len(older_blocks)} 筆舊區塊)。")
                 old_dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in old_dialogues_pool])
-                
+
                 compress_prompt = get_prompt_manager().get("history_compress").format(
                     old_dialogue_text=old_dialogue_text
                 )
@@ -484,7 +593,7 @@ class MemorySystem:
                 time_str = dt.strftime("%Y-%m-%d %H:%M")
             except:
                 time_str = latest_time_str
-                
+
             combined_dialogues.append({"role": "system", "content": f"[系統標記：近期原始對話發生於 {time_str}]"})
             seen_latest = set()
             for msg in latest_block.get("raw_dialogues", []):
@@ -494,7 +603,7 @@ class MemorySystem:
                     combined_dialogues.append(msg)
 
         dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in combined_dialogues])
-        
+
         episodic_prompt = get_prompt_manager().get("episodic_overview").format(
             dialogue_text=dialogue_text
         )
@@ -514,11 +623,17 @@ class MemorySystem:
             merged_overview = f"[核心實體]: 記憶縫合, 綜合事件\n[情境摘要]: 系統自動合併的多段相關記憶。"
 
         merged_features = self.embed_provider.get_embedding(text=merged_overview, model=self.embed_model)
-        
+
         if merged_features.get("dense"):
-            block_ids = [b["block_id"] for b in sorted_blocks]
-            self.memory_blocks = [b for b in self.memory_blocks if b["block_id"] not in block_ids]
-            
+            # 從快取移除已融合的舊區塊
+            block_ids = {b["block_id"] for b in sorted_blocks}
+            cache_key = (user_id, character_id, visibility)
+            self._memory_blocks_cache[cache_key] = [
+                b for b in self._get_memory_blocks(user_id, character_id, visibility)
+                if b["block_id"] not in block_ids
+            ]
+            memory_blocks = self._memory_blocks_cache[cache_key]
+
             # 從所有來源區塊收集潛在偏好（去重）
             merged_prefs = []
             seen_pref_tags = set()
@@ -540,10 +655,11 @@ class MemorySystem:
                 "encounter_count": total_weight,
                 "potential_preferences": merged_prefs
             }
-            self.memory_blocks.append(merged_block)
-            self.storage.save_db(self.db_path, self.memory_blocks)
-            
-            SystemLogger.log_system_event("大腦反芻 - 情境階段", f"超級區塊縫合完成並寫入:\n{merged_overview.split('\n')[0]} (總積分: {total_weight})")
+            memory_blocks.append(merged_block)
+            self.storage.save_db(self.db_path, memory_blocks,
+                                  user_id=user_id, character_id=character_id, visibility=visibility)
+
+            SystemLogger.log_system_event("大腦反芻 - 情境階段", f"超級區塊縫合完成並寫入:\n{merged_overview.split(chr(10))[0]} (總積分: {total_weight})")
             return f"完成：{len(sorted_blocks)} 筆區塊縫合，總積分 {total_weight}。"
 
         return "情境縫合失敗（向量化錯誤）"
@@ -552,27 +668,52 @@ class MemorySystem:
     # SECTION: 三軌檢索 — 核心認知 / 情境 Block / 使用者偏好
     # ════════════════════════════════════════════════════════════
 
-    def search_core_memories(self, query, top_k=1, threshold=0.45):
-        if not self.core_memories or not self.embed_provider: return []
-        
+    def search_core_memories(
+        self, query, top_k=1, threshold=0.45,
+        user_id="default", character_id="default", visibility_filter=None,
+    ):
+        if not self.embed_provider: return []
+
+        if visibility_filter is None:
+            core_memories = self._get_core_memories(user_id, character_id, "public")
+        else:
+            core_memories = []
+            for vis in visibility_filter:
+                core_memories.extend(self._get_core_memories(user_id, character_id, vis))
+
+        if not core_memories: return []
+
         q_feat = self.embed_provider.get_embedding(text=query, model=self.embed_model)
         q_dense = q_feat.get("dense", [])
         if not q_dense: return []
-        
+
         results = []
-        for core in self.core_memories:
+        for core in core_memories:
             sim = self.cosine_similarity(q_dense, core.get("insight_vector", []))
             if sim >= threshold:
                 results.append({
                     "insight": core["insight"],
                     "score": sim
                 })
-                
+
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    def search_blocks(self, original_query, combined_keywords, top_k=2, alpha=0.5, lambda_mult=0.9, threshold=0.5, hard_base=0.55):
-        if not self.memory_blocks or not self.embed_provider: return []
+    def search_blocks(
+        self, original_query, combined_keywords, top_k=2, alpha=0.5, lambda_mult=0.9,
+        threshold=0.5, hard_base=0.55,
+        user_id="default", character_id="default", visibility_filter=None,
+    ):
+        if not self.embed_provider: return []
+
+        if visibility_filter is None:
+            memory_blocks = self._get_memory_blocks(user_id, character_id, "public")
+        else:
+            memory_blocks = []
+            for vis in visibility_filter:
+                memory_blocks.extend(self._get_memory_blocks(user_id, character_id, vis))
+
+        if not memory_blocks: return []
         now = datetime.now()
         full_query = f"{original_query} {combined_keywords}".strip()
         q_full_feat = self.embed_provider.get_embedding(text=full_query, model=self.embed_model)
@@ -585,33 +726,33 @@ class MemorySystem:
         q_orig_sparse = q_orig_feat.get("sparse", {})
         q_exp_sparse = q_exp_feat.get("sparse", {})
 
-        for b in self.memory_blocks:
+        for b in memory_blocks:
             d_score = self.cosine_similarity(q_full_feat["dense"], b.get("overview_vector", []))
             dense_raw.append(d_score)
             s_orig = self.sparse_cosine_similarity(q_orig_sparse, b.get("sparse_vector", {}))
             s_exp = self.sparse_cosine_similarity(q_exp_sparse, b.get("sparse_vector", {}))
             sparse_raw.append((s_orig * 0.70) + (s_exp * 0.30))
-        
+
         dense_norm = [max(0.0, s) for s in dense_raw]
         sparse_norm = [min(1.0, max(0.0, s) * 2.5) for s in sparse_raw]
 
         final_candidates = []
-        for i, block in enumerate(self.memory_blocks):
+        for i, block in enumerate(memory_blocks):
             try:
                 block_time = datetime.fromisoformat(block["timestamp"])
                 delta_days = (now - block_time).total_seconds() / 86400.0
-            except Exception: delta_days = 30.0 
-            
+            except Exception: delta_days = 30.0
+
             # ==========================================
             # 綜合計分與斬殺線判定 (修正字面暴衝漏洞)
             # ==========================================
             recency_boost_base = 0.15 * math.exp(-0.35 * max(0.0, delta_days))
             hybrid_score = alpha * dense_norm[i] + (1 - alpha) * sparse_norm[i]
             is_killed = False
-            
+
             # 設定絕對語意底線 (比 hard_base 低 0.1)
-            absolute_bottom = hard_base - 0.10 
-            
+            absolute_bottom = hard_base - 0.10
+
             if dense_raw[i] < hard_base:
                 # 【嚴格豁免條件】：
                 # 1. 稀疏分數必須極高 (>= 0.35，代表有多個關鍵字完全命中)
@@ -621,14 +762,14 @@ class MemorySystem:
                 else:
                     hybrid_score = 0.0
                     is_killed = True
-                    recency_boost_base = 0.0 
+                    recency_boost_base = 0.0
 
             actual_boost = 0.0
             importance_boost = 0.0
             if not is_killed:
                 encounter_weight = float(block.get("encounter_count", 1.0))
                 importance_boost = 0.05 * math.log(encounter_weight) if encounter_weight > 1.0 else 0.0
-                
+
                 actual_boost = recency_boost_base * (hybrid_score ** 2)
                 hybrid_score += actual_boost
                 hybrid_score += importance_boost
@@ -646,7 +787,7 @@ class MemorySystem:
         if not final_candidates: return []
         final_candidates.sort(key=lambda x: x["_debug_score"], reverse=True)
         selected = [final_candidates.pop(0)]
-        
+
         while len(selected) < top_k and final_candidates:
             mmr_scores = []
             for item in final_candidates:
@@ -660,21 +801,18 @@ class MemorySystem:
 
         return selected
 
-    # ==========================================
-    # 使用者畫像 (User Profile) 管理
-    # ==========================================
     # ════════════════════════════════════════════════════════════
     # SECTION: 使用者偏好 Profile — 載入 / 套用 / 查詢 / Prompt 組裝
     # ════════════════════════════════════════════════════════════
 
-    def load_user_profile(self):
-        """從 DB 載入所有使用者事實到記憶體快取"""
+    def load_user_profile(self, user_id="default"):
+        """從 DB 載入使用者事實到記憶體快取"""
         if not self.db_path:
-            self.user_profiles = []
+            self._user_profiles_cache[user_id] = []
             return
-        self.user_profiles = self.storage.load_all_profiles(self.db_path)
+        self._user_profiles_cache[user_id] = self.storage.load_all_profiles(self.db_path, user_id=user_id)
 
-    def apply_profile_facts(self, facts, embed_model):
+    def apply_profile_facts(self, facts, embed_model, user_id="default", visibility="public"):
         """接收 extractor 回傳的 facts 列表，執行向量收束 + 墓碑化刪除 + upsert 並更新快取
 
         核心機制：
@@ -687,7 +825,7 @@ class MemorySystem:
             return
 
         # 一次性載入所有現有 profile 向量，避免迴圈內反覆查 DB
-        existing_profiles = self.storage.load_profile_vectors(self.db_path) if self.embed_provider else []
+        existing_profiles = self.storage.load_profile_vectors(self.db_path, user_id=user_id) if self.embed_provider else []
         DEDUP_THRESHOLD = 0.88
 
         for fact in facts:
@@ -724,13 +862,14 @@ class MemorySystem:
 
             if action == "DELETE":
                 # 墓碑模式：查出該 key 下所有值，逐筆標記 confidence=-1.0
-                existing_rows = self.storage.get_profile_by_key(self.db_path, resolved_key)
+                existing_rows = self.storage.get_profile_by_key(self.db_path, resolved_key, user_id=user_id)
                 if existing_rows:
                     for existing in existing_rows:
                         self.storage.upsert_profile(
                             self.db_path, resolved_key,
                             existing["fact_value"], existing["category"],
-                            justification, confidence=-1.0)
+                            justification, confidence=-1.0,
+                            user_id=user_id, visibility=visibility)
                     # 從 existing_profiles 快取中移除（墓碑不參與後續收束比對）
                     existing_profiles = [ep for ep in existing_profiles if ep["fact_key"] != resolved_key]
                     SystemLogger.log_system_event("使用者畫像-墓碑",
@@ -740,14 +879,16 @@ class MemorySystem:
                         f"找不到 key: {resolved_key}")
 
             elif action in ("INSERT", "UPDATE"):
-                self.storage.upsert_profile(self.db_path, resolved_key, fact_value, category, justification)
+                self.storage.upsert_profile(self.db_path, resolved_key, fact_value, category, justification,
+                                             user_id=user_id, visibility=visibility)
 
                 # 向量化事實描述，供語意搜尋使用
                 if self.embed_provider:
                     vec_text = f"{resolved_key}: {fact_value} ({category})"
                     vec = self.embed_provider.get_embedding(text=vec_text, model=embed_model)
                     if vec.get("dense"):
-                        self.storage.upsert_profile_vector(self.db_path, resolved_key, fact_value, vec["dense"])
+                        self.storage.upsert_profile_vector(self.db_path, resolved_key, fact_value, vec["dense"],
+                                                            user_id=user_id)
                         # 更新記憶體快取，確保同批次後續 fact 能正確收束
                         # 只移除完全相同的 (fact_key, fact_value) 組合，保留同 key 不同 value 的記錄
                         existing_profiles = [ep for ep in existing_profiles
@@ -761,14 +902,14 @@ class MemorySystem:
                     f"[{action}] {resolved_key} = {fact_value} ({category})")
 
         # 重新載入快取
-        self.load_user_profile()
+        self.load_user_profile(user_id=user_id)
 
-    def search_profile_by_query(self, query, top_k=3, threshold=0.5):
+    def search_profile_by_query(self, query, top_k=3, threshold=0.5, user_id="default"):
         """語意搜尋使用者畫像中的偏好類事實"""
         if not self.embed_provider or not self.db_path:
             return []
 
-        profile_vecs = self.storage.load_profile_vectors(self.db_path)
+        profile_vecs = self.storage.load_profile_vectors(self.db_path, user_id=user_id)
         if not profile_vecs:
             return []
 
@@ -796,13 +937,15 @@ class MemorySystem:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    def get_static_profile_prompt(self):
+    def get_static_profile_prompt(self, user_id="default", visibility_filter=None):
         """回傳 basic_info 和 critical_rule 分類的格式化文字（供靜態注入 System Prompt）"""
         if not self.db_path:
             return ""
 
-        basic_facts = self.storage.load_profiles_by_category(self.db_path, "basic_info")
-        critical_facts = self.storage.load_profiles_by_category(self.db_path, "critical_rule")
+        basic_facts = self.storage.load_profiles_by_category(
+            self.db_path, "basic_info", user_id=user_id, visibility_filter=visibility_filter)
+        critical_facts = self.storage.load_profiles_by_category(
+            self.db_path, "critical_rule", user_id=user_id, visibility_filter=visibility_filter)
 
         if not basic_facts and not critical_facts:
             return ""
@@ -822,19 +965,25 @@ class MemorySystem:
     # SECTION: 主動話題 Prompt 注入
     # ════════════════════════════════════════════════════════════
 
-    def get_proactive_topics_prompt(self, limit=1):
+    def get_proactive_topics_prompt(
+        self, limit=1, user_id="default", character_id="default", visibility_filter=None
+    ):
         """從 topic_cache 撈取未提過的話題轉為 Prompt，並標記為已使用"""
         if not self.db_path:
             return ""
-            
-        topics = self.storage.get_unmentioned_topics(self.db_path, limit=limit)
+
+        topics = self.storage.get_unmentioned_topics(
+            self.db_path, limit=limit,
+            user_id=user_id, character_id=character_id,
+            visibility_filter=visibility_filter,
+        )
         if not topics:
             return ""
-            
+
         lines = ["【系統背景資訊】：我們在背景發現了您可能感興趣的最新資訊："]
         for t in topics:
             lines.append(f"({t['interest_keyword']}) {t['summary_content']}")
             self.storage.mark_topic_mentioned(self.db_path, t['topic_id'])
-            
+
         lines.append("請視上下文，極度自然地在對話中提起或融合這些資訊。不要說「我查到了」或「根據背景資訊」。")
         return "\n".join(lines)

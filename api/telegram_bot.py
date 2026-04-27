@@ -12,6 +12,7 @@ from aiogram.enums import ParseMode, ChatAction
 from api.dependencies import (
     get_memory_sys, get_storage, get_router,
 )
+from core.deployment_config import resolve_context
 from api.session_manager import session_manager
 from api.routers.chat.orchestration import _run_chat_orchestration
 
@@ -42,8 +43,16 @@ class TelegramSessionMap:
             # session 過期，清除映射
             del self._map[user_id]
 
-        # 建立新 session（帶入 channel 資訊）
-        session = await session_manager.create(channel="telegram", channel_uid=str(user_id))
+        # 建立新 session（帶入 channel 資訊與隔離身份）
+        prefs = get_storage().load_prefs()
+        character_id = prefs.get("active_character_id", "default")
+        session = await session_manager.create(
+            channel="telegram",
+            channel_uid=str(user_id),
+            user_id=str(user_id),
+            character_id=character_id,
+            channel_class="private",
+        )
         self._map[user_id] = session.session_id
         return session.session_id
 
@@ -205,6 +214,12 @@ async def _handle_message(message: types.Message):
                     pass
             asyncio.run_coroutine_threadsafe(_edit_complete(), _loop)
 
+    session_ctx = {
+        "user_id": s.user_id,
+        "character_id": s.character_id,
+        "persona_face": s.persona_face,
+    }
+
     try:
         # 在執行緒池中跑完整編排（與 chat_ws.py 共用同一函式）
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events, \
@@ -213,6 +228,7 @@ async def _handle_message(message: types.Message):
                 _run_chat_orchestration,
                 list(s.messages), list(s.last_entities), user_text, user_prefs,
                 on_event=_tg_event_cb,
+                session_ctx=session_ctx,
             )
     except Exception as e:
         logger.error("Chat orchestration failed: %s", e, exc_info=True)

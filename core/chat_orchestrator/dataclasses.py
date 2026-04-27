@@ -1,4 +1,4 @@
-"""三模組（Router / Middleware / Persona）共用的資料結構。"""
+"""三模組（Router / Middleware / Persona）共用的資料結構，以及記憶管線上下文。"""
 from dataclasses import dataclass, field
 
 
@@ -40,3 +40,18 @@ class PersonaResult:
     # status_metrics / tone 已從 LLM schema 移除，保留欄位供向後相容（值永遠為 None）
     status_metrics: dict | None = None
     tone: str | None = None
+
+
+# ════════════════════════════════════════════════════════════
+# SECTION: 記憶管線上下文
+# ════════════════════════════════════════════════════════════
+
+@dataclass
+class PipelineContext:
+    """記憶管線執行所需的完整上下文，取代先前的 (msgs_to_extract, last_block) 2-tuple。
+
+    session_ctx 包含：{"user_id": str, "character_id": str, "persona_face": str}
+    """
+    msgs_to_extract: list[dict]
+    last_block: dict | None
+    session_ctx: dict = field(default_factory=dict)

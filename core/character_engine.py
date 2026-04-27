@@ -71,33 +71,61 @@ class CharacterManager:
         chars = [c for c in chars if c["character_id"] != character_id]
         self.save_characters(chars)
 
-    def set_evolved_prompt(self, character_id: str, content: str) -> bool:
-        """將 PersonaProbe 產出的演化人設寫入指定角色的 evolved_prompt 欄位。
+    def set_evolved_prompt(self, character_id: str, content: str, persona_face: str = "public") -> bool:
+        """將 PersonaProbe 產出的演化人設寫入指定角色的 evolved_prompt 欄位（per-face）。
+
+        evolved_prompt 儲存格式為 dict：{"public": str|None, "private": str|None}。
+        舊格式（純字串）讀取時自動視為 public，寫入時一律轉為 dict。
         回傳 True 表示成功，False 表示找不到角色。
         """
         chars = self.load_characters()
         for i, c in enumerate(chars):
             if c["character_id"] == character_id:
-                chars[i]["evolved_prompt"] = content
+                ep = c.get("evolved_prompt")
+                if isinstance(ep, str):
+                    ep = {"public": ep, "private": None}
+                elif not isinstance(ep, dict):
+                    ep = {"public": None, "private": None}
+                ep[persona_face] = content
+                chars[i]["evolved_prompt"] = ep
                 self.save_characters(chars)
                 return True
         return False
 
-    def clear_evolved_prompt(self, character_id: str) -> bool:
+    def clear_evolved_prompt(self, character_id: str, persona_face: str | None = None) -> bool:
         """清除指定角色的 evolved_prompt，還原為使用原始 system_prompt。
+
+        persona_face=None → 清除所有 face；否則只清指定 face。
         回傳 True 表示成功，False 表示找不到角色。
         """
         chars = self.load_characters()
         for i, c in enumerate(chars):
             if c["character_id"] == character_id:
-                chars[i]["evolved_prompt"] = None
+                if persona_face is None:
+                    chars[i]["evolved_prompt"] = None
+                else:
+                    ep = c.get("evolved_prompt")
+                    if isinstance(ep, dict):
+                        ep[persona_face] = None
+                        chars[i]["evolved_prompt"] = ep
+                    else:
+                        chars[i]["evolved_prompt"] = None
                 self.save_characters(chars)
                 return True
         return False
 
-    def get_effective_prompt(self, character: Dict[str, Any]) -> str:
-        """回傳角色實際使用的 System Prompt：優先 evolved_prompt，否則 system_prompt。"""
-        return character.get("evolved_prompt") or character.get("system_prompt", "")
+    def get_effective_prompt(self, character: Dict[str, Any], persona_face: str = "public") -> str:
+        """回傳角色實際使用的 System Prompt：優先對應 face 的 evolved_prompt，否則 system_prompt。
+
+        相容舊版純字串格式（視為 public face）。
+        """
+        ep = character.get("evolved_prompt")
+        if isinstance(ep, dict):
+            return ep.get(persona_face) or character.get("system_prompt", "")
+        # 舊格式向後相容：字串只服務 public face
+        if isinstance(ep, str) and ep:
+            return ep if persona_face == "public" else character.get("system_prompt", "")
+        return character.get("system_prompt", "")
 
     def get_active_character(self, active_id: str = "default") -> Dict[str, Any]:
         """如果沒有設定，預設回傳第一個或 default"""
