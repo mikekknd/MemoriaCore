@@ -144,19 +144,6 @@ class CharacterManager:
             "properties": {
                 "name": {"type": "string", "description": "角色的名稱"},
                 "system_prompt": {"type": "string", "description": "核心人格與世界觀設定的 System Prompt"},
-                "metrics": {
-                    "type": "array", 
-                    "items": {"type": "string"}, 
-                    "description": "2到4個英文變數名稱，代表這個角色隨時變動的心理指標，例如 'shyness', 'affection'"
-                },
-                "allowed_tones": {
-                    "type": "array", 
-                    "items": {
-                        "type": "string",
-                        "enum": ["Neutral", "Happy", "Sad", "Angry", "Fear", "Surprise", "Disgust", "Shame", "Tense"]
-                    },
-                    "description": "這個角色可能會切換的情緒或語氣，必須嚴格從以下標籤挑選：Neutral, Happy, Sad, Angry, Fear, Surprise, Disgust, Shame, Tense"
-                },
                 "reply_rules": {
                     "type": "string",
                     "description": "回覆文字的格式與語氣規定（例如必須說繁體中文、不准用 Emoji、句尾要加喵 等），同時套用於 reply 欄位（字幕文字）"
@@ -170,7 +157,7 @@ class CharacterManager:
                     "description": "如果角色發音語言與字幕不同，請填寫此欄位（例如 '日文', '英文'）。若無需雙語分離則留空字串。"
                 }
             },
-            "required": ["name", "system_prompt", "metrics", "allowed_tones", "reply_rules", "tts_rules", "tts_language"]
+            "required": ["name", "system_prompt", "reply_rules", "tts_rules", "tts_language"]
         }
 
         prompt = get_prompt_manager().get("character_generate").format(
