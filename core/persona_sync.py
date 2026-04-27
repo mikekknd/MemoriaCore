@@ -224,14 +224,11 @@ class PersonaSyncManager:
         if elapsed < idle_minutes:
             return False, f"not_idle({elapsed:.1f}min < {idle_minutes}min)"
 
-        # 4. 最低訊息數（per face：private face 只計 private channel 訊息）
+        # 4. 最低訊息數（per face：各自只計對應 channel_class 的訊息數）
         min_messages = prefs.get("persona_sync_min_messages", 50)
         since_iso = state.get("last_reflection_at") or "1970-01-01T00:00:00"
         try:
-            if persona_face == "private":
-                new_count = storage.count_messages_since_by_channel_class(since_iso, "private")
-            else:
-                new_count = storage.count_messages_since(since_iso)
+            new_count = storage.count_messages_since_by_channel_class(since_iso, channel_class)
         except Exception as e:
             return False, f"count_error({e})"
 

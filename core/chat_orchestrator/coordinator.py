@@ -183,7 +183,8 @@ def run_dual_layer_orchestration(
 
         with t.step("使用者偏好檢索 (Profile Search)"):
             profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5,
-                                                         user_id=user_id)
+                                                         user_id=user_id,
+                                                         visibility_filter=visibility_filter)
 
         # 格式化記憶上下文
         core_ctx = ""

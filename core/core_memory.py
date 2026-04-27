@@ -904,12 +904,20 @@ class MemorySystem:
         # 重新載入快取
         self.load_user_profile(user_id=user_id)
 
-    def search_profile_by_query(self, query, top_k=3, threshold=0.5, user_id="default"):
-        """語意搜尋使用者畫像中的偏好類事實"""
+    def search_profile_by_query(
+        self, query, top_k=3, threshold=0.5, user_id="default",
+        visibility_filter: "list[str] | None" = None,
+    ):
+        """語意搜尋使用者畫像中的偏好類事實。
+
+        visibility_filter: None → 不限；['public'] → 只含公開事實（公開頻道聊天時使用）。
+        """
         if not self.embed_provider or not self.db_path:
             return []
 
-        profile_vecs = self.storage.load_profile_vectors(self.db_path, user_id=user_id)
+        profile_vecs = self.storage.load_profile_vectors(
+            self.db_path, user_id=user_id, visibility_filter=visibility_filter
+        )
         if not profile_vecs:
             return []
 

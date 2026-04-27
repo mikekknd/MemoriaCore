@@ -658,19 +658,30 @@ class StorageManager:
         self,
         db_path,
         user_id: str = "default",
+        visibility_filter: "list[str] | None" = None,
     ):
-        """載入所有使用者事實及其向量（自動排除墓碑記錄，供語意搜尋用）。"""
+        """載入使用者事實及其向量（自動排除墓碑記錄，供語意搜尋用）。
+
+        visibility_filter: None → 不限（供寫入去重使用）；
+                           ['public'] / ['private', 'public'] → 限定 visibility（供讀取檢索使用）。
+        """
         if not os.path.exists(db_path):
             return []
         conn = self._init_db(db_path)
         cursor = conn.cursor()
+        where = "WHERE p.user_id = ? AND p.confidence >= 0"
+        params: list = [user_id]
+        if visibility_filter:
+            placeholders = ", ".join("?" * len(visibility_filter))
+            where += f" AND p.visibility IN ({placeholders})"
+            params.extend(visibility_filter)
         cursor.execute(
             "SELECT p.fact_key, p.fact_value, p.category, p.confidence, v.fact_vector "
             "FROM user_profile p "
             "LEFT JOIN user_profile_vectors v "
             "  ON p.user_id = v.user_id AND p.fact_key = v.fact_key AND p.fact_value = v.fact_value "
-            "WHERE p.user_id = ? AND p.confidence >= 0",
-            (user_id,)
+            f"{where}",
+            params,
         )
         rows = cursor.fetchall()
         conn.close()
