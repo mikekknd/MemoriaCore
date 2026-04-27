@@ -55,6 +55,7 @@ class PersonaSnapshotStore:
         summary: str,
         evolved_prompt: str,
         timestamp: str | None = None,
+        persona_face: str = "public",
     ) -> int:
         """寫入一筆 snapshot；回傳 snapshot_id。
 
@@ -81,10 +82,10 @@ class PersonaSnapshotStore:
                 " 請確認 LLM 萃取結果非空後再呼叫。"
             )
         # 活躍清單：供 updates 驗證 + fallback cosine 的候選池（只拿活躍的做 embedding 比對）
-        active_traits = self.storage.get_active_traits(character_id)
+        active_traits = self.storage.get_active_traits(character_id, persona_face=persona_face)
         active_by_key = {t["trait_key"]: t for t in active_traits}
         # 全部 trait（含 sweep）：供 parent_key 存在性驗證——已休眠 trait 被引用可復活
-        all_traits = self.storage.get_all_traits(character_id)
+        all_traits = self.storage.get_all_traits(character_id, persona_face=persona_face)
         all_by_key = {t["trait_key"]: t for t in all_traits}
         key_to_name = {tk: t["name"] for tk, t in all_by_key.items()}
 
@@ -138,6 +139,7 @@ class PersonaSnapshotStore:
             evolved_prompt=evolved_prompt,
             updates=updates_payload,
             new_traits=new_payload,
+            persona_face=persona_face,
             dormancy_idle_versions=self.dormancy_idle_versions,
             dormancy_confidence_threshold=self.dormancy_confidence_threshold,
         )
@@ -146,27 +148,31 @@ class PersonaSnapshotStore:
         self,
         character_id: str,
         limit: int | None = MAX_ACTIVE_TRAITS_IN_PROMPT,
+        persona_face: str = "public",
     ) -> list[dict]:
         """回傳活躍 trait 清單（按 ``last_active_version DESC``）。
 
         ``limit`` 預設為 ``MAX_ACTIVE_TRAITS_IN_PROMPT``（20）。傳 None 可取全部。
+        ``persona_face`` 決定查哪條血統樹（private / public）。
         """
-        return self.storage.get_active_traits(character_id, limit=limit)
+        return self.storage.get_active_traits(character_id, persona_face=persona_face, limit=limit)
 
-    def get_trait_timeline(self, character_id: str, trait_key: str) -> list:
+    def get_trait_timeline(
+        self, character_id: str, trait_key: str, persona_face: str = "public"
+    ) -> list:
         """代理 StorageManager — 某 trait 在所有版本的 confidence 變化序列。"""
-        return self.storage.get_trait_timeline(character_id, trait_key)
+        return self.storage.get_trait_timeline(character_id, trait_key, persona_face=persona_face)
 
-    def get_tree(self, character_id: str, version: int) -> dict | None:
+    def get_tree(self, character_id: str, version: int, persona_face: str = "public") -> dict | None:
         """回傳指定版本的樹狀結構（Force-Directed Graph 用）。"""
-        snap = self.storage.get_persona_snapshot(character_id, version)
+        snap = self.storage.get_persona_snapshot(character_id, version, persona_face=persona_face)
         if snap is None:
             return None
         return self._snap_to_tree(snap)
 
-    def get_latest_tree(self, character_id: str) -> dict | None:
+    def get_latest_tree(self, character_id: str, persona_face: str = "public") -> dict | None:
         """回傳最新版 snapshot 的樹狀結構；無紀錄回 ``None``。"""
-        snap = self.storage.get_latest_persona_snapshot(character_id)
+        snap = self.storage.get_latest_persona_snapshot(character_id, persona_face=persona_face)
         if snap is None:
             return None
         return self._snap_to_tree(snap)

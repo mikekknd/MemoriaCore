@@ -47,7 +47,8 @@ class PreferenceAggregator:
             return False
         return True
 
-    def aggregate(self, decay_lambda=0.02, similarity_threshold=0.85, score_threshold=3.0):
+    def aggregate(self, decay_lambda=0.02, similarity_threshold=0.85, score_threshold=3.0,
+                  user_id: str = "default", character_id: str = "default", visibility: str = "public"):
         """
         核心聚合演算法：
         1. 收集所有含 potential_preferences 的記憶區塊
@@ -60,13 +61,14 @@ class PreferenceAggregator:
             decay_lambda: 時間衰減係數，越大衰減越快（建議 0.02）
             similarity_threshold: 標籤聚類的 cosine similarity 門檻（建議 0.85）
             score_threshold: 升格為長期畫像的最低積分（建議 3.0）
+            user_id / character_id / visibility: 三層隔離參數
 
         Returns:
             list[dict]: 每個 dict 包含 tag, score, cluster_size, all_tags, representative_vector
         """
-        # Step 1: 過濾有偏好的區塊
+        # Step 1: 過濾有偏好的區塊（按隔離維度取對應 memory_blocks）
         blocks_with_prefs = [
-            b for b in self.memory_sys.memory_blocks
+            b for b in self.memory_sys._get_memory_blocks(user_id, character_id, visibility)
             if b.get("potential_preferences")
         ]
         if not blocks_with_prefs:
@@ -138,7 +140,8 @@ class PreferenceAggregator:
 
         return results
 
-    def write_to_profile(self, aggregated_results):
+    def write_to_profile(self, aggregated_results,
+                         user_id: str = "default", visibility: str = "public"):
         """
         將高分偏好寫入使用者畫像，寫入前進行語義去重。
         若已存在語義相似（cosine >= 0.85）的 preference 類畫像，則跳過避免重複。
@@ -147,7 +150,7 @@ class PreferenceAggregator:
             return
 
         existing_profiles = self.memory_sys.storage.load_profile_vectors(
-            self.memory_sys.db_path
+            self.memory_sys.db_path, user_id=user_id
         )
         # 僅取 preference 類別的既有畫像
         existing_pref_profiles = [
@@ -177,16 +180,18 @@ class PreferenceAggregator:
                     fact_value=tag,
                     category="preference",
                     source_context=f"自動聚合 (score={result['score']}, 來自 {result['cluster_size']} 個標籤實例)",
-                    confidence=min(1.0, result["score"] / 5.0)
+                    confidence=min(1.0, result["score"] / 5.0),
+                    user_id=user_id,
+                    visibility=visibility,
                 )
                 self.memory_sys.storage.upsert_profile_vector(
-                    self.memory_sys.db_path, fact_key, tag, tag_vec
+                    self.memory_sys.db_path, fact_key, tag, tag_vec, user_id=user_id
                 )
                 written_count += 1
 
         # 重新載入畫像快取
         if written_count > 0:
-            self.memory_sys.load_user_profile()
+            self.memory_sys.load_user_profile(user_id=user_id)
             SystemLogger.log_system_event(
                 "偏好聚合寫入",
                 f"成功升格 {written_count} 個偏好標籤至使用者畫像。"

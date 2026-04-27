@@ -40,6 +40,8 @@ def _block_to_dto(b: dict, include_vectors: bool = False) -> MemoryBlockDTO:
 
 
 # ── Memory Blocks ─────────────────────────────────────────
+# 以下端點透過 back-compat property，僅操作 (user_id='default', visibility='public') 範圍。
+# 非 default 使用者的資料不可見。如需跨 user/visibility 管理，需擴充為接受 query params。
 @router.get("/blocks", response_model=list[MemoryBlockDTO])
 async def list_blocks(include_vectors: bool = Query(False)):
     ms = get_memory_sys()
@@ -106,6 +108,7 @@ async def search_blocks(body: SearchRequest):
 
 
 # ── Core Memories ─────────────────────────────────────────
+# 同 Memory Blocks：僅限 (user_id='default', visibility='public') 範圍。
 @router.get("/core", response_model=list[CoreMemoryDTO])
 async def list_core():
     ms = get_memory_sys()
@@ -123,19 +126,30 @@ async def search_core(body: CoreSearchRequest):
 
 
 @router.delete("/core/{core_id}")
-async def delete_core(core_id: str):
+async def delete_core(
+    core_id: str,
+    user_id: str = Query("default"),
+    character_id: str = Query("default"),
+):
     ms = get_memory_sys()
     async with db_write_lock:
-        before = len(ms.core_memories)
-        ms.core_memories = [c for c in ms.core_memories if c["core_id"] != core_id]
-        if len(ms.core_memories) == before:
+        # 從所有已快取的 visibility slot 移除
+        found = False
+        for vis in ("public", "private"):
+            cache_key = (user_id, character_id, vis)
+            if cache_key in ms._core_memories_cache:
+                before = len(ms._core_memories_cache[cache_key])
+                ms._core_memories_cache[cache_key] = [
+                    c for c in ms._core_memories_cache[cache_key]
+                    if c["core_id"] != core_id
+                ]
+                if len(ms._core_memories_cache[cache_key]) < before:
+                    found = True
+        if not found:
             raise HTTPException(404, detail=f"Core memory {core_id} not found")
-        # 從 DB 刪除
-        import sqlite3
-        conn = sqlite3.connect(ms.db_path)
-        conn.execute("DELETE FROM core_memories WHERE core_id = ?", (core_id,))
-        conn.commit()
-        conn.close()
+        await asyncio.to_thread(
+            ms.storage.delete_core_memory, ms.db_path, user_id, character_id, core_id
+        )
     return {"status": "deleted", "core_id": core_id}
 
 
