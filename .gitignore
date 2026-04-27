@@ -16,6 +16,8 @@ venv/
 .vscode/
 .idea/
 .claude/
+.agents/
+AGENTS.md
 *.swp
 *.swo
 
