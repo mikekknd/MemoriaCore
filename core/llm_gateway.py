@@ -392,24 +392,30 @@ class LLMRouter:
             解析後的 dict，失敗時回傳 {}
         """
         try:
+            SystemLogger.log_llm_prompt(task_key, self.routes[task_key]["model"], messages)
             raw = self.generate(task_key, messages, temperature=temperature, response_format=schema)
         except Exception:
             if schema is not None:
                 # Provider 不支援 response_format，降級為純文字
                 try:
+                    SystemLogger.log_llm_prompt(task_key, self.routes[task_key]["model"], messages)
                     raw = self.generate(task_key, messages, temperature=temperature)
                 except Exception:
                     return {}
             else:
                 return {}
 
+        SystemLogger.log_llm_response(task_key, self.routes[task_key]["model"], raw)
+
         start = raw.find('{')
         if start == -1:
             start = raw.find('[')
         if start == -1:
+            SystemLogger.log_error("generate_json", f"回應中找不到 JSON 物件，前100字: {raw[:100]!r}")
             return {}
         try:
             parsed, _ = json.JSONDecoder().raw_decode(raw, start)
             return parsed if isinstance(parsed, dict) else {}
-        except Exception:
+        except Exception as e:
+            SystemLogger.log_error("generate_json", f"JSON 解析失敗: {e}，前200字: {raw[:200]!r}")
             return {}

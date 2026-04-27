@@ -1,6 +1,12 @@
 import streamlit as st
 import requests
 
+
+def _bump_form_version() -> None:
+    """讓 char_edit_form 與 seed editor 重新初始化（版本號+1）。"""
+    st.session_state["_ced_v"] = st.session_state.get("_ced_v", 0) + 1
+
+
 def render_character_page(api_base: str, user_prefs: dict):
     st.title("🎭 角色設定 (Character Settings)")
     st.markdown("在此建立並管理不同的 AI 角色設定。你可以手動輸入，或透過 LLM 自動為你擴充完整的角色世界觀與心理追蹤指標。")
@@ -19,13 +25,13 @@ def render_character_page(api_base: str, user_prefs: dict):
         st.session_state.char_tab = "📋 角色列表"
 
     selected_tab = st.radio(
-        "選擇模式", 
-        tab_options, 
+        "選擇模式",
+        tab_options,
         index=tab_options.index(st.session_state.char_tab),
-        horizontal=True, 
+        horizontal=True,
         label_visibility="collapsed"
     )
-    
+
     if selected_tab != st.session_state.char_tab:
         st.session_state.char_tab = selected_tab
         st.rerun()
@@ -77,6 +83,7 @@ def render_character_page(api_base: str, user_prefs: dict):
                     with col_btn2:
                         if st.button("✏️ 編輯此角色", key=f"edit_{char.get('character_id')}"):
                             st.session_state["char_draft"] = char
+                            _bump_form_version()
                             st.session_state.char_tab = "✏️ 新增 / 編輯角色"
                             st.rerun()
 
@@ -99,13 +106,28 @@ def render_character_page(api_base: str, user_prefs: dict):
 
     # === Tab 2: Edit/Create ===
     elif st.session_state.char_tab == "✏️ 新增 / 編輯角色":
+        draft = st.session_state.get("char_draft", {})
+
+        if "character_id" in draft:
+            st.info(f"正在編輯已存在的角色：**{draft.get('name')}** (ID: `{draft['character_id']}`)")
+            if st.button("取消編輯 (清空表單)"):
+                del st.session_state["char_draft"]
+                _bump_form_version()
+                st.session_state.char_tab = "📋 角色列表"
+                st.rerun()
+
+        # ── AI 生成區 ──
         st.subheader("🤖 AI 助理生成區")
         st.markdown("只需輸入簡短描述，讓 AI 幫您補齊所有細節設定！")
-        
+
         with st.form("ai_gen_form"):
             gen_desc = st.text_input("一句話描述你想建立的角色 (例如：毒舌但不坦率的青梅竹馬)")
             gen_submit = st.form_submit_button("✨ 讓 AI 自動生成草稿")
-            
+
+        # 一次性提示訊息（rerun 後顯示）
+        if "_char_notice" in st.session_state:
+            st.success(st.session_state.pop("_char_notice"))
+
         if gen_submit and gen_desc:
             with st.spinner("AI 正在絞盡腦汁撰寫設定..."):
                 try:
@@ -116,71 +138,142 @@ def render_character_page(api_base: str, user_prefs: dict):
                             st.error(f"生成出錯: {data['error']}")
                         else:
                             st.session_state["char_draft"] = data
-                            st.success("✨ 生成成功！請在下方檢查並儲存。")
+                            _bump_form_version()
+                            st.session_state["_char_notice"] = "✨ 基本草稿生成完成！可繼續點擊下方「PersonaProbe 深化」產生詳細行為規格。"
+                            st.rerun()
                     else:
-                        st.error(f"API 回應錯誤: {res.status_code}")
+                        st.error(f"API 回應錯誤 {res.status_code}: {res.text[:200]}")
                 except Exception as e:
                     st.error(f"請求失敗: {e}")
 
+        # ── PersonaProbe 深化 ──
+        if draft.get("system_prompt"):
+            st.divider()
+            st.markdown("**🧬 PersonaProbe 深化人格細節**")
+            st.caption("以目前草稿的 system_prompt 為種子，呼叫 PersonaProbe 快速人格生成，補充詳細行為規格書（語言行為模式、決策邊界、強度校準等）。結果會**更新當前草稿**，不會新建角色。")
+
+            seed_v = st.session_state.get("_ced_v", 0)
+            edited_seed = st.text_area(
+                "人格種子內容（可手動微調後再深化）",
+                value=draft.get("system_prompt", ""),
+                height=200,
+                key=f"_ced_seed_{seed_v}",
+            )
+
+            if st.button("🧬 PersonaProbe 深化人格細節", use_container_width=True):
+                with st.spinner("PersonaProbe 快速人格生成中（約需 30~90 秒）..."):
+                    try:
+                        res = requests.post(
+                            f"{api_base}/character/generate-from-seed",
+                            json={"description": gen_desc or "", "existing_persona": edited_seed},
+                            timeout=120,
+                        )
+                        if res.ok:
+                            data = res.json()
+                            if "error" in data:
+                                st.error(f"生成出錯: {data['error']}")
+                            else:
+                                updated_draft = dict(draft)
+                                updated_draft.update({k: v for k, v in data.items() if k != "character_id"})
+                                st.session_state["char_draft"] = updated_draft
+                                _bump_form_version()
+                                st.session_state["_char_notice"] = "✨ 人格深化完成！請在下方表單確認後儲存。"
+                                st.rerun()
+                        else:
+                            st.error(f"API 回應錯誤: {res.status_code}")
+                    except Exception as e:
+                        st.error(f"請求失敗: {e}")
+
+        # ── 編輯模式：以現有人格為種子，生成全新獨立角色 ──
+        if "character_id" in draft:
+            st.divider()
+            st.markdown("或者，直接以這位角色的現有人格當作種子，**生成另一個全新角色**：")
+
+            ep_raw = draft.get("evolved_prompt")
+            if isinstance(ep_raw, dict):
+                seed_text = ep_raw.get("public") or ""
+            elif isinstance(ep_raw, str) and ep_raw:
+                seed_text = ep_raw
+            else:
+                seed_text = draft.get("system_prompt", "")
+
+            if not seed_text.strip():
+                st.caption("⚠️ 這位角色目前沒有可用的人設內容（system_prompt 為空）。")
+            else:
+                with st.expander("🔍 預覽即將當作種子的人格內容"):
+                    st.text(seed_text[:200] + ("…" if len(seed_text) > 200 else ""))
+
+                if st.button("🌱 以此人設為種子，生成新角色", use_container_width=True):
+                    with st.spinner("正在呼叫 PersonaProbe 快速人格生成..."):
+                        try:
+                            res = requests.post(
+                                f"{api_base}/character/generate-from-seed",
+                                json={"description": gen_desc or "新角色", "existing_persona": seed_text},
+                                timeout=120,
+                            )
+                            if res.ok:
+                                data = res.json()
+                                if "error" in data:
+                                    st.error(f"生成出錯: {data['error']}")
+                                else:
+                                    new_draft = {k: v for k, v in data.items() if k != "character_id"}
+                                    st.session_state["char_draft"] = new_draft
+                                    _bump_form_version()
+                                    st.session_state["_char_notice"] = "✨ 新角色已生成！請在下方檢查並儲存。"
+                                    st.rerun()
+                            else:
+                                st.error(f"API 回應錯誤: {res.status_code}")
+                        except Exception as e:
+                            st.error(f"請求失敗: {e}")
+
+        # ── 手動微調表單 ──
         st.divider()
         st.subheader("📝 手動微調表單")
-        
-        # Load draft from state or use empty default
-        draft = st.session_state.get("char_draft", {})
-        
-        if "character_id" in draft:
-            st.info(f"正在編輯已存在的角色：**{draft.get('name')}** (ID: `{draft['character_id']}`)")
-            if st.button("取消編輯 (清空表單)"):
-                del st.session_state["char_draft"]
-                st.session_state.char_tab = "📋 角色列表"
-                st.rerun()
-        
-        with st.form("char_edit_form"):
-            c_name = st.text_input("角色名稱 (Name)", value=draft.get("name", ""))
 
-            prompt_tab_orig, prompt_tab_evolved = st.tabs(["📝 原始人設", "🧬 演化人設"])
-            with prompt_tab_orig:
-                st.caption("原始 System Prompt，由你手動撰寫。PersonaProbe 反思不會覆蓋此欄位。")
-                c_prompt = st.text_area("原始人設內容", value=draft.get("system_prompt", ""), height=250,
-                                        label_visibility="collapsed")
-            with prompt_tab_evolved:
-                ep_raw = draft.get("evolved_prompt") or {}
-                if isinstance(ep_raw, str):
-                    ep_dict = {"public": ep_raw, "private": None}
-                elif isinstance(ep_raw, dict):
-                    ep_dict = ep_raw
-                else:
-                    ep_dict = {"public": None, "private": None}
+        form_v = st.session_state.get("_ced_v", 0)
+        ep_raw = draft.get("evolved_prompt") or {}
+        if isinstance(ep_raw, str):
+            ep_dict = {"public": ep_raw, "private": None}
+        elif isinstance(ep_raw, dict):
+            ep_dict = ep_raw
+        else:
+            ep_dict = {"public": None, "private": None}
 
+        with st.form(f"char_edit_form_{form_v}"):
+            c_name = st.text_input("角色名稱 (Name)", value=draft.get("name") or "")
+
+            st.caption("📝 原始 System Prompt — 由你手動撰寫，PersonaProbe 反思不會覆蓋此欄位。")
+            c_prompt = st.text_area("原始人設內容", value=str(draft.get("system_prompt") or ""), height=250,
+                                    label_visibility="collapsed")
+
+            with st.expander("🧬 演化人設（進階，由 PersonaProbe 生成）"):
                 st.caption("📌 演化人設分為 **public** 與 **private** 兩份，各自獨立演化。SU 身份使用 private 分支。")
                 c_evolved_public = st.text_area(
                     "🌐 Public Face（公開頻道使用）",
-                    value=ep_dict.get("public") or "",
+                    value=str(ep_dict.get("public") or ""),
                     height=150,
-                    label_visibility="collapsed",
-                    placeholder="public face 演化內容（留空則使用原始人設）"
+                    placeholder="public face 演化內容（留空則使用原始人設）",
                 )
                 c_evolved_private = st.text_area(
                     "🔐 Private Face（SU 身份使用）",
-                    value=ep_dict.get("private") or "",
+                    value=str(ep_dict.get("private") or ""),
                     height=150,
-                    label_visibility="collapsed",
-                    placeholder="private face 演化內容（留空則使用原始人設）"
+                    placeholder="private face 演化內容（留空則使用原始人設）",
                 )
 
             c_tts = st.text_input(
                 "🗣️ TTS 獨立發音語言 (例如：日文。若無雙語需求請留空)",
-                value=draft.get("tts_language", ""),
+                value=draft.get("tts_language") or "",
             )
             c_reply_rules = st.text_input(
                 "回覆文字規則 (reply_rules) — 套用於字幕文字的語言、格式與語氣強制規定",
-                value=draft.get("reply_rules", ""),
-                help="例如：必須說繁體中文、不准用 Emoji、句尾加喵。有無 TTS 都會套用。"
+                value=str(draft.get("reply_rules") or ""),
+                help="例如：必須說繁體中文、不准用 Emoji、句尾加喵。有無 TTS 都會套用。",
             )
             c_tts_rules = st.text_input(
                 "TTS 發音指引 (tts_rules) — 僅注入 speech 欄位的發音提示（可留空）",
-                value=draft.get("tts_rules", ""),
-                help="例如：請以輕柔緩慢的語調朗讀、避免拖音。無特殊需求請留空。"
+                value=str(draft.get("tts_rules") or ""),
+                help="例如：請以輕柔緩慢的語調朗讀、避免拖音。無特殊需求請留空。",
             )
 
             save_submit = st.form_submit_button("💾 儲存角色")
@@ -206,7 +299,7 @@ def render_character_page(api_base: str, user_prefs: dict):
                     }
                     if "character_id" in draft:
                         payload["character_id"] = draft["character_id"]
-                    
+
                     try:
                         res = requests.post(f"{api_base}/character", json=payload)
                         if res.ok:

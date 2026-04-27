@@ -169,8 +169,9 @@ class CharacterManager:
         try:
             parsed = router.generate_json(task_key, api_messages, schema=GENERATE_SCHEMA, temperature=0.7)
             if not parsed:
+                SystemLogger.log_error("CharacterGenerate", f"LLM 回傳空 JSON。Prompt 前100字: {prompt[:100]!r}")
                 return {"error": "Invalid JSON format"}
             return parsed
         except Exception as e:
-            SystemLogger.log_error("CharacterGenerate", str(e))
+            SystemLogger.log_error("CharacterGenerate", f"例外: {e} | Prompt 前100字: {prompt[:100]!r}")
             return {"error": str(e)}
