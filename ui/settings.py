@@ -15,6 +15,25 @@ def render_settings_page(api_base, user_prefs=None):
             user_prefs = {}
             st.error("無法從 API 載入設定。")
 
+    # ── ⚠️ SU 身份設定 ───────────────────────────────────────
+    st.divider()
+    st.header("🔐 SU 身份設定")
+    st.caption(
+        "⚠️ **風險提示**：此欄位涉及系統敏感設定。\n"
+        "此功能一旦寫入，匹配的 Telegram 用戶即獲得 **private face** 身份，"
+        "可讀寫所有 `visibility='private'` 的記憶。\n\n"
+        "**上線前務必確認：**\n"
+        "1. `/system/config` API 已透過防火牆或 API Key 做存取控制\n"
+        "2. server 只暴露於信任的網路區段（勿對外網開放）\n\n"
+        "詳見：`api/models/requests.py` 中的 `su_user_id` 安全性標註。"
+    )
+    new_su_user_id = st.text_input(
+        "SU User ID（Telegram UID）",
+        value=user_prefs.get("su_user_id", ""),
+        placeholder="輸入你的 Telegram UID（數字）",
+        help="設定後，user_id 匹配此值的 Telegram 用戶將獲得 private face 身份。更改後無需重啟，熱重載生效。",
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         st.header("🌐 全域 API 金鑰配置")
@@ -249,6 +268,8 @@ def render_settings_page(api_base, user_prefs=None):
             "minimax_speed": new_minimax_speed,
             "minimax_vol": new_minimax_vol,
             "minimax_pitch": new_minimax_pitch,
+            # SU 身份
+            "su_user_id": new_su_user_id,
         }
         try:
             resp = requests.put(f"{api_base}/system/config", json=update_payload, timeout=10)
