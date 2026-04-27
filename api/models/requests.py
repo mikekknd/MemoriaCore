@@ -106,5 +106,10 @@ class CreateSessionRequest(BaseModel):
     user_id: Optional[str] = None
 
 
+class PersonalityUpdateRequest(BaseModel):
+    public: Optional[str] = None
+    private: Optional[str] = None
+
+
 class BlockUpdateRequest(BaseModel):
     new_overview: str

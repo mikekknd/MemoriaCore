@@ -7,7 +7,7 @@ from api.dependencies import (
 )
 from api.models.requests import (
     ConfigUpdateRequest, ConsolidateRequest,
-    PreferenceAggregateRequest, SyntheticRequest,
+    PersonalityUpdateRequest, PreferenceAggregateRequest, SyntheticRequest,
 )
 from api.models.responses import SystemConfigDTO
 from api.session_manager import session_manager
@@ -212,16 +212,18 @@ async def get_personality():
 
 
 @router.put("/personality")
-async def update_personality(body: dict):
-    """手動覆寫 active character 的 evolved_prompt（public 與 private 各自更新）。"""
+async def update_personality(body: PersonalityUpdateRequest):
+    """手動覆寫 active character 的 evolved_prompt（public 與 private 各自更新）。
+    欄位為 None 表示「不修改此 face」；空字串表示「清除此 face 的演化內容」。
+    """
     sto = get_storage()
     char_mgr = get_character_manager()
     prefs = sto.load_prefs()
     active_id = prefs.get("active_character_id", "default")
-    if "public" in body:
-        char_mgr.set_evolved_prompt(active_id, body["public"] or "", persona_face="public")
-    if "private" in body:
-        char_mgr.set_evolved_prompt(active_id, body["private"] or "", persona_face="private")
+    if body.public is not None:
+        char_mgr.set_evolved_prompt(active_id, body.public, persona_face="public")
+    if body.private is not None:
+        char_mgr.set_evolved_prompt(active_id, body.private, persona_face="private")
     return {"status": "saved"}
 
 

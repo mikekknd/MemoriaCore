@@ -58,6 +58,9 @@ def render_character_page(api_base: str, user_prefs: dict):
                         st.markdown(f"**🗣️ TTS 發音語言:** `{char.get('tts_language')}`")
                     st.write("**回覆文字規則 (Reply Rules):**")
                     st.info(char.get("reply_rules", ""))
+                    if char.get("tts_rules"):
+                        st.write("**TTS 發音指引 (TTS Rules):**")
+                        st.info(char.get("tts_rules", ""))
 
                     is_active = user_prefs.get("active_character_id") == char.get('character_id')
                     if is_active:
@@ -222,26 +225,23 @@ def render_character_page(api_base: str, user_prefs: dict):
         st.subheader("🧬 PersonaProbe 同步")
         st.caption("同步結果會寫入 active character 的演化人設。")
 
-        try:
-            res = requests.get(f"{api_base}/character", timeout=5)
-            if res.ok:
-                all_chars = res.json()
-        except Exception:
-            all_chars = []
-
         active_char_id = user_prefs.get("active_character_id", "default")
-        active_char_name = next((c.get("name", c.get("character_id")) for c in all_chars if c.get("character_id") == active_char_id), active_char_id)
+        active_char_name = next(
+            (c.get("name", c.get("character_id")) for c in characters if c.get("character_id") == active_char_id),
+            active_char_id,
+        )
 
         col_a, col_b = st.columns([1, 2])
         with col_a:
-            st.info(f"📌 目前活跃角色：**{active_char_name}**")
+            st.info(f"📌 目前活躍角色：**{active_char_name}**")
         with col_b:
-            char_options = [(c.get("character_id"), c.get("name", c.get("character_id"))) for c in all_chars]
+            char_options = [(c.get("character_id"), c.get("name", c.get("character_id"))) for c in characters]
+            char_ids = [cid for cid, _ in char_options]
             selected = st.selectbox(
                 "切換目標角色",
-                options=[cid for cid, _ in char_options],
+                options=char_ids,
                 format_func=lambda cid: next((name for cid_, name in char_options if cid_ == cid), cid),
-                index=[cid for cid, _ in char_options].index(active_char_id) if active_char_id in [cid for cid, _ in char_options] else 0,
+                index=char_ids.index(active_char_id) if active_char_id in char_ids else 0,
                 key="probe_target_char",
             )
             if selected != active_char_id:
