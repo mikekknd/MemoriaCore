@@ -325,13 +325,39 @@ marked.setOptions({
 });
 
 // =====================================================================
+//  SU User ID（從 API 取得一次，快取在記憶體）
+//
+//  ⚠️ 安全意圖說明：
+//  dashboard 是 SU（SuperUser）的專屬管理介面，設計上僅在信任網路（localhost /
+//  內部 LAN）部署。此處主動從 GET /system/config 取得 su_user_id，並在建立
+//  session 時傳入，使 AI 以 private face 回應（可存取所有 visibility='private' 記憶）。
+//
+//  風險：任何能存取此 dashboard URL 的人均可取得 su_user_id 並冒充 SU。
+//  正式上線前必須透過防火牆 / reverse proxy / VPN 確保僅 SU 本人可連線。
+//  詳見 docs/SECURITY.md。
+// =====================================================================
+let suUserId = null;
+
+async function loadSuUserId() {
+  try {
+    const r = await fetch(`${API}/system/config`);
+    if (r.ok) {
+      const cfg = await r.json();
+      suUserId = cfg.su_user_id || null;
+    }
+  } catch { suUserId = null; }
+}
+
+// =====================================================================
 //  Initialization
 // =====================================================================
 document.addEventListener('DOMContentLoaded', () => {
   checkHealth();
   setInterval(checkHealth, 15000);
   initResizer();
-  loadSessionList().then(() => autoRestoreOrCreate());
+  // loadSuUserId 與 loadSessionList 並行，兩者都結束後再 autoRestoreOrCreate
+  Promise.allSettled([loadSuUserId(), loadSessionList()])
+    .then(() => autoRestoreOrCreate());
   loadRouting();
   loadPrompts();
 });
@@ -435,7 +461,14 @@ async function autoRestoreOrCreate() {
 
 async function createNewSession() {
   try {
-    const r = await fetch(`${API}/session`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channel:'html'})});
+    const r = await fetch(`${API}/session`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        channel: 'dashboard',
+        user_id: suUserId || 'default',
+      }),
+    });
     const data = await r.json();
     currentSessionId = data.session_id;
     updateSessionDisplay();
@@ -572,7 +605,14 @@ async function sendMessage() {
   // Create session if needed
   if (!currentSessionId) {
     try {
-      const r = await fetch(`${API}/session`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channel:'html'})});
+      const r = await fetch(`${API}/session`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          channel: 'dashboard',
+          user_id: suUserId || 'default',
+        }),
+      });
       const data = await r.json();
       currentSessionId = data.session_id;
       updateSessionDisplay();

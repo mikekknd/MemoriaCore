@@ -26,7 +26,11 @@ def _state_to_dto(s: SessionState) -> SessionDTO:
 
 @router.post("", response_model=SessionDTO)
 async def create_session(body: CreateSessionRequest = CreateSessionRequest()):
-    s = await session_manager.create(channel=body.channel, channel_uid=body.channel_uid)
+    s = await session_manager.create(
+        channel=body.channel,
+        channel_uid=body.channel_uid,
+        user_id=body.user_id or "default",
+    )
     return _state_to_dto(s)
 
 

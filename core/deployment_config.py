@@ -13,7 +13,7 @@ PUBLIC_CHANNELS: frozenset[str] = frozenset({'livestream', 'discord_public'})
 
 # 應對哪些 channel 的用戶進行 profile 抽取
 EXTRACT_PROFILE_FROM_CHANNELS: frozenset[str] = frozenset({
-    'telegram', 'rest', 'discord_private',
+    'telegram', 'rest', 'discord_private', 'dashboard',
 })
 
 # SU（SuperUser）的識別 ID

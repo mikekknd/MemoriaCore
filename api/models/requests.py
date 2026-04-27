@@ -103,6 +103,7 @@ class ChatSyncRequest(BaseModel):
 class CreateSessionRequest(BaseModel):
     channel: str = "rest"
     channel_uid: str = ""
+    user_id: Optional[str] = None
 
 
 class BlockUpdateRequest(BaseModel):
