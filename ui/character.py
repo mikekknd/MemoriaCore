@@ -54,23 +54,10 @@ def render_character_page(api_base: str, user_prefs: dict):
                         else:
                             st.markdown("- 🌐 public: `已設定`（舊格式）")
 
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**心理追蹤指標 (Metrics):**")
-                        for m in char.get("metrics", []):
-                            st.caption(f"- {m}")
-                    with col2:
-                        st.write("**允許語氣 (Allowed Tones):**")
-                        for t in char.get("allowed_tones", []):
-                            st.caption(f"- {t}")
-
                     if char.get("tts_language"):
                         st.markdown(f"**🗣️ TTS 發音語言:** `{char.get('tts_language')}`")
                     st.write("**回覆文字規則 (Reply Rules):**")
                     st.info(char.get("reply_rules", ""))
-                    if char.get("tts_rules"):
-                        st.write("**TTS 發音指引 (TTS Rules):**")
-                        st.info(char.get("tts_rules", ""))
 
                     is_active = user_prefs.get("active_character_id") == char.get('character_id')
                     if is_active:
@@ -178,9 +165,10 @@ def render_character_page(api_base: str, user_prefs: dict):
                     placeholder="private face 演化內容（留空則使用原始人設）"
                 )
 
-            c_metrics = st.text_input("心理追蹤指標 (英文，用逗號分隔)", value=",".join(draft.get("metrics", [])))
-            c_tones = st.text_input("允許的語氣字眼 (英文，用逗號分隔)", value=",".join(draft.get("allowed_tones", [])))
-            c_tts = st.text_input("🗣️ TTS 獨立發音語言 (例如：日文。若無雙語需求請留空)", value=draft.get("tts_language", ""))
+            c_tts = st.text_input(
+                "🗣️ TTS 獨立發音語言 (例如：日文。若無雙語需求請留空)",
+                value=draft.get("tts_language", ""),
+            )
             c_reply_rules = st.text_input(
                 "回覆文字規則 (reply_rules) — 套用於字幕文字的語言、格式與語氣強制規定",
                 value=draft.get("reply_rules", ""),
@@ -193,14 +181,11 @@ def render_character_page(api_base: str, user_prefs: dict):
             )
 
             save_submit = st.form_submit_button("💾 儲存角色")
-            
+
             if save_submit:
                 if not c_name:
                     st.error("請輸入角色名稱!")
                 else:
-                    metrics_list = [m.strip() for m in c_metrics.split(",") if m.strip()]
-                    tones_list = [t.strip() for t in c_tones.split(",") if t.strip()]
-                    
                     evolved_public_val = c_evolved_public.strip() or None
                     evolved_private_val = c_evolved_private.strip() or None
                     if evolved_public_val is None and evolved_private_val is None:
@@ -212,8 +197,6 @@ def render_character_page(api_base: str, user_prefs: dict):
                         "name": c_name,
                         "system_prompt": c_prompt,
                         "evolved_prompt": evolved_payload,
-                        "metrics": metrics_list,
-                        "allowed_tones": tones_list,
                         "tts_language": c_tts.strip(),
                         "reply_rules": c_reply_rules,
                         "tts_rules": c_tts_rules,
