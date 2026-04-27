@@ -16,8 +16,40 @@ EXTRACT_PROFILE_FROM_CHANNELS: frozenset[str] = frozenset({
     'telegram', 'rest', 'discord_private',
 })
 
-# SU（SuperUser）的 Telegram user_id；未設定時功能降級為無 SU（等同一般用戶）
+# SU（SuperUser）的識別 ID
+# 優先取環境變數；未設定則從 user_prefs.json 讀取（不啟動時 fallback）
 SU_USER_ID: str = os.getenv('SU_USER_ID', '')
+
+_cached_su_id: str | None = None  # 模組層級 cache，避免每次 I/O
+
+
+def _load_su_user_id_from_prefs() -> str:
+    """從 user_prefs.json 讀取 su_user_id（供 runtime fallback 使用）。"""
+    try:
+        prefs_path = os.path.join(os.path.dirname(__file__), "..", "user_prefs.json")
+        if os.path.exists(prefs_path):
+            import json
+            with open(prefs_path, "r", encoding="utf-8") as f:
+                prefs = json.load(f)
+            return prefs.get("su_user_id", "") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def get_su_user_id() -> str:
+    """取得 SU_USER_ID（env var 優先，其次為 prefs.json）。結果會 cache。"""
+    global _cached_su_id
+    if _cached_su_id is None:
+        _cached_su_id = os.getenv('SU_USER_ID', '') or _load_su_user_id_from_prefs()
+    return _cached_su_id
+
+
+def invalidate_su_id_cache() -> None:
+    """清除 SU ID cache，讓下次 get_su_user_id() 重新讀取。
+    適用於管理者透過 API 更新 su_user_id 後熱重載。"""
+    global _cached_su_id
+    _cached_su_id = None
 
 
 def resolve_context(user_id: str, channel: str) -> tuple[str, str]:
@@ -35,7 +67,7 @@ def resolve_context(user_id: str, channel: str) -> tuple[str, str]:
     """
     if channel in PUBLIC_CHANNELS:
         return ('public', 'public')
-    if SU_USER_ID and user_id == SU_USER_ID:
+    if get_su_user_id() and user_id == get_su_user_id():
         return ('private', 'private')
     return ('public', 'public')
 

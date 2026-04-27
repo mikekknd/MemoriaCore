@@ -100,16 +100,15 @@ _recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
 - public face **只能**讀到 `visibility='public'` 的記憶；private face 可讀兩者
 
 **Streamlit UI 與 dashboard.html 必須同步修改**
-對話介面、debug 資訊、session 管理、路由設定有兩個並行前端：
-- `ui/chat.py`（Streamlit，port 8501）
+對話介面已迁移至 dashboard.html。其餘頁面（設定、路由等）有兩個並行前端：
+- `ui/`（Streamlit，port 8501）
 - `static/dashboard.html`（純 HTML，嵌入同一 FastAPI）
 
-凡是涉及以下項目的改動，兩個前端都必須同步更新：
-- 對話送出 / SSE 事件處理（`result`、`tool_status`、`thinking_speech` 等）
-- Session 建立 / 還原 / 切換邏輯
-- Debug panel 顯示的欄位（`retrieval_context`、`context_messages_count` 等）
+⚠️ DEPRECATED: `ui/chat.py` 與 `ui/history.py` 已移除，請勿參考。
+
+凡涉及以下項目的改動，Broader UI 都要同步更新：
 - Routing config 的任務清單（`TASK_INFOS` 在 dashboard.html 是硬編碼）
-- `RetrievalContextDTO` 新增欄位後，兩邊的渲染邏輯都要更新
+- `RetrievalContextDTO` 新增欄位
 
 **Tests**
 使用 `tmp_path` 隔離 SQLite DB，禁止讀寫根目錄 `.db` 檔；不 mock `StorageManager` async lock。

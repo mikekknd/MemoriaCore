@@ -55,6 +55,8 @@ async def get_config():
         browser_agent_enabled=prefs.get("browser_agent_enabled", False),
         bash_tool_enabled=prefs.get("bash_tool_enabled", False),
         bash_tool_allowed_commands=prefs.get("bash_tool_allowed_commands", []),
+        # ⚠️ SECURITY: su_user_id 目前無任何權限管控，詳見 api/models/requests.py 的風險說明
+        su_user_id=prefs.get("su_user_id", ""),
     )
 
 
@@ -74,6 +76,10 @@ async def update_config(body: ConfigUpdateRequest):
     if new_tg_token != old_tg_token:
         from api.telegram_bot import reload_telegram_bot
         await reload_telegram_bot(new_tg_token)
+    # su_user_id 變動時清除 cache（熱重載生效，不需重啟 FastAPI）
+    if "su_user_id" in update:
+        from core.deployment_config import invalidate_su_id_cache
+        invalidate_su_id_cache()
     return await get_config()
 
 

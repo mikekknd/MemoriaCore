@@ -1,5 +1,8 @@
 # 【環境假設】：Python 3.12, Streamlit 1.30+
 # 跨介面對話歷史獨立視圖模組。
+#
+# ⚠️ DEPRECATED: 對話歷史已移至 dashboard.html，本檔案保留作為參考，計畫移除。
+#   移除進度：Streamlit 導航已移除（2026-04-27）。
 import streamlit as st
 import requests
 

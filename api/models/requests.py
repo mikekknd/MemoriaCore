@@ -82,6 +82,12 @@ class ConfigUpdateRequest(BaseModel):
     browser_agent_enabled: Optional[bool] = None
     bash_tool_enabled: Optional[bool] = None
     bash_tool_allowed_commands: Optional[list[str]] = None
+    # ⚠️ SECURITY: su_user_id 目前無任何權限管控，公開部署有極高風險。
+    #   此欄位一旦寫入 user_prefs.json，匹配的 Telegram 用戶即獲得 private face 身份，
+    #   可讀寫所有 visibility='private' 的記憶。上線前務必：
+    #   1. 確認 /system/config API 已透過防火牆或 API Key 做存取控制
+    #   2. 確認 server 只暴露於信任的網路區段（勿對外網開放）
+    su_user_id: Optional[str] = None
 
 
 class ExpandQueryRequest(BaseModel):

@@ -189,6 +189,8 @@ class SystemConfigDTO(BaseModel):
     browser_agent_enabled: bool = False
     bash_tool_enabled: bool = False
     bash_tool_allowed_commands: list[str] = []
+    # ⚠️ SECURITY: su_user_id 目前無任何權限管控，詳見 api/models/requests.py 的風險說明
+    su_user_id: str = ""
 
 
 # ── 通用錯誤 ──────────────────────────────────────────────

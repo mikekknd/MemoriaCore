@@ -1,5 +1,8 @@
 # 【環境假設】：Python 3.12, Streamlit 1.30+。對話大廳獨立視圖模組。
 # 已遷移為瘦客戶端：所有業務邏輯透過 FastAPI REST API 執行。
+#
+# ⚠️ DEPRECATED: 對話功能已移至 dashboard.html，本檔案保留作為參考，計畫移除。
+#   移除進度：Streamlit 導航已移除（2026-04-27）。
 import streamlit as st
 import json
 import requests
@@ -181,6 +184,27 @@ def render_chat_page(api_base, user_prefs):
                             st.session_state.pop("chat_messages_cache", None)
                         _load_session_list.clear()
                         st.rerun()
+
+        # ── ⚠️ SU 身份設定（風險提示）──
+        st.divider()
+        st.subheader("🔐 SU 身份設定")
+        st.caption("⚠️ **風險提示**：此欄位涉及系統敏感設定。上線前請確保：\n1. `/system/config` API 已做權限驗證或移除此欄位\n2. 或僅在信任的內網環境中使用 Streamlit\n\n詳見：`api/models/requests.py` 中的 `su_user_id` 標註。")
+        current_su = user_prefs.get("su_user_id", "")
+        su_input = st.text_input(
+            "SU User ID",
+            value=current_su,
+            placeholder="輸入你的 Telegram UID（數字）",
+            help="設定後，user_id 匹配此值的 Telegram 用戶將獲得 private face 身份。注意：設定後需重啟 API 服務生效。",
+        )
+        if st.button("💾 儲存 SU ID", help="透過 /system/config API 寫入 user_prefs.json"):
+            try:
+                upd = requests.put(f"{api_base}/system/config", json={"su_user_id": su_input}, timeout=5)
+                if upd.ok:
+                    st.success("已儲存！請重啟 API 服務以生效。")
+                else:
+                    st.error(f"儲存失敗：{upd.status_code}")
+            except Exception as e:
+                st.error(f"請求失敗：{e}")
 
     # Session 管理：首次載入時自動恢復最近的 streamlit session
     # 若無可恢復的 session，不主動建立——等使用者發送訊息時再建

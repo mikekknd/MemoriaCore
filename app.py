@@ -4,9 +4,7 @@ import streamlit as st
 import requests
 import warnings
 
-from ui.chat import render_chat_page
 from ui.db_manager import render_db_manager_page
-from ui.history import render_history_page
 from ui.settings import render_settings_page
 from ui.routing import render_routing_page
 from ui.log_viewer import render_log_viewer_page
@@ -45,10 +43,8 @@ except requests.ConnectionError:
 # 頁面路由分發 (View Controller)
 # ==========================================
 PAGES = [
-    "💬 對話大廳",
     "🧠 記憶庫管理",
     "🎭 角色設定",
-    "💬 對話歷史",
     "⚙️ 系統設定",
     "🔀 路由映射",
     "📝 Prompt 管理",
@@ -60,17 +56,11 @@ with st.sidebar:
     current_page = st.radio("導覽", PAGES, label_visibility="collapsed")
     st.divider()
 
-if current_page == "💬 對話大廳":
-    render_chat_page(API_BASE, user_prefs)
-
-elif current_page == "🧠 記憶庫管理":
+if current_page == "🧠 記憶庫管理":
     render_db_manager_page(API_BASE, user_prefs)
 
 elif current_page == "🎭 角色設定":
     render_character_page(API_BASE, user_prefs)
-
-elif current_page == "💬 對話歷史":
-    render_history_page(API_BASE, user_prefs)
 
 elif current_page == "⚙️ 系統設定":
     render_settings_page(API_BASE, user_prefs)
