@@ -1,6 +1,7 @@
 """系統設定、大腦反芻、偏好聚合、合成資料端點"""
 import asyncio
-from fastapi import APIRouter, BackgroundTasks
+from typing import Optional
+from fastapi import APIRouter, BackgroundTasks, Query
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_embed_model,
     get_persona_sync_manager, get_character_manager, reload_router, reload_tts, db_write_lock,
@@ -46,6 +47,7 @@ async def get_config():
         active_character_id=prefs.get("active_character_id", "default"),
         dual_layer_enabled=prefs.get("dual_layer_enabled", False),
         tts_enabled=prefs.get("tts_enabled", False),
+        image_generation_enabled=prefs.get("image_generation_enabled", False),
         minimax_api_key=prefs.get("minimax_api_key", ""),
         minimax_voice_id=prefs.get("minimax_voice_id", "moss_audio_7c2b39d9-1006-11f1-b9c4-4ea5324904c7"),
         minimax_model=prefs.get("minimax_model", "speech-2.8-hd"),
@@ -65,18 +67,12 @@ async def get_config():
 async def update_config(body: ConfigUpdateRequest):
     sto = get_storage()
     prefs = sto.load_prefs()
-    old_tg_token = prefs.get("telegram_bot_token", "")
     update = body.model_dump(exclude_none=True)
     prefs.update(update)
     sto.save_prefs(prefs)
     # 熱重載路由 + TTS
     await asyncio.to_thread(reload_router)
     await asyncio.to_thread(reload_tts, prefs)
-    # Telegram token 有變動時熱重載 bot
-    new_tg_token = prefs.get("telegram_bot_token", "")
-    if new_tg_token != old_tg_token:
-        from api.telegram_bot import reload_telegram_bot
-        await reload_telegram_bot(new_tg_token)
     # su_user_id 變動時清除 cache（熱重載生效，不需重啟 FastAPI）
     if "su_user_id" in update:
         from core.deployment_config import invalidate_su_id_cache
@@ -229,15 +225,22 @@ async def update_personality(body: PersonalityUpdateRequest):
 
 
 @router.get("/personality/sync-status")
-async def get_persona_sync_status():
+async def get_persona_sync_status(
+    character_id: Optional[str] = Query(None),
+    persona_face: str = Query("public"),
+):
     """查詢 PersonaSync 目前狀態（上次執行時間、今日次數、距上次反思訊息數）"""
     psm = get_persona_sync_manager()
     sto = get_storage()
-    return psm.get_sync_status(storage=sto)
+    prefs = sto.load_prefs()
+    return psm.get_sync_status(storage=sto, character_id=character_id, persona_face=persona_face, prefs=prefs)
 
 
 @router.post("/personality/sync-now")
-async def trigger_persona_sync_now():
+async def trigger_persona_sync_now(
+    character_id: Optional[str] = Query(None),
+    persona_face: str = Query("public"),
+):
     """手動觸發一次 PersonaProbe 同步。
     跳過所有自動觸發條件（閒置時間、訊息累積數、每日上限），
     僅保留 persona_sync_enabled 全局開關。
@@ -249,7 +252,10 @@ async def trigger_persona_sync_now():
     if not prefs.get("persona_sync_enabled", True):
         return {"status": "skipped", "message": "persona_sync_enabled 為 False"}
 
-    success = await psm.run_sync(sto, prefs, count_toward_daily=False)
+    success = await psm.run_sync(
+        sto, prefs, count_toward_daily=False,
+        character_id=character_id, persona_face=persona_face,
+    )
     if success:
         return {"status": "success", "message": "PersonaProbe 同步完成，evolved_prompt 已更新"}
     return {"status": "failed", "message": "同步失敗，請查看系統 Log 以了解詳細原因"}

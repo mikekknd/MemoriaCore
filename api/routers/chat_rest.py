@@ -26,6 +26,16 @@ from tools.minimax_image import generated_image_path
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+def _get_session_character(character_id: str) -> dict:
+    char_mgr = get_character_manager()
+    char = char_mgr.get_character(character_id)
+    if not char:
+        from core.system_logger import SystemLogger
+        SystemLogger.log_error("character_missing", f"missing_character_id={character_id}; fallback=default")
+        char = char_mgr.get_active_character("default")
+    return char or {}
+
+
 # ════════════════════════════════════════════════════════════
 # SECTION: 共用 — Session 取得/還原/建立
 # ════════════════════════════════════════════════════════════
@@ -44,12 +54,14 @@ async def _resolve_session(session_id: str | None, current_user: dict):
             except PermissionError:
                 raise HTTPException(403, detail="Session owner mismatch")
     if session is None:
+        prefs = get_storage().load_prefs()
         channel_class = "private" if current_user.get("role") == "admin" else "public"
         persona_face = "private" if current_user.get("role") == "admin" else "public"
         session = await session_manager.create(
             channel="dashboard",
             channel_uid=user_id,
             user_id=user_id,
+            character_id=prefs.get("active_character_id", "default"),
             channel_class=channel_class,
             persona_face=persona_face,
         )
@@ -77,6 +89,8 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         "user_id": session.user_id,
         "character_id": session.character_id,
         "persona_face": session.persona_face,
+        "session_id": sid,
+        "bot_id": session.bot_id,
     }
 
     result = await asyncio.to_thread(
@@ -105,8 +119,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     # /sync 為完整請求-回應週期，翻譯同步執行
     if not speech:
         from core.chat_orchestrator.coordinator import _generate_tts_speech
-        _char = get_character_manager().get_active_character(
-            user_prefs.get("active_character_id", "default"))
+        _char = _get_session_character(session.character_id)
         speech = _generate_tts_speech(
             reply_text,
             _char.get("tts_language", ""),
@@ -155,6 +168,8 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         "user_id": session.user_id,
         "character_id": session.character_id,
         "persona_face": session.persona_face,
+        "session_id": sid,
+        "bot_id": session.bot_id,
     }
 
     def on_event(data: dict):
@@ -223,8 +238,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         tts = get_tts_client()
         if tts:
             from core.chat_orchestrator.coordinator import _generate_tts_speech
-            _char = get_character_manager().get_active_character(
-                user_prefs.get("active_character_id", "default"))
+            _char = _get_session_character(session.character_id)
             _tts_lang = _char.get("tts_language", "")
             _tts_rules = _char.get("tts_rules", "")
             if _tts_lang:

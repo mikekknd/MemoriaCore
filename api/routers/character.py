@@ -1,7 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-from api.dependencies import get_character_manager, get_router
+from api.dependencies import get_bot_registry, get_character_manager, get_router, get_storage
 from core.system_logger import SystemLogger
 from probe_engine import FAST_PERSONA_BEHAVIORAL_TEMPLATE
 import asyncio
@@ -14,6 +14,7 @@ class CharacterProfileDTO(BaseModel):
     character_id: Optional[str] = None
     name: str
     system_prompt: str
+    visual_prompt: str = ""
     evolved_prompt: Optional[str | Dict[str, Optional[str]]] = None
     reply_rules: str = ""
     tts_rules: str = ""
@@ -47,6 +48,13 @@ async def upsert_character(profile: CharacterProfileDTO):
 
 @router.delete("/{character_id}")
 async def delete_character(character_id: str):
+    refs = get_bot_registry().configs_using_character(character_id, get_storage().load_prefs())
+    if refs:
+        bot_ids = ", ".join(c.get("bot_id", "") for c in refs)
+        raise HTTPException(
+            status_code=400,
+            detail=f"此角色仍被 Bot 設定使用，請先修改或刪除 Bot：{bot_ids}",
+        )
     mgr = get_character_manager()
     mgr.delete_character(character_id)
     return {"status": "success"}
@@ -115,6 +123,7 @@ async def generate_from_existing_persona(req: GenerateFromSeedRequest):
         "JSON 欄位必須符合下方 schema：\n"
         "- name：根據人格種子推導出的角色名稱。\n"
         "- system_prompt：填寫完整的 PersonaProbe 行為模板內容；請把完整模板文字放在這個字串欄位內。\n"
+        "- visual_prompt：角色外觀專用的圖片生成提示詞，只描述可視覺化元素，不寫對話規則或抽象心理分析。\n"
         "- reply_rules：字幕文字的格式與語氣規定。\n"
         "- tts_rules：TTS 發音專用指引，無特殊需求請填空字串。\n"
         "- tts_language：若需要特定發音語言請填寫，否則填空字串。\n"
@@ -133,6 +142,10 @@ async def generate_from_existing_persona(req: GenerateFromSeedRequest):
         "properties": {
             "name": {"type": "string", "description": "角色的名稱"},
             "system_prompt": {"type": "string", "description": "核心人格與世界觀設定的 System Prompt"},
+            "visual_prompt": {
+                "type": "string",
+                "description": "角色外觀專用的圖片生成提示詞。描述物種、髮色、眼睛、服裝、配件、體型、年齡感與畫風等可視覺化元素。"
+            },
             "reply_rules": {
                 "type": "string",
                 "description": "回覆文字的格式與語氣規定（例如必須說繁體中文、不准用 Emoji、句尾要加喵 等），同時套用於 reply 欄位（字幕文字）"
@@ -146,7 +159,7 @@ async def generate_from_existing_persona(req: GenerateFromSeedRequest):
                 "description": "如果角色發音語言與字幕不同，請填寫此欄位（例如 '日文', '英文'）。若無需雙語分離則留空字串。"
             }
         },
-        "required": ["name", "system_prompt", "reply_rules", "tts_rules", "tts_language"]
+        "required": ["name", "system_prompt", "visual_prompt", "reply_rules", "tts_rules", "tts_language"]
     }
 
     api_messages = [

@@ -12,12 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.dependencies import init_all, get_storage, get_router, get_memory_sys, get_persona_sync_manager
+from api.dependencies import (
+    init_all, get_storage, get_router, get_memory_sys,
+    get_persona_sync_manager, get_telegram_bot_manager,
+)
 from api.session_manager import session_manager
-from api.telegram_bot import start_telegram_bot, stop_telegram_bot
 from core.background_gatherer import start_background_gather_loop
 from api.middleware.auth import AuthMiddleware
-from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users
+from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots
 
 
 # ── Lifespan：啟動 / 關機 ────────────────────────────────
@@ -34,11 +36,9 @@ async def lifespan(app: FastAPI):
 
     cleanup_task = asyncio.create_task(_session_cleanup_loop())
 
-    # Telegram Bot（可選：有 token 才啟動）
+    # Telegram Bots（可選：讀取 bot_configs.json；舊 telegram_bot_token 只作首次遷移）
     user_prefs = get_storage().load_prefs()
-    tg_token = user_prefs.get("telegram_bot_token", "")
-    if tg_token:
-        await start_telegram_bot(tg_token)
+    await get_telegram_bot_manager().sync_from_registry()
 
     # 天氣快取預熱（有設定城市 + API key 才執行）
     weather_city = user_prefs.get("weather_city", "")
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
                 start_background_gather_loop(db_path, get_router(), get_storage(), default_interval_seconds=14400)
             )
 
-    # PersonaSync 批次反思（每 20 分鐘檢查一次觸發條件，雙 face 分開執行）
+    # PersonaSync 批次反思（每 20 分鐘檢查一次觸發條件，逐角色 + 雙 face 分開執行）
     async def _persona_sync_loop():
         while True:
             await asyncio.sleep(1200)  # 20 分鐘
@@ -67,14 +67,21 @@ async def lifespan(app: FastAPI):
                 sto = get_storage()
                 prefs = sto.load_prefs()
                 from core.system_logger import SystemLogger
-                for face in ("public", "private"):
-                    should, reason = await psm.should_run(sto, prefs, persona_face=face)
-                    if should:
-                        await psm.run_sync(sto, prefs, persona_face=face)
-                    else:
-                        SystemLogger.log_system_event(
-                            "persona_sync_skip", {"reason": reason, "persona_face": face}
+                character_ids = sto.list_recent_conversation_character_ids(limit=50)
+                if not character_ids:
+                    character_ids = [prefs.get("active_character_id", "default")]
+                for character_id in character_ids:
+                    for face in ("public", "private"):
+                        should, reason = await psm.should_run(
+                            sto, prefs, persona_face=face, character_id=character_id,
                         )
+                        if should:
+                            await psm.run_sync(sto, prefs, persona_face=face, character_id=character_id)
+                        else:
+                            SystemLogger.log_system_event(
+                                "persona_sync_skip",
+                                {"reason": reason, "character_id": character_id, "persona_face": face},
+                            )
             except Exception as e:
                 from core.system_logger import SystemLogger
                 SystemLogger.log_error("persona_sync_loop", str(e))
@@ -84,7 +91,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    await stop_telegram_bot()
+    await get_telegram_bot_manager().stop_all()
     cleanup_task.cancel()
     if bg_gather_task:
         bg_gather_task.cancel()
@@ -145,6 +152,7 @@ app.include_router(logs.router, prefix=PREFIX)
 app.include_router(chat_ws.router, prefix=PREFIX)
 app.include_router(chat_rest.router, prefix=PREFIX)
 app.include_router(character.router, prefix=PREFIX)
+app.include_router(bots.router, prefix=PREFIX)
 app.include_router(prompts.router, prefix=PREFIX)
 app.include_router(persona_evolution.router, prefix=PREFIX)
 app.include_router(personality_public.router, prefix=PREFIX)

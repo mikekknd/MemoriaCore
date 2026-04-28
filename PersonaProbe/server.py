@@ -61,6 +61,10 @@ class FragmentAnalysisRequest(BaseModel):
         "",
         description="指定 session ID（留空則載入全部 sessions）",
     )
+    character_id: str = Field(
+        "",
+        description="指定 character_id（留空則不限制角色）",
+    )
     # 共用選填欄位
     existing_persona: str = Field(
         "",
@@ -118,6 +122,7 @@ async def analyze_fragments(req: FragmentAnalysisRequest) -> FragmentAnalysisRes
             messages = load_fragments_from_db(
                 req.db_path,
                 session_id=req.session_id or None,
+                character_id=req.character_id or None,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"讀取資料庫失敗：{exc}") from exc

@@ -20,6 +20,7 @@ class SessionState:
     last_active: datetime = field(default_factory=datetime.now)
     channel: str = "rest"
     channel_uid: str = ""
+    bot_id: str = ""
     user_id: str = "default"
     character_id: str = "default"
     persona_face: str = "public"
@@ -41,29 +42,33 @@ class SessionManager:
         self,
         channel: str = "rest",
         channel_uid: str = "",
+        bot_id: str = "",
         user_id: str = "default",
         character_id: str = "default",
-        channel_class: str = "public",
+        channel_class: str | None = None,
         persona_face: str | None = None,
     ) -> SessionState:
         async with self._lock:
             sid = str(uuid.uuid4())
-            resolved_face, _ = resolve_context(user_id, channel)
+            resolved_face, write_visibility = resolve_context(user_id, channel)
             effective_face = persona_face or resolved_face
+            effective_channel_class = channel_class or write_visibility
             session = SessionState(
                 session_id=sid,
                 channel=channel,
                 channel_uid=channel_uid,
+                bot_id=bot_id,
                 user_id=user_id,
                 character_id=character_id,
                 persona_face=effective_face,
-                channel_class=channel_class,
+                channel_class=effective_channel_class,
             )
             self._sessions[sid] = session
             if self._storage:
                 self._storage.create_conversation_session(
                     sid, channel, channel_uid,
-                    user_id=user_id, channel_class=channel_class, persona_face=effective_face,
+                    bot_id=bot_id, user_id=user_id, character_id=character_id,
+                    channel_class=effective_channel_class, persona_face=effective_face,
                 )
             return session
 
@@ -79,9 +84,10 @@ class SessionManager:
         session_id: str | None,
         channel: str = "rest",
         channel_uid: str = "",
+        bot_id: str = "",
         user_id: str = "default",
         character_id: str = "default",
-        channel_class: str = "public",
+        channel_class: str | None = None,
         persona_face: str | None = None,
     ) -> SessionState:
         if session_id:
@@ -93,6 +99,7 @@ class SessionManager:
         return await self.create(
             channel=channel,
             channel_uid=channel_uid,
+            bot_id=bot_id,
             user_id=user_id,
             character_id=character_id,
             channel_class=channel_class,
@@ -128,7 +135,9 @@ class SessionManager:
                 messages=messages,
                 channel=channel,
                 channel_uid=info.get("channel_uid", ""),
+                bot_id=info.get("bot_id", ""),
                 user_id=user_id,
+                character_id=info.get("character_id", "default"),
                 channel_class=channel_class,
                 persona_face=persona_face,
                 created_at=datetime.fromisoformat(info["created_at"]) if info.get("created_at") else datetime.now(),

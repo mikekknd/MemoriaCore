@@ -11,6 +11,7 @@ from ui.routing import render_routing_page
 from ui.log_viewer import render_log_viewer_page
 from ui.character import render_character_page
 from ui.prompts import render_prompts_page
+from ui.bots import render_bots_page
 
 warnings.filterwarnings("ignore", message="coroutine 'expire_cache' was never awaited")
 
@@ -147,6 +148,7 @@ except requests.ConnectionError:
 PAGES = [
     "🧠 記憶庫管理",
     "🎭 角色設定",
+    "🤖 Bot 管理",
     "⚙️ 系統設定",
     "🔀 路由映射",
     "📝 Prompt 管理",
@@ -169,6 +171,9 @@ if current_page == "🧠 記憶庫管理":
 
 elif current_page == "🎭 角色設定":
     render_character_page(API_BASE, user_prefs)
+
+elif current_page == "🤖 Bot 管理":
+    render_bots_page(API_BASE, user_prefs)
 
 elif current_page == "⚙️ 系統設定":
     render_settings_page(API_BASE, user_prefs)

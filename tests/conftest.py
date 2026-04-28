@@ -1,12 +1,25 @@
 """共用 pytest fixtures：MemorySystem、Router、Analyzer 等核心元件的隔離式初始化"""
 import os
 import sys
+import tempfile
 import pytest
 
 # 將專案根目錄加入 Python path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+# 統一 pytest 期間所有暫存與工具 cache，避免在專案根目錄散落 pytest_tmp* 等目錄。
+PYTEST_TEMP_ROOT = os.path.join(PROJECT_ROOT, ".pyTestTemp")
+PYTHON_TEMP_DIR = os.path.join(PYTEST_TEMP_ROOT, "temp")
+TORCHINDUCTOR_CACHE_DIR = os.path.join(PYTEST_TEMP_ROOT, "torchinductor")
+os.makedirs(PYTHON_TEMP_DIR, exist_ok=True)
+os.makedirs(TORCHINDUCTOR_CACHE_DIR, exist_ok=True)
+for _name in ("TMP", "TEMP", "TMPDIR"):
+    os.environ[_name] = PYTHON_TEMP_DIR
+os.environ["PYTEST_DEBUG_TEMPROOT"] = PYTEST_TEMP_ROOT
+os.environ["TORCHINDUCTOR_CACHE_DIR"] = TORCHINDUCTOR_CACHE_DIR
+tempfile.tempdir = PYTHON_TEMP_DIR
 
 from core.core_memory import MemorySystem
 from core.memory_analyzer import MemoryAnalyzer
@@ -106,7 +119,7 @@ def mock_character_manager():
     """回傳固定角色設定，避免 CharacterManager 檔案 I/O"""
     from unittest.mock import MagicMock
     cm = MagicMock()
-    cm.get_active_character.return_value = {
+    character = {
         "character_id": "default",
         "name": "測試助理",
         "metrics": ["professionalism"],
@@ -115,8 +128,11 @@ def mock_character_manager():
         "tts_rules": "",
         "tts_language": "",
         "system_prompt": "你是一個測試助理。",
+        "visual_prompt": "測試助理，乾淨的角色肖像。",
         "evolved_prompt": None,
     }
+    cm.get_active_character.return_value = character
+    cm.get_character.return_value = character
     cm.get_effective_prompt.return_value = "你是一個測試助理。"
     return cm
 

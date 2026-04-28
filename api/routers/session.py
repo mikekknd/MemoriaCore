@@ -31,10 +31,12 @@ async def create_session(
 ):
     channel_class = "private" if current_user.get("role") == "admin" else "public"
     persona_face = "private" if current_user.get("role") == "admin" else "public"
+    prefs = get_storage().load_prefs()
     s = await session_manager.create(
         channel=body.channel,
         channel_uid=body.channel_uid or str(current_user["id"]),
         user_id=str(current_user["id"]),
+        character_id=prefs.get("active_character_id", "default"),
         channel_class=channel_class,
         persona_face=persona_face,
     )

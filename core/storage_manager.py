@@ -1227,7 +1227,9 @@ class StorageManager:
                 last_active TEXT,
                 is_active INTEGER DEFAULT 1,
                 bridge_after_msg_id INTEGER DEFAULT 0,
+                bot_id TEXT DEFAULT '',
                 user_id TEXT NOT NULL DEFAULT 'default',
+                character_id TEXT NOT NULL DEFAULT 'default',
                 channel_class TEXT NOT NULL DEFAULT 'public',
                 persona_face TEXT DEFAULT NULL
             )
@@ -1237,7 +1239,9 @@ class StorageManager:
         cs_cols = [info[1] for info in cursor.fetchall()]
         for col, typedef in [
             ('bridge_after_msg_id', 'INTEGER DEFAULT 0'),
+            ('bot_id', "TEXT DEFAULT ''"),
             ('user_id', "TEXT NOT NULL DEFAULT 'default'"),
+            ('character_id', "TEXT NOT NULL DEFAULT 'default'"),
             ('channel_class', "TEXT NOT NULL DEFAULT 'public'"),
             ('persona_face', "TEXT DEFAULT NULL"),
         ]:
@@ -1268,7 +1272,9 @@ class StorageManager:
         session_id,
         channel="rest",
         channel_uid="",
+        bot_id: str = "",
         user_id: str = "default",
+        character_id: str = "default",
         channel_class: str = "public",
         persona_face: str | None = None,
     ):
@@ -1277,9 +1283,9 @@ class StorageManager:
         now = datetime.now().isoformat()
         cursor.execute(
             "INSERT OR IGNORE INTO conversation_sessions "
-            "(session_id, channel, channel_uid, created_at, last_active, user_id, channel_class, persona_face) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (session_id, channel, channel_uid, now, now, user_id, channel_class, persona_face)
+            "(session_id, channel, channel_uid, created_at, last_active, bot_id, user_id, character_id, channel_class, persona_face) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, channel, channel_uid, now, now, bot_id, user_id, character_id, channel_class, persona_face)
         )
         conn.commit()
         conn.close()
@@ -1368,7 +1374,7 @@ class StorageManager:
         params.append(limit)
         cursor.execute(
             "SELECT s.session_id, s.channel, s.channel_uid, s.created_at, s.last_active, "
-                "       s.is_active, s.user_id, s.channel_class, s.persona_face, "
+                "       s.is_active, s.bot_id, s.user_id, s.character_id, s.channel_class, s.persona_face, "
                 "       (SELECT COUNT(*) FROM conversation_messages m WHERE m.session_id = s.session_id) "
             f"FROM conversation_sessions s {where_clause}"
             "ORDER BY s.last_active DESC LIMIT ?",
@@ -1379,7 +1385,8 @@ class StorageManager:
         return [
             {"session_id": r[0], "channel": r[1], "channel_uid": r[2],
              "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
-             "user_id": r[6], "channel_class": r[7], "persona_face": r[8], "message_count": r[9]}
+             "bot_id": r[6], "user_id": r[7], "character_id": r[8],
+             "channel_class": r[9], "persona_face": r[10], "message_count": r[11]}
             for r in rows
         ]
 
@@ -1436,7 +1443,7 @@ class StorageManager:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT s.session_id, s.channel, s.channel_uid, s.created_at, s.last_active, "
-            "       s.is_active, s.user_id, s.channel_class, s.persona_face, "
+            "       s.is_active, s.bot_id, s.user_id, s.character_id, s.channel_class, s.persona_face, "
             "       (SELECT COUNT(*) FROM conversation_messages m WHERE m.session_id = s.session_id) "
             "FROM conversation_sessions s WHERE s.session_id = ?",
             (session_id,)
@@ -1448,7 +1455,8 @@ class StorageManager:
         return {
             "session_id": r[0], "channel": r[1], "channel_uid": r[2],
             "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
-            "user_id": r[6], "channel_class": r[7], "persona_face": r[8], "message_count": r[9],
+            "bot_id": r[6], "user_id": r[7], "character_id": r[8],
+            "channel_class": r[9], "persona_face": r[10], "message_count": r[11],
         }
 
     # ════════════════════════════════════════════════════════════
@@ -1484,6 +1492,28 @@ class StorageManager:
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
                 "WHERE cs.channel_class = ? ORDER BY cm.msg_id DESC LIMIT 1",
                 (channel_class,),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0]:
+                return datetime.fromisoformat(row[0])
+            return None
+        except Exception:
+            return None
+
+    def get_last_message_time_by_character_and_channel_class(
+        self, character_id: str, channel_class: str
+    ) -> "datetime | None":
+        """回傳指定 character_id + channel_class 的最後訊息時間。"""
+        try:
+            conn = self._init_conversation_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT cm.timestamp FROM conversation_messages cm "
+                "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
+                "WHERE cs.character_id = ? AND cs.channel_class = ? "
+                "ORDER BY cm.msg_id DESC LIMIT 1",
+                (character_id, channel_class),
             )
             row = cursor.fetchone()
             conn.close()
@@ -1531,6 +1561,45 @@ class StorageManager:
             return count
         except Exception:
             return 0
+
+    def count_messages_since_by_character_and_channel_class(
+        self, since_iso: str, character_id: str, channel_class: str
+    ) -> int:
+        """計算指定 character_id + channel_class 在 since_iso 之後的訊息數。"""
+        try:
+            conn = self._init_conversation_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM conversation_messages cm "
+                "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
+                "WHERE cs.character_id = ? AND cs.channel_class = ? AND cm.timestamp > ?",
+                (character_id, channel_class, since_iso),
+            )
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception:
+            return 0
+
+    def list_recent_conversation_character_ids(self, limit: int = 50) -> list[str]:
+        """列出近期有對話的 character_id，供 PersonaSync 掃描候選角色。"""
+        try:
+            conn = self._init_conversation_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT cs.character_id, MAX(cm.timestamp) AS last_ts "
+                "FROM conversation_messages cm "
+                "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
+                "WHERE cs.character_id IS NOT NULL AND cs.character_id != '' "
+                "GROUP BY cs.character_id "
+                "ORDER BY last_ts DESC LIMIT ?",
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [r[0] for r in rows if r and r[0]]
+        except Exception:
+            return []
 
     # ════════════════════════════════════════════════════════════
     # SECTION: 人格演化 Snapshots — 版本儲存 / 血統查詢 / 時間序列

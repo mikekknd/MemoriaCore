@@ -354,7 +354,11 @@ def render_character_page(api_base: str, user_prefs: dict):
         st.divider()
 
         try:
-            sync_resp = requests.get(f"{api_base}/system/personality/sync-status", timeout=5)
+            sync_resp = requests.get(
+                f"{api_base}/system/personality/sync-status",
+                params={"character_id": active_char_id, "persona_face": "public"},
+                timeout=5,
+            )
             if sync_resp.ok:
                 sync_status = sync_resp.json()
                 col1, col2, col3 = st.columns(3)
@@ -369,7 +373,11 @@ def render_character_page(api_base: str, user_prefs: dict):
         if st.button("🚀 立即執行 PersonaProbe 反思", use_container_width=True, type="primary"):
             with st.spinner("正在呼叫 PersonaProbe 進行深度人格分析（約需 1-2 分鐘）..."):
                 try:
-                    ref_resp = requests.post(f"{api_base}/system/personality/sync-now", timeout=660)
+                    ref_resp = requests.post(
+                        f"{api_base}/system/personality/sync-now",
+                        params={"character_id": active_char_id, "persona_face": "public"},
+                        timeout=660,
+                    )
                     if ref_resp.ok:
                         result = ref_resp.json()
                         status = result.get("status", "")
