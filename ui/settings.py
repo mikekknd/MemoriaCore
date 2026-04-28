@@ -31,6 +31,11 @@ def render_settings_page(api_base, user_prefs=None):
         placeholder="輸入你的 Telegram UID（數字）",
         help="設定後，user_id 匹配此值的 Telegram 用戶將獲得 private face 身份。更改後無需重啟，熱重載生效。",
     )
+    new_admin_bypass_enabled = st.checkbox(
+        "啟用 Streamlit Admin Bypass",
+        value=user_prefs.get("admin_bypass_enabled", False),
+        help="僅供本機開發或可信內網使用。啟用後 Streamlit 登入頁可一鍵登入第一個 admin 帳號。",
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -280,6 +285,7 @@ def render_settings_page(api_base, user_prefs=None):
             "minimax_pitch": new_minimax_pitch,
             # SU 身份
             "su_user_id": new_su_user_id,
+            "admin_bypass_enabled": new_admin_bypass_enabled,
         }
         try:
             resp = requests.put(f"{api_base}/system/config", json=update_payload, timeout=10)

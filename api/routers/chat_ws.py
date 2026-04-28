@@ -208,6 +208,9 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 "extracted_entities": new_entities,
                 "internal_thought": inner_thought,
             }
+            reply_char = _get_session_character(s.character_id)
+            character_name = reply_char.get("name") or s.character_id
+            done_payload["character_name"] = character_name
             await ws.send_json(done_payload)
 
             # 寫入 assistant 回覆（後端隱性掛載引用 UID）
@@ -218,6 +221,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             await session_manager.add_assistant_message(
                 sid, saved_reply_text, retrieval_ctx, new_entities,
                 persona_state={"internal_thought": inner_thought},
+                character_name=character_name,
             )
 
             # 如果話題偏移，執行橋接
@@ -228,11 +232,10 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             tts = get_tts_client()
             if tts:
                 from api.dependencies import get_router
-                _active_char = _get_session_character(s.character_id)
                 asyncio.create_task(_translate_and_tts_send(
                     ws, tts, reply_text,
-                    _active_char.get("tts_language", ""),
-                    _active_char.get("tts_rules", ""),
+                    reply_char.get("tts_language", ""),
+                    reply_char.get("tts_rules", ""),
                     get_router(),
                 ))
 

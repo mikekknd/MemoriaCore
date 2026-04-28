@@ -41,6 +41,19 @@ def _logout_streamlit() -> None:
     _load_config.clear()
 
 
+def _activate_streamlit_admin_session(payload: dict) -> bool:
+    user = payload.get("user") or {}
+    if user.get("role") != "admin":
+        st.error("Streamlit 是管理後台，僅 admin 可使用。一般使用者請使用 /static/app.html。")
+        st.session_state.api_session = requests.Session()
+        return False
+
+    st.session_state.api_csrf_token = payload.get("csrf_token", "")
+    st.session_state.api_user = user
+    _load_config.clear()
+    return True
+
+
 def _render_login() -> None:
     st.title("MemoriaCore 管理後台")
     st.caption("Streamlit 管理後台需要另外登入；瀏覽器在 /static/login.html 的 HttpOnly Cookie 不會傳給 Streamlit 的 Python requests。")
@@ -50,6 +63,32 @@ def _render_login() -> None:
         username = st.text_input("帳號")
         password = st.text_input("密碼", type="password")
         submitted = st.form_submit_button("登入")
+
+    bypass_clicked = st.button("⚡ 一鍵免密碼登入 (Admin Bypass)", use_container_width=True)
+    if bypass_clicked:
+        try:
+            response = st.session_state.api_session.post(
+                f"{API_BASE}/auth/bypass",
+                timeout=8,
+            )
+        except requests.ConnectionError:
+            st.error("FastAPI 後端未啟動，請先啟動 8088。")
+            return
+        except Exception as exc:
+            st.error(f"Admin Bypass 登入失敗：{exc}")
+            return
+
+        if not response.ok:
+            try:
+                detail = response.json().get("detail") or response.json().get("error", {}).get("message")
+            except Exception:
+                detail = response.text
+            st.error(f"Admin Bypass 登入失敗：{detail or '未啟用此功能或僅允許本機使用'}")
+            return
+
+        if _activate_streamlit_admin_session(response.json()):
+            st.rerun()
+        return
 
     if not submitted:
         return
@@ -75,17 +114,8 @@ def _render_login() -> None:
         st.error(f"登入失敗：{detail or response.status_code}")
         return
 
-    payload = response.json()
-    user = payload.get("user") or {}
-    if user.get("role") != "admin":
-        st.error("Streamlit 是管理後台，僅 admin 可使用。一般使用者請使用 /static/app.html。")
-        st.session_state.api_session = requests.Session()
-        return
-
-    st.session_state.api_csrf_token = payload.get("csrf_token", "")
-    st.session_state.api_user = user
-    _load_config.clear()
-    st.rerun()
+    if _activate_streamlit_admin_session(response.json()):
+        st.rerun()
 
 
 def _require_admin_login() -> bool:

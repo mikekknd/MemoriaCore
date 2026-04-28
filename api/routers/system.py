@@ -58,6 +58,7 @@ async def get_config():
         bash_tool_enabled=prefs.get("bash_tool_enabled", False),
         bash_tool_allowed_commands=prefs.get("bash_tool_allowed_commands", []),
         registration_enabled=prefs.get("registration_enabled", True),
+        admin_bypass_enabled=prefs.get("admin_bypass_enabled", False),
         # ⚠️ SECURITY: su_user_id 目前無任何權限管控，詳見 api/models/requests.py 的風險說明
         su_user_id=prefs.get("su_user_id", ""),
     )

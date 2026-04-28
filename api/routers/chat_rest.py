@@ -107,9 +107,12 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     if cited_uids:
         refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
         saved_reply_text = f"{reply_text} {refs_str}"
+    reply_char = _get_session_character(session.character_id)
+    character_name = reply_char.get("name") or session.character_id
     await session_manager.add_assistant_message(
         sid, saved_reply_text, retrieval_ctx, new_entities,
         persona_state={"internal_thought": inner_thought},
+        character_name=character_name,
     )
 
     if topic_shifted:
@@ -120,11 +123,10 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     # /sync 為完整請求-回應週期，翻譯同步執行
     if not speech:
         from core.chat_orchestrator.coordinator import _generate_tts_speech
-        _char = _get_session_character(session.character_id)
         speech = _generate_tts_speech(
             reply_text,
-            _char.get("tts_language", ""),
-            _char.get("tts_rules", ""),
+            reply_char.get("tts_language", ""),
+            reply_char.get("tts_rules", ""),
             get_router(),
         )
 
@@ -136,6 +138,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         internal_thought=inner_thought,
         speech=speech,
         thinking_speech=thinking_speech or None,
+        character_name=character_name,
     )
 
 
@@ -213,9 +216,12 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         if cited_uids:
             refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
             saved_reply_text = f"{reply_text} {refs_str}"
+        reply_char = _get_session_character(session.character_id)
+        character_name = reply_char.get("name") or session.character_id
         await session_manager.add_assistant_message(
             sid, saved_reply_text, retrieval_ctx, new_entities,
             persona_state={"internal_thought": inner_thought},
+            character_name=character_name,
         )
 
         if topic_shifted:
@@ -233,6 +239,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
             "cited_memory_uids": cited_uids,
             "internal_thought": inner_thought,
             "thinking_speech": thinking_speech or None,
+            "character_name": character_name,
         }
         yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
 
@@ -240,9 +247,8 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         tts = get_tts_client()
         if tts:
             from core.chat_orchestrator.coordinator import _generate_tts_speech
-            _char = _get_session_character(session.character_id)
-            _tts_lang = _char.get("tts_language", "")
-            _tts_rules = _char.get("tts_rules", "")
+            _tts_lang = reply_char.get("tts_language", "")
+            _tts_rules = reply_char.get("tts_rules", "")
             if _tts_lang:
                 speech = await asyncio.to_thread(
                     _generate_tts_speech, reply_text, _tts_lang, _tts_rules, get_router())

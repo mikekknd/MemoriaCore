@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -35,6 +36,16 @@ def _client_ip(request: Request) -> str:
         if forwarded:
             return forwarded.split(",", 1)[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def _is_loopback_request(request: Request) -> bool:
+    host = _client_ip(request)
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _public_user(user: dict, csrf_token: str | None = None) -> AuthUserDTO:
@@ -96,6 +107,21 @@ async def login(body: LoginRequest, request: Request, response: Response):
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
 
     storage.reset_auth_attempts(body.username, ip)
+    return _issue_login_response(response, user)
+
+
+@router.post("/bypass", response_model=AuthResponseDTO)
+async def bypass_login(request: Request, response: Response):
+    storage = get_storage()
+    prefs = storage.load_prefs()
+    if not prefs.get("admin_bypass_enabled", False):
+        raise HTTPException(status_code=403, detail="Admin Bypass 未啟用")
+    if not _is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="Admin Bypass 僅允許本機請求")
+
+    user = await asyncio.to_thread(storage.get_first_admin_user)
+    if not user:
+        raise HTTPException(status_code=404, detail="找不到 admin 使用者")
     return _issue_login_response(response, user)
 
 

@@ -90,6 +90,7 @@ class ConfigUpdateRequest(BaseModel):
     bash_tool_enabled: Optional[bool] = None
     bash_tool_allowed_commands: Optional[list[str]] = None
     registration_enabled: Optional[bool] = None
+    admin_bypass_enabled: Optional[bool] = None
     # ⚠️ SECURITY: su_user_id 目前無任何權限管控，公開部署有極高風險。
     #   此欄位一旦寫入 user_prefs.json，匹配的 Telegram 用戶即獲得 private face 身份，
     #   可讀寫所有 visibility='private' 的記憶。上線前務必：
@@ -112,6 +113,7 @@ class CreateSessionRequest(BaseModel):
     channel: str = "rest"
     channel_uid: str = ""
     user_id: Optional[str] = None
+    character_id: Optional[str] = None
 
 
 class PersonalityUpdateRequest(BaseModel):

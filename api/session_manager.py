@@ -185,6 +185,7 @@ class SessionManager:
         debug_info: dict | None = None,
         extracted_entities: list[str] | None = None,
         persona_state: dict | None = None,
+        character_name: str | None = None,
     ) -> bool:
         """
         persona_state: {"internal_thought": str, "status_metrics": dict, "tone": str}
@@ -199,12 +200,17 @@ class SessionManager:
                 msg["debug_info"] = debug_info
             if persona_state:
                 msg["persona_state"] = persona_state
+            if character_name:
+                msg["character_name"] = character_name
             s.messages.append(msg)
             if extracted_entities is not None:
                 s.last_entities = extracted_entities
             s.last_active = datetime.now()
             if self._storage:
-                self._storage.save_conversation_message(session_id, "assistant", content, debug_info)
+                self._storage.save_conversation_message(
+                    session_id, "assistant", content, debug_info,
+                    character_name=character_name,
+                )
             return True
 
     async def get_pipeline_context(self, session_id: str) -> list[dict]:

@@ -7,18 +7,26 @@ from api.models.responses import (
     SessionDTO, SessionMessageDTO,
     ConversationSessionDTO, ConversationHistoryDTO,
 )
-from api.dependencies import get_current_user, get_storage, require_admin_user
+from api.dependencies import get_character_manager, get_current_user, get_storage, require_admin_user
 
 router = APIRouter(prefix="/session", tags=["session"])
+
+
+def _message_to_dto(m: dict) -> SessionMessageDTO:
+    return SessionMessageDTO(
+        role=m["role"],
+        content=m["content"],
+        debug_info=m.get("debug_info"),
+        character_name=m.get("character_name"),
+    )
 
 
 def _state_to_dto(s: SessionState) -> SessionDTO:
     return SessionDTO(
         session_id=s.session_id,
-        messages=[SessionMessageDTO(role=m["role"], content=m["content"],
-                                     debug_info=m.get("debug_info"))
-                  for m in s.messages],
+        messages=[_message_to_dto(m) for m in s.messages],
         last_entities=s.last_entities,
+        character_id=s.character_id,
         created_at=s.created_at.isoformat(),
         last_active=s.last_active.isoformat(),
     )
@@ -32,11 +40,14 @@ async def create_session(
     channel_class = "private" if current_user.get("role") == "admin" else "public"
     persona_face = "private" if current_user.get("role") == "admin" else "public"
     prefs = get_storage().load_prefs()
+    character_id = body.character_id or prefs.get("active_character_id", "default")
+    if body.character_id and not get_character_manager().get_character(character_id):
+        raise HTTPException(404, detail="Character not found")
     s = await session_manager.create(
         channel=body.channel,
         channel_uid=body.channel_uid or str(current_user["id"]),
         user_id=str(current_user["id"]),
-        character_id=prefs.get("active_character_id", "default"),
+        character_id=character_id,
         channel_class=channel_class,
         persona_face=persona_face,
     )
@@ -68,9 +79,7 @@ async def get_conversation_history(session_id: str, current_user: dict = Depends
     messages = storage.load_conversation_messages(session_id)
     return ConversationHistoryDTO(
         session=ConversationSessionDTO(**session_info),
-        messages=[SessionMessageDTO(role=m["role"], content=m["content"],
-                                     debug_info=m.get("debug_info"))
-                  for m in messages],
+        messages=[_message_to_dto(m) for m in messages],
     )
 
 

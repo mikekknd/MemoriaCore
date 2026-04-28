@@ -1002,6 +1002,18 @@ class StorageManager:
         conn.close()
         return count
 
+    def get_first_admin_user(self) -> dict | None:
+        conn = self._init_users_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, username, nickname, password_hash, role, token_version, "
+            "telegram_uid, discord_uid, created_at, updated_at "
+            "FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1"
+        )
+        user = self._row_to_user(cursor.fetchone())
+        conn.close()
+        return user
+
     def list_users_with_stats(self) -> list[dict]:
         conn = self._init_users_db()
         cursor = conn.cursor()
@@ -1257,10 +1269,15 @@ class StorageManager:
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 debug_info TEXT,
+                character_name TEXT,
                 timestamp TEXT,
                 FOREIGN KEY (session_id) REFERENCES conversation_sessions(session_id)
             )
         ''')
+        cursor.execute("PRAGMA table_info(conversation_messages)")
+        cm_cols = [info[1] for info in cursor.fetchall()]
+        if "character_name" not in cm_cols:
+            cursor.execute("ALTER TABLE conversation_messages ADD COLUMN character_name TEXT")
         cursor.execute(
             'CREATE INDEX IF NOT EXISTS idx_conv_msg_session ON conversation_messages(session_id)'
         )
@@ -1290,15 +1307,15 @@ class StorageManager:
         conn.commit()
         conn.close()
 
-    def save_conversation_message(self, session_id, role, content, debug_info=None):
+    def save_conversation_message(self, session_id, role, content, debug_info=None, character_name=None):
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
         debug_json = json.dumps(debug_info, ensure_ascii=False) if debug_info else None
         cursor.execute(
-            "INSERT INTO conversation_messages (session_id, role, content, debug_info, timestamp) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, debug_json, now)
+            "INSERT INTO conversation_messages (session_id, role, content, debug_info, character_name, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, role, content, debug_json, character_name, now)
         )
         cursor.execute(
             'UPDATE conversation_sessions SET last_active = ? WHERE session_id = ?', (now, session_id)
@@ -1311,7 +1328,7 @@ class StorageManager:
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT role, content, debug_info, timestamp "
+            "SELECT role, content, debug_info, timestamp, character_name "
             "FROM conversation_messages WHERE session_id = ? AND msg_id > ? "
             "ORDER BY msg_id ASC",
             (session_id, since_msg_id)
@@ -1321,6 +1338,8 @@ class StorageManager:
         results = []
         for r in rows:
             msg = {"role": r[0], "content": r[1], "timestamp": r[3]}
+            if r[4]:
+                msg["character_name"] = r[4]
             if r[2]:
                 try:
                     msg["debug_info"] = json.loads(r[2])

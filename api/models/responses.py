@@ -68,12 +68,14 @@ class SessionMessageDTO(BaseModel):
     role: str
     content: str
     debug_info: Optional[dict] = None
+    character_name: Optional[str] = None
 
 
 class SessionDTO(BaseModel):
     session_id: str
     messages: list[SessionMessageDTO] = []
     last_entities: list[str] = []
+    character_id: str = "default"
     created_at: str
     last_active: str
 
@@ -157,6 +159,7 @@ class ChatSyncResponseDTO(BaseModel):
     internal_thought: Optional[str] = None
     speech: Optional[str] = None
     thinking_speech: Optional[str] = None
+    character_name: Optional[str] = None
 
 
 # ── Auth ─────────────────────────────────────────────────
@@ -240,6 +243,7 @@ class SystemConfigDTO(BaseModel):
     bash_tool_enabled: bool = False
     bash_tool_allowed_commands: list[str] = []
     registration_enabled: bool = True
+    admin_bypass_enabled: bool = False
     # ⚠️ SECURITY: su_user_id 目前無任何權限管控，詳見 api/models/requests.py 的風險說明
     su_user_id: str = ""
 
