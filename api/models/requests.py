@@ -1,6 +1,12 @@
 """Pydantic request bodies — API 輸入資料驗證。"""
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional
+
+from api.auth_utils import WEAK_PASSWORDS
+
+
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 
 
 class SearchRequest(BaseModel):
@@ -82,6 +88,7 @@ class ConfigUpdateRequest(BaseModel):
     browser_agent_enabled: Optional[bool] = None
     bash_tool_enabled: Optional[bool] = None
     bash_tool_allowed_commands: Optional[list[str]] = None
+    registration_enabled: Optional[bool] = None
     # ⚠️ SECURITY: su_user_id 目前無任何權限管控，公開部署有極高風險。
     #   此欄位一旦寫入 user_prefs.json，匹配的 Telegram 用戶即獲得 private face 身份，
     #   可讀寫所有 visibility='private' 的記憶。上線前務必：
@@ -113,3 +120,69 @@ class PersonalityUpdateRequest(BaseModel):
 
 class BlockUpdateRequest(BaseModel):
     new_overview: str
+
+
+# ── Auth ─────────────────────────────────────────────────
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    password_confirm: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        username = value.strip().lower()
+        if not USERNAME_RE.fullmatch(username):
+            raise ValueError("username 必須為 3-32 字元，且只能包含英數、底線、連字號")
+        return username
+
+    @model_validator(mode="after")
+    def validate_passwords(self):
+        if self.password != self.password_confirm:
+            raise ValueError("兩次密碼輸入不一致")
+        validate_password_strength(self.username, self.password)
+        return self
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class ProfileUpdateRequest(BaseModel):
+    nickname: Optional[str] = None
+    telegram_uid: Optional[str] = None
+    discord_uid: Optional[str] = None
+
+
+class PasswordChangeRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+    @model_validator(mode="after")
+    def validate_new_password(self):
+        validate_password_strength("", self.new_password)
+        return self
+
+
+class AdminPasswordResetRequest(BaseModel):
+    new_password: str
+
+
+class AdminUserDeleteRequest(BaseModel):
+    confirm_username: str
+
+
+def validate_password_strength(username: str, password: str) -> None:
+    normalized = password.strip().lower()
+    if len(password) < 6:
+        raise ValueError("密碼至少需要 6 字元")
+    if username and normalized == username.strip().lower():
+        raise ValueError("密碼不可與 username 相同")
+    if normalized in WEAK_PASSWORDS:
+        raise ValueError("密碼過於常見，請改用較強的密碼")

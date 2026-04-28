@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore Register</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
+<style>
+body { min-height:100vh; display:grid; place-items:center; padding:24px; }
+.auth-panel { width:min(400px,100%); background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:24px; }
+h1 { font-size:20px; margin-bottom:8px; }
+.hint { color:var(--text2); font-size:13px; line-height:1.5; margin-bottom:14px; }
+label { display:block; color:var(--text2); font-size:13px; margin:12px 0 6px; }
+input { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:10px 12px; color:var(--text); outline:none; }
+input:focus { border-color:var(--accent); }
+button { width:100%; margin-top:18px; background:var(--accent); border:none; border-radius:6px; padding:10px 14px; color:#fff; cursor:pointer; }
+.link-row { margin-top:14px; font-size:13px; color:var(--text2); text-align:center; }
+.link-row a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main class="auth-panel">
+  <h1>建立帳號</h1>
+  <div class="hint">帳號需為 3-32 字元，只能包含英數、底線與連字號；密碼至少 6 字元。</div>
+  <form onsubmit="register(event)">
+    <label for="username">帳號</label>
+    <input id="username" autocomplete="username" required>
+    <label for="password">密碼</label>
+    <input id="password" type="password" autocomplete="new-password" required>
+    <label for="passwordConfirm">確認密碼</label>
+    <input id="passwordConfirm" type="password" autocomplete="new-password" required>
+    <button type="submit" id="submitBtn">註冊</button>
+  </form>
+  <div class="link-row">已有帳號？<a href="/static/login.html">登入</a></div>
+</main>
+<div class="toast-container" id="toastContainer"></div>
+<script src="/static/shared/common.js"></script>
+<script>
+async function register(e) {
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/auth/register`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value,
+        password_confirm: document.getElementById('passwordConfirm').value,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErrorMessage(data, '註冊失敗'));
+    storeCsrf(data.csrf_token);
+    window.location.href = '/static/app.html';
+  } catch (err) {
+    toast(err.message || '註冊失敗', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

@@ -149,12 +149,30 @@ chown <service_user> user_prefs.json
 
 ---
 
-## 4. 部署前確認清單
+## 4. 內建登入系統部署注意
+
+登入系統啟用後，API 預設由 HttpOnly Cookie + CSRF token 保護：
+
+- 第一個註冊帳號會自動成為 admin；後續帳號預設為 user
+- `MEMORIACORE_JWT_SECRET` 應在正式環境以環境變數提供，長度至少 32 bytes
+- 對外 HTTPS 部署時設定 `MEMORIACORE_COOKIE_SECURE=1`
+- `MEMORIACORE_CORS_ORIGINS` 必須明列允許來源，禁止公開部署時使用萬用字元
+- 登出與修改密碼會遞增 `token_version`，讓既有 JWT 立即失效
+- `/system/*`、`/prompts/*`、`/character/*` 等敏感 API 僅 admin 可用
+- 對話 session 會綁定 owner user id，不能用他人的 `session_id` 還原內容
+- 若需要暫停自由註冊，可在 `user_prefs.json` 設定 `registration_enabled=false`
+
+---
+
+## 5. 部署前確認清單
 
 ```
 [ ] port 8088 已透過防火牆封鎖外部直接存取
 [ ] dashboard 已加 Basic Auth 或 VPN 保護
 [ ] HTTPS 已啟用（TLS 憑證有效）
+[ ] MEMORIACORE_JWT_SECRET 已設定且未寫入版本控制
+[ ] 對外 HTTPS 部署時 MEMORIACORE_COOKIE_SECURE=1
+[ ] MEMORIACORE_CORS_ORIGINS 已收斂到可信來源
 [ ] user_prefs.json 檔案權限已收緊（非 service 帳號不可讀）
 [ ] su_user_id 已設定（非空字串）
 [ ] Telegram bot token 未出現在任何 git commit 中
@@ -165,6 +183,6 @@ chown <service_user> user_prefs.json
 
 ---
 
-## 5. 聯絡與回報
+## 6. 聯絡與回報
 
 發現安全疑慮請直接在 private channel 通知專案維護者，勿在公開 issue 中揭露細節。

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
+<style>
+body { height:100vh; overflow:hidden; }
+.app-shell { height:100vh; display:flex; flex-direction:column; }
+.topbar { height:40px; flex-shrink:0; background:var(--surface); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; padding:0 12px; }
+.brand { color:var(--text); font-weight:600; font-size:14px; margin-right:8px; }
+.nav { display:flex; gap:4px; align-items:center; }
+.nav button, .actions button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:5px 12px; color:var(--text); font-size:13px; cursor:pointer; }
+.nav button:hover, .actions button:hover { border-color:var(--accent); color:var(--accent); opacity:1; }
+.nav button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+.actions { margin-left:auto; display:flex; gap:8px; align-items:center; }
+.user-text { color:var(--text2); font-size:12px; }
+.admin-only { display:none; }
+.content { flex:1; position:relative; min-height:0; }
+.pane { display:none; position:absolute; inset:0; overflow:hidden; }
+.pane.active { display:block; }
+.pane iframe { width:100%; height:100%; border:0; background:var(--bg); display:block; }
+@media (max-width:720px) {
+  .topbar { height:auto; min-height:40px; flex-wrap:wrap; padding:6px 8px; }
+  .brand { width:100%; }
+  .actions { margin-left:0; }
+  .content { height:calc(100vh - 78px); }
+}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <div class="topbar">
+    <div class="brand">MemoriaCore</div>
+    <div class="nav">
+      <button class="active" data-pane="chat" onclick="switchPane(this)">Chat</button>
+      <button data-pane="persona" onclick="switchPane(this)">人格演化</button>
+      <button data-pane="profile" onclick="switchPane(this)">Profile</button>
+    </div>
+    <div class="actions">
+      <span class="user-text" id="userText"></span>
+      <button class="admin-only" id="dashboardBtn" onclick="location.href='/static/dashboard.html'">Dashboard</button>
+      <button onclick="logout()">Logout</button>
+    </div>
+  </div>
+  <main class="content">
+    <section class="pane active" data-pane="chat">
+      <iframe src="/static/chat.html" title="MemoriaCore Chat"></iframe>
+    </section>
+    <section class="pane" data-pane="persona">
+      <iframe src="/static/persona_tree.html?public=true" title="Public Persona Evolution"></iframe>
+    </section>
+    <section class="pane" data-pane="profile">
+      <iframe src="/static/user_profile.html" title="User Profile"></iframe>
+    </section>
+  </main>
+</div>
+
+<script src="/static/shared/common.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', initApp);
+
+async function initApp() {
+  try {
+    const r = await fetch(`${API}/auth/me`);
+    if (!r.ok) throw 0;
+    const me = await r.json();
+    storeCsrf(me.csrf_token);
+    document.getElementById('userText').textContent = `${me.username} (${me.role})`;
+    if (me.role === 'admin') {
+      document.getElementById('dashboardBtn').style.display = 'inline-block';
+    }
+  } catch {
+    window.location.href = '/static/login.html';
+  }
+}
+
+function switchPane(btn) {
+  const pane = btn.dataset.pane;
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b === btn));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.dataset.pane === pane));
+}
+
+async function logout() {
+  try {
+    await fetch(`${API}/auth/logout`, { method:'POST' });
+  } finally {
+    clearCsrf();
+    window.location.href = '/static/login.html';
+  }
+}
+</script>
+</body>
+</html>

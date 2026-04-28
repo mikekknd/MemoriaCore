@@ -78,10 +78,10 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 <div class="header">
   <label>角色：</label>
   <select id="charSelect" onchange="onCharacterChange()"></select>
-  <div class="divider"></div>
-  <label>手動：</label>
-  <input id="charManual" type="text" placeholder="例：catgirl-fragment" spellcheck="false">
-  <button onclick="loadManualCharacter()" title="載入指定 character_id">載入</button>
+  <div class="divider admin-control"></div>
+  <label class="admin-control">手動：</label>
+  <input id="charManual" class="admin-control" type="text" placeholder="例：catgirl-fragment" spellcheck="false">
+  <button class="admin-control" onclick="loadManualCharacter()" title="載入指定 character_id">載入</button>
   <button onclick="refreshNow()" title="立即重新整理">⟳</button>
   <div class="divider"></div>
   <label>版本：</label>
@@ -119,6 +119,11 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 //  Constants
 // =====================================================================
 const API = '/api/v1';
+const params = new URLSearchParams(location.search);
+const PUBLIC_MODE = params.get('public') === 'true';
+const CHARACTER_API = PUBLIC_MODE ? `${API}/personality-public/characters` : `${API}/character`;
+const PERSONALITY_API = PUBLIC_MODE ? `${API}/personality-public` : `${API}/system/personality`;
+const CHARACTER_STORAGE_KEY = PUBLIC_MODE ? 'persona_tree_public_character' : 'persona_tree_character';
 const POLL_INTERVAL_MS = 5 * 60 * 1000;  // 5 分鐘
 const BASE_RADIUS       = 6;   // 最小半徑
 const CHILD_SCALE       = 7;   // 每多一個子節點增加的半徑
@@ -236,9 +241,13 @@ const linkIndex = new Map();  // "src-tgt" -> link object
 document.addEventListener('DOMContentLoaded', async () => {
   resizeSvg();
   window.addEventListener('resize', resizeSvg);
-  document.getElementById('charManual').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') loadManualCharacter();
-  });
+  if (PUBLIC_MODE) {
+    document.querySelectorAll('.admin-control').forEach(el => el.style.display = 'none');
+  } else {
+    document.getElementById('charManual').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadManualCharacter();
+    });
+  }
   const slider = document.getElementById('versionSlider');
   slider.addEventListener('input', (e) => {
     const v = parseInt(e.target.value);
@@ -284,7 +293,8 @@ function resizeSvg() {
 // =====================================================================
 async function loadCharacterList() {
   try {
-    const r = await fetch(`${API}/character`);
+    const r = await fetch(CHARACTER_API);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const chars = await r.json();
     const sel = document.getElementById('charSelect');
     sel.innerHTML = '';
@@ -299,7 +309,7 @@ async function loadCharacterList() {
       opt.textContent = `${c.name} (${c.character_id})`;
       sel.appendChild(opt);
     });
-    const saved = localStorage.getItem('persona_tree_character');
+    const saved = localStorage.getItem(CHARACTER_STORAGE_KEY);
     const match = chars.find(c => c.character_id === saved);
     currentCharacterId = match ? match.character_id : chars[0].character_id;
     sel.value = currentCharacterId;
@@ -393,7 +403,7 @@ async function runPlayStep() {
 async function switchCharacter(id) {
   stopPlayback();
   currentCharacterId = id;
-  localStorage.setItem('persona_tree_character', id);
+  localStorage.setItem(CHARACTER_STORAGE_KEY, id);
   currentVersion = null;
   selectedNodeId = null;
   viewMode = 'live';
@@ -416,7 +426,7 @@ async function refreshNow() {
 async function fetchAndUpdate() {
   if (!currentCharacterId) return;
   try {
-    const r = await fetch(`${API}/system/personality/snapshots/latest/tree?character_id=${encodeURIComponent(currentCharacterId)}`);
+    const r = await fetch(`${PERSONALITY_API}/snapshots/latest/tree?character_id=${encodeURIComponent(currentCharacterId)}`);
     if (r.status === 404) {
       setStatus('此角色尚無 snapshot', 'warn');
       document.getElementById('summary').textContent = '（尚無演化資料）';
@@ -681,7 +691,7 @@ function escapeHtml(s) {
 async function loadVersionList() {
   if (!currentCharacterId) { allVersions = []; updateSliderUI(); return; }
   try {
-    const r = await fetch(`${API}/system/personality/snapshots?character_id=${encodeURIComponent(currentCharacterId)}`);
+    const r = await fetch(`${PERSONALITY_API}/snapshots?character_id=${encodeURIComponent(currentCharacterId)}`);
     if (!r.ok) { allVersions = []; updateSliderUI(); return; }
     const list = await r.json();
     allVersions = Array.isArray(list) ? list.slice().sort((a, b) => a.version - b.version) : [];
@@ -714,7 +724,7 @@ function updateSliderUI() {
 async function fetchSpecificVersion(v) {
   if (!currentCharacterId) return;
   try {
-    const r = await fetch(`${API}/system/personality/snapshots/${v}/tree?character_id=${encodeURIComponent(currentCharacterId)}`);
+    const r = await fetch(`${PERSONALITY_API}/snapshots/${v}/tree?character_id=${encodeURIComponent(currentCharacterId)}`);
     if (!r.ok) { setStatus(`v${v} 讀取失敗`, 'error'); return; }
     const tree = await r.json();
     applyTree(tree);

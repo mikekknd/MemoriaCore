@@ -73,7 +73,6 @@ body { height:100vh; overflow:hidden; }
 <script>
 let currentSessionId = null;
 let isSending = false;
-let suUserId = null;
 let _ttsAudio = null;
 let _pendingTtsEl = null;
 
@@ -86,19 +85,9 @@ marked.setOptions({
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-  Promise.allSettled([loadSuUserId(), loadSessionList()])
+  Promise.allSettled([loadSessionList()])
     .then(() => autoRestoreOrCreate());
 });
-
-async function loadSuUserId() {
-  try {
-    const r = await fetch(`${API}/system/config`);
-    if (r.ok) {
-      const cfg = await r.json();
-      suUserId = cfg.su_user_id || null;
-    }
-  } catch { suUserId = null; }
-}
 
 async function loadSessionList() {
   try {
@@ -135,7 +124,6 @@ async function createNewSession() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         channel: 'dashboard',
-        user_id: suUserId || 'default',
       }),
     });
     const data = await r.json();
@@ -260,7 +248,6 @@ async function sendMessage() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           channel: 'dashboard',
-          user_id: suUserId || 'default',
         }),
       });
       const data = await r.json();

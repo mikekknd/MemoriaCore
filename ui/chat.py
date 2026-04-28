@@ -5,9 +5,7 @@
 #   移除進度：Streamlit 導航已移除（2026-04-27）。
 import streamlit as st
 import json
-import requests
-
-
+from ui import api_client as requests
 def _render_perf_panel(di):
     """效能計時面板"""
     perf = di.get('perf_timing', {})

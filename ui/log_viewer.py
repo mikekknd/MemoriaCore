@@ -3,7 +3,7 @@ Log 檢視器頁面 — 透過 FastAPI REST API 載入 Log 資料。
 不再直接讀取 llm_trace.jsonl 檔案。
 """
 import streamlit as st
-import requests
+from ui import api_client as requests
 from datetime import datetime
 
 CATEGORY_META = {

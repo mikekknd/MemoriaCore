@@ -4,9 +4,7 @@
 # ⚠️ DEPRECATED: 對話歷史已移至 dashboard.html，本檔案保留作為參考，計畫移除。
 #   移除進度：Streamlit 導航已移除（2026-04-27）。
 import streamlit as st
-import requests
-
-
+from ui import api_client as requests
 @st.cache_data(ttl=5, show_spinner=False)
 def _cached_session_history(api_base, channel="all", limit=50):
     try:

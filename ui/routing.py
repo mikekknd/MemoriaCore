@@ -1,9 +1,7 @@
 # 【環境假設】：Python 3.12, Streamlit 1.30+
 # 任務路由映射獨立視圖模組。
 import streamlit as st
-import requests
-
-
+from ui import api_client as requests
 def render_routing_page(api_base, user_prefs=None):
     st.title("🔀 任務路由映射")
 

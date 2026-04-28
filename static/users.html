@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore Users</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
+<style>
+body { min-height:100vh; overflow:auto; }
+.page { padding:16px 20px 32px; }
+.header { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+h1 { font-size:18px; margin:0; }
+.hint { color:var(--text2); font-size:13px; line-height:1.5; margin-bottom:14px; }
+button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:12px; cursor:pointer; }
+button:hover { border-color:var(--accent); color:var(--accent); opacity:1; }
+button.danger { color:var(--error); border-color:var(--error); }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+table { width:100%; border-collapse:collapse; background:var(--surface); border:1px solid var(--border); }
+th, td { border-bottom:1px solid var(--border); padding:8px 10px; text-align:left; font-size:13px; vertical-align:top; }
+th { color:var(--text2); font-weight:600; background:var(--surface2); position:sticky; top:0; z-index:1; }
+td.mono { font-family:'Cascadia Code','Fira Code',monospace; font-size:12px; }
+.actions { display:flex; gap:6px; flex-wrap:wrap; }
+.stats { color:var(--text2); line-height:1.5; white-space:nowrap; }
+.empty { color:var(--text2); padding:24px; text-align:center; }
+.toast-container { position:fixed; right:16px; bottom:16px; }
+</style>
+</head>
+<body>
+<main class="page">
+  <div class="header">
+    <h1>使用者帳號</h1>
+    <button class="primary" onclick="loadUsers()">重新載入</button>
+  </div>
+  <div class="hint">刪除帳號是測試清理工具，會移除該帳號、登入嘗試、對話、profile、memory 與 topic cache。操作不可復原，且必須輸入完整 username 確認。</div>
+  <div id="content" class="empty">載入中...</div>
+</main>
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="/static/shared/common.js"></script>
+<script>
+let users = [];
+
+document.addEventListener('DOMContentLoaded', loadUsers);
+
+async function loadUsers() {
+  const content = document.getElementById('content');
+  content.className = 'empty';
+  content.textContent = '載入中...';
+  try {
+    const r = await fetch(`${API}/admin/users`);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErrorMessage(data, '載入使用者失敗'));
+    users = data;
+    renderUsers();
+  } catch (err) {
+    content.className = 'empty';
+    content.textContent = err.message || '載入使用者失敗';
+  }
+}
+
+function renderUsers() {
+  const content = document.getElementById('content');
+  if (!users.length) {
+    content.className = 'empty';
+    content.textContent = '尚無使用者';
+    return;
+  }
+  content.className = '';
+  content.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>帳號</th>
+          <th>角色</th>
+          <th>建立時間</th>
+          <th>Token</th>
+          <th>資料量</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${users.map(renderUserRow).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderUserRow(user) {
+  const s = user.stats || {};
+  return `
+    <tr>
+      <td class="mono">${user.id}</td>
+      <td>
+        <div>${escapeHtml(user.username)}</div>
+        ${user.nickname ? `<div class="stats">${escapeHtml(user.nickname)}</div>` : ''}
+      </td>
+      <td>${escapeHtml(user.role)}</td>
+      <td class="mono">${escapeHtml(user.created_at || '')}</td>
+      <td class="mono">v${user.token_version || 0}</td>
+      <td class="stats">
+        sessions ${s.sessions || 0} / messages ${s.messages || 0}<br>
+        blocks ${s.memory_blocks || 0} / core ${s.core_memories || 0}<br>
+        profile ${s.profiles || 0} / topics ${s.topics || 0}
+      </td>
+      <td>
+        <div class="actions">
+          <button onclick="revokeUser(${user.id})">撤銷登入</button>
+          <button onclick="resetPassword(${user.id}, '${escapeJs(user.username)}')">重設密碼</button>
+          <button class="danger" onclick="deleteUser(${user.id}, '${escapeJs(user.username)}')">刪除</button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+async function revokeUser(userId) {
+  try {
+    const r = await fetch(`${API}/admin/users/${userId}/revoke`, { method:'POST' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErrorMessage(data, '撤銷失敗'));
+    toast('已撤銷登入', 'success');
+    loadUsers();
+  } catch (err) {
+    toast(err.message || '撤銷失敗', 'error');
+  }
+}
+
+async function resetPassword(userId, username) {
+  const password = prompt(`輸入 ${username} 的新密碼（至少 6 字元）`);
+  if (!password) return;
+  try {
+    const r = await fetch(`${API}/admin/users/${userId}/password`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({new_password: password}),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErrorMessage(data, '重設失敗'));
+    toast('密碼已重設，舊登入已失效', 'success');
+    loadUsers();
+  } catch (err) {
+    toast(err.message || '重設失敗', 'error');
+  }
+}
+
+async function deleteUser(userId, username) {
+  const confirmation = prompt(`刪除 ${username} 會移除帳號與該使用者資料。請輸入完整 username 確認：`);
+  if (confirmation === null) return;
+  if (confirmation !== username) {
+    toast('username 確認不一致，已取消', 'error');
+    return;
+  }
+  try {
+    const r = await fetch(`${API}/admin/users/${userId}`, {
+      method:'DELETE',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({confirm_username: confirmation}),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErrorMessage(data, '刪除失敗'));
+    toast(`已刪除 ${username}`, 'success');
+    loadUsers();
+  } catch (err) {
+    toast(err.message || '刪除失敗', 'error');
+  }
+}
+
+function escapeJs(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+</script>
+</body>
+</html>

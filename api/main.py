@@ -16,7 +16,8 @@ from api.dependencies import init_all, get_storage, get_router, get_memory_sys, 
 from api.session_manager import session_manager
 from api.telegram_bot import start_telegram_bot, stop_telegram_bot
 from core.background_gatherer import start_background_gather_loop
-from api.routers import health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution
+from api.middleware.auth import AuthMiddleware
+from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users
 
 
 # ── Lifespan：啟動 / 關機 ────────────────────────────────
@@ -106,10 +107,27 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS（Unity 桌面端需要 allow_origins=["*"]） ─────────
+def _cors_origins() -> list[str]:
+    raw = os.getenv("MEMORIACORE_CORS_ORIGINS", "")
+    if raw.strip():
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    return [
+        "http://localhost:8088",
+        "http://127.0.0.1:8088",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+        "http://localhost:8502",
+        "http://127.0.0.1:8502",
+    ]
+
+
+# AuthMiddleware 先註冊，讓後註冊的 CORS 成為外層 middleware，確保 401/403 也帶 CORS header。
+app.add_middleware(AuthMiddleware)
+
+# ── CORS（公開部署禁止使用萬用字元；需要額外 origin 請設 MEMORIACORE_CORS_ORIGINS）──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -117,6 +135,7 @@ app.add_middleware(
 
 # ── 掛載路由 ──────────────────────────────────────────────
 PREFIX = "/api/v1"
+app.include_router(auth.router, prefix=PREFIX)
 app.include_router(health.router, prefix=PREFIX)
 app.include_router(memory.router, prefix=PREFIX)
 app.include_router(profile.router, prefix=PREFIX)
@@ -128,12 +147,14 @@ app.include_router(chat_rest.router, prefix=PREFIX)
 app.include_router(character.router, prefix=PREFIX)
 app.include_router(prompts.router, prefix=PREFIX)
 app.include_router(persona_evolution.router, prefix=PREFIX)
+app.include_router(personality_public.router, prefix=PREFIX)
+app.include_router(admin_users.router, prefix=PREFIX)
 
 
-# ── 根路由 → Dashboard ───────────────────────────────────
+# ── 根路由 → 一般入口 ────────────────────────────────────
 @app.get("/")
 async def root_redirect():
-    return RedirectResponse(url="/static/dashboard.html")
+    return RedirectResponse(url="/static/app.html")
 
 
 # ── 靜態檔案服務 ──────────────────────────────────────────

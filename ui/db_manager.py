@@ -2,9 +2,7 @@
 # 已遷移為瘦客戶端：所有業務邏輯透過 FastAPI REST API 執行。
 import streamlit as st
 import pandas as pd
-import requests
-
-
+from ui import api_client as requests
 @st.cache_data(ttl=30, show_spinner=False)
 def _cached_sync_status(api_base):
     try:

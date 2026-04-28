@@ -1,8 +1,8 @@
 """記憶區塊、核心認知、圖譜、查詢擴展端點"""
 import asyncio
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from api.dependencies import (
-    get_memory_sys, get_storage, get_router, get_embed_model, db_write_lock,
+    get_current_user, get_memory_sys, get_storage, get_router, get_embed_model, db_write_lock,
 )
 from api.models.requests import SearchRequest, CoreSearchRequest, ExpandQueryRequest, BlockUpdateRequest
 from api.models.responses import (
@@ -15,6 +15,24 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 
 # ── helpers ───────────────────────────────────────────────
+def _visibility_filter_for(user: dict) -> list[str]:
+    return ["private", "public"] if user.get("role") == "admin" else ["public"]
+
+
+def _blocks_for_user(ms, user: dict) -> list[dict]:
+    blocks: list[dict] = []
+    for vis in _visibility_filter_for(user):
+        blocks.extend(ms._get_memory_blocks(str(user["id"]), "default", vis))
+    return blocks
+
+
+def _cores_for_user(ms, user: dict) -> list[dict]:
+    cores: list[dict] = []
+    for vis in _visibility_filter_for(user):
+        cores.extend(ms._get_core_memories(str(user["id"]), "default", vis))
+    return cores
+
+
 def _block_to_dto(b: dict, include_vectors: bool = False) -> MemoryBlockDTO:
     prefs = []
     for p in b.get("potential_preferences", []):
@@ -43,54 +61,86 @@ def _block_to_dto(b: dict, include_vectors: bool = False) -> MemoryBlockDTO:
 # 以下端點透過 back-compat property，僅操作 (user_id='default', visibility='public') 範圍。
 # 非 default 使用者的資料不可見。如需跨 user/visibility 管理，需擴充為接受 query params。
 @router.get("/blocks", response_model=list[MemoryBlockDTO])
-async def list_blocks(include_vectors: bool = Query(False)):
+async def list_blocks(include_vectors: bool = Query(False), current_user: dict = Depends(get_current_user)):
     ms = get_memory_sys()
-    return [_block_to_dto(b, include_vectors) for b in ms.memory_blocks]
+    return [_block_to_dto(b, include_vectors) for b in _blocks_for_user(ms, current_user)]
 
 
 @router.get("/blocks/{block_id}", response_model=MemoryBlockDTO)
-async def get_block(block_id: str, include_vectors: bool = Query(False)):
+async def get_block(
+    block_id: str,
+    include_vectors: bool = Query(False),
+    current_user: dict = Depends(get_current_user),
+):
     ms = get_memory_sys()
-    for b in ms.memory_blocks:
+    for b in _blocks_for_user(ms, current_user):
         if b["block_id"] == block_id:
             return _block_to_dto(b, include_vectors)
     raise HTTPException(404, detail=f"Block {block_id} not found")
 
 
 @router.put("/blocks/{block_id}", response_model=MemoryBlockDTO)
-async def update_block(block_id: str, body: BlockUpdateRequest):
+async def update_block(block_id: str, body: BlockUpdateRequest, current_user: dict = Depends(get_current_user)):
     ms = get_memory_sys()
     async with db_write_lock:
-        ok = await asyncio.to_thread(ms.update_memory_block, block_id, body.new_overview)
+        ok = False
+        for vis in _visibility_filter_for(current_user):
+            ok = await asyncio.to_thread(
+                ms.update_memory_block,
+                block_id,
+                body.new_overview,
+                user_id=str(current_user["id"]),
+                character_id="default",
+                visibility=vis,
+            )
+            if ok:
+                break
     if not ok:
         raise HTTPException(404, detail=f"Block {block_id} not found or vector engine not ready")
-    for b in ms.memory_blocks:
+    for b in _blocks_for_user(ms, current_user):
         if b["block_id"] == block_id:
             return _block_to_dto(b)
     raise HTTPException(500, detail="Block updated but not found in memory")
 
 
 @router.delete("/blocks/{block_id}")
-async def delete_block(block_id: str):
+async def delete_block(block_id: str, current_user: dict = Depends(get_current_user)):
     ms = get_memory_sys()
     async with db_write_lock:
-        before = len(ms.memory_blocks)
-        ms.memory_blocks = [b for b in ms.memory_blocks if b["block_id"] != block_id]
-        if len(ms.memory_blocks) == before:
+        found = False
+        user_id = str(current_user["id"])
+        for vis in _visibility_filter_for(current_user):
+            blocks = ms._get_memory_blocks(user_id, "default", vis)
+            before = len(blocks)
+            blocks[:] = [b for b in blocks if b["block_id"] != block_id]
+            if len(blocks) < before:
+                found = True
+                await asyncio.to_thread(
+                    ms.storage.save_db,
+                    ms.db_path,
+                    blocks,
+                    user_id=user_id,
+                    character_id="default",
+                    visibility=vis,
+                )
+                break
+        if not found:
             raise HTTPException(404, detail=f"Block {block_id} not found")
-        await asyncio.to_thread(ms.storage.save_db, ms.db_path, ms.memory_blocks)
     return {"status": "deleted", "block_id": block_id}
 
 
 # ── Search ────────────────────────────────────────────────
 @router.post("/search", response_model=list[SearchResultDTO])
-async def search_blocks(body: SearchRequest):
+async def search_blocks(body: SearchRequest, current_user: dict = Depends(get_current_user)):
     ms = get_memory_sys()
     results = await asyncio.to_thread(
         ms.search_blocks,
         body.query, body.combined_keywords,
         body.top_k, body.alpha, 0.5,
         body.threshold, body.hard_base,
+        user_id=str(current_user["id"]),
+        character_id="default",
+        visibility_filter=_visibility_filter_for(current_user),
     )
     out = []
     for b in results:
@@ -110,18 +160,26 @@ async def search_blocks(body: SearchRequest):
 # ── Core Memories ─────────────────────────────────────────
 # 同 Memory Blocks：僅限 (user_id='default', visibility='public') 範圍。
 @router.get("/core", response_model=list[CoreMemoryDTO])
-async def list_core():
+async def list_core(current_user: dict = Depends(get_current_user)):
     ms = get_memory_sys()
     return [CoreMemoryDTO(
         core_id=c["core_id"], timestamp=c.get("timestamp", ""),
         insight=c.get("insight", ""), encounter_count=float(c.get("encounter_count", 1.0)),
-    ) for c in ms.core_memories]
+    ) for c in _cores_for_user(ms, current_user)]
 
 
 @router.post("/core/search")
-async def search_core(body: CoreSearchRequest):
+async def search_core(body: CoreSearchRequest, current_user: dict = Depends(get_current_user)):
     ms = get_memory_sys()
-    results = await asyncio.to_thread(ms.search_core_memories, body.query, body.top_k, body.threshold)
+    results = await asyncio.to_thread(
+        ms.search_core_memories,
+        body.query,
+        body.top_k,
+        body.threshold,
+        user_id=str(current_user["id"]),
+        character_id="default",
+        visibility_filter=_visibility_filter_for(current_user),
+    )
     return results
 
 
@@ -130,12 +188,15 @@ async def delete_core(
     core_id: str,
     user_id: str = Query("default"),
     character_id: str = Query("default"),
+    current_user: dict = Depends(get_current_user),
 ):
     ms = get_memory_sys()
     async with db_write_lock:
         # 從所有已快取的 visibility slot 移除
         found = False
-        for vis in ("public", "private"):
+        user_id = str(current_user["id"])
+        character_id = "default"
+        for vis in _visibility_filter_for(current_user):
             cache_key = (user_id, character_id, vis)
             if cache_key in ms._core_memories_cache:
                 before = len(ms._core_memories_cache[cache_key])
@@ -155,13 +216,16 @@ async def delete_core(
 
 # ── Graph（力導向圖用） ──────────────────────────────────
 @router.get("/graph", response_model=GraphDTO)
-async def get_graph(similarity_threshold: float = Query(0.6)):
+async def get_graph(
+    similarity_threshold: float = Query(0.6),
+    current_user: dict = Depends(get_current_user),
+):
     ms = get_memory_sys()
     nodes: list[GraphNodeDTO] = []
     edges: list[GraphEdgeDTO] = []
 
-    blocks = ms.memory_blocks
-    cores = ms.core_memories
+    blocks = _blocks_for_user(ms, current_user)
+    cores = _cores_for_user(ms, current_user)
 
     for b in blocks:
         label = b["overview"].split("\n")[0] if "\n" in b["overview"] else b["overview"]
