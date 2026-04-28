@@ -1,9 +1,7 @@
 # 【環境假設】：Python 3.12, Streamlit 1.30+
 # 已遷移為瘦客戶端：透過 FastAPI REST API 讀寫設定。
 import streamlit as st
-import requests
-
-
+from ui import api_client as requests
 def render_settings_page(api_base, user_prefs=None):
     st.title("⚙️ 系統設定")
 

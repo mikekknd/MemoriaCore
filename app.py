@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 import warnings
 
+from ui import api_client
 from ui.db_manager import render_db_manager_page
 from ui.settings import render_settings_page
 from ui.routing import render_routing_page
@@ -28,55 +29,9 @@ def _ensure_streamlit_api_state() -> None:
     st.session_state.setdefault("api_user", None)
 
 
-def _install_authenticated_requests() -> None:
-    if not hasattr(requests, "_mc_original_get"):
-        requests._mc_original_get = requests.get
-        requests._mc_original_post = requests.post
-        requests._mc_original_put = requests.put
-        requests._mc_original_delete = requests.delete
-
-    session = st.session_state.api_session
-
-    def _headers(extra=None, include_csrf=False):
-        headers = dict(extra or {})
-        csrf = st.session_state.get("api_csrf_token", "")
-        if include_csrf and csrf and "X-CSRF-Token" not in headers:
-            headers["X-CSRF-Token"] = csrf
-        return headers
-
-    def _get(url, **kwargs):
-        return session.get(url, **kwargs)
-
-    def _post(url, **kwargs):
-        kwargs["headers"] = _headers(kwargs.get("headers"), include_csrf=True)
-        return session.post(url, **kwargs)
-
-    def _put(url, **kwargs):
-        kwargs["headers"] = _headers(kwargs.get("headers"), include_csrf=True)
-        return session.put(url, **kwargs)
-
-    def _delete(url, **kwargs):
-        kwargs["headers"] = _headers(kwargs.get("headers"), include_csrf=True)
-        return session.delete(url, **kwargs)
-
-    requests.get = _get
-    requests.post = _post
-    requests.put = _put
-    requests.delete = _delete
-
-
-def _restore_plain_requests() -> None:
-    if not hasattr(requests, "_mc_original_get"):
-        return
-    requests.get = requests._mc_original_get
-    requests.post = requests._mc_original_post
-    requests.put = requests._mc_original_put
-    requests.delete = requests._mc_original_delete
-
-
 def _logout_streamlit() -> None:
     try:
-        requests.post(f"{API_BASE}/auth/logout", timeout=5)
+        api_client.post(f"{API_BASE}/auth/logout", timeout=5)
     except Exception:
         pass
     st.session_state.api_session = requests.Session()
@@ -134,14 +89,13 @@ def _render_login() -> None:
 
 def _require_admin_login() -> bool:
     _ensure_streamlit_api_state()
-    _install_authenticated_requests()
     user = st.session_state.get("api_user")
     if not user:
         _render_login()
         return False
 
     try:
-        response = requests.get(f"{API_BASE}/auth/me", timeout=5)
+        response = api_client.get(f"{API_BASE}/auth/me", timeout=5)
     except requests.ConnectionError:
         st.error("⚠️ FastAPI 後端未啟動！請先執行: `uvicorn api.main:app --port 8088`")
         return False
@@ -169,7 +123,7 @@ def _require_admin_login() -> bool:
 @st.cache_data(ttl=30, show_spinner=False)
 def _load_config(api_base: str, auth_cache_key: str) -> dict:
     """快取系統設定 30 秒，避免每次 Streamlit rerun 都重複呼叫 API。"""
-    resp = requests.get(f"{api_base}/system/config", timeout=3)
+    resp = api_client.get(f"{api_base}/system/config", timeout=3)
     if resp.ok:
         return resp.json()
     return {}

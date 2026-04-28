@@ -121,6 +121,9 @@ def _cors_origins() -> list[str]:
     ]
 
 
+# AuthMiddleware 先註冊，讓後註冊的 CORS 成為外層 middleware，確保 401/403 也帶 CORS header。
+app.add_middleware(AuthMiddleware)
+
 # ── CORS（公開部署禁止使用萬用字元；需要額外 origin 請設 MEMORIACORE_CORS_ORIGINS）──
 app.add_middleware(
     CORSMiddleware,
@@ -129,7 +132,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(AuthMiddleware)
 
 # ── 掛載路由 ──────────────────────────────────────────────
 PREFIX = "/api/v1"

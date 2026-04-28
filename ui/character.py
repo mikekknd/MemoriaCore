@@ -1,7 +1,5 @@
 import streamlit as st
-import requests
-
-
+from ui import api_client as requests
 def _bump_form_version() -> None:
     """讓 char_edit_form 與 seed editor 重新初始化（版本號+1）。"""
     st.session_state["_ced_v"] = st.session_state.get("_ced_v", 0) + 1
