@@ -37,6 +37,7 @@ characters.json
 weather_cache.json
 .memoriacore_jwt_secret
 PersonaProbe/result/
+generated_images/
 
 # Build & Dist
 build/

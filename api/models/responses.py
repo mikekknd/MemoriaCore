@@ -229,6 +229,7 @@ class SystemConfigDTO(BaseModel):
     active_character_id: Optional[str] = "default"
     dual_layer_enabled: bool = False
     tts_enabled: bool = False
+    image_generation_enabled: bool = False
     minimax_api_key: str = ""
     minimax_voice_id: str = "moss_audio_7c2b39d9-1006-11f1-b9c4-4ea5324904c7"
     minimax_model: str = "speech-2.8-hd"

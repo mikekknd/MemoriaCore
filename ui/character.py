@@ -60,6 +60,9 @@ def render_character_page(api_base: str, user_prefs: dict):
 
                     if char.get("tts_language"):
                         st.markdown(f"**🗣️ TTS 發音語言:** `{char.get('tts_language')}`")
+                    if char.get("visual_prompt"):
+                        st.write("**圖片生成外觀提示 (Visual Prompt):**")
+                        st.info(char.get("visual_prompt", ""))
                     st.write("**回覆文字規則 (Reply Rules):**")
                     st.info(char.get("reply_rules", ""))
                     if char.get("tts_rules"):
@@ -243,6 +246,12 @@ def render_character_page(api_base: str, user_prefs: dict):
             st.caption("📝 原始 System Prompt — 由你手動撰寫，PersonaProbe 反思不會覆蓋此欄位。")
             c_prompt = st.text_area("原始人設內容", value=str(draft.get("system_prompt") or ""), height=250,
                                     label_visibility="collapsed")
+            c_visual_prompt = st.text_area(
+                "圖片生成外觀提示 (visual_prompt)",
+                value=str(draft.get("visual_prompt") or ""),
+                height=120,
+                help="當使用者要求生成目前角色本人、你的自畫像或你的形象時，generate_image tool 會把此欄位注入圖片 prompt。請只描述可視覺化元素，例如物種、髮色、眼睛、服裝、尾巴、配件、畫風。",
+            )
 
             with st.expander("🧬 演化人設（進階，由 PersonaProbe 生成）"):
                 st.caption("📌 演化人設分為 **public** 與 **private** 兩份，各自獨立演化。SU 身份使用 private 分支。")
@@ -290,6 +299,7 @@ def render_character_page(api_base: str, user_prefs: dict):
                     payload = {
                         "name": c_name,
                         "system_prompt": c_prompt,
+                        "visual_prompt": c_visual_prompt.strip(),
                         "evolved_prompt": evolved_payload,
                         "tts_language": c_tts.strip(),
                         "reply_rules": c_reply_rules,

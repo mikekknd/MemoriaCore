@@ -19,6 +19,7 @@ class CharacterManager:
                     "character_id": "default",
                     "name": "預設助理",
                     "system_prompt": "你是一個具備情境記憶與核心認知的 AI 助理。",
+                    "visual_prompt": "具備情境記憶與核心認知的 AI 助理形象，乾淨、親切、專業的角色肖像。",
                     "evolved_prompt": None,
                     "metrics": ["professionalism", "friendliness"],
                     "allowed_tones": ["Neutral", "Happy", "Professional", "Friendly"],
@@ -148,6 +149,10 @@ class CharacterManager:
                     "type": "string",
                     "description": "回覆文字的格式與語氣規定（例如必須說繁體中文、不准用 Emoji、句尾要加喵 等），同時套用於 reply 欄位（字幕文字）"
                 },
+                "visual_prompt": {
+                    "type": "string",
+                    "description": "角色外觀專用的圖片生成提示詞。描述可視覺化元素，例如物種、髮色、眼睛、服裝、體型、年齡感、配件、整體畫風。禁止包含對話規則、人格分析或不可視覺化的抽象心理描述。"
+                },
                 "tts_rules": {
                     "type": "string",
                     "description": "TTS 發音專用指引（例如發音腔調、停頓節奏、特定詞彙的讀音），僅注入 speech 欄位的生成提示。無特殊需求請留空字串。"
@@ -157,7 +162,7 @@ class CharacterManager:
                     "description": "如果角色發音語言與字幕不同，請填寫此欄位（例如 '日文', '英文'）。若無需雙語分離則留空字串。"
                 }
             },
-            "required": ["name", "system_prompt", "reply_rules", "tts_rules", "tts_language"]
+            "required": ["name", "system_prompt", "reply_rules", "visual_prompt", "tts_rules", "tts_language"]
         }
 
         prompt = get_prompt_manager().get("character_generate").format(

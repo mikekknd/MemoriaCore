@@ -79,6 +79,7 @@ class ConfigUpdateRequest(BaseModel):
     active_character_id: Optional[str] = None
     dual_layer_enabled: Optional[bool] = None
     tts_enabled: Optional[bool] = None
+    image_generation_enabled: Optional[bool] = None
     minimax_api_key: Optional[str] = None
     minimax_voice_id: Optional[str] = None
     minimax_model: Optional[str] = None
