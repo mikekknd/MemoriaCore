@@ -6,6 +6,8 @@ venv_ai_memory/
 env/
 venv/
 .pytest_cache/
+.tmp_pytest/
+pytest-cache-files-*/
 .coverage
 
 # Environments
@@ -33,6 +35,7 @@ ai_personality.md
 persona_sync_state.json
 characters.json
 weather_cache.json
+.memoriacore_jwt_secret
 PersonaProbe/result/
 
 # Build & Dist

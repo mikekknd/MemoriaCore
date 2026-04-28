@@ -52,6 +52,8 @@
 
   /* ===== Log Entries ===== */
   .log-container { padding: 12px 24px 80px; display: none; }
+  .empty-state { color: var(--text2); padding: 32px 24px; text-align: center; line-height: 1.7; }
+  .empty-state strong { color: var(--text); font-weight: 600; }
   .log-entry { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; overflow: hidden; transition: all .15s; }
   .log-entry:hover { border-color: var(--text2); }
   .log-entry.hidden { display: none; }
@@ -151,6 +153,7 @@
 
 <div class="log-container" id="logContainer"></div>
 
+<script src="/static/shared/common.js"></script>
 <script>
 let allEntries = [];
 let searchTerm = '';
@@ -189,7 +192,10 @@ async function clearLogs() {
 async function fetchLogsFromApi() {
   try {
     const resp = await fetch('/api/v1/logs?limit=500');
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(apiErrorMessage(data, `HTTP ${resp.status}`));
+    }
     const data = await resp.json();
     // API 回傳已是反序（最新在前），還原為正序以相容 parseAndRender
     allEntries = data.reverse();
@@ -224,12 +230,23 @@ async function fetchLogsFromApi() {
 
     renderEntries();
     applyFilters();
+    if (!allEntries.length) {
+      renderEmptyState('<strong>目前沒有可顯示的 Log。</strong><br>Log Viewer 已自動讀取專案根目錄的 llm_trace.jsonl，但檔案目前為空或沒有符合格式的紀錄。');
+    }
 
     const sb = document.getElementById('searchBox');
     sb.oninput = () => { searchTerm = sb.value.trim().toLowerCase(); applyFilters(); };
   } catch (e) {
     console.error('API Log 載入失敗:', e);
+    dropZone.style.display = 'none';
+    document.getElementById('toolbar').style.display = 'flex';
+    document.getElementById('logContainer').style.display = 'block';
+    renderEmptyState(`<strong>Log 載入失敗。</strong><br>${escapeHtml(e.message || String(e))}`);
   }
+}
+
+function renderEmptyState(message) {
+  document.getElementById('logContainer').innerHTML = `<div class="empty-state">${message}</div>`;
 }
 
 // ===== Drag & Drop =====

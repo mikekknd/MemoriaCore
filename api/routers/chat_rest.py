@@ -7,12 +7,12 @@ import asyncio
 import json
 import queue as sync_queue
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 import base64
 
-from api.dependencies import get_storage, get_tts_client, get_character_manager, get_router
+from api.dependencies import get_current_user, get_storage, get_tts_client, get_character_manager, get_router
 from api.session_manager import session_manager
 from api.models.requests import ChatSyncRequest
 from api.models.responses import ChatSyncResponseDTO, RetrievalContextDTO
@@ -27,15 +27,29 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # SECTION: 共用 — Session 取得/還原/建立
 # ════════════════════════════════════════════════════════════
 
-async def _resolve_session(session_id: str | None):
+async def _resolve_session(session_id: str | None, current_user: dict):
     """取得 session：優先從記憶體取，其次從 DB 還原，最後才建新 session。"""
+    user_id = str(current_user["id"])
     session = None
     if session_id:
         session = await session_manager.get(session_id)
+        if session is not None and session.user_id != user_id:
+            raise HTTPException(403, detail="Session owner mismatch")
         if session is None:
-            session = await session_manager.restore_from_db(session_id)
+            try:
+                session = await session_manager.restore_from_db(session_id, user_id=user_id)
+            except PermissionError:
+                raise HTTPException(403, detail="Session owner mismatch")
     if session is None:
-        session = await session_manager.create(channel="streamlit")
+        channel_class = "private" if current_user.get("role") == "admin" else "public"
+        persona_face = "private" if current_user.get("role") == "admin" else "public"
+        session = await session_manager.create(
+            channel="dashboard",
+            channel_uid=user_id,
+            user_id=user_id,
+            channel_class=channel_class,
+            persona_face=persona_face,
+        )
     return session
 
 
@@ -44,8 +58,8 @@ async def _resolve_session(session_id: str | None):
 # ════════════════════════════════════════════════════════════
 
 @router.post("/sync", response_model=ChatSyncResponseDTO)
-async def chat_sync(body: ChatSyncRequest):
-    session = await _resolve_session(body.session_id)
+async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_current_user)):
+    session = await _resolve_session(body.session_id, current_user)
     sid = session.session_id
 
     await session_manager.add_user_message(sid, body.content)
@@ -113,14 +127,14 @@ async def chat_sync(body: ChatSyncRequest):
 # ════════════════════════════════════════════════════════════
 
 @router.post("/stream-sync")
-async def chat_stream_sync(body: ChatSyncRequest):
+async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(get_current_user)):
     """
     與 /sync 功能相同，但以 SSE (Server-Sent Events) 串流回傳中間狀態。
     事件格式：data: {"type": "tool_status"|"result"|"error", ...}
     """
     # 優先從記憶體取得 session；找不到時先嘗試從 DB 還原（後端重啟後記憶體清空的情況）；
     # 都沒有才建新 session（channel 統一用 streamlit，確保能出現在 UI session 列表）
-    session = await _resolve_session(body.session_id)
+    session = await _resolve_session(body.session_id, current_user)
     sid = session.session_id
 
     await session_manager.add_user_message(sid, body.content)

@@ -55,6 +55,7 @@ async def get_config():
         browser_agent_enabled=prefs.get("browser_agent_enabled", False),
         bash_tool_enabled=prefs.get("bash_tool_enabled", False),
         bash_tool_allowed_commands=prefs.get("bash_tool_allowed_commands", []),
+        registration_enabled=prefs.get("registration_enabled", True),
         # ⚠️ SECURITY: su_user_id 目前無任何權限管控，詳見 api/models/requests.py 的風險說明
         su_user_id=prefs.get("su_user_id", ""),
     )

@@ -44,23 +44,26 @@ class SessionManager:
         user_id: str = "default",
         character_id: str = "default",
         channel_class: str = "public",
+        persona_face: str | None = None,
     ) -> SessionState:
         async with self._lock:
             sid = str(uuid.uuid4())
-            persona_face, _ = resolve_context(user_id, channel)
+            resolved_face, _ = resolve_context(user_id, channel)
+            effective_face = persona_face or resolved_face
             session = SessionState(
                 session_id=sid,
                 channel=channel,
                 channel_uid=channel_uid,
                 user_id=user_id,
                 character_id=character_id,
-                persona_face=persona_face,
+                persona_face=effective_face,
                 channel_class=channel_class,
             )
             self._sessions[sid] = session
             if self._storage:
                 self._storage.create_conversation_session(
-                    sid, channel, channel_uid, user_id=user_id, channel_class=channel_class
+                    sid, channel, channel_uid,
+                    user_id=user_id, channel_class=channel_class, persona_face=effective_face,
                 )
             return session
 
@@ -79,10 +82,13 @@ class SessionManager:
         user_id: str = "default",
         character_id: str = "default",
         channel_class: str = "public",
+        persona_face: str | None = None,
     ) -> SessionState:
         if session_id:
             s = await self.get(session_id)
             if s:
+                if user_id is not None and s.user_id != user_id:
+                    raise PermissionError("session owner mismatch")
                 return s
         return await self.create(
             channel=channel,
@@ -90,9 +96,10 @@ class SessionManager:
             user_id=user_id,
             character_id=character_id,
             channel_class=channel_class,
+            persona_face=persona_face,
         )
 
-    async def restore_from_db(self, session_id: str) -> SessionState | None:
+    async def restore_from_db(self, session_id: str, user_id: str | None = None) -> SessionState | None:
         """從 DB 還原已過期的 session 到記憶體。
         使用 bridge_after_msg_id 避免載入已被記憶管線處理過的舊訊息。
         還原時從 DB 取 user_id / channel_class，並重新計算 persona_face。
@@ -102,15 +109,20 @@ class SessionManager:
         info = self._storage.get_session_info(session_id)
         if not info:
             return None
+        if user_id is not None and info.get("user_id") != user_id:
+            raise PermissionError("session owner mismatch")
         async with self._lock:
             if session_id in self._sessions:
+                if user_id is not None and self._sessions[session_id].user_id != user_id:
+                    raise PermissionError("session owner mismatch")
                 return self._sessions[session_id]
             bridge_point = self._storage.get_bridge_point(session_id)
             messages = self._storage.load_conversation_messages(session_id, since_msg_id=bridge_point)
             channel = info.get("channel", "rest")
             user_id = info.get("user_id", "default")
             channel_class = info.get("channel_class", "public")
-            persona_face, _ = resolve_context(user_id, channel)
+            resolved_face, _ = resolve_context(user_id, channel)
+            persona_face = info.get("persona_face") or resolved_face
             session = SessionState(
                 session_id=session_id,
                 messages=messages,

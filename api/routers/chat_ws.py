@@ -9,6 +9,7 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from api.auth_utils import AUTH_COOKIE_NAME, decode_jwt
 from api.dependencies import get_storage, get_tts_client
 from api.session_manager import session_manager
 from api.routers.chat.ws_manager import ws_manager
@@ -24,13 +25,48 @@ from api.routers.chat.timer import StepTimer
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+async def _authenticate_ws(ws: WebSocket) -> dict | None:
+    token = ws.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        await ws.close(code=1008)
+        return None
+    try:
+        payload = decode_jwt(token)
+        storage = get_storage()
+        user = storage.get_user_by_id(payload.get("sub"))
+        if not user or int(user.get("token_version", 0)) != int(payload.get("ver", -1)):
+            await ws.close(code=1008)
+            return None
+        return user
+    except Exception:
+        await ws.close(code=1008)
+        return None
+
+
 # ════════════════════════════════════════════════════════════
 # SECTION: WebSocket 端點
 # ════════════════════════════════════════════════════════════
 
 @router.websocket("/stream")
 async def chat_stream(ws: WebSocket, session_id: str | None = None):
-    session = await session_manager.get_or_create(session_id, channel="websocket")
+    current_user = await _authenticate_ws(ws)
+    if not current_user:
+        return
+    user_id = str(current_user["id"])
+    channel_class = "private" if current_user.get("role") == "admin" else "public"
+    persona_face = "private" if current_user.get("role") == "admin" else "public"
+    try:
+        session = await session_manager.get_or_create(
+            session_id,
+            channel="websocket",
+            channel_uid=user_id,
+            user_id=user_id,
+            channel_class=channel_class,
+            persona_face=persona_face,
+        )
+    except PermissionError:
+        await ws.close(code=1008)
+        return
     sid = session.session_id
     await ws_manager.connect(sid, ws)
 

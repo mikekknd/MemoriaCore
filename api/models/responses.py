@@ -91,6 +91,12 @@ class LogEntryDTO(BaseModel):
     details: Optional[dict] = None
 
 
+# ── Public Character ─────────────────────────────────────
+class PublicCharacterDTO(BaseModel):
+    character_id: str
+    name: str
+
+
 # ── Health ────────────────────────────────────────────────
 class HealthDTO(BaseModel):
     onnx_loaded: bool
@@ -153,6 +159,49 @@ class ChatSyncResponseDTO(BaseModel):
     thinking_speech: Optional[str] = None
 
 
+# ── Auth ─────────────────────────────────────────────────
+class AuthUserDTO(BaseModel):
+    id: int
+    username: str
+    nickname: str = ""
+    role: str = "user"
+    telegram_uid: Optional[str] = None
+    discord_uid: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    csrf_token: Optional[str] = None
+
+
+class AuthResponseDTO(BaseModel):
+    user: AuthUserDTO
+    csrf_token: str
+
+
+class AuthSessionDTO(BaseModel):
+    session_id: str
+
+
+class AdminUserStatsDTO(BaseModel):
+    sessions: int = 0
+    messages: int = 0
+    memory_blocks: int = 0
+    core_memories: int = 0
+    profiles: int = 0
+    topics: int = 0
+
+
+class AdminUserDTO(AuthUserDTO):
+    token_version: int = 0
+    stats: AdminUserStatsDTO = Field(default_factory=AdminUserStatsDTO)
+
+
+class AdminUserDeleteResultDTO(BaseModel):
+    status: str
+    deleted_user_id: int
+    deleted_username: str
+    deleted_counts: AdminUserStatsDTO
+
+
 # ── 系統設定 ──────────────────────────────────────────────
 class SystemConfigDTO(BaseModel):
     routing_config: dict = {}
@@ -189,6 +238,7 @@ class SystemConfigDTO(BaseModel):
     browser_agent_enabled: bool = False
     bash_tool_enabled: bool = False
     bash_tool_allowed_commands: list[str] = []
+    registration_enabled: bool = True
     # ⚠️ SECURITY: su_user_id 目前無任何權限管控，詳見 api/models/requests.py 的風險說明
     su_user_id: str = ""
 

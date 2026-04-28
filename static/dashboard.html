@@ -34,6 +34,9 @@ body { height:100vh; overflow:hidden; }
 .viewer-frames { flex:1; display:flex; min-height:0; }
 .viewer-frames iframe { flex:1; min-width:0; }
 .viewer-frames iframe.hidden { display:none; }
+.status-actions { margin-left:auto; display:flex; align-items:center; gap:8px; }
+.status-actions button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:3px 10px; color:var(--text); font-size:12px; cursor:pointer; }
+.status-actions button:hover { border-color:var(--accent); color:var(--accent); opacity:1; }
 @media (max-width:900px) {
   .dashboard { flex-direction:column; }
   .panel-left { width:100% !important; max-width:100%; height:50vh; border-right:none; border-bottom:1px solid var(--border); }
@@ -46,6 +49,11 @@ body { height:100vh; overflow:hidden; }
 <div class="status-bar">
   <div class="status-dot" id="statusDot"></div>
   <span class="status-text" id="statusText">connecting...</span>
+  <div class="status-actions">
+    <span class="status-text" id="userText"></span>
+    <button onclick="openProfile()">profile</button>
+    <button onclick="logout()">logout</button>
+  </div>
 </div>
 
 <div class="dashboard">
@@ -61,6 +69,7 @@ body { height:100vh; overflow:hidden; }
       <button class="tab-btn" data-tab="routing" onclick="switchTab(this)">routing</button>
       <button class="tab-btn" data-tab="prompts" onclick="switchTab(this)">Prompts</button>
       <button class="tab-btn" data-tab="persona" onclick="switchTab(this)">人格演化</button>
+      <button class="tab-btn" data-tab="users" onclick="switchTab(this)">Users</button>
     </div>
     <div class="tab-content">
       <div class="tab-pane active" data-pane="viewer">
@@ -88,6 +97,14 @@ body { height:100vh; overflow:hidden; }
       <div class="tab-pane" data-pane="persona">
         <iframe id="personaTreeFrame" src="/static/persona_tree.html" title="Persona Evolution"></iframe>
       </div>
+
+      <div class="tab-pane" data-pane="users">
+        <iframe src="/static/users.html" title="User Management"></iframe>
+      </div>
+
+      <div class="tab-pane" data-pane="profile">
+        <iframe id="profileFrame" src="/static/user_profile.html" title="User Profile"></iframe>
+      </div>
     </div>
   </div>
 </div>
@@ -95,10 +112,34 @@ body { height:100vh; overflow:hidden; }
 <script src="/static/shared/common.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+  initDashboard();
+});
+
+async function initDashboard() {
+  const ok = await requireLogin();
+  if (!ok) return;
   checkHealth();
   setInterval(checkHealth, 15000);
   initResizer();
-});
+}
+
+async function requireLogin() {
+  try {
+    const r = await fetch(`${API}/auth/me`);
+    if (!r.ok) throw 0;
+    const me = await r.json();
+    storeCsrf(me.csrf_token);
+    if (me.role !== 'admin') {
+      window.location.href = '/static/app.html';
+      return false;
+    }
+    document.getElementById('userText').textContent = `${me.username} (${me.role})`;
+    return true;
+  } catch {
+    window.location.href = '/static/login.html';
+    return false;
+  }
+}
 
 async function checkHealth() {
   try {
@@ -149,9 +190,23 @@ function switchTab(btn) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
 }
 
+function openProfile() {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === 'profile'));
+}
+
+async function logout() {
+  try {
+    await fetch(`${API}/auth/logout`, {method:'POST'});
+  } finally {
+    clearCsrf();
+    window.location.href = '/static/login.html';
+  }
+}
+
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && !e.shiftKey && !e.altKey) {
-    const map = {'1':'viewer','2':'routing','3':'prompts','4':'persona'};
+    const map = {'1':'viewer','2':'routing','3':'prompts','4':'persona','5':'users'};
     const tab = map[e.key];
     if (tab) {
       e.preventDefault();

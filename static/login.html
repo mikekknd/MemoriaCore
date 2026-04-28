@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore Login</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
+<style>
+body { min-height:100vh; display:grid; place-items:center; padding:24px; }
+.auth-panel { width:min(360px,100%); background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:24px; }
+h1 { font-size:20px; margin-bottom:18px; }
+label { display:block; color:var(--text2); font-size:13px; margin:12px 0 6px; }
+input { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:10px 12px; color:var(--text); outline:none; }
+input:focus { border-color:var(--accent); }
+button { width:100%; margin-top:18px; background:var(--accent); border:none; border-radius:6px; padding:10px 14px; color:#fff; cursor:pointer; }
+.link-row { margin-top:14px; font-size:13px; color:var(--text2); text-align:center; }
+.link-row a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main class="auth-panel">
+  <h1>MemoriaCore</h1>
+  <form onsubmit="login(event)">
+    <label for="username">帳號</label>
+    <input id="username" autocomplete="username" required>
+    <label for="password">密碼</label>
+    <input id="password" type="password" autocomplete="current-password" required>
+    <button type="submit" id="submitBtn">登入</button>
+  </form>
+  <div class="link-row">沒有帳號？<a href="/static/register.html">註冊</a></div>
+</main>
+<div class="toast-container" id="toastContainer"></div>
+<script src="/static/shared/common.js"></script>
+<script>
+async function login(e) {
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/auth/login`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErrorMessage(data, '登入失敗'));
+    storeCsrf(data.csrf_token);
+    window.location.href = '/static/app.html';
+  } catch (err) {
+    toast(err.message || '登入失敗', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

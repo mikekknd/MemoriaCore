@@ -6,6 +6,7 @@
 import asyncio
 import sys
 import os
+from fastapi import HTTPException, Request
 
 # 確保專案根目錄在 Python path 上（api/ 是子目錄）
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -200,3 +201,17 @@ def get_persona_snapshot_store() -> PersonaSnapshotStore:
 
 def get_embed_model() -> str:
     return embed_model
+
+
+def get_current_user(request: Request) -> dict:
+    user = getattr(request.state, "current_user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="尚未登入")
+    return user
+
+
+def require_admin_user(request: Request) -> dict:
+    user = get_current_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="需要管理員權限")
+    return user
