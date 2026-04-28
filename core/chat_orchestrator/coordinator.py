@@ -132,6 +132,13 @@ def run_dual_layer_orchestration(
             tools_list.append(BROWSER_AGENT_SCHEMA)
     except ImportError:
         pass
+    try:
+        from tools.minimax_image import GENERATE_IMAGE_SCHEMA, GENERATE_SELF_PORTRAIT_SCHEMA
+        if user_prefs.get("image_generation_enabled") and user_prefs.get("minimax_api_key"):
+            tools_list.append(GENERATE_IMAGE_SCHEMA)
+            tools_list.append(GENERATE_SELF_PORTRAIT_SCHEMA)
+    except ImportError:
+        pass
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Branch A — 記憶檢索管線
@@ -347,6 +354,7 @@ def run_dual_layer_orchestration(
                     router_result=router_result,
                     on_thinking_speech=None,
                     on_tool_status=on_event,
+                    runtime_context={**_ctx, "visual_prompt": active_char.get("visual_prompt", "")},
                 )
                 thinking = ctx.thinking_speech_sent
 
@@ -409,6 +417,9 @@ def run_dual_layer_orchestration(
             persona_result = _parse_persona_response(raw_res)
 
     reply_text = persona_result.reply_text
+    if tool_context:
+        from tools.minimax_image import append_generated_images
+        reply_text = append_generated_images(reply_text, tool_context.tool_results)
     new_entities = persona_result.new_entities
     cited_uids = retrieval_ctx.get("cited_uids", [])
     inner_thought = persona_result.inner_thought

@@ -5,10 +5,12 @@ WebSocket 端點見 chat_ws.py；
 """
 import asyncio
 import json
+import re
 import queue as sync_queue
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 import base64
 
@@ -18,6 +20,7 @@ from api.models.requests import ChatSyncRequest
 from api.models.responses import ChatSyncResponseDTO, RetrievalContextDTO
 from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
+from tools.minimax_image import generated_image_path
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -248,6 +251,35 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
                 SystemLogger.log_error("TTS", f"合成失敗: {type(e).__name__}: {e}")
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ════════════════════════════════════════════════════════════
+# SECTION: 已生成圖片讀取端點
+# ════════════════════════════════════════════════════════════
+
+@router.get("/generated-images/{session_id}/{image_id}")
+async def get_generated_image(
+    session_id: str,
+    image_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """讀取目前登入使用者在指定 session 生成的圖片。"""
+    storage = get_storage()
+    session_info = storage.get_session_info(session_id)
+    if not session_info:
+        raise HTTPException(404, detail="Image session not found")
+    if session_info.get("user_id") != str(current_user["id"]):
+        raise HTTPException(403, detail="Session owner mismatch")
+
+    clean_image_id = image_id.removesuffix(".jpeg")
+    if not re.fullmatch(r"[A-Fa-f0-9]{32}", clean_image_id):
+        raise HTTPException(404, detail="Image not found")
+
+    path = generated_image_path(str(current_user["id"]), session_id, clean_image_id)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, detail="Image not found")
+
+    return FileResponse(Path(path), media_type="image/jpeg")
 
 
 # ════════════════════════════════════════════════════════════

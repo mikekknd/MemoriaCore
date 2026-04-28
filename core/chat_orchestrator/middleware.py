@@ -20,6 +20,7 @@ def run_middleware(
     router_result: RouterResult,
     on_thinking_speech: Callable[[str], None] | None = None,
     on_tool_status: Callable[[dict], None] | None = None,
+    runtime_context: dict | None = None,
 ) -> ToolContext:
     """
     Module B — 同步中介層：立即推播過渡語音，並行執行工具呼叫。
@@ -28,6 +29,7 @@ def run_middleware(
         router_result: Module A 的輸出。
         on_thinking_speech: 回呼，立即將過渡語推播給前端 TTS。
         on_tool_status: 回呼，推送工具呼叫狀態事件。
+        runtime_context: 工具執行時需要的請求脈絡，例如 user_id / session_id。
 
     Returns:
         ToolContext — 工具結果 + 已推播的過渡語。
@@ -57,7 +59,9 @@ def run_middleware(
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=len(tool_calls) or 1) as executor:
         future_to_tc = {
-            executor.submit(execute_tool_call, tc): tc
+            executor.submit(execute_tool_call, tc, runtime_context)
+            if runtime_context is not None
+            else executor.submit(execute_tool_call, tc): tc
             for tc in tool_calls
         }
         for future in as_completed(future_to_tc):

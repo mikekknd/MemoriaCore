@@ -24,6 +24,8 @@ body { height:100vh; overflow:hidden; }
 .msg.assistant .md-content pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin:8px 0; overflow-x:auto; }
 .msg.assistant .md-content code { font-family:'Cascadia Code','Fira Code',monospace; font-size:13px; }
 .msg.assistant .md-content :not(pre)>code { background:var(--surface2); padding:1px 5px; border-radius:3px; font-size:13px; }
+.msg.assistant .md-content img { display:block; max-width:100%; height:auto; margin:8px 0; border-radius:8px; border:1px solid var(--border); cursor:pointer; background:var(--bg); }
+.msg.assistant .md-content a:has(img) { display:block; max-width:100%; }
 .msg.system-info { align-self:center; background:none; color:var(--text2); font-size:12px; padding:4px; font-style:italic; }
 .msg.tool-status { align-self:flex-start; background:var(--surface2); border:1px solid var(--border); color:var(--warn); font-size:13px; padding:6px 12px; border-radius:8px; }
 .msg.tool-status .spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--warn); border-radius:50%; animation:spin .6s linear infinite; margin-right:6px; vertical-align:middle; }
@@ -314,7 +316,7 @@ async function sendMessage() {
           mdDiv.innerHTML = `<span style="color:var(--error)">${escapeHtml(event.message)}</span>`;
         } else if (event.type === 'result') {
           mdDiv.innerHTML = marked.parse(event.reply || '');
-          mdDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+          enhanceRenderedMarkdown(mdDiv);
           lastDebugData = event;
           if (event.session_id && event.session_id !== currentSessionId) {
             currentSessionId = event.session_id;
@@ -353,7 +355,7 @@ function appendMessage(role, content, debugData, scroll=true) {
     mdDiv.className = 'md-content';
     if (content) {
       mdDiv.innerHTML = marked.parse(content);
-      mdDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+      enhanceRenderedMarkdown(mdDiv);
     }
     div.appendChild(mdDiv);
   }
@@ -361,6 +363,16 @@ function appendMessage(role, content, debugData, scroll=true) {
   container.appendChild(div);
   if (scroll) scrollToBottom();
   return div;
+}
+
+function enhanceRenderedMarkdown(root) {
+  root.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+  root.querySelectorAll('img').forEach(img => {
+    img.loading = 'lazy';
+    img.onclick = () => {
+      if (img.src) window.open(img.src, '_blank', 'noopener');
+    };
+  });
 }
 
 function scrollToBottom() {

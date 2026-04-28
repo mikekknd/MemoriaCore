@@ -260,6 +260,13 @@ def _run_chat_orchestration(
                     tools_list.append(BROWSER_AGENT_SCHEMA)
             except ImportError:
                 pass
+            try:
+                from tools.minimax_image import GENERATE_IMAGE_SCHEMA, GENERATE_SELF_PORTRAIT_SCHEMA
+                if user_prefs.get("image_generation_enabled") and user_prefs.get("minimax_api_key"):
+                    tools_list.append(GENERATE_IMAGE_SCHEMA)
+                    tools_list.append(GENERATE_SELF_PORTRAIT_SCHEMA)
+            except ImportError:
+                pass
 
             # ── 第一輪：輕量工具偵測（共用 run_router_agent）──────
             # clean_history 末尾含當前 user_prompt，傳 [:-1] 避免重複追加。
@@ -271,6 +278,7 @@ def _run_chat_orchestration(
                 recent_history=clean_history[-5:-1] or None,
             )
             tool_calls = router_result.tool_calls if router_result.needs_tools else []
+            tool_results = []
 
             # ── 若有工具呼叫：執行工具並將結果注入完整上下文 ──
             if tool_calls:
@@ -293,7 +301,15 @@ def _run_chat_orchestration(
                     "tool_calls": tool_calls,
                 })
                 for tc in tool_calls:
-                    tool_result = execute_tool_call(tc)
+                    tool_runtime_ctx = {
+                        **(session_ctx or {}),
+                        "visual_prompt": active_char.get("visual_prompt", ""),
+                    }
+                    tool_result = execute_tool_call(tc, tool_runtime_ctx)
+                    tool_results.append({
+                        "tool_name": tc.get("function", {}).get("name", "unknown"),
+                        "result": tool_result,
+                    })
                     tc_id = tc.get("id", f"call_{tc.get('function', {}).get('name', 'unknown')}")
                     api_messages.append({
                         "role": "tool",
@@ -343,12 +359,16 @@ def _run_chat_orchestration(
                 reply_text = full_res
                 new_entities = []
 
+    if "tool_results" in locals():
+        from tools.minimax_image import append_generated_images
+        reply_text = append_generated_images(reply_text, tool_results)
+
     speech = None  # 翻譯移至端點層背景任務，不在此阻塞文字回覆
 
     # 將效能計時結果注入 retrieval_ctx
     retrieval_ctx["perf_timing"] = timer.summary()
 
-    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, inner_thought, status_metrics, tone, speech, cited_uids
+    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, inner_thought, status_metrics, tone, speech, "", cited_uids
 
 
 # ════════════════════════════════════════════════════════════

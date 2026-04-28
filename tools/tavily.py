@@ -83,7 +83,7 @@ def search_web(query: str, topic: str = "general") -> str:
         SystemLogger.log_error("Tavily", f"搜尋過程中發生錯誤: {e}")
         return json.dumps({"error": f"網路搜尋過程中發生錯誤: {e}"}, ensure_ascii=False)
 
-def execute_tool_call(tool_call: dict) -> str:
+def execute_tool_call(tool_call: dict, runtime_context: dict | None = None) -> str:
     """
     統一工具調度中心 — 接收 LLM 的 tool_call 結構並執行對應的工具。
     新增工具時只需在此處加入對應的分支。
@@ -109,5 +109,21 @@ def execute_tool_call(tool_call: dict) -> str:
     if func_name == "browser_task":
         from tools.browser_agent import run_browser_agent
         return run_browser_agent(args.get("task", ""))
+
+    if func_name == "generate_image":
+        from tools.minimax_image import generate_image
+        return generate_image(
+            args.get("prompt", ""),
+            args.get("aspect_ratio", "1:1"),
+            runtime_context=runtime_context,
+        )
+
+    if func_name == "generate_self_portrait":
+        from tools.minimax_image import generate_self_portrait
+        return generate_self_portrait(
+            args.get("prompt", ""),
+            args.get("aspect_ratio", "1:1"),
+            runtime_context=runtime_context,
+        )
 
     return json.dumps({"error": f"找不到工具 {func_name}"}, ensure_ascii=False)

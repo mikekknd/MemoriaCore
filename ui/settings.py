@@ -37,6 +37,12 @@ def render_settings_page(api_base, user_prefs=None):
         st.header("🌐 全域 API 金鑰配置")
         new_openai_key = st.text_input("OpenAI API Key", type="password", value=user_prefs.get("openai_key", ""))
         new_or_key = st.text_input("OpenRouter API Key", type="password", value=user_prefs.get("or_key", ""))
+        new_minimax_key = st.text_input(
+            "MiniMax API Key（TTS / 圖片生成共用）",
+            type="password",
+            value=user_prefs.get("minimax_api_key", ""),
+            help="從 https://platform.minimax.io 取得。TTS 與 MiniMax 圖片生成共用此 Key。",
+        )
         new_tavily_key = st.text_input("Tavily API Key (網路搜尋用)", type="password", value=user_prefs.get("tavily_api_key", ""))
         new_openweather_key = st.text_input("OpenWeather API Key (天氣查詢用)", type="password", value=user_prefs.get("openweather_api_key", ""),
                                              help="從 https://openweathermap.org/api 免費申請。用於即時天氣與預報查詢。")
@@ -104,12 +110,7 @@ def render_settings_page(api_base, user_prefs=None):
             value=user_prefs.get("tts_enabled", False),
             help="開啟後，AI 每次回覆都會呼叫 Minimax TTS 合成語音，並透過 WebSocket 以 tts_audio 事件傳送給 client。",
         )
-        new_minimax_key = st.text_input(
-            "Minimax API Key",
-            type="password",
-            value=user_prefs.get("minimax_api_key", ""),
-            help="從 https://platform.minimax.io 取得。",
-        )
+        st.caption("TTS 使用上方「MiniMax API Key（TTS / 圖片生成共用）」。")
         new_minimax_voice = st.text_input(
             "Voice ID",
             value=user_prefs.get("minimax_voice_id", "moss_audio_7c2b39d9-1006-11f1-b9c4-4ea5324904c7"),
@@ -168,6 +169,16 @@ def render_settings_page(api_base, user_prefs=None):
                             st.error("❌ 合成失敗，請確認 API Key 與網路連線。")
                     except Exception as e:
                         st.error(f"❌ 測試失敗：{e}")
+
+    # ── MiniMax 圖片生成設定 ────────────────────────────────
+    st.divider()
+    st.header("🖼️ 圖片生成（MiniMax Image）")
+    new_image_generation_enabled = st.checkbox(
+        "啟用圖片生成 Tool",
+        value=user_prefs.get("image_generation_enabled", False),
+        help="開啟後，AI 可在使用者明確要求產生圖片時呼叫 MiniMax image-01 文字生圖工具。",
+    )
+    st.caption("圖片生成與 TTS 共用上方 MiniMax API Key，但開關彼此獨立。")
 
     # ── Bash Tool 設定（橫跨全寬） ─────────────────────────────
     st.divider()
@@ -260,6 +271,7 @@ def render_settings_page(api_base, user_prefs=None):
             "browser_agent_enabled": new_browser_agent_enabled,
             # TTS
             "tts_enabled": new_tts_enabled,
+            "image_generation_enabled": new_image_generation_enabled,
             "minimax_api_key": new_minimax_key,
             "minimax_voice_id": new_minimax_voice,
             "minimax_model": new_minimax_model,
