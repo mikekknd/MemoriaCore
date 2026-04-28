@@ -5,7 +5,7 @@ from ui import api_client as requests
 
 def render_bots_page(api_base: str, user_prefs: dict | None = None):
     st.title("🤖 Bot 管理")
-    st.caption("管理各平台 bot token 與角色綁定。v1 只有 Telegram runtime 會啟動。")
+    st.caption("管理 Telegram / Discord bot token 與角色綁定。Discord 需在 Developer Portal 開啟 Message Content Intent。")
 
     try:
         bots_resp = requests.get(f"{api_base}/bots", timeout=5)
@@ -96,12 +96,28 @@ def render_bots_page(api_base: str, user_prefs: dict | None = None):
             index=char_index,
             format_func=character_label,
         )
-        token = st.text_input("Token", type="password", value=draft.get("token", ""))
+        token_visible_key = "bot_token_visible"
+        token_visible = bool(st.session_state.get(token_visible_key, False))
+        token_col, show_col = st.columns([4, 1])
+        with token_col:
+            token = st.text_input(
+                "Token",
+                type="default" if token_visible else "password",
+                value=draft.get("token", ""),
+            )
+        with show_col:
+            st.write("")
+            st.write("")
+            if st.form_submit_button("隱藏" if token_visible else "顯示"):
+                st.session_state[token_visible_key] = not token_visible
+                st.rerun()
+        if platform == "discord":
+            st.info("Discord guild 內預設只回應提及 bot 或回覆 bot 的訊息；DM 會直接回應。")
         enabled = st.checkbox("啟用", value=bool(draft.get("enabled", False)))
 
         col_save, col_cancel = st.columns(2)
         submitted = col_save.form_submit_button("儲存", type="primary")
-        cancelled = col_cancel.form_submit_button("取消編輯")
+        cancelled = col_cancel.form_submit_button("取消編輯" if editing else "清空表單")
 
     if cancelled:
         st.session_state.pop("bot_edit", None)

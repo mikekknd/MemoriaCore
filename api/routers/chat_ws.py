@@ -158,6 +158,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 "persona_face": s.persona_face,
                 "session_id": sid,
                 "bot_id": s.bot_id,
+                "channel": s.channel,
             }
 
             # 建立即時事件推送 callback（從工作執行緒安全呼叫 async WS send）

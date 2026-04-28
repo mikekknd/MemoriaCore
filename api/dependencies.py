@@ -23,6 +23,7 @@ from core.persona_sync import PersonaSyncManager
 from core.persona_evolution.snapshot_store import PersonaSnapshotStore
 from core.tts_client import MinimaxTTSClient
 from api.telegram_bot import TelegramBotManager
+from api.discord_bot import DiscordBotManager
 
 # ── Module-level singletons ──────────────────────────────
 memory_sys: MemorySystem | None = None
@@ -32,6 +33,7 @@ global_router: LLMRouter | None = None
 character_mgr: CharacterManager | None = None
 bot_registry: BotRegistry | None = None
 telegram_bot_mgr: TelegramBotManager | None = None
+discord_bot_mgr: DiscordBotManager | None = None
 persona_sync_mgr: PersonaSyncManager | None = None
 persona_snapshot_store: PersonaSnapshotStore | None = None
 tts_client: MinimaxTTSClient | None = None
@@ -46,7 +48,7 @@ _startup_time: float = 0.0
 
 def init_all():
     """在 FastAPI lifespan startup 時呼叫一次，初始化全部核心物件。"""
-    global memory_sys, storage, analyzer, global_router, character_mgr, bot_registry, telegram_bot_mgr, persona_sync_mgr, persona_snapshot_store, tts_client, embed_model, _startup_time
+    global memory_sys, storage, analyzer, global_router, character_mgr, bot_registry, telegram_bot_mgr, discord_bot_mgr, persona_sync_mgr, persona_snapshot_store, tts_client, embed_model, _startup_time
     import time
     _startup_time = time.time()
 
@@ -56,6 +58,7 @@ def init_all():
     character_mgr = CharacterManager()
     bot_registry = BotRegistry()
     telegram_bot_mgr = TelegramBotManager(bot_registry)
+    discord_bot_mgr = DiscordBotManager(bot_registry)
     persona_sync_mgr = PersonaSyncManager()
     persona_snapshot_store = PersonaSnapshotStore(storage)
 
@@ -198,6 +201,11 @@ def get_bot_registry() -> BotRegistry:
 def get_telegram_bot_manager() -> TelegramBotManager:
     assert telegram_bot_mgr is not None, "TelegramBotManager not initialized"
     return telegram_bot_mgr
+
+
+def get_discord_bot_manager() -> DiscordBotManager:
+    assert discord_bot_mgr is not None, "DiscordBotManager not initialized"
+    return discord_bot_mgr
 
 
 def get_tts_client() -> MinimaxTTSClient | None:

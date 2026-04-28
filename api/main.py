@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.dependencies import (
     init_all, get_storage, get_router, get_memory_sys,
-    get_persona_sync_manager, get_telegram_bot_manager,
+    get_persona_sync_manager, get_telegram_bot_manager, get_discord_bot_manager,
 )
 from api.session_manager import session_manager
 from core.background_gatherer import start_background_gather_loop
@@ -36,9 +36,10 @@ async def lifespan(app: FastAPI):
 
     cleanup_task = asyncio.create_task(_session_cleanup_loop())
 
-    # Telegram Bots（可選：讀取 bot_configs.json；舊 telegram_bot_token 只作首次遷移）
+    # 外部平台 Bots（可選：讀取 bot_configs.json；舊 telegram_bot_token 只作首次遷移）
     user_prefs = get_storage().load_prefs()
     await get_telegram_bot_manager().sync_from_registry()
+    await get_discord_bot_manager().sync_from_registry()
 
     # 天氣快取預熱（有設定城市 + API key 才執行）
     weather_city = user_prefs.get("weather_city", "")
@@ -92,6 +93,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await get_telegram_bot_manager().stop_all()
+    await get_discord_bot_manager().stop_all()
     cleanup_task.cancel()
     if bg_gather_task:
         bg_gather_task.cancel()

@@ -67,6 +67,54 @@ def test_bot_registry_rejects_duplicate_enabled_telegram_tokens():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_bot_registry_rejects_enabled_discord_without_token():
+    tmp_dir = _tmp_dir()
+    try:
+        registry = BotRegistry(str(tmp_dir / "bot_configs.json"))
+        config = {
+            "bot_id": "discord-a",
+            "platform": "discord",
+            "display_name": "Discord A",
+            "character_id": "char-a",
+            "token": "",
+            "enabled": True,
+        }
+
+        with pytest.raises(BotRegistryError, match="Discord bot 必須提供 token"):
+            registry.validate_config(config, character_ids={"char-a"})
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_bot_registry_rejects_duplicate_enabled_discord_tokens():
+    tmp_dir = _tmp_dir()
+    try:
+        registry = BotRegistry(str(tmp_dir / "bot_configs.json"))
+        configs = [
+            {
+                "bot_id": "discord-a",
+                "platform": "discord",
+                "display_name": "A",
+                "character_id": "char-a",
+                "token": "same-discord-token",
+                "enabled": True,
+            },
+            {
+                "bot_id": "discord-b",
+                "platform": "discord",
+                "display_name": "B",
+                "character_id": "char-b",
+                "token": "same-discord-token",
+                "enabled": True,
+            },
+        ]
+
+        with pytest.raises(BotRegistryError, match="Discord token 不可重複"):
+            registry.validate_configs(configs, character_ids={"char-a", "char-b"})
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_conversation_session_persists_bot_and_character():
     tmp_dir = _tmp_dir()
     storage = StorageManager(

@@ -13,6 +13,7 @@ import time
 
 from api.dependencies import get_memory_sys, get_router, get_analyzer, get_embed_model
 from api.routers.chat.ws_manager import ws_manager
+from core.deployment_config import should_extract_profile
 from core.chat_orchestrator.dataclasses import PipelineContext  # re-export，保持向後相容
 
 __all__ = ["PipelineContext"]
@@ -40,6 +41,8 @@ def _run_memory_pipeline_sync(ctx: PipelineContext) -> list[dict]:
     user_id = sctx.get("user_id", "default")
     character_id = sctx.get("character_id", "default")
     write_visibility = sctx.get("persona_face", "public")  # persona_face == write_visibility
+    channel = sctx.get("channel", "")
+    profile_allowed = should_extract_profile(channel) if channel else True
 
     t_start = time.perf_counter()
 
@@ -75,31 +78,33 @@ def _run_memory_pipeline_sync(ctx: PipelineContext) -> list[dict]:
                             "new_blocks": len(pipeline_res.get("new_memories", []))})
 
     # ─── 使用者畫像提取 ───
-    try:
-        current_profile = ms.storage.load_all_profiles(ms.db_path, user_id=user_id) if ms.db_path else []
-        profile_facts = analyzer.extract_user_facts(msgs_to_extract, current_profile, rtr, task_key="profile")
-        if profile_facts:
-            ms.apply_profile_facts(profile_facts, embed_model,
-                                   user_id=user_id, visibility=write_visibility)
-            pipeline_events.append({"type": "system_event", "action": "profile_updated",
-                                    "facts_count": len(profile_facts)})
-    except Exception:
-        pass
+    if profile_allowed:
+        try:
+            current_profile = ms.storage.load_all_profiles(ms.db_path, user_id=user_id) if ms.db_path else []
+            profile_facts = analyzer.extract_user_facts(msgs_to_extract, current_profile, rtr, task_key="profile")
+            if profile_facts:
+                ms.apply_profile_facts(profile_facts, embed_model,
+                                       user_id=user_id, visibility=write_visibility)
+                pipeline_events.append({"type": "system_event", "action": "profile_updated",
+                                        "facts_count": len(profile_facts)})
+        except Exception:
+            pass
 
     # ─── 偏好聚合 ───
-    try:
-        from preference_aggregator import PreferenceAggregator
-        pref_agg = PreferenceAggregator(ms)
-        promoted = pref_agg.aggregate(
-            score_threshold=3.0,
-            user_id=user_id, character_id=character_id, visibility=write_visibility,
-        )
-        if promoted:
-            pref_agg.write_to_profile(promoted, user_id=user_id, visibility=write_visibility)
-            pipeline_events.append({"type": "system_event", "action": "preferences_aggregated",
-                                    "promoted_count": len(promoted)})
-    except Exception:
-        pass
+    if profile_allowed:
+        try:
+            from preference_aggregator import PreferenceAggregator
+            pref_agg = PreferenceAggregator(ms)
+            promoted = pref_agg.aggregate(
+                score_threshold=3.0,
+                user_id=user_id, character_id=character_id, visibility=write_visibility,
+            )
+            if promoted:
+                pref_agg.write_to_profile(promoted, user_id=user_id, visibility=write_visibility)
+                pipeline_events.append({"type": "system_event", "action": "preferences_aggregated",
+                                        "promoted_count": len(promoted)})
+        except Exception:
+            pass
 
     pipeline_events.append({"type": "system_event", "action": "graph_updated", "entity": "memory_blocks"})
 

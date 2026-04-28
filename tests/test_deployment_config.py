@@ -147,3 +147,10 @@ class TestResolveContext:
 
         assert face == "public"
         assert vis == "public"
+
+    def test_discord_profile_extraction_channels(self):
+        """Discord 私訊可抽 profile；公開頻道不可抽 profile。"""
+        from core import deployment_config as dc
+
+        assert dc.should_extract_profile("discord_private") is True
+        assert dc.should_extract_profile("discord_public") is False

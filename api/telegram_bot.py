@@ -421,6 +421,7 @@ class TelegramBotManager:
                 "persona_face": s.persona_face,
                 "session_id": sid,
                 "bot_id": s.bot_id,
+                "channel": s.channel,
             }
 
             try:

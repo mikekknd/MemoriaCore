@@ -10,7 +10,7 @@ body { min-height:100vh; overflow:hidden; }
 .page { height:100vh; display:flex; flex-direction:column; }
 .toolbar { background:var(--surface); border-bottom:1px solid var(--border); padding:10px 14px; display:flex; align-items:center; gap:8px; }
 .toolbar h2 { font-size:16px; margin:0; font-weight:600; }
-.toolbar button, .bot-actions button, .form-actions button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 12px; color:var(--text); font-size:13px; cursor:pointer; }
+.toolbar button, .bot-actions button, .form-actions button, .field-button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 12px; color:var(--text); font-size:13px; cursor:pointer; }
 .toolbar button.primary, .form-actions button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
 .content { flex:1; overflow:auto; padding:14px; display:grid; grid-template-columns:minmax(320px, 1fr) minmax(320px, 420px); gap:14px; }
 .section { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
@@ -28,6 +28,9 @@ body { min-height:100vh; overflow:hidden; }
 label { color:var(--text2); font-size:12px; display:block; margin-bottom:4px; }
 input, select { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); padding:7px 9px; font-size:13px; box-sizing:border-box; }
 input[type="checkbox"] { width:auto; }
+.token-row { display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; }
+.token-row input { min-width:0; }
+.field-button { height:32px; white-space:nowrap; }
 .form-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
 .error-text { color:var(--error); font-size:12px; margin-top:6px; white-space:pre-wrap; }
 @media (max-width:900px) { .content { grid-template-columns:1fr; } }
@@ -39,7 +42,6 @@ input[type="checkbox"] { width:auto; }
     <h2>Bot 管理</h2>
     <span style="flex:1"></span>
     <button onclick="loadAll()">reload</button>
-    <button class="primary" onclick="newBot()">new bot</button>
   </div>
   <div class="content">
     <section class="section">
@@ -55,11 +57,12 @@ input[type="checkbox"] { width:auto; }
         </div>
         <div>
           <label for="platform">平台</label>
-          <select id="platform">
+          <select id="platform" onchange="updatePlatformHint()">
             <option value="telegram">telegram</option>
             <option value="discord">discord</option>
             <option value="other">other</option>
           </select>
+          <div class="meta" id="platformHint"></div>
         </div>
         <div>
           <label for="displayName">顯示名稱</label>
@@ -71,11 +74,14 @@ input[type="checkbox"] { width:auto; }
         </div>
         <div>
           <label for="token">Token</label>
-          <input id="token" type="password">
+          <div class="token-row">
+            <input id="token" type="password">
+            <button class="field-button" id="toggleToken" type="button" onclick="toggleTokenVisible()">顯示</button>
+          </div>
         </div>
         <label><input id="enabled" type="checkbox"> 啟用</label>
         <div class="form-actions">
-          <button type="button" onclick="newBot()">clear</button>
+          <button type="button" onclick="newBot()">清空 / 新增模式</button>
           <button class="primary" type="submit">save</button>
         </div>
         <div class="error-text" id="formError"></div>
@@ -90,6 +96,7 @@ input[type="checkbox"] { width:auto; }
 let bots = [];
 let characters = [];
 let editingId = null;
+let tokenVisible = false;
 
 document.addEventListener('DOMContentLoaded', loadAll);
 
@@ -151,9 +158,11 @@ function newBot() {
   document.getElementById('botId').disabled = false;
   document.getElementById('botId').value = '';
   document.getElementById('platform').value = 'telegram';
+  updatePlatformHint();
   document.getElementById('displayName').value = '';
   renderCharacterOptions('default');
   document.getElementById('token').value = '';
+  setTokenVisible(false);
   document.getElementById('enabled').checked = false;
   document.getElementById('formError').textContent = '';
 }
@@ -166,11 +175,31 @@ function editBot(id) {
   document.getElementById('botId').disabled = true;
   document.getElementById('botId').value = bot.bot_id || '';
   document.getElementById('platform').value = bot.platform || 'telegram';
+  updatePlatformHint();
   document.getElementById('displayName').value = bot.display_name || '';
   renderCharacterOptions(bot.character_id || 'default');
   document.getElementById('token').value = bot.token || '';
+  setTokenVisible(false);
   document.getElementById('enabled').checked = !!bot.enabled;
   document.getElementById('formError').textContent = '';
+}
+
+function setTokenVisible(visible) {
+  tokenVisible = visible;
+  document.getElementById('token').type = visible ? 'text' : 'password';
+  document.getElementById('toggleToken').textContent = visible ? '隱藏' : '顯示';
+}
+
+function toggleTokenVisible() {
+  setTokenVisible(!tokenVisible);
+}
+
+function updatePlatformHint() {
+  const platform = document.getElementById('platform').value;
+  const hint = document.getElementById('platformHint');
+  hint.textContent = platform === 'discord'
+    ? 'Discord 需在 Developer Portal 開啟 Message Content Intent；伺服器內只回應提及或回覆。'
+    : '';
 }
 
 async function saveBot(event) {

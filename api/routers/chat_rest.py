@@ -91,6 +91,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         "persona_face": session.persona_face,
         "session_id": sid,
         "bot_id": session.bot_id,
+        "channel": session.channel,
     }
 
     result = await asyncio.to_thread(
@@ -170,6 +171,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         "persona_face": session.persona_face,
         "session_id": sid,
         "bot_id": session.bot_id,
+        "channel": session.channel,
     }
 
     def on_event(data: dict):

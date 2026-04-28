@@ -9,6 +9,7 @@ from api.dependencies import (
     get_bot_registry,
     get_character_manager,
     get_current_user,
+    get_discord_bot_manager,
     get_storage,
     get_telegram_bot_manager,
     require_admin_user,
@@ -31,12 +32,44 @@ def _character_ids() -> set[str]:
 
 
 def _dto(config: dict[str, Any]) -> BotConfigDTO:
-    manager = get_telegram_bot_manager()
-    status = manager.get_status(config["bot_id"], config.get("platform", "telegram"))
+    status = _runtime_status(config["bot_id"], config.get("platform", "telegram"))
     return BotConfigDTO(
         **config,
         runtime_status=BotRuntimeStatusDTO(**status),
     )
+
+
+def _runtime_status(bot_id: str, platform: str) -> dict[str, Any]:
+    if platform == "telegram":
+        return get_telegram_bot_manager().get_status(bot_id, platform)
+    if platform == "discord":
+        return get_discord_bot_manager().get_status(bot_id, platform)
+    return {
+        "bot_id": bot_id,
+        "platform": platform,
+        "status": "unsupported",
+        "running": False,
+        "last_error": None,
+    }
+
+
+async def _sync_runtime_managers() -> None:
+    await get_telegram_bot_manager().sync_from_registry()
+    await get_discord_bot_manager().sync_from_registry()
+
+
+async def _stop_runtime(bot_id: str, platform: str) -> None:
+    if platform == "telegram":
+        await get_telegram_bot_manager().stop_bot(bot_id)
+    elif platform == "discord":
+        await get_discord_bot_manager().stop_bot(bot_id)
+
+
+async def _reload_runtime(bot_id: str, platform: str) -> None:
+    if platform == "telegram":
+        await get_telegram_bot_manager().reload_bot(bot_id)
+    elif platform == "discord":
+        await get_discord_bot_manager().reload_bot(bot_id)
 
 
 def _raise_registry_error(exc: Exception) -> None:
@@ -65,7 +98,7 @@ async def create_bot(body: BotConfigCreateRequest, current_user: dict = Depends(
         )
     except BotRegistryError as exc:
         _raise_registry_error(exc)
-    await get_telegram_bot_manager().sync_from_registry()
+    await _sync_runtime_managers()
     return _dto(cfg)
 
 
@@ -100,7 +133,7 @@ async def update_bot(
         )
     except BotRegistryError as exc:
         _raise_registry_error(exc)
-    await get_telegram_bot_manager().sync_from_registry()
+    await _sync_runtime_managers()
     return _dto(cfg)
 
 
@@ -108,10 +141,13 @@ async def update_bot(
 async def delete_bot(bot_id: str, current_user: dict = Depends(require_admin_user)):
     prefs = get_storage().load_prefs()
     registry = get_bot_registry()
+    cfg = registry.get_config(bot_id, prefs)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="bot not found")
     if not registry.delete_config(bot_id, prefs):
         raise HTTPException(status_code=404, detail="bot not found")
-    await get_telegram_bot_manager().stop_bot(bot_id)
-    await get_telegram_bot_manager().sync_from_registry()
+    await _stop_runtime(bot_id, cfg.get("platform", "telegram"))
+    await _sync_runtime_managers()
     return {"status": "deleted", "bot_id": bot_id}
 
 
@@ -121,6 +157,7 @@ async def reload_bot(bot_id: str, current_user: dict = Depends(require_admin_use
     cfg = get_bot_registry().get_config(bot_id, prefs)
     if not cfg:
         raise HTTPException(status_code=404, detail="bot not found")
-    await get_telegram_bot_manager().reload_bot(bot_id)
-    status = get_telegram_bot_manager().get_status(bot_id, cfg.get("platform", "telegram"))
+    platform = cfg.get("platform", "telegram")
+    await _reload_runtime(bot_id, platform)
+    status = _runtime_status(bot_id, platform)
     return BotRuntimeStatusDTO(**status)

@@ -115,12 +115,16 @@ class BotRegistry:
             raise BotRegistryError("platform 必須是 telegram、discord 或 other")
         if character_id not in character_ids:
             raise BotRegistryError(f"character_id 不存在: {character_id}")
-        if config.get("enabled") and platform == "telegram" and not config.get("token"):
-            raise BotRegistryError("enabled Telegram bot 必須提供 token")
+        if config.get("enabled") and platform in {"telegram", "discord"} and not config.get("token"):
+            platform_label = "Telegram" if platform == "telegram" else "Discord"
+            raise BotRegistryError(f"enabled {platform_label} bot 必須提供 token")
 
     def validate_configs(self, configs: list[dict[str, Any]], *, character_ids: set[str]) -> None:
         seen_ids: set[str] = set()
-        seen_enabled_telegram_tokens: set[str] = set()
+        seen_enabled_tokens: dict[str, set[str]] = {
+            "telegram": set(),
+            "discord": set(),
+        }
         for cfg in configs:
             self.validate_config(cfg, character_ids=character_ids)
             bot_id = cfg["bot_id"]
@@ -128,10 +132,12 @@ class BotRegistry:
                 raise BotRegistryError(f"bot_id 重複: {bot_id}")
             seen_ids.add(bot_id)
             token = cfg.get("token", "")
-            if cfg.get("enabled") and cfg.get("platform") == "telegram" and token:
-                if token in seen_enabled_telegram_tokens:
-                    raise BotRegistryError("enabled Telegram token 不可重複")
-                seen_enabled_telegram_tokens.add(token)
+            platform = cfg.get("platform")
+            if cfg.get("enabled") and platform in seen_enabled_tokens and token:
+                if token in seen_enabled_tokens[platform]:
+                    platform_label = "Telegram" if platform == "telegram" else "Discord"
+                    raise BotRegistryError(f"enabled {platform_label} token 不可重複")
+                seen_enabled_tokens[platform].add(token)
 
     @staticmethod
     def _legacy_configs_from_prefs(prefs: dict[str, Any]) -> list[dict[str, Any]]:
