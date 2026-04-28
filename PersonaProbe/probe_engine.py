@@ -665,19 +665,20 @@ def load_fragments_from_db(
     limit: Optional[int] = None,
     user_id: Optional[str] = None,
     channel_class_filter: Optional[list] = None,
+    character_id: Optional[str] = None,
 ) -> list[dict]:
     """從 MemoriaCore conversation.db 載入對話訊息。
 
     若指定 session_id 則只載入該 session；否則載入全部 session（按 msg_id 排序）。
     若指定 limit，則以近期優先取最後 N 筆（先 DESC 取 limit，再反轉回正序）。
-    user_id / channel_class_filter：JOIN conversation_sessions 做範圍過濾，
+    user_id / channel_class_filter / character_id：JOIN conversation_sessions 做範圍過濾，
     供 PersonaSync 按 persona_face 分開載入。
     回傳 [{role, content}]。
     """
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
-        needs_join = user_id is not None or bool(channel_class_filter)
+        needs_join = user_id is not None or bool(channel_class_filter) or character_id is not None
 
         conds: list[str] = []
         params: list = []
@@ -687,6 +688,9 @@ def load_fragments_from_db(
         if user_id is not None:
             conds.append("cs.user_id = ?")
             params.append(user_id)
+        if character_id is not None:
+            conds.append("cs.character_id = ?")
+            params.append(character_id)
         if channel_class_filter:
             placeholders = ",".join("?" * len(channel_class_filter))
             conds.append(f"cs.channel_class IN ({placeholders})")

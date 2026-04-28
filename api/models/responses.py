@@ -249,6 +249,11 @@ class ConversationSessionDTO(BaseModel):
     session_id: str
     channel: str = "rest"
     channel_uid: str = ""
+    bot_id: str = ""
+    character_id: str = "default"
+    user_id: str = "default"
+    channel_class: str = "public"
+    persona_face: Optional[str] = None
     created_at: str
     last_active: str
     is_active: bool = True

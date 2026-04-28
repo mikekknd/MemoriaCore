@@ -155,8 +155,15 @@ def _run_chat_orchestration(
 
     # 動態角色載入（evolved_prompt 優先，否則使用 system_prompt）
     char_mgr = get_character_manager()
-    active_char_id = user_prefs.get("active_character_id", "default")
-    active_char = char_mgr.get_active_character(active_char_id)
+    active_char = char_mgr.get_character(character_id)
+    if not active_char:
+        from core.system_logger import SystemLogger
+        SystemLogger.log_error("character_missing", {
+            "missing_character_id": character_id,
+            "session_id": ctx.get("session_id", ""),
+            "fallback": "default",
+        })
+        active_char = char_mgr.get_active_character("default")
     metrics = active_char.get("metrics", ["professionalism"])
     allowed_tones = active_char.get("allowed_tones", ["Neutral", "Happy", "Professional"])
     reply_rules = active_char.get("reply_rules", "Traditional Chinese. NO EMOJIS.")

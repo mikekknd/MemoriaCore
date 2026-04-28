@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore Bots</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
+<style>
+body { min-height:100vh; overflow:hidden; }
+.page { height:100vh; display:flex; flex-direction:column; }
+.toolbar { background:var(--surface); border-bottom:1px solid var(--border); padding:10px 14px; display:flex; align-items:center; gap:8px; }
+.toolbar h2 { font-size:16px; margin:0; font-weight:600; }
+.toolbar button, .bot-actions button, .form-actions button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 12px; color:var(--text); font-size:13px; cursor:pointer; }
+.toolbar button.primary, .form-actions button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.content { flex:1; overflow:auto; padding:14px; display:grid; grid-template-columns:minmax(320px, 1fr) minmax(320px, 420px); gap:14px; }
+.section { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.section h3 { margin:0; padding:10px 12px; border-bottom:1px solid var(--border); font-size:14px; }
+.bot-list { padding:10px; }
+.bot-card { border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:8px; background:var(--bg); }
+.bot-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.bot-name { font-weight:600; flex:1; }
+.badge { font-size:11px; border:1px solid var(--border); border-radius:999px; padding:2px 7px; color:var(--text2); }
+.badge.running { color:var(--accent2); border-color:var(--accent2); }
+.badge.error { color:var(--error); border-color:var(--error); }
+.meta { color:var(--text2); font-size:12px; line-height:1.6; font-family:'Cascadia Code',monospace; }
+.bot-actions { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+.form { padding:12px; display:flex; flex-direction:column; gap:10px; }
+label { color:var(--text2); font-size:12px; display:block; margin-bottom:4px; }
+input, select { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); padding:7px 9px; font-size:13px; box-sizing:border-box; }
+input[type="checkbox"] { width:auto; }
+.form-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
+.error-text { color:var(--error); font-size:12px; margin-top:6px; white-space:pre-wrap; }
+@media (max-width:900px) { .content { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="toolbar">
+    <h2>Bot 管理</h2>
+    <span style="flex:1"></span>
+    <button onclick="loadAll()">reload</button>
+    <button class="primary" onclick="newBot()">new bot</button>
+  </div>
+  <div class="content">
+    <section class="section">
+      <h3>Bot 列表</h3>
+      <div class="bot-list" id="botList"></div>
+    </section>
+    <section class="section">
+      <h3 id="formTitle">新增 Bot</h3>
+      <form class="form" onsubmit="saveBot(event)">
+        <div>
+          <label for="botId">Bot ID</label>
+          <input id="botId" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_-]{3,64}">
+        </div>
+        <div>
+          <label for="platform">平台</label>
+          <select id="platform">
+            <option value="telegram">telegram</option>
+            <option value="discord">discord</option>
+            <option value="other">other</option>
+          </select>
+        </div>
+        <div>
+          <label for="displayName">顯示名稱</label>
+          <input id="displayName">
+        </div>
+        <div>
+          <label for="characterId">綁定角色</label>
+          <select id="characterId"></select>
+        </div>
+        <div>
+          <label for="token">Token</label>
+          <input id="token" type="password">
+        </div>
+        <label><input id="enabled" type="checkbox"> 啟用</label>
+        <div class="form-actions">
+          <button type="button" onclick="newBot()">clear</button>
+          <button class="primary" type="submit">save</button>
+        </div>
+        <div class="error-text" id="formError"></div>
+      </form>
+    </section>
+  </div>
+</div>
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="/static/shared/common.js"></script>
+<script>
+let bots = [];
+let characters = [];
+let editingId = null;
+
+document.addEventListener('DOMContentLoaded', loadAll);
+
+async function loadAll() {
+  try {
+    const [br, cr] = await Promise.all([fetch(`${API}/bots`), fetch(`${API}/character`)]);
+    bots = br.ok ? await br.json() : [];
+    characters = cr.ok ? await cr.json() : [];
+    renderCharacterOptions();
+    renderBots();
+  } catch {
+    toast('load failed', 'error');
+  }
+}
+
+function renderCharacterOptions(selected = 'default') {
+  const ids = characters.map(c => c.character_id).filter(Boolean);
+  if (!ids.includes('default')) ids.unshift('default');
+  document.getElementById('characterId').innerHTML = ids.map(id =>
+    `<option value="${escapeHtml(id)}" ${id===selected?'selected':''}>${escapeHtml(labelForChar(id))}</option>`
+  ).join('');
+}
+
+function labelForChar(id) {
+  const c = characters.find(x => x.character_id === id);
+  return c ? `${c.name || id} (${id})` : id;
+}
+
+function renderBots() {
+  const list = document.getElementById('botList');
+  if (!bots.length) {
+    list.innerHTML = '<div class="meta">尚未建立任何 Bot。</div>';
+    return;
+  }
+  list.innerHTML = bots.map(bot => {
+    const st = bot.runtime_status || {};
+    const status = st.status || 'disabled';
+    const cls = status === 'running' ? 'running' : (status === 'error' ? 'error' : '');
+    return `<div class="bot-card">
+      <div class="bot-head">
+        <div class="bot-name">${escapeHtml(bot.display_name || bot.bot_id)}</div>
+        <span class="badge">${escapeHtml(bot.platform)}</span>
+        <span class="badge ${cls}">${escapeHtml(status)}</span>
+      </div>
+      <div class="meta">id=${escapeHtml(bot.bot_id)}<br>character=${escapeHtml(bot.character_id)}<br>enabled=${bot.enabled}</div>
+      ${st.last_error ? `<div class="error-text">${escapeHtml(st.last_error)}</div>` : ''}
+      <div class="bot-actions">
+        <button onclick="editBot('${escapeHtml(bot.bot_id)}')">edit</button>
+        <button onclick="reloadBot('${escapeHtml(bot.bot_id)}')">reload</button>
+        <button onclick="deleteBot('${escapeHtml(bot.bot_id)}')">delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function newBot() {
+  editingId = null;
+  document.getElementById('formTitle').textContent = '新增 Bot';
+  document.getElementById('botId').disabled = false;
+  document.getElementById('botId').value = '';
+  document.getElementById('platform').value = 'telegram';
+  document.getElementById('displayName').value = '';
+  renderCharacterOptions('default');
+  document.getElementById('token').value = '';
+  document.getElementById('enabled').checked = false;
+  document.getElementById('formError').textContent = '';
+}
+
+function editBot(id) {
+  const bot = bots.find(b => b.bot_id === id);
+  if (!bot) return;
+  editingId = id;
+  document.getElementById('formTitle').textContent = '編輯 Bot';
+  document.getElementById('botId').disabled = true;
+  document.getElementById('botId').value = bot.bot_id || '';
+  document.getElementById('platform').value = bot.platform || 'telegram';
+  document.getElementById('displayName').value = bot.display_name || '';
+  renderCharacterOptions(bot.character_id || 'default');
+  document.getElementById('token').value = bot.token || '';
+  document.getElementById('enabled').checked = !!bot.enabled;
+  document.getElementById('formError').textContent = '';
+}
+
+async function saveBot(event) {
+  event.preventDefault();
+  const payload = {
+    platform: document.getElementById('platform').value,
+    display_name: document.getElementById('displayName').value,
+    character_id: document.getElementById('characterId').value,
+    token: document.getElementById('token').value,
+    enabled: document.getElementById('enabled').checked,
+  };
+  const url = editingId ? `${API}/bots/${encodeURIComponent(editingId)}` : `${API}/bots`;
+  if (!editingId) payload.bot_id = document.getElementById('botId').value;
+  const method = editingId ? 'PUT' : 'POST';
+  const r = await fetch(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  if (!r.ok) {
+    const data = await r.json().catch(() => null);
+    document.getElementById('formError').textContent = apiErrorMessage(data, 'save failed');
+    return;
+  }
+  toast('saved', 'success');
+  newBot();
+  await loadAll();
+}
+
+async function reloadBot(id) {
+  const r = await fetch(`${API}/bots/${encodeURIComponent(id)}/reload`, {method:'POST'});
+  if (!r.ok) return toast('reload failed', 'error');
+  await loadAll();
+  toast('reloaded', 'success');
+}
+
+async function deleteBot(id) {
+  if (!confirm(`Delete bot ${id}?`)) return;
+  const r = await fetch(`${API}/bots/${encodeURIComponent(id)}`, {method:'DELETE'});
+  if (!r.ok) {
+    const data = await r.json().catch(() => null);
+    return toast(apiErrorMessage(data, 'delete failed'), 'error');
+  }
+  if (editingId === id) newBot();
+  await loadAll();
+  toast('deleted', 'success');
+}
+</script>
+</body>
+</html>

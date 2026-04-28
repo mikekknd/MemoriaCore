@@ -135,7 +135,8 @@ class MockMemorySystem:
         """模擬核心記憶搜尋"""
         return self._core_search_results[:top_k] if self._core_search_results else []
 
-    def search_profile_by_query(self, query, top_k=3, threshold=0.5, user_id="default"):
+    def search_profile_by_query(self, query, top_k=3, threshold=0.5,
+                                user_id="default", visibility_filter=None):
         """模擬使用者畫像搜尋"""
         return []
 

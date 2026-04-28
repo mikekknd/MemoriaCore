@@ -47,8 +47,8 @@ def render_settings_page(api_base, user_prefs=None):
             value=user_prefs.get("llamacpp_url", "http://localhost:8080"),
             help="llama.cpp server 的位址（不含 /v1）。啟動指令範例：llama-server --model model.gguf --port 8080 --cont-batching -np 4",
         )
-        new_tg_token = st.text_input("Telegram Bot Token", type="password", value=user_prefs.get("telegram_bot_token", ""),
-                                      help="從 @BotFather 取得。設定後重啟伺服器即可啟用 Telegram 對話。留空則不啟動 Bot。")
+        st.info("Telegram Bot Token 已移至「Bot 管理」頁。此處保留舊設定相容，但不再控制 Bot runtime。")
+        new_tg_token = user_prefs.get("telegram_bot_token", "")
 
     with col2:
         st.header("🛠️ 記憶與模型參數")

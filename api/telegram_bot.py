@@ -1,79 +1,86 @@
 """
-Telegram Bot 整合模組 — 與 FastAPI 共存於同一進程。
-直接呼叫內部函式（非 HTTP），共享所有單例。
-使用長輪詢模式，無需公網 IP / HTTPS / ngrok。
+Telegram Bot 多實例整合模組。
+
+每個 bot config 對應一組 Bot / Dispatcher / polling task，與 FastAPI 共用核心單例。
 """
+from __future__ import annotations
+
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart, Command
-from aiogram.enums import ParseMode, ChatAction
+from dataclasses import dataclass, field
+from typing import Any
 
-from api.dependencies import (
-    get_memory_sys, get_storage, get_router,
-)
-from core.deployment_config import resolve_context
-from api.session_manager import session_manager
-from api.routers.chat.orchestration import _run_chat_orchestration
+from aiogram import Bot, Dispatcher, types
+from aiogram.enums import ChatAction
+from aiogram.filters import Command, CommandStart
+
+from core.bot_registry import BotRegistry
+
 
 logger = logging.getLogger("telegram_bot")
 
-# ── Module-level state ────────────────────────────────────
-_bot: Bot | None = None
-_dp: Dispatcher | None = None
-_polling_task: asyncio.Task | None = None
+
+@dataclass
+class TelegramRuntime:
+    bot_id: str
+    platform: str = "telegram"
+    bot: Bot | None = None
+    dispatcher: Dispatcher | None = None
+    polling_task: asyncio.Task | None = None
+    status: str = "disabled"
+    last_error: str | None = None
+    token_fingerprint: str = ""
+    character_id: str = "default"
 
 
-# ══════════════════════════════════════════════════════════
-# Telegram user_id → API session_id 映射
-# ══════════════════════════════════════════════════════════
 class TelegramSessionMap:
-    """管理 Telegram user_id 到 API session_id 的映射。"""
+    """管理 (bot_id, Telegram user_id) 到 API session_id 的映射。"""
 
     def __init__(self):
-        self._map: dict[int, str] = {}
+        self._map: dict[tuple[str, int], str] = {}
 
-    async def get_or_create_session(self, user_id: int) -> str:
-        """取得或建立對應的 API session。若 session 已過期則自動重建。"""
-        sid = self._map.get(user_id)
+    async def get_or_create_session(self, bot_id: str, user_id: int, character_id: str) -> str:
+        from api.dependencies import get_storage
+        from api.session_manager import session_manager
+
+        key = (bot_id, user_id)
+        sid = self._map.get(key)
         if sid:
             s = await session_manager.get(sid)
             if s:
                 return sid
-            # session 過期，清除映射
-            del self._map[user_id]
+            del self._map[key]
 
-        # 建立新 session（帶入 channel 資訊與隔離身份）
-        prefs = get_storage().load_prefs()
-        character_id = prefs.get("active_character_id", "default")
+        # 觸發 legacy prefs 讀取，確保 StorageManager 已初始化；角色由 bot config 指定。
+        get_storage().load_prefs()
         session = await session_manager.create(
             channel="telegram",
             channel_uid=str(user_id),
             user_id=str(user_id),
             character_id=character_id,
-            channel_class="private",
+            bot_id=bot_id,
         )
-        self._map[user_id] = session.session_id
+        self._map[key] = session.session_id
         return session.session_id
 
-    async def clear_session(self, user_id: int) -> bool:
-        """清除使用者的對話歷史，重新開始。"""
-        sid = self._map.pop(user_id, None)
+    async def clear_session(self, bot_id: str, user_id: int) -> bool:
+        from api.session_manager import session_manager
+
+        key = (bot_id, user_id)
+        sid = self._map.pop(key, None)
         if sid:
             await session_manager.delete(sid)
             return True
         return False
 
-    def get_session_id(self, user_id: int) -> str | None:
-        return self._map.get(user_id)
+    def get_session_id(self, bot_id: str, user_id: int) -> str | None:
+        return self._map.get((bot_id, user_id))
+
+    def clear_bot(self, bot_id: str) -> None:
+        for key in [key for key in self._map if key[0] == bot_id]:
+            del self._map[key]
 
 
-_session_map = TelegramSessionMap()
-
-
-# ══════════════════════════════════════════════════════════
-# 訊息分割（Telegram 單訊息限制 4096 字元）
-# ══════════════════════════════════════════════════════════
 def _split_message(text: str, max_len: int = 4000) -> list[str]:
     """將長訊息分割為多段，優先在換行或句號處分割。"""
     if len(text) <= max_len:
@@ -85,17 +92,14 @@ def _split_message(text: str, max_len: int = 4000) -> list[str]:
             chunks.append(text)
             break
 
-        # 嘗試在 max_len 範圍內找最後的換行
         cut = text.rfind("\n", 0, max_len)
         if cut == -1 or cut < max_len // 2:
-            # 找不到合適換行，嘗試句號
             for sep in ("。", ". ", "！", "？", "! ", "? "):
                 cut = text.rfind(sep, 0, max_len)
                 if cut != -1 and cut > max_len // 2:
                     cut += len(sep)
                     break
             else:
-                # 最後手段：硬切
                 cut = max_len
 
         chunks.append(text[:cut])
@@ -104,207 +108,347 @@ def _split_message(text: str, max_len: int = 4000) -> list[str]:
     return chunks
 
 
-# ══════════════════════════════════════════════════════════
-# 指令處理
-# ══════════════════════════════════════════════════════════
-async def _cmd_start(message: types.Message):
-    """處理 /start 指令"""
-    user_id = message.from_user.id
-    await _session_map.get_or_create_session(user_id)
-    await message.answer(
-        "你好！我是你的 AI 助手。\n"
-        "直接發送訊息即可開始對話。\n\n"
-        "可用指令：\n"
-        "/clear — 清空對話歷史\n"
-        "/status — 查看 Session 狀態"
-    )
+class TelegramBotManager:
+    """管理多個 Telegram bot polling runtime。"""
 
+    def __init__(self, registry: BotRegistry):
+        self.registry = registry
+        self._runtimes: dict[str, TelegramRuntime] = {}
+        self._session_map = TelegramSessionMap()
+        self._lock = asyncio.Lock()
 
-async def _cmd_clear(message: types.Message):
-    """處理 /clear 指令"""
-    user_id = message.from_user.id
-    cleared = await _session_map.clear_session(user_id)
-    if cleared:
-        await message.answer("對話歷史已清空！發送訊息開始新對話。")
-    else:
-        await message.answer("目前沒有活躍的對話 Session。")
+    def get_status(self, bot_id: str, platform: str = "telegram") -> dict[str, Any]:
+        if platform != "telegram":
+            return {
+                "bot_id": bot_id,
+                "platform": platform,
+                "status": "unsupported",
+                "running": False,
+                "last_error": None,
+            }
+        runtime = self._runtimes.get(bot_id)
+        if not runtime:
+            return {
+                "bot_id": bot_id,
+                "platform": "telegram",
+                "status": "disabled",
+                "running": False,
+                "last_error": None,
+            }
+        running = bool(runtime.polling_task and not runtime.polling_task.done() and runtime.bot)
+        return {
+            "bot_id": bot_id,
+            "platform": "telegram",
+            "status": runtime.status,
+            "running": running,
+            "last_error": runtime.last_error,
+        }
 
+    async def sync_from_registry(self) -> None:
+        """依 bot_configs.json 同步 runtime 狀態。"""
+        from api.dependencies import get_storage
 
-async def _cmd_status(message: types.Message):
-    """處理 /status 指令"""
-    user_id = message.from_user.id
-    sid = _session_map.get_session_id(user_id)
-    if not sid:
-        await message.answer("目前沒有活躍的 Session。發送任何訊息即可自動建立。")
-        return
+        async with self._lock:
+            prefs = get_storage().load_prefs()
+            configs = self.registry.load_configs(prefs)
+            desired_ids = {c["bot_id"] for c in configs if c.get("platform") == "telegram" and c.get("enabled")}
 
-    s = await session_manager.get(sid)
-    if not s:
-        await message.answer("Session 已過期。發送任何訊息即可自動建立新 Session。")
-        return
+            for bot_id in list(self._runtimes):
+                if bot_id not in desired_ids:
+                    await self._stop_bot_locked(bot_id)
 
-    ms = get_memory_sys()
-    block_count = len(ms.memory_blocks) if ms.memory_blocks else 0
+            for cfg in configs:
+                if cfg.get("platform") != "telegram":
+                    self._runtimes[cfg["bot_id"]] = TelegramRuntime(
+                        bot_id=cfg["bot_id"],
+                        platform=cfg.get("platform", "other"),
+                        status="unsupported",
+                        character_id=cfg.get("character_id", "default"),
+                    )
+                    continue
+                if not cfg.get("enabled"):
+                    continue
+                fp = self._fingerprint(cfg.get("token", ""))
+                runtime = self._runtimes.get(cfg["bot_id"])
+                if (
+                    runtime
+                    and runtime.status == "running"
+                    and runtime.token_fingerprint == fp
+                    and runtime.character_id == cfg.get("character_id", "default")
+                    and runtime.polling_task
+                    and not runtime.polling_task.done()
+                ):
+                    continue
+                await self._stop_bot_locked(cfg["bot_id"])
+                await self._start_bot_locked(cfg)
 
-    await message.answer(
-        f"Session ID: {sid[:8]}...\n"
-        f"對話訊息數: {len(s.messages)}\n"
-        f"當前實體標籤: {', '.join(s.last_entities) if s.last_entities else '(無)'}\n"
-        f"記憶區塊總數: {block_count}\n"
-        f"建立時間: {s.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-        f"最後活動: {s.last_active.strftime('%H:%M:%S')}"
-    )
+    async def reload_bot(self, bot_id: str) -> None:
+        from api.dependencies import get_storage
 
+        async with self._lock:
+            prefs = get_storage().load_prefs()
+            cfg = self.registry.get_config(bot_id, prefs)
+            await self._stop_bot_locked(bot_id)
+            if cfg and cfg.get("enabled") and cfg.get("platform") == "telegram":
+                await self._start_bot_locked(cfg)
+            elif cfg and cfg.get("platform") != "telegram":
+                self._runtimes[bot_id] = TelegramRuntime(
+                    bot_id=bot_id,
+                    platform=cfg.get("platform", "other"),
+                    status="unsupported",
+                    character_id=cfg.get("character_id", "default"),
+                )
 
-# ══════════════════════════════════════════════════════════
-# 一般訊息處理（核心對話流程）
-# ══════════════════════════════════════════════════════════
-async def _handle_message(message: types.Message):
-    """處理一般文字訊息 — 完整對話編排流程。"""
-    if not message.text:
-        return
+    async def stop_bot(self, bot_id: str) -> None:
+        async with self._lock:
+            await self._stop_bot_locked(bot_id)
 
-    user_id = message.from_user.id
-    user_text = message.text.strip()
-    if not user_text:
-        return
+    async def stop_all(self) -> None:
+        async with self._lock:
+            for bot_id in list(self._runtimes):
+                await self._stop_bot_locked(bot_id)
 
-    # 取得或建立 session
-    sid = await _session_map.get_or_create_session(user_id)
+    async def _start_bot_locked(self, config: dict[str, Any]) -> None:
+        bot_id = config["bot_id"]
+        token = config.get("token", "").strip()
+        character_id = config.get("character_id", "default")
+        runtime = TelegramRuntime(
+            bot_id=bot_id,
+            platform="telegram",
+            status="starting",
+            token_fingerprint=self._fingerprint(token),
+            character_id=character_id,
+        )
+        self._runtimes[bot_id] = runtime
+        if not token:
+            runtime.status = "error"
+            runtime.last_error = "missing token"
+            return
 
-    # 加入使用者訊息
-    await session_manager.add_user_message(sid, user_text)
-    s = await session_manager.get(sid)
-    if not s:
-        await message.answer("Session 錯誤，請重試。")
-        return
+        try:
+            bot = Bot(token=token)
+            dispatcher = Dispatcher()
+            dispatcher.message.register(self._cmd_start(bot_id, character_id), CommandStart())
+            dispatcher.message.register(self._cmd_clear(bot_id), Command("clear"))
+            dispatcher.message.register(self._cmd_status(bot_id), Command("status"))
+            dispatcher.message.register(self._handle_message(bot_id, character_id))
+            await bot.delete_webhook(drop_pending_updates=False)
 
-    # 發送 typing 指示器
-    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
-    user_prefs = get_storage().load_prefs()
-
-    # 建立 Telegram 即時狀態通知 callback
-    _status_msg = None
-    _loop = asyncio.get_running_loop()
-
-    def _tg_event_cb(data: dict):
-        nonlocal _status_msg
-        action = data.get("action", "")
-        text = data.get("message", "")
-        if action == "calling" and text:
-            # 發送或更新搜尋中提示訊息
-            async def _send_or_edit():
-                nonlocal _status_msg
+            async def _run_polling():
                 try:
-                    if _status_msg is None:
-                        _status_msg = await message.answer(f"🔍 {text}")
-                    else:
-                        await _status_msg.edit_text(f"🔍 {text}")
-                except Exception:
+                    await dispatcher.start_polling(bot, handle_signals=False)
+                except asyncio.CancelledError:
                     pass
-            asyncio.run_coroutine_threadsafe(_send_or_edit(), _loop)
-        elif action == "complete" and text:
-            async def _edit_complete():
-                nonlocal _status_msg
-                try:
-                    if _status_msg:
-                        await _status_msg.edit_text(f"✅ {text}")
-                except Exception:
-                    pass
-            asyncio.run_coroutine_threadsafe(_edit_complete(), _loop)
+                except Exception as exc:
+                    runtime.status = "error"
+                    runtime.last_error = self._sanitize_error(exc, token)
+                    logger.error("Telegram polling error for bot_id=%s: %s", bot_id, runtime.last_error)
 
-    session_ctx = {
-        "user_id": s.user_id,
-        "character_id": s.character_id,
-        "persona_face": s.persona_face,
-    }
+            runtime.bot = bot
+            runtime.dispatcher = dispatcher
+            runtime.polling_task = asyncio.create_task(_run_polling())
+            runtime.status = "running"
+            runtime.last_error = None
+            logger.info("Telegram Bot started: bot_id=%s character_id=%s", bot_id, character_id)
+        except Exception as exc:
+            runtime.status = "error"
+            runtime.last_error = self._sanitize_error(exc, token)
+            logger.error("Telegram bot startup failed: bot_id=%s error=%s", bot_id, runtime.last_error)
+            if runtime.bot:
+                await runtime.bot.session.close()
 
-    try:
-        # 在執行緒池中跑完整編排（與 chat_ws.py 共用同一函式）
-        reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_events, \
-            _inner_thought, _status_metrics, _tone, _speech, _cited_uids = \
-            await asyncio.to_thread(
-                _run_chat_orchestration,
-                list(s.messages), list(s.last_entities), user_text, user_prefs,
-                on_event=_tg_event_cb,
-                session_ctx=session_ctx,
+    async def _stop_bot_locked(self, bot_id: str) -> None:
+        runtime = self._runtimes.get(bot_id)
+        if not runtime:
+            return
+        if runtime.dispatcher:
+            try:
+                await runtime.dispatcher.stop_polling()
+            except Exception:
+                pass
+        if runtime.polling_task and not runtime.polling_task.done():
+            runtime.polling_task.cancel()
+            try:
+                await runtime.polling_task
+            except asyncio.CancelledError:
+                pass
+        if runtime.bot:
+            await runtime.bot.session.close()
+        self._session_map.clear_bot(bot_id)
+        runtime.bot = None
+        runtime.dispatcher = None
+        runtime.polling_task = None
+        runtime.status = "disabled"
+        logger.info("Telegram Bot stopped: bot_id=%s", bot_id)
+
+    def _cmd_start(self, bot_id: str, character_id: str):
+        async def handler(message: types.Message):
+            user_id = self._message_user_id(message)
+            if user_id is None:
+                return
+            await self._session_map.get_or_create_session(bot_id, user_id, character_id)
+            await message.answer(
+                "你好！我是你的 AI 助手。\n"
+                "直接發送訊息即可開始對話。\n\n"
+                "可用指令：\n"
+                "/clear — 清空對話歷史\n"
+                "/status — 查看 Session 狀態"
             )
-    except Exception as e:
-        logger.error("Chat orchestration failed: %s", e, exc_info=True)
-        await message.answer(f"處理失敗: {e}")
-        return
+        return handler
 
-    # 寫入 assistant 回覆
-    await session_manager.add_assistant_message(sid, reply_text, retrieval_ctx, new_entities)
+    def _cmd_clear(self, bot_id: str):
+        async def handler(message: types.Message):
+            user_id = self._message_user_id(message)
+            if user_id is None:
+                return
+            cleared = await self._session_map.clear_session(bot_id, user_id)
+            if cleared:
+                await message.answer("對話歷史已清空！發送訊息開始新對話。")
+            else:
+                await message.answer("目前沒有活躍的對話 Session。")
+        return handler
 
-    # 話題偏移時執行橋接
-    if topic_shifted:
-        await session_manager.bridge(sid)
+    def _cmd_status(self, bot_id: str):
+        async def handler(message: types.Message):
+            from api.dependencies import get_memory_sys
+            from api.session_manager import session_manager
 
-    # 分割並回傳訊息
-    chunks = _split_message(reply_text)
-    for chunk in chunks:
-        await message.answer(chunk)
+            user_id = self._message_user_id(message)
+            if user_id is None:
+                return
+            sid = self._session_map.get_session_id(bot_id, user_id)
+            if not sid:
+                await message.answer("目前沒有活躍的 Session。發送任何訊息即可自動建立。")
+                return
+            s = await session_manager.get(sid)
+            if not s:
+                await message.answer("Session 已過期。發送任何訊息即可自動建立新 Session。")
+                return
 
+            ms = get_memory_sys()
+            block_count = len(ms.memory_blocks) if ms.memory_blocks else 0
+            await message.answer(
+                f"Bot ID: {bot_id}\n"
+                f"角色 ID: {s.character_id}\n"
+                f"Session ID: {sid[:8]}...\n"
+                f"對話訊息數: {len(s.messages)}\n"
+                f"當前實體標籤: {', '.join(s.last_entities) if s.last_entities else '(無)'}\n"
+                f"記憶區塊總數: {block_count}\n"
+                f"建立時間: {s.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+                f"最後活動: {s.last_active.strftime('%H:%M:%S')}"
+            )
+        return handler
 
-# ══════════════════════════════════════════════════════════
-# 生命週期管理
-# ══════════════════════════════════════════════════════════
-async def start_telegram_bot(token: str):
-    """啟動 Telegram Bot（長輪詢模式）。在 FastAPI lifespan 中呼叫。"""
-    global _bot, _dp, _polling_task
+    def _handle_message(self, bot_id: str, character_id: str):
+        async def handler(message: types.Message):
+            if not message.text:
+                return
+            user_id = self._message_user_id(message)
+            if user_id is None:
+                return
+            user_text = message.text.strip()
+            if not user_text:
+                return
 
-    if not token or not token.strip():
-        logger.info("Telegram Bot token is empty, skipping bot startup.")
-        return
+            from api.dependencies import get_storage
+            from api.session_manager import session_manager
+            from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 
-    _bot = Bot(token=token.strip())
-    _dp = Dispatcher()
+            sid = await self._session_map.get_or_create_session(bot_id, user_id, character_id)
+            await session_manager.add_user_message(sid, user_text)
+            s = await session_manager.get(sid)
+            if not s:
+                await message.answer("Session 錯誤，請重試。")
+                return
 
-    # 註冊處理器
-    _dp.message.register(_cmd_start, CommandStart())
-    _dp.message.register(_cmd_clear, Command("clear"))
-    _dp.message.register(_cmd_status, Command("status"))
-    _dp.message.register(_handle_message)  # 所有其他文字訊息
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+            user_prefs = get_storage().load_prefs()
+            orchestration_fn = _select_orchestration(user_prefs)
+            status_cb = self._telegram_event_callback(message)
+            session_ctx = {
+                "user_id": s.user_id,
+                "character_id": s.character_id,
+                "persona_face": s.persona_face,
+                "session_id": sid,
+                "bot_id": s.bot_id,
+            }
 
-    # 啟動長輪詢（在背景 task 中，handle_signals=False 避免與 uvicorn 衝突）
-    async def _run_polling():
-        try:
-            await _dp.start_polling(_bot, handle_signals=False)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error("Telegram polling error: %s", e, exc_info=True)
+            try:
+                result = await asyncio.to_thread(
+                    orchestration_fn,
+                    list(s.messages), list(s.last_entities), user_text, user_prefs,
+                    on_event=status_cb,
+                    session_ctx=session_ctx,
+                )
+                reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
+                    _inner_thought, _status_metrics, _tone, _speech, _thinking_speech, cited_uids = \
+                    _unpack_orchestration_result(result)
+            except Exception as exc:
+                logger.error("Chat orchestration failed: %s", exc, exc_info=True)
+                await message.answer(f"處理失敗: {exc}")
+                return
 
-    _polling_task = asyncio.create_task(_run_polling())
-    logger.info("Telegram Bot started (long-polling mode).")
+            saved_reply_text = reply_text
+            if cited_uids:
+                saved_reply_text = f"{reply_text} " + " ".join([f"[Ref: {u}]" for u in cited_uids])
+            await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
 
+            if topic_shifted:
+                await session_manager.bridge(sid)
+                if pipeline_data:
+                    from api.routers.chat.pipeline import _run_memory_pipeline_bg
+                    asyncio.create_task(_run_memory_pipeline_bg(sid, pipeline_data))
 
-async def stop_telegram_bot():
-    """停止 Telegram Bot。在 FastAPI shutdown 時呼叫。"""
-    global _bot, _dp, _polling_task
+            for chunk in _split_message(reply_text):
+                await message.answer(chunk)
+        return handler
 
-    if _dp:
-        await _dp.stop_polling()
-        _dp = None
+    @staticmethod
+    def _telegram_event_callback(message: types.Message):
+        status_msg = None
+        loop = asyncio.get_running_loop()
 
-    if _polling_task and not _polling_task.done():
-        _polling_task.cancel()
-        try:
-            await _polling_task
-        except asyncio.CancelledError:
-            pass
-        _polling_task = None
+        def callback(data: dict):
+            nonlocal status_msg
+            action = data.get("action", "")
+            text = data.get("message", "")
+            if action == "calling" and text:
+                async def _send_or_edit():
+                    nonlocal status_msg
+                    try:
+                        if status_msg is None:
+                            status_msg = await message.answer(f"🔍 {text}")
+                        else:
+                            await status_msg.edit_text(f"🔍 {text}")
+                    except Exception:
+                        pass
+                asyncio.run_coroutine_threadsafe(_send_or_edit(), loop)
+            elif action == "complete" and text:
+                async def _edit_complete():
+                    try:
+                        if status_msg:
+                            await status_msg.edit_text(f"✅ {text}")
+                    except Exception:
+                        pass
+                asyncio.run_coroutine_threadsafe(_edit_complete(), loop)
 
-    if _bot:
-        await _bot.session.close()
-        _bot = None
+        return callback
 
-    logger.info("Telegram Bot stopped.")
+    @staticmethod
+    def _message_user_id(message: types.Message) -> int | None:
+        if not message.from_user:
+            return None
+        return int(message.from_user.id)
 
+    @staticmethod
+    def _fingerprint(token: str) -> str:
+        if not token:
+            return ""
+        return f"{len(token)}:{token[:4]}:{token[-4:]}"
 
-async def reload_telegram_bot(new_token: str):
-    """以新 token 熱重載 Telegram Bot（PUT /system/config 時呼叫）。"""
-    await stop_telegram_bot()
-    await start_telegram_bot(new_token)
+    @staticmethod
+    def _sanitize_error(exc: Exception, token: str) -> str:
+        message = str(exc)
+        if token:
+            message = message.replace(token, "[redacted-token]")
+        return message

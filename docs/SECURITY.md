@@ -13,7 +13,7 @@
 | FastAPI 無內建驗證層 | **高** | 所有 API 端點預設無 auth token |
 | SQLite 直接位於專案目錄 | 中 | DB 檔若被直接讀取，所有記憶明文可見 |
 | LLM API Key 存於 `user_prefs.json` | 中 | 明文儲存；需限制檔案系統存取權限 |
-| Telegram Bot Token 存於 `user_prefs.json` | 中 | 同上 |
+| Telegram Bot Token 存於 `bot_configs.json` / legacy `user_prefs.json` | 中 | 明文儲存；需限制檔案系統存取權限 |
 | dashboard.html 無 CSRF 防護 | 低 | 僅限信任網路部署時影響有限 |
 
 ---
@@ -95,16 +95,16 @@ htpasswd -c /etc/nginx/.htpasswd su_username
 
 ### 2-3. API Key / Secret 檔案權限
 
-`user_prefs.json` 存放 OpenAI key、Telegram token 等敏感資訊，需限制讀取權限：
+`user_prefs.json` 存放 OpenAI key 等敏感資訊；`bot_configs.json` 存放 Bot token。兩者都需限制讀取權限：
 
 **Linux / macOS：**
 ```bash
-chmod 600 user_prefs.json
-chown <service_user> user_prefs.json
+chmod 600 user_prefs.json bot_configs.json
+chown <service_user> user_prefs.json bot_configs.json
 ```
 
 **Windows：**
-- 右鍵 `user_prefs.json` → 內容 → 安全性
+- 右鍵 `user_prefs.json` 與 `bot_configs.json` → 內容 → 安全性
 - 移除 Everyone / Users 的讀取權，僅保留執行服務的帳號
 
 ---
@@ -131,7 +131,7 @@ chown <service_user> user_prefs.json
 
 ### 2-6. Telegram Bot 安全
 
-- `telegram_bot_token` 不可寫入版本控制（已在 `.gitignore` 確認）
+- `bot_configs.json` 與 legacy `telegram_bot_token` 不可寫入版本控制（已在 `.gitignore` 確認）
 - 建議在 BotFather 設定 `setPrivacy`：只回應直接訊息，不接受加入群組
 - 定期到 BotFather 執行 `revoke` 輪換 token
 
@@ -173,7 +173,7 @@ chown <service_user> user_prefs.json
 [ ] MEMORIACORE_JWT_SECRET 已設定且未寫入版本控制
 [ ] 對外 HTTPS 部署時 MEMORIACORE_COOKIE_SECURE=1
 [ ] MEMORIACORE_CORS_ORIGINS 已收斂到可信來源
-[ ] user_prefs.json 檔案權限已收緊（非 service 帳號不可讀）
+[ ] user_prefs.json / bot_configs.json 檔案權限已收緊（非 service 帳號不可讀）
 [ ] su_user_id 已設定（非空字串）
 [ ] Telegram bot token 未出現在任何 git commit 中
 [ ] SQLite DB 目錄不在靜態資源路徑下

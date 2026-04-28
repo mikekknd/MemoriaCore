@@ -25,6 +25,17 @@ from api.routers.chat.timer import StepTimer
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+def _get_session_character(character_id: str) -> dict:
+    from api.dependencies import get_character_manager
+    char_mgr = get_character_manager()
+    char = char_mgr.get_character(character_id)
+    if not char:
+        from core.system_logger import SystemLogger
+        SystemLogger.log_error("character_missing", f"missing_character_id={character_id}; fallback=default")
+        char = char_mgr.get_active_character("default")
+    return char or {}
+
+
 async def _authenticate_ws(ws: WebSocket) -> dict | None:
     token = ws.cookies.get(AUTH_COOKIE_NAME)
     if not token:
@@ -55,12 +66,14 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
     user_id = str(current_user["id"])
     channel_class = "private" if current_user.get("role") == "admin" else "public"
     persona_face = "private" if current_user.get("role") == "admin" else "public"
+    user_prefs = get_storage().load_prefs()
     try:
         session = await session_manager.get_or_create(
             session_id,
             channel="websocket",
             channel_uid=user_id,
             user_id=user_id,
+            character_id=user_prefs.get("active_character_id", "default"),
             channel_class=channel_class,
             persona_face=persona_face,
         )
@@ -98,16 +111,20 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 # 保留原 session 的隔離身份，重建乾淨的對話歷史
                 old_channel = session.channel
                 old_channel_uid = session.channel_uid
+                old_bot_id = session.bot_id
                 old_user_id = session.user_id
                 old_character_id = session.character_id
+                old_persona_face = session.persona_face
                 old_channel_class = session.channel_class
                 await session_manager.delete(sid)
                 session = await session_manager.create(
                     channel=old_channel,
                     channel_uid=old_channel_uid,
+                    bot_id=old_bot_id,
                     user_id=old_user_id,
                     character_id=old_character_id,
                     channel_class=old_channel_class,
+                    persona_face=old_persona_face,
                 )
                 sid = session.session_id
                 ws_manager._connections[sid] = ws
@@ -139,6 +156,8 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 "user_id": s.user_id,
                 "character_id": s.character_id,
                 "persona_face": s.persona_face,
+                "session_id": sid,
+                "bot_id": s.bot_id,
             }
 
             # 建立即時事件推送 callback（從工作執行緒安全呼叫 async WS send）
@@ -207,10 +226,8 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             # TTS 合成（若啟用）：背景執行翻譯 + 合成，不阻塞文字回覆顯示
             tts = get_tts_client()
             if tts:
-                from api.dependencies import get_character_manager, get_router
-                _char_mgr = get_character_manager()
-                _active_char = _char_mgr.get_active_character(
-                    user_prefs.get("active_character_id", "default"))
+                from api.dependencies import get_router
+                _active_char = _get_session_character(s.character_id)
                 asyncio.create_task(_translate_and_tts_send(
                     ws, tts, reply_text,
                     _active_char.get("tts_language", ""),
