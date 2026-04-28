@@ -7,15 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
+from aiogram.types import FSInputFile
 
 from core.bot_registry import BotRegistry
-
+from tools.minimax_image import generated_image_path
 
 logger = logging.getLogger("telegram_bot")
 
@@ -81,6 +83,11 @@ class TelegramSessionMap:
             del self._map[key]
 
 
+# ══════════════════════════════════════════════════════════
+# 訊息分割與圖片處理
+# ══════════════════════════════════════════════════════════
+_IMAGE_MARKDOWN_RE = re.compile(r"!\[.*?\]\(/api/v1/chat/generated-images/([^/]+)/([^/]+)\.jpeg\)")
+
 def _split_message(text: str, max_len: int = 4000) -> list[str]:
     """將長訊息分割為多段，優先在換行或句號處分割。"""
     if len(text) <= max_len:
@@ -106,6 +113,43 @@ def _split_message(text: str, max_len: int = 4000) -> list[str]:
         text = text[cut:].lstrip()
 
     return chunks
+
+
+async def _send_message_with_images(message: types.Message, reply_text: str, user_id: str):
+    """將包含圖片的回覆拆分並依序發送"""
+    matches = list(_IMAGE_MARKDOWN_RE.finditer(reply_text))
+    
+    if not matches:
+        chunks = _split_message(reply_text)
+        for chunk in chunks:
+            await message.answer(chunk)
+        return
+
+    last_end = 0
+    for match in matches:
+        text_before = reply_text[last_end:match.start()].strip()
+        if text_before:
+            for chunk in _split_message(text_before):
+                await message.answer(chunk)
+        
+        session_id = match.group(1)
+        image_id = match.group(2)
+        try:
+            path = generated_image_path(user_id, session_id, image_id)
+            if path.exists() and path.is_file():
+                await message.answer_photo(photo=FSInputFile(path))
+            else:
+                await message.answer(match.group(0))
+        except Exception as e:
+            logger.error("Failed to send photo %s: %s", image_id, e)
+            await message.answer(match.group(0))
+            
+        last_end = match.end()
+        
+    text_after = reply_text[last_end:].strip()
+    if text_after:
+        for chunk in _split_message(text_after):
+            await message.answer(chunk)
 
 
 class TelegramBotManager:
@@ -341,13 +385,19 @@ class TelegramBotManager:
 
     def _handle_message(self, bot_id: str, character_id: str):
         async def handler(message: types.Message):
-            if not message.text:
+            user_text = ""
+            if message.text:
+                user_text = message.text.strip()
+            elif message.photo:
+                await message.reply("（提示：我目前還無法看見圖片內容，但我會回覆您的文字）")
+                if message.caption:
+                    user_text = message.caption.strip()
+            
+            if not user_text:
                 return
+
             user_id = self._message_user_id(message)
             if user_id is None:
-                return
-            user_text = message.text.strip()
-            if not user_text:
                 return
 
             from api.dependencies import get_storage
@@ -399,8 +449,7 @@ class TelegramBotManager:
                     from api.routers.chat.pipeline import _run_memory_pipeline_bg
                     asyncio.create_task(_run_memory_pipeline_bg(sid, pipeline_data))
 
-            for chunk in _split_message(reply_text):
-                await message.answer(chunk)
+            await _send_message_with_images(message, reply_text, s.user_id)
         return handler
 
     @staticmethod
