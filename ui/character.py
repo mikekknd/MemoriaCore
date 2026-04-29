@@ -71,11 +71,11 @@ def render_character_page(api_base: str, user_prefs: dict):
 
                     is_active = user_prefs.get("active_character_id") == char.get('character_id')
                     if is_active:
-                        st.success("✅ 目前指定的對話角色")
+                        st.success("✅ 預設角色（未指定角色時使用）")
 
                     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
                     with col_btn1:
-                        if not is_active and st.button("🎯 設為當前角色", key=f"act_{char.get('character_id')}"):
+                        if not is_active and st.button("🎯 設為預設角色", key=f"act_{char.get('character_id')}"):
                             new_prefs = user_prefs.copy()
                             new_prefs["active_character_id"] = char.get("character_id")
                             requests.put(f"{api_base}/system/config", json=new_prefs)
@@ -324,39 +324,43 @@ def render_character_page(api_base: str, user_prefs: dict):
     # === Tab 3: PersonaProbe ===
     elif st.session_state.char_tab == "🧬 PersonaProbe":
         st.subheader("🧬 PersonaProbe 同步")
-        st.caption("同步結果會寫入 active character 的演化人設。")
+        st.caption("同步結果會寫入下方明確選取角色的演化人設，不再依賴 active/default character。")
 
-        active_char_id = user_prefs.get("active_character_id", "default")
-        active_char_name = next(
-            (c.get("name", c.get("character_id")) for c in characters if c.get("character_id") == active_char_id),
-            active_char_id,
-        )
+        char_options = [(c.get("character_id"), c.get("name", c.get("character_id"))) for c in characters]
+        char_ids = [cid for cid, _ in char_options if cid]
+        if not char_ids:
+            st.info("請先建立角色後再執行 PersonaProbe 同步。")
+            return
+
+        default_target = st.session_state.get("probe_target_character_id")
+        if default_target not in char_ids:
+            fallback = user_prefs.get("active_character_id", "default")
+            default_target = fallback if fallback in char_ids else char_ids[0]
+            st.session_state["probe_target_character_id"] = default_target
 
         col_a, col_b = st.columns([1, 2])
         with col_a:
-            st.info(f"📌 目前活躍角色：**{active_char_name}**")
+            target_name = next((name for cid, name in char_options if cid == default_target), default_target)
+            st.info(f"📌 同步目標角色：**{target_name}**")
         with col_b:
-            char_options = [(c.get("character_id"), c.get("name", c.get("character_id"))) for c in characters]
-            char_ids = [cid for cid, _ in char_options]
             selected = st.selectbox(
-                "切換目標角色",
+                "PersonaProbe 同步目標",
                 options=char_ids,
                 format_func=lambda cid: next((name for cid_, name in char_options if cid_ == cid), cid),
-                index=char_ids.index(active_char_id) if active_char_id in char_ids else 0,
+                index=char_ids.index(default_target),
                 key="probe_target_char",
             )
-            if selected != active_char_id:
-                new_prefs = user_prefs.copy()
-                new_prefs["active_character_id"] = selected
-                requests.put(f"{api_base}/system/config", json=new_prefs)
+            if selected != st.session_state.get("probe_target_character_id"):
+                st.session_state["probe_target_character_id"] = selected
                 st.rerun()
 
         st.divider()
+        target_char_id = st.session_state["probe_target_character_id"]
 
         try:
             sync_resp = requests.get(
                 f"{api_base}/system/personality/sync-status",
-                params={"character_id": active_char_id, "persona_face": "public"},
+                params={"character_id": target_char_id, "persona_face": "public"},
                 timeout=5,
             )
             if sync_resp.ok:
@@ -375,7 +379,7 @@ def render_character_page(api_base: str, user_prefs: dict):
                 try:
                     ref_resp = requests.post(
                         f"{api_base}/system/personality/sync-now",
-                        params={"character_id": active_char_id, "persona_face": "public"},
+                        params={"character_id": target_char_id, "persona_face": "public"},
                         timeout=660,
                     )
                     if ref_resp.ok:

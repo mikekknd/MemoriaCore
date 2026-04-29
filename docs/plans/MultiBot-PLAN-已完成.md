@@ -48,7 +48,7 @@
 - PersonaSync 與 PersonaProbe 漏點修正：
   - `conversation_sessions.character_id` 加入後，PersonaSync 必須可按 `character_id + persona_face/channel_class` 計算訊息數與閒置時間。
   - `PersonaProbe.load_fragments_from_db()` 增加 `character_id` filter，避免多角色反思混用對話。
-  - 定時 PersonaSync 不再只跑 `active_character_id`；改為掃描有近期訊息的角色，對每個角色的 public/private face 分開判斷。
+  - 定時 PersonaSync 不再只跑 `active_character_id`；改為掃描 conversation DB 中所有曾有 assistant 發言的角色作為 dirty 候選，對每個角色的 public/private face 分開判斷。
   - 手動 PersonaProbe 頁保留 active character 流程，但 API 需支援指定 `character_id`，UI 下拉選到哪個角色就傳哪個角色。
 
 ## Test Plan

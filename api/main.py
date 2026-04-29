@@ -22,6 +22,25 @@ from api.middleware.auth import AuthMiddleware
 from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots
 
 
+def _persona_sync_candidate_character_ids(storage) -> list[str]:
+    """取得自動 PersonaSync 候選角色。
+
+    候選清單由 conversation DB 推導：只有曾有 assistant 發言的角色才需要檢查。
+    不以 active/default character 補位，避免同步目標被全域預設角色污染。
+    """
+    if hasattr(storage, "list_conversation_character_ids"):
+        return storage.list_conversation_character_ids()
+    return storage.list_recent_conversation_character_ids(limit=50)
+
+
+def _should_log_persona_sync_skip(reason: str) -> bool:
+    """判斷 PersonaSync skip 是否需要寫系統 log。"""
+    quiet_prefixes = (
+        "insufficient_messages(",
+    )
+    return not any(reason.startswith(prefix) for prefix in quiet_prefixes)
+
+
 # ── Lifespan：啟動 / 關機 ────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -41,10 +60,12 @@ async def lifespan(app: FastAPI):
     await get_telegram_bot_manager().sync_from_registry()
     await get_discord_bot_manager().sync_from_registry()
 
-    # 天氣快取預熱（有設定城市 + API key 才執行）
+    # SU 天氣快取預熱（有 SU + 設定城市 + API key 才執行）
     weather_city = user_prefs.get("weather_city", "")
     ow_key = user_prefs.get("openweather_api_key", "")
-    if weather_city and ow_key:
+    from core.deployment_config import get_su_user_id
+    su_user_id = user_prefs.get("su_user_id") or get_su_user_id()
+    if su_user_id and weather_city and ow_key:
         from tools.weather_cache import WeatherCache
         wc = WeatherCache()
         await asyncio.to_thread(wc.ensure_today, weather_city, ow_key)
@@ -68,9 +89,7 @@ async def lifespan(app: FastAPI):
                 sto = get_storage()
                 prefs = sto.load_prefs()
                 from core.system_logger import SystemLogger
-                character_ids = sto.list_recent_conversation_character_ids(limit=50)
-                if not character_ids:
-                    character_ids = [prefs.get("active_character_id", "default")]
+                character_ids = _persona_sync_candidate_character_ids(sto)
                 for character_id in character_ids:
                     for face in ("public", "private"):
                         should, reason = await psm.should_run(
@@ -78,7 +97,7 @@ async def lifespan(app: FastAPI):
                         )
                         if should:
                             await psm.run_sync(sto, prefs, persona_face=face, character_id=character_id)
-                        else:
+                        elif _should_log_persona_sync_skip(reason):
                             SystemLogger.log_system_event(
                                 "persona_sync_skip",
                                 {"reason": reason, "character_id": character_id, "persona_face": face},

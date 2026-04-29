@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import api.dependencies as deps
 from api.middleware.auth import AuthMiddleware
+from api.main import _persona_sync_candidate_character_ids, _should_log_persona_sync_skip
 from api.routers import auth, chat_rest, session, system
 from api.session_manager import session_manager
 from core.storage_manager import StorageManager
@@ -105,6 +106,71 @@ def test_system_config_roundtrips_admin_bypass(monkeypatch):
     finally:
         deps.storage = None
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_personality_root_endpoint_removed_and_sync_requires_character_id(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-personality-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+
+    class FakePersonaSyncManager:
+        def get_sync_status(self, storage=None, character_id=None, persona_face="public", prefs=None):
+            return {
+                "character_id": character_id,
+                "persona_face": persona_face,
+                "messages_since_last": 0,
+            }
+
+    deps.persona_sync_mgr = FakePersonaSyncManager()
+
+    try:
+        client = TestClient(_app(), client=("127.0.0.1", 50000))
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "owner",
+                "password": "abc123",
+                "password_confirm": "abc123",
+            },
+        )
+        assert registered.status_code == 200, registered.text
+
+        assert client.get("/api/v1/system/personality").status_code == 404
+        assert client.get("/api/v1/system/personality/sync-status").status_code == 422
+
+        status = client.get(
+            "/api/v1/system/personality/sync-status",
+            params={"character_id": "char-a", "persona_face": "public"},
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["character_id"] == "char-a"
+    finally:
+        deps.storage = None
+        deps.persona_sync_mgr = None
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_auto_persona_sync_uses_conversation_candidates_without_default_fallback():
+    class FakeStorage:
+        def list_conversation_character_ids(self):
+            return ["char-a", "char-b"]
+
+        def list_recent_conversation_character_ids(self, limit=50):
+            raise AssertionError("不應 fallback 到 recent helper")
+
+    assert _persona_sync_candidate_character_ids(FakeStorage()) == ["char-a", "char-b"]
+
+    class EmptyStorage:
+        def list_conversation_character_ids(self):
+            return []
+
+    assert _persona_sync_candidate_character_ids(EmptyStorage()) == []
+
+
+def test_auto_persona_sync_skip_log_suppresses_insufficient_messages():
+    assert _should_log_persona_sync_skip("insufficient_messages(12/50)") is False
+    assert _should_log_persona_sync_skip("not_idle(1.0min < 10min)") is True
 
 
 def test_session_creation_accepts_character_id_and_rejects_unknown(monkeypatch):

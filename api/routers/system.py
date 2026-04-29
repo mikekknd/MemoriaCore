@@ -3,15 +3,14 @@ import asyncio
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Query
 from api.dependencies import (
-    get_memory_sys, get_storage, get_router, get_embed_model,
-    get_persona_sync_manager, get_character_manager, reload_router, reload_tts, db_write_lock,
+    get_memory_sys, get_storage, get_router,
+    get_persona_sync_manager, reload_router, reload_tts,
 )
 from api.models.requests import (
     ConfigUpdateRequest, ConsolidateRequest,
-    PersonalityUpdateRequest, PreferenceAggregateRequest, SyntheticRequest,
+    PreferenceAggregateRequest, SyntheticRequest,
 )
 from api.models.responses import SystemConfigDTO
-from api.session_manager import session_manager
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -181,56 +180,9 @@ async def preference_aggregate(body: PreferenceAggregateRequest):
     return result
 
 
-# ── AI 個性管理（操作 active character 的 evolved_prompt）──
-@router.get("/personality")
-async def get_personality():
-    """回傳目前 active character 的 public 與 private 演化人設。"""
-    sto = get_storage()
-    char_mgr = get_character_manager()
-    prefs = sto.load_prefs()
-    active_id = prefs.get("active_character_id", "default")
-    char = char_mgr.get_active_character(active_id)
-    ep = char.get("evolved_prompt") or {}
-
-    # 向後相容：舊格式是純字串
-    if isinstance(ep, str):
-        public_content = ep
-        private_content = None
-    elif isinstance(ep, dict):
-        public_content = ep.get("public")
-        private_content = ep.get("private")
-    else:
-        public_content = None
-        private_content = None
-
-    return {
-        "public": public_content or char.get("system_prompt", ""),
-        "private": private_content,
-        "original_prompt": char.get("system_prompt", ""),
-        "character_id": char.get("character_id"),
-        "character_name": char.get("name"),
-    }
-
-
-@router.put("/personality")
-async def update_personality(body: PersonalityUpdateRequest):
-    """手動覆寫 active character 的 evolved_prompt（public 與 private 各自更新）。
-    欄位為 None 表示「不修改此 face」；空字串表示「清除此 face 的演化內容」。
-    """
-    sto = get_storage()
-    char_mgr = get_character_manager()
-    prefs = sto.load_prefs()
-    active_id = prefs.get("active_character_id", "default")
-    if body.public is not None:
-        char_mgr.set_evolved_prompt(active_id, body.public, persona_face="public")
-    if body.private is not None:
-        char_mgr.set_evolved_prompt(active_id, body.private, persona_face="private")
-    return {"status": "saved"}
-
-
 @router.get("/personality/sync-status")
 async def get_persona_sync_status(
-    character_id: Optional[str] = Query(None),
+    character_id: str = Query(..., description="角色 ID"),
     persona_face: str = Query("public"),
 ):
     """查詢 PersonaSync 目前狀態（上次執行時間、今日次數、距上次反思訊息數）"""
@@ -242,7 +194,7 @@ async def get_persona_sync_status(
 
 @router.post("/personality/sync-now")
 async def trigger_persona_sync_now(
-    character_id: Optional[str] = Query(None),
+    character_id: str = Query(..., description="角色 ID"),
     persona_face: str = Query("public"),
 ):
     """手動觸發一次 PersonaProbe 同步。

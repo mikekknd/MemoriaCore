@@ -157,8 +157,8 @@
   },
   "environment_context_block": {
     "label": "環境上下文區塊 (Environment Context Block)",
-    "description": "注入在使用者訊息前的動態環境資訊（時間、天氣）。放在 user message 前綴而非 system prompt，避免破壞 prefix cache。",
-    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → _build_user_prefix()",
+    "description": "注入在使用者訊息前的動態環境資訊（時間、SU private face 天氣）。放在 user message 前綴而非 system prompt，避免破壞 prefix cache。",
+    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → build_user_prefix()",
     "placeholders": [
       "{current_time}",
       "{weather_block}"
@@ -168,7 +168,7 @@
   "emotional_trajectory_block": {
     "label": "情緒軌跡區塊 (Emotional Trajectory Block)",
     "description": "注入上一輪的情緒狀態，幫助 LLM 維持角色情緒節奏的連貫性。無前輪紀錄時省略整個區塊。",
-    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → _build_user_prefix()",
+    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → build_user_prefix()",
     "placeholders": [
       "{internal_thought}"
     ],

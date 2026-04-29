@@ -218,7 +218,8 @@ class PersonaSyncManager:
         reason 為跳過原因（skip 時）或 ok 描述（執行時）。
         character_id + persona_face 決定獨立計算哪條 face 的訊息閾值與每日次數。
         """
-        character_id = character_id or prefs.get("active_character_id", "default") or "default"
+        if not character_id:
+            return False, "missing_character_id"
         # 1. 全局開關
         if not prefs.get("persona_sync_enabled", True):
             return False, "disabled"
@@ -272,6 +273,10 @@ class PersonaSyncManager:
         """
         import asyncio
 
+        if not character_id:
+            SystemLogger.log_error("persona_sync", "missing character_id")
+            return False
+
         # 確認 conversation.db 存在
         db_path = os.path.abspath("conversation.db")
         if not os.path.exists(db_path):
@@ -286,10 +291,9 @@ class PersonaSyncManager:
             SystemLogger.log_error("persona_sync", f"PersonaProbe import failed: {e}")
             return False
 
-        # 從 active character 取得現有人設（evolved 優先，否則用原始 system_prompt）
+        # 從明確指定的 character 取得現有人設（evolved 優先，否則用原始 system_prompt）
         from api.dependencies import get_character_manager
         char_mgr = get_character_manager()
-        character_id = character_id or prefs.get("active_character_id", "default") or "default"
         active_char = char_mgr.get_character(character_id)
         if not active_char:
             SystemLogger.log_error("persona_sync", f"Character not found: {character_id}")
@@ -428,7 +432,18 @@ class PersonaSyncManager:
             persona_face: 要查詢的 face（public / private），預設 public。
         """
         prefs = prefs or {}
-        character_id = character_id or prefs.get("active_character_id", "default") or "default"
+        if not character_id:
+            state = self._FACE_STATE_DEFAULT()
+            state = self._reset_daily_count_if_needed(state)
+            return {
+                "last_reflection_at": state.get("last_reflection_at"),
+                "today_date": state.get("today_date", ""),
+                "today_run_count": state.get("today_run_count", 0),
+                "messages_since_last": 0,
+                "persona_face": persona_face,
+                "character_id": "",
+                "error": "missing_character_id",
+            }
         state = self._load_face_state(character_id, persona_face, prefs)
         state = self._reset_daily_count_if_needed(state)
         since_iso = state.get("last_reflection_at") or "1970-01-01T00:00:00"

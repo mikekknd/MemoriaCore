@@ -94,10 +94,17 @@ _recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
 
 **記憶隔離三維度（高頻踩坑）**
 任何涉及多使用者、公私可見性、雙 face 人格演化問題，應先查 `docs/memory-isolation-architecture.md`。
+涉及背景話題、主動開場、`topic_cache`、proactive topics 時，另需查 `docs/proactive-topic-architecture.md`。
+涉及 PersonaProbe 同步、人格式 evolved_prompt、`/system/personality` API 時，另需查 `docs/personality-api-modernization.md`。
+涉及 Weather Cache、`weather_city`、prompt 天氣注入時，另需查 `docs/weather-cache-architecture.md`。
 核心原則：
 - 所有 DB 讀寫**必須** scope 到 `(user_id, character_id, visibility)` 三維度
 - `resolve_context(user_id, channel)` 決定 `persona_face` 與 `write_visibility`
 - public face **只能**讀到 `visibility='public'` 的記憶；private face 可讀兩者
+- 背景蒐集產生的 user-level topic 寫入 `character_id='__global__'`，不要綁定 `active_character_id`
+- 人格管理與 PersonaProbe 同步必須明確傳入 `character_id`，不要綁定 `active_character_id`
+- 自動 PersonaSync 只掃描 conversation DB 中曾有 assistant 發言的角色作為 dirty 候選；不要用 active/default character 補位
+- Weather Cache prompt 注入只服務 SU private face，`weather_city` 視為 SU 的常駐城市；一般天氣查詢走 `get_weather` tool
 
 **Streamlit UI 與 dashboard.html 必須同步修改**
 對話介面已迁移至 dashboard.html。其餘頁面（設定、路由等）有兩個並行前端：

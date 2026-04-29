@@ -84,7 +84,7 @@ persona_face='public'   →  WHERE visibility = 'public'                # 只讀
 - `memory_blocks` — 記憶區塊（帶 BGE-M3 embedding）
 - `core_memories` — 核心記憶
 - `ai_personality_observations` — AI 人格觀察
-- `topic_cache` — 主題快取
+- `topic_cache` — 主題快取；背景蒐集產生的 user-level topic 使用 `character_id='__global__'`，詳見 `docs/proactive-topic-architecture.md`
 
 ### 5.2 user_profile 表
 
@@ -142,7 +142,7 @@ CREATE TABLE user_profile_vectors (
 | `core/deployment_config.py` | `resolve_context()`、`should_extract_profile()` — 三維度入口 |
 | `core/storage_manager.py` | 所有 DB 操作，嚴格 scope 到 `(user_id, character_id, visibility)` |
 | `core/core_memory.py` | 三軌檢索、Memory Block 寫入、Profile 管理 |
-| `core/persona_sync.py` | `PersonaSyncManager` — per-face 獨立觸發與演化 |
+| `core/persona_sync.py` | `PersonaSyncManager` — per-character/per-face 獨立觸發與演化 |
 | `core/persona_evolution/` | 人格快照、trait lineage、BGE-M3 parent inference |
 | `core/character_engine.py` | `get_effective_prompt(persona_face)` — face-aware system prompt 組合 |
 
@@ -155,7 +155,9 @@ resolve_context(user_id, channel)
     ↓
 (新增對話片段)
     ↓
-PersonaSyncManager.should_run(persona_face)
+自動 PersonaSync 從 conversation DB 掃描曾有 assistant 發言的 character_id
+    ↓
+PersonaSyncManager.should_run(character_id, persona_face)
     ↓ (觸發)
 Run _run_probe_sync(persona_face)
     ├── load_fragments_from_db(face=persona_face)  — 只取對應 visibility 的對話

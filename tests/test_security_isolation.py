@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 
 from core.background_gatherer import _resolve_background_gather_scope
-from core.storage_manager import StorageManager
-from PersonaProbe.probe_engine import load_fragments_from_db
+from core.storage_manager import GLOBAL_TOPIC_CHARACTER_ID, StorageManager
+from PersonaProbe.probe_engine import _messages_to_text, load_fragments_from_db
 
 
 def _test_dir() -> Path:
@@ -26,7 +26,7 @@ def _slot(city_temp: float) -> dict:
     }
 
 
-def test_load_fragments_filters_other_assistants_in_group_session():
+def test_load_fragments_keeps_other_assistants_as_context_in_group_session():
     base = _test_dir()
     db_path = base / "conversation.db"
     conn = sqlite3.connect(db_path)
@@ -71,7 +71,18 @@ def test_load_fragments_filters_other_assistants_in_group_session():
         character_id="char-b",
     )
 
-    assert [m["content"] for m in messages] == ["使用者問題", "B 的回答", "追問"]
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", "使用者問題"),
+        ("context", "A 的回答"),
+        ("assistant", "B 的回答"),
+        ("user", "追問"),
+    ]
+    assert messages[1]["context_type"] == "other_ai"
+    assert messages[1]["character_id"] == "char-a"
+
+    text = _messages_to_text(messages)
+    assert "上下文（char-a，非分析對象）：A 的回答" in text
+    assert "AI：B 的回答" in text
 
 
 def test_storage_counts_only_target_assistant_messages():
@@ -101,6 +112,7 @@ def test_storage_counts_only_target_assistant_messages():
         "1970-01-01T00:00:00", "char-b", "public"
     ) == 1
     assert storage.get_last_message_time_by_character_and_channel_class("char-b", "public") is not None
+    assert set(storage.list_conversation_character_ids()) == {"char-a", "char-b"}
     assert set(storage.list_recent_conversation_character_ids()) == {"char-a", "char-b"}
 
 
@@ -150,10 +162,7 @@ def test_background_gather_scope_uses_first_admin_private():
         def get_first_admin_user(self):
             return {"id": 7, "role": "admin"}
 
-        def load_prefs(self):
-            return {"active_character_id": "char-main"}
-
-    assert _resolve_background_gather_scope(FakeStorage()) == ("7", "char-main", "private")
+    assert _resolve_background_gather_scope(FakeStorage()) == ("7", GLOBAL_TOPIC_CHARACTER_ID, "private")
 
 
 def test_background_gather_scope_skips_when_no_admin():
@@ -162,6 +171,35 @@ def test_background_gather_scope_skips_when_no_admin():
             return None
 
     assert _resolve_background_gather_scope(FakeStorage()) is None
+
+
+def test_proactive_topics_include_global_pool_for_character():
+    base = _test_dir()
+    storage = StorageManager(
+        prefs_file=str(base / "prefs.json"),
+        history_file=str(base / "history.json"),
+        persona_snapshot_db_path=str(base / "persona.db"),
+    )
+    db_path = str(base / "memory.db")
+    storage.insert_topic_cache(
+        db_path, "global-topic", "tea", "global summary",
+        user_id="7", character_id=GLOBAL_TOPIC_CHARACTER_ID, visibility="private",
+    )
+    storage.insert_topic_cache(
+        db_path, "char-topic", "coffee", "char summary",
+        user_id="7", character_id="char-a", visibility="private",
+    )
+    storage.insert_topic_cache(
+        db_path, "other-topic", "books", "other summary",
+        user_id="7", character_id="char-b", visibility="private",
+    )
+
+    topics = storage.get_unmentioned_topics(
+        db_path, user_id="7", character_id="char-a",
+        visibility_filter=["private"], include_global=True, limit=10,
+    )
+
+    assert [t["topic_id"] for t in topics] == ["char-topic", "global-topic"]
 
 
 def test_weather_cache_keeps_multiple_cities(monkeypatch):

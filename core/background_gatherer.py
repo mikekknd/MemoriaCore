@@ -3,6 +3,7 @@ import random
 import asyncio
 import json
 from core.storage_manager import StorageManager
+from core.storage_manager import GLOBAL_TOPIC_CHARACTER_ID
 from core.prompt_manager import get_prompt_manager
 from tools.tavily import search_web
 from core.llm_gateway import LLMRouter
@@ -13,13 +14,11 @@ _next_gather_time = None
 
 
 def _resolve_background_gather_scope(storage: StorageManager) -> tuple[str, str, str] | None:
-    """背景話題只服務首位 admin，並固定寫入 private topic cache。"""
+    """背景話題只服務首位 admin，並固定寫入 private global topic cache。"""
     admin = storage.get_first_admin_user()
     if not admin:
         return None
-    prefs = storage.load_prefs()
-    character_id = prefs.get("active_character_id", "default") or "default"
-    return str(admin["id"]), character_id, "private"
+    return str(admin["id"]), GLOBAL_TOPIC_CHARACTER_ID, "private"
 
 def run_background_topic_gather(
     db_path: str,

@@ -3,16 +3,6 @@
 import streamlit as st
 import pandas as pd
 from ui import api_client as requests
-@st.cache_data(ttl=30, show_spinner=False)
-def _cached_sync_status(api_base):
-    try:
-        resp = requests.get(f"{api_base}/system/personality/sync-status", timeout=5)
-        if resp.ok:
-            return resp.json()
-    except Exception:
-        pass
-    return None
-
 
 def render_db_manager_page(api_base, user_prefs):
     st.title("🧠 記憶庫管理")

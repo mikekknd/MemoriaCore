@@ -377,11 +377,18 @@ CONFIDENCE_MAP = {
 
 ## 十六、觸發條件（`PersonaSyncManager.should_run`）
 
+自動 PersonaSync 每輪先由 conversation DB 推導候選角色：所有曾有 assistant 發言的
+`character_id` 都會被檢查，且不以 `active_character_id` / default character 補位。
+這等同 derived dirty set，避免空角色或全域預設角色污染同步目標。
+
 全部滿足才執行：
 1. `persona_sync_enabled == True`
 2. 今日執行次數 < `persona_sync_max_per_day`（預設 2）
 3. 最後一筆訊息距今 > `persona_sync_idle_minutes`（預設 10 分鐘）
 4. 上次反思後新訊息數 >= `persona_sync_min_messages`（預設 50）
+
+`insufficient_messages(...)` 代表角色尚未累積足夠素材，是正常等待狀態，不寫入
+`persona_sync_skip` 系統 log。
 
 ---
 

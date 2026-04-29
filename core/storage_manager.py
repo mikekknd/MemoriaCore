@@ -6,6 +6,8 @@ import sqlite3
 import numpy as np
 from datetime import datetime, timedelta
 
+GLOBAL_TOPIC_CHARACTER_ID = "__global__"
+
 class StorageManager:
     def __init__(
         self,
@@ -767,23 +769,31 @@ class StorageManager:
         user_id: str = "default",
         character_id: str = "default",
         visibility_filter=None,
+        include_global: bool = False,
     ):
         if not os.path.exists(db_path):
             return []
         conn = self._init_db(db_path)
         cursor = conn.cursor()
-        where_parts = ["is_mentioned_to_user = 0", "user_id = ?", "character_id = ?"]
-        params: list = [user_id, character_id]
+        where_parts = ["is_mentioned_to_user = 0", "user_id = ?"]
+        params: list = [user_id]
+        if include_global:
+            where_parts.append("character_id IN (?, ?)")
+            params.extend([character_id, GLOBAL_TOPIC_CHARACTER_ID])
+        else:
+            where_parts.append("character_id = ?")
+            params.append(character_id)
         if visibility_filter is not None:
             placeholders = ','.join('?' * len(visibility_filter))
             where_parts.append(f"visibility IN ({placeholders})")
             params.extend(visibility_filter)
-        params.append(limit)
         where_clause = " WHERE " + " AND ".join(where_parts)
+        query_params = params + [character_id, limit]
         cursor.execute(
             "SELECT topic_id, interest_keyword, summary_content, created_at "
-            f"FROM topic_cache{where_clause} ORDER BY created_at DESC LIMIT ?",
-            params
+            f"FROM topic_cache{where_clause} "
+            "ORDER BY CASE WHEN character_id = ? THEN 0 ELSE 1 END, created_at DESC LIMIT ?",
+            query_params,
         )
         rows = cursor.fetchall()
         conn.close()
@@ -1696,26 +1706,38 @@ class StorageManager:
         except Exception:
             return 0
 
-    def list_recent_conversation_character_ids(self, limit: int = 50) -> list[str]:
-        """列出近期實際有 assistant 發言的 character_id，供 PersonaSync 掃描候選角色。"""
+    def list_conversation_character_ids(self, limit: int | None = None) -> list[str]:
+        """列出實際有 assistant 發言的 character_id，供 PersonaSync 掃描候選角色。
+
+        這是由 conversation DB 推導出的 dirty set：只有角色真的發言後才會出現在
+        候選清單，不需要依賴 active/default character。
+        """
         try:
             conn = self._init_conversation_db()
             cursor = conn.cursor()
-            cursor.execute(
+            query = (
                 "SELECT cm.character_id, MAX(cm.timestamp) AS last_ts "
                 "FROM conversation_messages cm "
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
                 "WHERE cm.role = 'assistant' "
                 "AND cm.character_id IS NOT NULL AND cm.character_id != '' "
                 "GROUP BY cm.character_id "
-                "ORDER BY last_ts DESC LIMIT ?",
-                (limit,),
+                "ORDER BY last_ts DESC"
             )
+            params: tuple = ()
+            if limit is not None:
+                query += " LIMIT ?"
+                params = (limit,)
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             conn.close()
             return [r[0] for r in rows if r and r[0]]
         except Exception:
             return []
+
+    def list_recent_conversation_character_ids(self, limit: int = 50) -> list[str]:
+        """相容舊呼叫：列出近期實際有 assistant 發言的 character_id。"""
+        return self.list_conversation_character_ids(limit=limit)
 
     # ════════════════════════════════════════════════════════════
     # SECTION: 人格演化 Snapshots — 版本儲存 / 血統查詢 / 時間序列

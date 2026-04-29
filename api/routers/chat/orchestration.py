@@ -197,7 +197,7 @@ def _run_chat_orchestration(
 
         # 注入環境上下文 + 情緒軌跡前綴到當前使用者訊息（不放 system prompt，以保留 prefix cache）
         if api_messages and api_messages[-1]["role"] == "user":
-            _prefix = build_user_prefix(session_messages)
+            _prefix = build_user_prefix(session_messages, user_prefs=user_prefs, session_ctx=ctx)
             api_messages[-1] = {**api_messages[-1], "content": _prefix + api_messages[-1]["content"]}
 
     # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）

@@ -984,6 +984,7 @@ class MemorySystem:
             self.db_path, limit=limit,
             user_id=user_id, character_id=character_id,
             visibility_filter=visibility_filter,
+            include_global=True,
         )
         if not topics:
             return ""

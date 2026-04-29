@@ -673,8 +673,9 @@ def load_fragments_from_db(
     若指定 limit，則以近期優先取最後 N 筆（先 DESC 取 limit，再反轉回正序）。
     user_id / channel_class_filter / character_id：JOIN conversation_sessions 做範圍過濾，
     供 PersonaSync 按 persona_face 分開載入。
-    指定 character_id 時，群組對話只保留該角色自己的 assistant 訊息；
-    user 訊息保留，作為該角色實際聽到的上下文。
+    指定 character_id 時，群組對話會保留其他 AI 的 assistant 訊息作為
+    context-only 上下文，避免 PersonaProbe 因缺少前文而誤判目標角色文不對題；
+    只有目標角色自己的 assistant 訊息會維持 role="assistant" 作為分析證據。
     回傳 [{role, content}]。
     """
     conn = sqlite3.connect(db_path)
@@ -738,29 +739,6 @@ def load_fragments_from_db(
             placeholders = ",".join("?" * len(channel_class_filter))
             conds.append(f"cs.channel_class IN ({placeholders})")
             params.extend(channel_class_filter)
-        if character_id is not None and has_message_character_id:
-            if needs_join:
-                assistant_filter = (
-                    "(cm.role != 'assistant' "
-                    "OR cm.character_id = ? "
-                )
-                if has_session_character_id and has_session_mode:
-                    assistant_filter += (
-                        "OR (cm.character_id IS NULL AND cs.character_id = ? "
-                        "AND COALESCE(cs.session_mode, 'single') != 'group')"
-                    )
-                elif has_session_character_id:
-                    assistant_filter += "OR (cm.character_id IS NULL AND cs.character_id = ?)"
-                assistant_filter += ")"
-                conds.append(assistant_filter)
-                params.append(character_id)
-                if has_session_character_id:
-                    params.append(character_id)
-            else:
-                conds.append(
-                    "(cm.role != 'assistant' OR cm.character_id = ? OR cm.character_id IS NULL)"
-                )
-                params.append(character_id)
 
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         from_clause = (
@@ -770,10 +748,26 @@ def load_fragments_from_db(
             else "conversation_messages cm"
         )
 
+        select_cols = ["cm.role AS role", "cm.content AS content"]
+        if "character_name" in message_cols:
+            select_cols.append("cm.character_name AS character_name")
+        else:
+            select_cols.append("NULL AS character_name")
+        if has_message_character_id:
+            select_cols.append("cm.character_id AS message_character_id")
+        else:
+            select_cols.append("NULL AS message_character_id")
+        if needs_join and has_session_mode:
+            select_cols.append("COALESCE(cs.session_mode, 'single') AS session_mode")
+        else:
+            select_cols.append("'single' AS session_mode")
+        select_sql = ", ".join(select_cols)
+
         if limit:
             cursor.execute(
-                "SELECT role, content FROM ("
-                "  SELECT cm.role AS role, cm.content AS content, cm.msg_id AS msg_id "
+                "SELECT role, content, character_name, message_character_id, session_mode FROM ("
+                "  SELECT "
+                f"  {select_sql}, cm.msg_id AS msg_id "
                 f"  FROM {from_clause} {where} "
                 "  ORDER BY cm.msg_id DESC LIMIT ?"
                 ") ORDER BY msg_id",
@@ -781,10 +775,24 @@ def load_fragments_from_db(
             )
         else:
             cursor.execute(
-                f"SELECT cm.role, cm.content FROM {from_clause} {where} ORDER BY cm.msg_id",
+                f"SELECT {select_sql} FROM {from_clause} {where} ORDER BY cm.msg_id",
                 params,
             )
-        return [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
+        messages: list[dict] = []
+        for role, content, speaker_name, speaker_id, session_mode in cursor.fetchall():
+            msg = {"role": role, "content": content}
+            if speaker_name:
+                msg["character_name"] = speaker_name
+            if speaker_id:
+                msg["character_id"] = speaker_id
+            if character_id is not None and role == "assistant":
+                is_target = speaker_id == character_id
+                is_legacy_single_target = not speaker_id and session_mode != "group"
+                if not is_target and not is_legacy_single_target:
+                    msg["role"] = "context"
+                    msg["context_type"] = "other_ai"
+            messages.append(msg)
+        return messages
     finally:
         conn.close()
 
@@ -813,7 +821,14 @@ def _messages_to_text(messages: list[dict]) -> str:
     """將 [{role, content}] 轉為可讀文字，供 prompt 使用。"""
     lines = []
     for m in messages:
-        label = "使用者" if m["role"] == "user" else "AI"
+        role = m["role"]
+        if role == "user":
+            label = "使用者"
+        elif role == "context":
+            speaker = m.get("character_name") or m.get("character_id") or "其他 AI"
+            label = f"上下文（{speaker}，非分析對象）"
+        else:
+            label = "AI"
         lines.append(f"{label}：{m['content']}")
     return "\n\n".join(lines)
 
@@ -965,10 +980,11 @@ def build_fragment_extraction_prompt(
     system = (
         f"你是人格分析師，任務是從對話片段中提取【{spec['name']}】維度的行為證據。\n"
         "規則：\n"
-        "1. 只能引用對話中的原文，禁止使用形容詞標籤（如「理性」、「感性」、「開朗」）。\n"
+        "1. 只能引用目標 AI 的原文，禁止使用形容詞標籤（如「理性」、「感性」、「開朗」）。\n"
         "2. 描述底層機制（此人如何感知、如何反應、如何決策），而非特質名稱。\n"
         "3. 若對話中完全找不到任何直接相關的內容，回傳 {\"confidence\": \"none\"}。\n"
-        "4. 嚴格輸出 JSON，不要有任何其他說明文字。\n"
+        "4. 「上下文（...，非分析對象）」行只能用來理解前後文，不可引用為證據，也不可歸因給目標 AI。\n"
+        "5. 嚴格輸出 JSON，不要有任何其他說明文字。\n"
         "語言：繁體中文。"
     )
 
@@ -1051,7 +1067,8 @@ def build_fragment_aggregation_prompt(
             "4. LLM 人格化 System Prompt：以現有 Persona 為前提框架，融入新發現微調後重新生成，"
             "   保留現有 Persona 的核心設定與矛盾，根據新證據更新情緒反應、決策邊界、對話行為模式等區塊。\n"
             "5. 只引用 high/medium 可信度的新證據；low 可信度的內容標注「（推測）」。\n"
-            "6. 只輸出報告，不要前言或說明。語言：繁體中文。"
+            "6. 原始片段中的「上下文（...，非分析對象）」只可補足因果脈絡，不可當人格證據。\n"
+            "7. 只輸出報告，不要前言或說明。語言：繁體中文。"
         )
     else:
         system = (
@@ -1060,7 +1077,8 @@ def build_fragment_aggregation_prompt(
             "1. 只引用 high/medium 可信度的證據；low 可信度的內容標注「（推測）」。\n"
             "2. 若某維度無資料，該欄位填「資料不足，建議補充相關對話」。\n"
             "3. LLM 人格化 System Prompt 必須從證據推斷，禁止列詞彙清單。\n"
-            "4. 只輸出報告，不要前言或說明。語言：繁體中文。"
+            "4. 原始片段中的「上下文（...，非分析對象）」只可補足因果脈絡，不可當人格證據。\n"
+            "5. 只輸出報告，不要前言或說明。語言：繁體中文。"
         )
 
     # ── 組裝 user content ──

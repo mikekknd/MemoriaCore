@@ -168,3 +168,27 @@ def test_persona_sync_state_is_per_character():
     finally:
         os.chdir(original_cwd)
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_persona_sync_requires_explicit_character_id():
+    manager = PersonaSyncManager()
+
+    should, reason = await manager.should_run(
+        storage=None,
+        prefs={"active_character_id": "char-a", "persona_sync_enabled": True},
+        persona_face="public",
+        character_id=None,
+    )
+
+    assert should is False
+    assert reason == "missing_character_id"
+
+    status = manager.get_sync_status(
+        storage=None,
+        prefs={"active_character_id": "char-a"},
+        persona_face="public",
+        character_id=None,
+    )
+    assert status["character_id"] == ""
+    assert status["error"] == "missing_character_id"

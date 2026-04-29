@@ -120,11 +120,6 @@ class CreateSessionRequest(BaseModel):
     group_name: str = ""
 
 
-class PersonalityUpdateRequest(BaseModel):
-    public: Optional[str] = None
-    private: Optional[str] = None
-
-
 class BlockUpdateRequest(BaseModel):
     new_overview: str
 
