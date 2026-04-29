@@ -190,14 +190,25 @@ class OpenAICompatibleProvider(ILLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
-        try:
-            response = self.client.chat.completions.create(**kwargs)
-        except Exception as e:
-            # 部分模型（推理模型）不支援自訂 temperature，自動降級重試
-            if "temperature" in str(e) and "unsupported_value" in str(e):
-                kwargs.pop("temperature", None)
+        import time
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
                 response = self.client.chat.completions.create(**kwargs)
-            else:
+                break
+            except Exception as e:
+                err_str = str(e)
+                # 部分模型（推理模型）不支援自訂 temperature，自動降級重試
+                if "temperature" in err_str and "unsupported_value" in err_str:
+                    if attempt < max_retries:
+                        kwargs.pop("temperature", None)
+                        continue
+                    raise
+                
+                if attempt < max_retries and any(code in err_str for code in ("502", "503", "429", "504", "temporary error")):
+                    SystemLogger.log_error("LLMRouter", f"[{model}] API 暫時錯誤 ({err_str[:50]})，等待 3 秒後重試 {attempt+1}/{max_retries}...")
+                    time.sleep(3.0)
+                    continue
                 raise
         choice = response.choices[0]
         msg = choice.message

@@ -11,10 +11,24 @@
 <style>
 body { height:100vh; overflow:hidden; }
 .chat-shell { height:100vh; display:flex; flex-direction:column; }
-.chat-header { background:var(--surface); padding:8px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.chat-header { background:var(--surface); padding:8px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); flex-shrink:0; flex-wrap:wrap; }
 .chat-header select { min-width:0; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--text); font-size:13px; outline:none; }
 .session-select { flex:1.3; }
-.character-select { flex:.8; min-width:130px; max-width:220px; }
+.character-select { flex:.8; min-width:160px; max-width:280px; }
+.group-toggle { display:flex; align-items:center; gap:4px; color:var(--text2); font-size:12px; white-space:nowrap; }
+.group-toggle input { margin:0; }
+.group-picker { display:none; position:relative; min-width:220px; max-width:320px; flex:.9; }
+.group-picker.enabled { display:block; }
+.group-picker-btn { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--text); font-size:13px; cursor:pointer; min-height:30px; }
+.group-picker-btn:hover, .group-picker.open .group-picker-btn { border-color:var(--accent); color:var(--accent); opacity:1; }
+.group-picker-panel { display:none; position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:20; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 22px rgba(0,0,0,.32); padding:6px; max-height:260px; overflow-y:auto; }
+.group-picker.open .group-picker-panel { display:block; }
+.group-option { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:6px; color:var(--text); font-size:13px; cursor:pointer; }
+.group-option:hover { background:var(--surface2); }
+.group-option input { margin:0; flex-shrink:0; }
+.group-option span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.group-name { display:none; max-width:140px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--text); font-size:13px; outline:none; }
+.group-name.enabled { display:block; }
 .chat-header button { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--text); font-size:13px; cursor:pointer; white-space:nowrap; }
 .chat-header button:hover { border-color:var(--accent); color:var(--accent); }
 .session-chip { color:var(--accent); font-family:'Cascadia Code','Fira Code',monospace; font-size:11px; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -22,7 +36,13 @@ body { height:100vh; overflow:hidden; }
 .msg { max-width:88%; padding:10px 14px; border-radius:12px; font-size:14px; line-height:1.65; word-wrap:break-word; }
 .msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
 .msg.assistant { align-self:flex-start; background:var(--surface); border:1px solid var(--border); border-bottom-left-radius:4px; }
+.msg.assistant.typing { color:var(--text2); }
 .msg-author { color:var(--accent); font-size:11px; line-height:1.2; margin-bottom:4px; font-weight:600; }
+.typing-indicator { display:flex; align-items:center; gap:4px; min-width:42px; min-height:22px; }
+.typing-dot { width:6px; height:6px; border-radius:50%; background:var(--text2); opacity:.35; animation:typingPulse 1.15s infinite ease-in-out; }
+.typing-dot:nth-child(2) { animation-delay:.16s; }
+.typing-dot:nth-child(3) { animation-delay:.32s; }
+@keyframes typingPulse { 0%, 80%, 100% { transform:translateY(0); opacity:.35; } 40% { transform:translateY(-3px); opacity:1; } }
 .msg.assistant .md-content p { margin:0.4em 0; }
 .msg.assistant .md-content pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin:8px 0; overflow-x:auto; }
 .msg.assistant .md-content code { font-family:'Cascadia Code','Fira Code',monospace; font-size:13px; }
@@ -65,6 +85,17 @@ body { height:100vh; overflow:hidden; }
     <select id="characterSelect" class="character-select" onchange="switchCharacter(this.value)">
       <option value="">-- select AI --</option>
     </select>
+    <label class="group-toggle" title="建立多 AI 群組 Session">
+      <input type="checkbox" id="groupMode" onchange="syncGroupControls()"> group
+    </label>
+    <div id="groupPicker" class="group-picker">
+      <button type="button" class="group-picker-btn" onclick="toggleGroupPicker(event)">
+        <span id="groupPickerLabel">select AIs</span>
+        <span>▾</span>
+      </button>
+      <div id="groupCharacterList" class="group-picker-panel"></div>
+    </div>
+    <input id="groupNameInput" class="group-name" placeholder="group name">
     <span class="session-chip" id="statusSession"></span>
     <button onclick="createNewSession()">+ new</button>
     <button onclick="deleteCurrentSession()" title="delete current session">x</button>
@@ -81,9 +112,13 @@ body { height:100vh; overflow:hidden; }
 <script>
 let currentSessionId = null;
 let currentCharacterId = null;
+let currentCharacterIds = [];
+let currentSessionMode = 'single';
 let isSending = false;
 let _ttsAudio = null;
 let _pendingTtsEl = null;
+let _ttsQueue = [];
+let _ttsPlaying = false;
 let characters = [];
 let charactersById = new Map();
 
@@ -112,17 +147,30 @@ async function loadCharacters() {
     characters = Array.isArray(data) ? data : [];
     charactersById = new Map(characters.map(c => [c.character_id, c]));
     const sel = document.getElementById('characterSelect');
+    const groupList = document.getElementById('groupCharacterList');
     sel.innerHTML = '<option value="">-- select AI --</option>';
+    groupList.innerHTML = '';
     characters.forEach(c => {
       const opt = document.createElement('option');
       opt.value = c.character_id;
       opt.textContent = c.name || c.character_id;
       sel.appendChild(opt);
+      const item = document.createElement('label');
+      item.className = 'group-option';
+      item.innerHTML = `
+        <input type="checkbox" value="${escapeHtml(c.character_id)}" onchange="syncGroupPickerLabel()">
+        <span>${escapeHtml(c.name || c.character_id)}</span>
+      `;
+      groupList.appendChild(item);
     });
     if (!currentCharacterId && characters.length) {
       currentCharacterId = characters[0].character_id;
     }
+    if (!currentCharacterIds.length && currentCharacterId) {
+      currentCharacterIds = [currentCharacterId];
+    }
     syncCharacterSelect();
+    syncGroupControls();
   } catch {
     toast('Failed to load AI list', 'error');
   }
@@ -136,6 +184,64 @@ function characterNameForId(characterId) {
 function syncCharacterSelect() {
   const sel = document.getElementById('characterSelect');
   if (sel && currentCharacterId) sel.value = currentCharacterId;
+  const groupList = document.getElementById('groupCharacterList');
+  if (groupList) {
+    const selected = new Set(currentCharacterIds.length ? currentCharacterIds : [currentCharacterId]);
+    groupList.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      input.checked = selected.has(input.value);
+    });
+    syncGroupPickerLabel();
+  }
+}
+
+function syncGroupControls() {
+  const enabled = document.getElementById('groupMode')?.checked;
+  document.getElementById('groupPicker')?.classList.toggle('enabled', !!enabled);
+  document.getElementById('groupNameInput')?.classList.toggle('enabled', !!enabled);
+  if (!enabled) document.getElementById('groupPicker')?.classList.remove('open');
+  syncGroupPickerLabel();
+}
+
+function selectedGroupCharacterIds() {
+  const selected = Array.from(document.querySelectorAll('#groupCharacterList input[type="checkbox"]:checked'))
+    .map(input => input.value)
+    .filter(Boolean);
+  return [...new Set(selected)];
+}
+
+function toggleGroupPicker(event) {
+  event?.stopPropagation();
+  const picker = document.getElementById('groupPicker');
+  if (!picker?.classList.contains('enabled')) return;
+  picker.classList.toggle('open');
+}
+
+function syncGroupPickerLabel() {
+  const label = document.getElementById('groupPickerLabel');
+  if (!label) return;
+  const ids = selectedGroupCharacterIds();
+  if (!ids.length) {
+    label.textContent = 'select AIs';
+  } else if (ids.length <= 2) {
+    label.textContent = ids.map(characterNameForId).join(', ');
+  } else {
+    label.textContent = `${ids.length} AIs selected`;
+  }
+  currentCharacterIds = ids.length ? ids : currentCharacterIds;
+}
+
+document.addEventListener('click', e => {
+  const picker = document.getElementById('groupPicker');
+  if (picker && !picker.contains(e.target)) picker.classList.remove('open');
+});
+
+function sessionCharacterLabel(session) {
+  const ids = session.character_ids && session.character_ids.length ? session.character_ids : [session.character_id];
+  const names = ids.map(characterNameForId);
+  if ((session.session_mode || 'single') === 'group' || ids.length > 1) {
+    return `${session.group_name || 'Group'}: ${names.join(', ')}`;
+  }
+  return names[0] || 'AI';
 }
 
 async function loadSessionList() {
@@ -149,7 +255,7 @@ async function loadSessionList() {
       opt.value = s.session_id;
       const dt = new Date(s.created_at).toLocaleString('zh-TW', {hour12:false});
       const ch = s.channel || '';
-      const ai = characterNameForId(s.character_id);
+      const ai = sessionCharacterLabel(s);
       opt.textContent = `${dt} [${ch}] ${ai} (${s.message_count} msgs)`;
       if (s.session_id === currentSessionId) opt.selected = true;
       sel.appendChild(opt);
@@ -170,7 +276,18 @@ async function autoRestoreOrCreate() {
 async function createNewSession(characterId = currentCharacterId) {
   try {
     const body = {channel: 'dashboard'};
-    if (characterId) body.character_id = characterId;
+    const groupMode = document.getElementById('groupMode')?.checked;
+    if (groupMode) {
+      const ids = selectedGroupCharacterIds();
+      if (ids.length < 2) {
+        toast('Select at least two AIs for group chat', 'info');
+        return;
+      }
+      body.character_ids = ids;
+      body.group_name = document.getElementById('groupNameInput')?.value?.trim() || '';
+    } else if (characterId) {
+      body.character_id = characterId;
+    }
     const r = await fetch(`${API}/session`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -180,7 +297,11 @@ async function createNewSession(characterId = currentCharacterId) {
     const data = await r.json();
     currentSessionId = data.session_id;
     currentCharacterId = data.character_id || characterId || currentCharacterId;
+    currentCharacterIds = data.character_ids || [currentCharacterId];
+    currentSessionMode = data.session_mode || (currentCharacterIds.length > 1 ? 'group' : 'single');
     syncCharacterSelect();
+    document.getElementById('groupMode').checked = currentSessionMode === 'group';
+    syncGroupControls();
     updateSessionDisplay();
     document.getElementById('messages').innerHTML = '';
     await loadSessionList();
@@ -199,9 +320,14 @@ async function switchSession(sessionId) {
     const r = await fetch(`${API}/session/history/${sessionId}`);
     const data = await r.json();
     currentCharacterId = data.session?.character_id || currentCharacterId;
+    currentCharacterIds = data.session?.character_ids || [currentCharacterId];
+    currentSessionMode = data.session?.session_mode || (currentCharacterIds.length > 1 ? 'group' : 'single');
+    document.getElementById('groupMode').checked = currentSessionMode === 'group';
+    document.getElementById('groupNameInput').value = data.session?.group_name || '';
     syncCharacterSelect();
+    syncGroupControls();
     const msgs = data.messages || [];
-    msgs.forEach(m => appendMessage(m.role, m.content, null, false, m.character_name));
+    msgs.forEach(m => appendMessage(m.role, m.content, null, false, m.character_name, m.character_id));
     scrollToBottom();
   } catch {
     toast('Failed to load session', 'error');
@@ -217,6 +343,10 @@ async function switchCharacter(characterId) {
   }
   if (characterId === currentCharacterId && currentSessionId) return;
   currentCharacterId = characterId;
+  currentCharacterIds = [characterId];
+  currentSessionMode = 'single';
+  document.getElementById('groupMode').checked = false;
+  syncGroupControls();
   await createNewSession(characterId);
 }
 
@@ -251,6 +381,17 @@ function autoResize(el) {
 
 function playTtsAudio(base64Data, format) {
   console.log('[TTS] tts_audio 事件收到，bytes(base64 len):', base64Data.length);
+  _ttsQueue.push({base64Data, format});
+  if (!_ttsPlaying) playNextTtsAudio();
+}
+
+function playNextTtsAudio() {
+  const item = _ttsQueue.shift();
+  if (!item) {
+    _ttsPlaying = false;
+    return;
+  }
+  _ttsPlaying = true;
   try {
     if (_ttsAudio) {
       _ttsAudio.pause();
@@ -262,10 +403,12 @@ function playTtsAudio(base64Data, format) {
       _pendingTtsEl = null;
     }
 
-    const dataUrl = `data:audio/${format};base64,${base64Data}`;
+    const dataUrl = `data:audio/${item.format};base64,${item.base64Data}`;
     _ttsAudio = new Audio(dataUrl);
+    _ttsAudio.addEventListener('ended', playNextTtsAudio, {once:true});
     _ttsAudio.addEventListener('error', e => {
       console.error('[TTS] Audio 播放錯誤:', e.target.error);
+      playNextTtsAudio();
     });
     _ttsAudio.play().then(() => {
       console.log('[TTS] 播放成功');
@@ -275,6 +418,7 @@ function playTtsAudio(base64Data, format) {
     });
   } catch (e) {
     console.error('[TTS] playTtsAudio error:', e);
+    playNextTtsAudio();
   }
 }
 
@@ -289,13 +433,20 @@ function _showTtsPlayButton(dataUrl) {
   btn.innerHTML = '🔊 點擊播放語音';
   btn.onclick = () => {
     _ttsAudio = new Audio(dataUrl);
+    _ttsAudio.addEventListener('ended', playNextTtsAudio, {once:true});
     _ttsAudio.play().catch(e => console.error('[TTS] Manual play failed:', e));
     btn.remove();
     _pendingTtsEl = null;
   };
   document.body.appendChild(btn);
   _pendingTtsEl = btn;
-  setTimeout(() => { if (_pendingTtsEl === btn) { btn.remove(); _pendingTtsEl = null; } }, 30000);
+  setTimeout(() => {
+    if (_pendingTtsEl === btn) {
+      btn.remove();
+      _pendingTtsEl = null;
+      playNextTtsAudio();
+    }
+  }, 30000);
 }
 
 async function sendMessage() {
@@ -311,7 +462,21 @@ async function sendMessage() {
   if (!currentSessionId) {
     try {
       const body = {channel: 'dashboard'};
-      if (currentCharacterId) body.character_id = currentCharacterId;
+      if (document.getElementById('groupMode')?.checked) {
+        const ids = selectedGroupCharacterIds();
+        if (ids.length < 2) {
+          toast('Select at least two AIs for group chat', 'info');
+          input.value = content;
+          autoResize(input);
+          isSending = false;
+          document.getElementById('sendBtn').disabled = false;
+          return;
+        }
+        body.character_ids = ids;
+        body.group_name = document.getElementById('groupNameInput')?.value?.trim() || '';
+      } else if (currentCharacterId) {
+        body.character_id = currentCharacterId;
+      }
       const r = await fetch(`${API}/session`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -321,7 +486,10 @@ async function sendMessage() {
       const data = await r.json();
       currentSessionId = data.session_id;
       currentCharacterId = data.character_id || currentCharacterId;
+      currentCharacterIds = data.character_ids || [currentCharacterId];
+      currentSessionMode = data.session_mode || (currentCharacterIds.length > 1 ? 'group' : 'single');
       syncCharacterSelect();
+      syncGroupControls();
       updateSessionDisplay();
       loadSessionList();
     } catch {
@@ -335,10 +503,12 @@ async function sendMessage() {
   appendMessage('user', content);
   scrollToBottom();
 
-  const msgEl = appendMessage('assistant', '', null, false);
-  const mdDiv = msgEl.querySelector('.md-content');
+  const firstMsgEl = appendMessage('assistant', '', null, false);
+  setTypingState(firstMsgEl, true);
+  const resultEls = new Map([[0, firstMsgEl]]);
+  const debugAttached = new Set();
   let toolStatusEl = null;
-  let lastDebugData = null;
+  let receivedAnyResult = false;
 
   try {
     const resp = await fetch(`${API}/chat/stream-sync`, {
@@ -369,7 +539,7 @@ async function sendMessage() {
             toolStatusEl = document.createElement('div');
             toolStatusEl.className = 'msg system-info tool-status';
             toolStatusEl.innerHTML = `<span class="spinner"></span>${escapeHtml(event.message || event.tool_name || 'calling tool...')}`;
-            document.getElementById('messages').insertBefore(toolStatusEl, msgEl);
+            document.getElementById('messages').insertBefore(toolStatusEl, firstMsgEl);
           } else if (event.action === 'complete' && toolStatusEl) {
             toolStatusEl.innerHTML = `&#10003; ${escapeHtml(event.message || 'tool complete')}`;
             toolStatusEl.style.color = 'var(--accent2)';
@@ -379,17 +549,53 @@ async function sendMessage() {
           const ts = document.createElement('div');
           ts.className = 'msg system-info';
           ts.textContent = event.content;
-          document.getElementById('messages').insertBefore(ts, msgEl);
+          document.getElementById('messages').insertBefore(ts, firstMsgEl);
         } else if (event.type === 'error') {
-          mdDiv.innerHTML = `<span style="color:var(--error)">${escapeHtml(event.message)}</span>`;
+          if (receivedAnyResult) {
+            clearTypingPlaceholders(resultEls);
+            console.warn('[chat] stream error after result:', event.message);
+          } else {
+            const targetEl = resultEls.get(0) || firstMsgEl;
+            targetEl.classList.remove('typing');
+            targetEl.querySelector('.md-content').innerHTML = `<span style="color:var(--error)">${escapeHtml(event.message)}</span>`;
+          }
+        } else if (event.type === 'typing') {
+          const turnIndex = event.turn_index || 0;
+          let targetEl = resultEls.get(turnIndex);
+          if (!targetEl) {
+            targetEl = appendMessage('assistant', '', null, false, event.character_name, event.character_id);
+            resultEls.set(turnIndex, targetEl);
+          }
+          setMessageAuthor(targetEl, event.character_name);
+          setTypingState(targetEl, true);
         } else if (event.type === 'result') {
+          receivedAnyResult = true;
+          const turnIndex = event.turn_index || 0;
+          let targetEl = resultEls.get(turnIndex);
+          if (!targetEl) {
+            targetEl = appendMessage('assistant', '', null, false, event.character_name, event.character_id);
+            resultEls.set(turnIndex, targetEl);
+          }
+          const mdDiv = targetEl.querySelector('.md-content');
+          targetEl.classList.remove('typing');
           mdDiv.innerHTML = marked.parse(event.reply || '');
           enhanceRenderedMarkdown(mdDiv);
-          setMessageAuthor(msgEl, event.character_name);
-          lastDebugData = event;
+          setMessageAuthor(targetEl, event.character_name);
+          if (event.retrieval_context && !debugAttached.has(turnIndex)) {
+            targetEl.appendChild(buildDebugPanel(event));
+            debugAttached.add(turnIndex);
+          }
           if (event.session_id && event.session_id !== currentSessionId) {
             currentSessionId = event.session_id;
             updateSessionDisplay();
+          }
+        } else if (event.type === 'group_done') {
+          if ((event.turn_count || 0) > 0) receivedAnyResult = true;
+          // 多 AI 回合已全部結束；單一對話不會送此事件。
+          if ((event.turn_count || 0) === 0) {
+            const targetEl = resultEls.get(0) || firstMsgEl;
+            targetEl.classList.remove('typing');
+            targetEl.querySelector('.md-content').textContent = '（無回應）';
           }
         } else if (event.type === 'tts_audio') {
           console.log('[TTS] SSE 收到 tts_audio 事件，format:', event.format, 'data len:', (event.data||'').length);
@@ -399,11 +605,14 @@ async function sendMessage() {
       }
     }
   } catch (e) {
-    mdDiv.innerHTML = `<span style="color:var(--error)">Connection error: ${escapeHtml(String(e))}</span>`;
-  }
-
-  if (lastDebugData && lastDebugData.retrieval_context) {
-    msgEl.appendChild(buildDebugPanel(lastDebugData));
+    if (receivedAnyResult) {
+      clearTypingPlaceholders(resultEls);
+      console.warn('[chat] stream closed after result:', e);
+    } else {
+      const targetEl = resultEls.get(0) || firstMsgEl;
+      targetEl.classList.remove('typing');
+      targetEl.querySelector('.md-content').innerHTML = `<span style="color:var(--error)">Connection error: ${escapeHtml(String(e))}</span>`;
+    }
   }
 
   isSending = false;
@@ -412,10 +621,11 @@ async function sendMessage() {
   loadSessionList();
 }
 
-function appendMessage(role, content, debugData, scroll=true, characterName=null) {
+function appendMessage(role, content, debugData, scroll=true, characterName=null, characterId=null) {
   const container = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = `msg ${role}`;
+  if (characterId) div.dataset.characterId = characterId;
 
   if (role === 'user') {
     div.textContent = content;
@@ -449,6 +659,31 @@ function setMessageAuthor(msgEl, characterName) {
     msgEl.insertBefore(author, msgEl.firstChild);
   }
   author.textContent = characterName;
+}
+
+function setTypingState(msgEl, active) {
+  if (!msgEl) return;
+  const mdDiv = msgEl.querySelector('.md-content');
+  if (!mdDiv) return;
+  msgEl.classList.toggle('typing', !!active);
+  if (!active) return;
+  mdDiv.innerHTML = `
+    <div class="typing-indicator" aria-label="typing">
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+    </div>`;
+}
+
+function clearTypingPlaceholders(resultEls) {
+  resultEls.forEach(el => {
+    if (!el?.classList.contains('typing')) return;
+    const mdDiv = el.querySelector('.md-content');
+    el.classList.remove('typing');
+    if (mdDiv?.querySelector('.typing-indicator')) {
+      el.remove();
+    }
+  });
 }
 
 function enhanceRenderedMarkdown(root) {

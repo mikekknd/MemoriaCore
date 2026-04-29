@@ -75,6 +75,17 @@ def render_settings_page(api_base, user_prefs=None):
         new_dual_layer_enabled = st.checkbox(
             "啟用異步雙層 Agent 模式", value=user_prefs.get("dual_layer_enabled", False),
             help="開啟後，對話將拆分為「意圖路由」與「角色渲染」兩階段。需要工具時會先播放過渡語音，並行執行工具查詢，消除等待空窗。")
+        new_group_chat_max_bot_turns = st.slider(
+            "群組對話 AI 連續發言上限",
+            1, 5, int(user_prefs.get("group_chat_max_bot_turns", 3)), 1,
+            help="多 AI 群組對話中，單次使用者訊息最多允許幾位 AI 接力回應。")
+        new_group_chat_turn_delay_seconds = st.number_input(
+            "群組對話接龍延遲（秒）",
+            min_value=0.0,
+            max_value=30.0,
+            value=float(user_prefs.get("group_chat_turn_delay_seconds", 2.0)),
+            step=0.5,
+            help="每位 AI 回覆顯示後，等待多久才進入下一位 AI。0 代表無延遲。")
 
         st.header("🧬 PersonaProbe 定時反思")
         new_persona_sync_enabled = st.checkbox("啟用定時人格反思", value=user_prefs.get("persona_sync_enabled", True),
@@ -269,6 +280,8 @@ def render_settings_page(api_base, user_prefs=None):
             "persona_sync_fragment_limit": new_persona_sync_fragment_limit,
             "persona_probe_url": new_persona_probe_url,
             "dual_layer_enabled": new_dual_layer_enabled,
+            "group_chat_max_bot_turns": new_group_chat_max_bot_turns,
+            "group_chat_turn_delay_seconds": new_group_chat_turn_delay_seconds,
             # Bash Tool
             "bash_tool_enabled": bash_enabled,
             "bash_tool_allowed_commands": merged,

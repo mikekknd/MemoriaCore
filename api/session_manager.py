@@ -23,6 +23,9 @@ class SessionState:
     bot_id: str = ""
     user_id: str = "default"
     character_id: str = "default"
+    active_character_ids: list[str] = field(default_factory=list)
+    session_mode: str = "single"
+    group_name: str = ""
     persona_face: str = "public"
     channel_class: str = "public"
 
@@ -45,6 +48,9 @@ class SessionManager:
         bot_id: str = "",
         user_id: str = "default",
         character_id: str = "default",
+        character_ids: list[str] | None = None,
+        session_mode: str = "single",
+        group_name: str = "",
         channel_class: str | None = None,
         persona_face: str | None = None,
     ) -> SessionState:
@@ -53,13 +59,20 @@ class SessionManager:
             resolved_face, write_visibility = resolve_context(user_id, channel)
             effective_face = persona_face or resolved_face
             effective_channel_class = channel_class or write_visibility
+            participant_ids = list(dict.fromkeys(character_ids or [character_id]))
+            if not participant_ids:
+                participant_ids = [character_id]
+            effective_mode = "group" if session_mode == "group" or len(participant_ids) > 1 else "single"
             session = SessionState(
                 session_id=sid,
                 channel=channel,
                 channel_uid=channel_uid,
                 bot_id=bot_id,
                 user_id=user_id,
-                character_id=character_id,
+                character_id=participant_ids[0],
+                active_character_ids=participant_ids,
+                session_mode=effective_mode,
+                group_name=group_name,
                 persona_face=effective_face,
                 channel_class=effective_channel_class,
             )
@@ -67,8 +80,10 @@ class SessionManager:
             if self._storage:
                 self._storage.create_conversation_session(
                     sid, channel, channel_uid,
-                    bot_id=bot_id, user_id=user_id, character_id=character_id,
+                    bot_id=bot_id, user_id=user_id, character_id=participant_ids[0],
                     channel_class=effective_channel_class, persona_face=effective_face,
+                    session_mode=effective_mode, group_name=group_name,
+                    character_ids=participant_ids,
                 )
             return session
 
@@ -87,6 +102,9 @@ class SessionManager:
         bot_id: str = "",
         user_id: str = "default",
         character_id: str = "default",
+        character_ids: list[str] | None = None,
+        session_mode: str = "single",
+        group_name: str = "",
         channel_class: str | None = None,
         persona_face: str | None = None,
     ) -> SessionState:
@@ -102,6 +120,9 @@ class SessionManager:
             bot_id=bot_id,
             user_id=user_id,
             character_id=character_id,
+            character_ids=character_ids,
+            session_mode=session_mode,
+            group_name=group_name,
             channel_class=channel_class,
             persona_face=persona_face,
         )
@@ -130,6 +151,8 @@ class SessionManager:
             channel_class = info.get("channel_class", "public")
             resolved_face, _ = resolve_context(user_id, channel)
             persona_face = info.get("persona_face") or resolved_face
+            character_ids = info.get("character_ids") or [info.get("character_id", "default")]
+            session_mode = info.get("session_mode", "single")
             session = SessionState(
                 session_id=session_id,
                 messages=messages,
@@ -137,7 +160,10 @@ class SessionManager:
                 channel_uid=info.get("channel_uid", ""),
                 bot_id=info.get("bot_id", ""),
                 user_id=user_id,
-                character_id=info.get("character_id", "default"),
+                character_id=character_ids[0] if character_ids else info.get("character_id", "default"),
+                active_character_ids=character_ids,
+                session_mode=session_mode,
+                group_name=info.get("group_name", ""),
                 channel_class=channel_class,
                 persona_face=persona_face,
                 created_at=datetime.fromisoformat(info["created_at"]) if info.get("created_at") else datetime.now(),
@@ -186,6 +212,7 @@ class SessionManager:
         extracted_entities: list[str] | None = None,
         persona_state: dict | None = None,
         character_name: str | None = None,
+        character_id: str | None = None,
     ) -> bool:
         """
         persona_state: {"internal_thought": str, "status_metrics": dict, "tone": str}
@@ -202,6 +229,8 @@ class SessionManager:
                 msg["persona_state"] = persona_state
             if character_name:
                 msg["character_name"] = character_name
+            if character_id:
+                msg["character_id"] = character_id
             s.messages.append(msg)
             if extracted_entities is not None:
                 s.last_entities = extracted_entities
@@ -210,6 +239,7 @@ class SessionManager:
                 self._storage.save_conversation_message(
                     session_id, "assistant", content, debug_info,
                     character_name=character_name,
+                    character_id=character_id,
                 )
             return True
 

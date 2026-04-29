@@ -104,7 +104,7 @@ def execute_tool_call(tool_call: dict, runtime_context: dict | None = None) -> s
 
     if func_name == "run_bash":
         from tools.bash_tool import run_bash
-        return run_bash(args.get("command", ""))
+        return run_bash(args.get("command", ""), runtime_context=runtime_context)
 
     if func_name == "browser_task":
         from tools.browser_agent import run_browser_agent

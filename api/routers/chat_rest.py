@@ -17,9 +17,10 @@ import base64
 from api.dependencies import get_current_user, get_storage, get_tts_client, get_character_manager, get_router
 from api.session_manager import session_manager
 from api.models.requests import ChatSyncRequest
-from api.models.responses import ChatSyncResponseDTO, RetrievalContextDTO
+from api.models.responses import ChatSyncResponseDTO, ChatTurnDTO, RetrievalContextDTO
 from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
+from api.routers.chat.group_loop import is_group_session, run_group_chat_loop
 from tools.minimax_image import generated_image_path
 
 
@@ -85,6 +86,42 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     user_prefs = get_storage().load_prefs()
     orchestration_fn = _select_orchestration(user_prefs)
 
+    if is_group_session(s):
+        turns = await run_group_chat_loop(
+            session=s,
+            user_prompt=body.content,
+            user_prefs=user_prefs,
+            orchestration_fn=orchestration_fn,
+        )
+        if not turns:
+            return ChatSyncResponseDTO(reply="（無回應）", turns=[])
+        from core.chat_orchestrator.coordinator import _generate_tts_speech
+        for turn in turns:
+            if not turn.get("speech"):
+                reply_char = _get_session_character(turn["character_id"])
+                turn["speech"] = _generate_tts_speech(
+                    turn["reply"],
+                    reply_char.get("tts_language", ""),
+                    reply_char.get("tts_rules", ""),
+                    get_router(),
+                )
+        final_turn = turns[-1]
+        joined_reply = "\n\n".join(
+            f"{turn['character_name']}: {turn['reply']}" for turn in turns
+        )
+        return ChatSyncResponseDTO(
+            reply=joined_reply,
+            extracted_entities=final_turn.get("extracted_entities", []),
+            retrieval_context=RetrievalContextDTO(**final_turn.get("retrieval_context", {})),
+            cited_memory_uids=final_turn.get("cited_memory_uids", []),
+            internal_thought=final_turn.get("internal_thought"),
+            speech=final_turn.get("speech"),
+            thinking_speech=final_turn.get("thinking_speech"),
+            character_id=final_turn.get("character_id"),
+            character_name=final_turn.get("character_name"),
+            turns=[ChatTurnDTO(**turn) for turn in turns],
+        )
+
     session_ctx = {
         "user_id": session.user_id,
         "character_id": session.character_id,
@@ -113,6 +150,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         sid, saved_reply_text, retrieval_ctx, new_entities,
         persona_state={"internal_thought": inner_thought},
         character_name=character_name,
+        character_id=session.character_id,
     )
 
     if topic_shifted:
@@ -138,7 +176,21 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         internal_thought=inner_thought,
         speech=speech,
         thinking_speech=thinking_speech or None,
+        character_id=session.character_id,
         character_name=character_name,
+        turns=[ChatTurnDTO(
+            reply=reply_text,
+            extracted_entities=new_entities,
+            retrieval_context=RetrievalContextDTO(**retrieval_ctx),
+            cited_memory_uids=cited_uids,
+            internal_thought=inner_thought,
+            speech=speech,
+            thinking_speech=thinking_speech or None,
+            character_id=session.character_id,
+            character_name=character_name,
+            turn_index=0,
+            is_final=True,
+        )],
     )
 
 
@@ -181,6 +233,73 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         event_q.put(data)
 
     async def event_generator():
+        if is_group_session(s):
+            def on_turn(turn: dict):
+                event_q.put({
+                    "type": "result",
+                    "session_id": sid,
+                    **turn,
+                })
+
+            group_task = asyncio.create_task(run_group_chat_loop(
+                session=s,
+                user_prompt=body.content,
+                user_prefs=user_prefs,
+                orchestration_fn=orchestration_fn,
+                on_event=on_event,
+                on_turn=on_turn,
+            ))
+
+            while not group_task.done():
+                try:
+                    event = event_q.get_nowait()
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except sync_queue.Empty:
+                    await asyncio.sleep(0.1)
+
+            while not event_q.empty():
+                event = event_q.get_nowait()
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            try:
+                turns = group_task.result()
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'group_done', 'session_id': sid, 'turn_count': len(turns)}, ensure_ascii=False)}\n\n"
+
+            tts = get_tts_client()
+            if tts:
+                from core.chat_orchestrator.coordinator import _generate_tts_speech
+                for turn in turns:
+                    reply_char = _get_session_character(turn["character_id"])
+                    speech = turn.get("speech")
+                    _tts_lang = reply_char.get("tts_language", "")
+                    _tts_rules = reply_char.get("tts_rules", "")
+                    if _tts_lang and not speech:
+                        speech = await asyncio.to_thread(
+                            _generate_tts_speech, turn["reply"], _tts_lang, _tts_rules, get_router())
+                    raw_tts_text = speech or _strip_markdown(turn["reply"])
+                    tts_text = raw_tts_text[:400] if raw_tts_text else ""
+                    if not tts_text:
+                        continue
+                    try:
+                        audio_bytes = await tts.synthesize(tts_text)
+                        if audio_bytes:
+                            tts_event = {
+                                "type": "tts_audio",
+                                "format": "mp3",
+                                "data": base64.b64encode(audio_bytes).decode("ascii"),
+                                "turn_index": turn["turn_index"],
+                                "character_id": turn["character_id"],
+                                "character_name": turn["character_name"],
+                            }
+                            yield f"data: {json.dumps(tts_event, ensure_ascii=False)}\n\n"
+                    except Exception:
+                        pass
+            return
+
         orch_task = asyncio.create_task(asyncio.to_thread(
             orchestration_fn,
             list(s.messages), list(s.last_entities), body.content, user_prefs,
@@ -222,6 +341,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
             sid, saved_reply_text, retrieval_ctx, new_entities,
             persona_state={"internal_thought": inner_thought},
             character_name=character_name,
+            character_id=session.character_id,
         )
 
         if topic_shifted:
@@ -239,7 +359,10 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
             "cited_memory_uids": cited_uids,
             "internal_thought": inner_thought,
             "thinking_speech": thinking_speech or None,
+            "character_id": session.character_id,
             "character_name": character_name,
+            "turn_index": 0,
+            "is_final": True,
         }
         yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
 
@@ -265,8 +388,11 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
                         "type": "tts_audio",
                         "format": "mp3",
                         "data": base64.b64encode(audio_bytes).decode("ascii"),
+                        "turn_index": 0,
+                        "character_id": session.character_id,
+                        "character_name": character_name,
                     }
-                    yield f"data: {json.dumps(tts_event)}\n\n"
+                    yield f"data: {json.dumps(tts_event, ensure_ascii=False)}\n\n"
                 else:
                     SystemLogger.log_error("TTS", "synthesize() 回傳 None（API 無音頻輸出）")
             except Exception as e:

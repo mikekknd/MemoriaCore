@@ -673,64 +673,117 @@ def load_fragments_from_db(
     若指定 limit，則以近期優先取最後 N 筆（先 DESC 取 limit，再反轉回正序）。
     user_id / channel_class_filter / character_id：JOIN conversation_sessions 做範圍過濾，
     供 PersonaSync 按 persona_face 分開載入。
+    指定 character_id 時，群組對話只保留該角色自己的 assistant 訊息；
+    user 訊息保留，作為該角色實際聽到的上下文。
     回傳 [{role, content}]。
     """
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
-        needs_join = user_id is not None or bool(channel_class_filter) or character_id is not None
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        table_names = {row[0] for row in cursor.fetchall()}
+        has_sessions = "conversation_sessions" in table_names
+        has_participants = "conversation_session_participants" in table_names
+
+        session_cols: set[str] = set()
+        if has_sessions:
+            cursor.execute("PRAGMA table_info(conversation_sessions)")
+            session_cols = {info[1] for info in cursor.fetchall()}
+        has_session_user_id = "user_id" in session_cols
+        has_session_character_id = "character_id" in session_cols
+        has_session_channel_class = "channel_class" in session_cols
+        has_session_mode = "session_mode" in session_cols
+
+        cursor.execute("PRAGMA table_info(conversation_messages)")
+        message_cols = {info[1] for info in cursor.fetchall()}
+        has_message_character_id = "character_id" in message_cols
+
+        needs_join = has_sessions and (
+            user_id is not None or bool(channel_class_filter) or character_id is not None
+        )
 
         conds: list[str] = []
         params: list = []
         if session_id:
-            conds.append("cm.session_id = ?" if needs_join else "session_id = ?")
+            conds.append("cm.session_id = ?")
             params.append(session_id)
-        if user_id is not None:
+        if user_id is not None and needs_join and has_session_user_id:
             conds.append("cs.user_id = ?")
             params.append(user_id)
-        if character_id is not None:
-            conds.append("cs.character_id = ?")
-            params.append(character_id)
-        if channel_class_filter:
+        if character_id is not None and needs_join:
+            if has_participants and has_session_character_id:
+                conds.append(
+                    "("
+                    "cs.character_id = ? OR EXISTS ("
+                    "SELECT 1 FROM conversation_session_participants csp "
+                    "WHERE csp.session_id = cm.session_id "
+                    "AND csp.character_id = ? AND csp.is_active = 1"
+                    ")"
+                    ")"
+                )
+                params.extend([character_id, character_id])
+            elif has_participants:
+                conds.append(
+                    "EXISTS ("
+                    "SELECT 1 FROM conversation_session_participants csp "
+                    "WHERE csp.session_id = cm.session_id "
+                    "AND csp.character_id = ? AND csp.is_active = 1"
+                    ")"
+                )
+                params.append(character_id)
+            elif has_session_character_id:
+                conds.append("cs.character_id = ?")
+                params.append(character_id)
+        if channel_class_filter and needs_join and has_session_channel_class:
             placeholders = ",".join("?" * len(channel_class_filter))
             conds.append(f"cs.channel_class IN ({placeholders})")
             params.extend(channel_class_filter)
+        if character_id is not None and has_message_character_id:
+            if needs_join:
+                assistant_filter = (
+                    "(cm.role != 'assistant' "
+                    "OR cm.character_id = ? "
+                )
+                if has_session_character_id and has_session_mode:
+                    assistant_filter += (
+                        "OR (cm.character_id IS NULL AND cs.character_id = ? "
+                        "AND COALESCE(cs.session_mode, 'single') != 'group')"
+                    )
+                elif has_session_character_id:
+                    assistant_filter += "OR (cm.character_id IS NULL AND cs.character_id = ?)"
+                assistant_filter += ")"
+                conds.append(assistant_filter)
+                params.append(character_id)
+                if has_session_character_id:
+                    params.append(character_id)
+            else:
+                conds.append(
+                    "(cm.role != 'assistant' OR cm.character_id = ? OR cm.character_id IS NULL)"
+                )
+                params.append(character_id)
 
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        from_clause = (
+            "conversation_messages cm "
+            "JOIN conversation_sessions cs ON cm.session_id = cs.session_id"
+            if needs_join
+            else "conversation_messages cm"
+        )
 
-        if needs_join:
-            if limit:
-                cursor.execute(
-                    "SELECT role, content FROM ("
-                    "  SELECT cm.role, cm.content, cm.msg_id"
-                    "  FROM conversation_messages cm"
-                    "  JOIN conversation_sessions cs ON cm.session_id = cs.session_id"
-                    f"  {where} ORDER BY cm.msg_id DESC LIMIT ?"
-                    ") ORDER BY msg_id",
-                    params + [limit],
-                )
-            else:
-                cursor.execute(
-                    "SELECT cm.role, cm.content"
-                    " FROM conversation_messages cm"
-                    " JOIN conversation_sessions cs ON cm.session_id = cs.session_id"
-                    f" {where} ORDER BY cm.msg_id",
-                    params,
-                )
+        if limit:
+            cursor.execute(
+                "SELECT role, content FROM ("
+                "  SELECT cm.role AS role, cm.content AS content, cm.msg_id AS msg_id "
+                f"  FROM {from_clause} {where} "
+                "  ORDER BY cm.msg_id DESC LIMIT ?"
+                ") ORDER BY msg_id",
+                params + [limit],
+            )
         else:
-            if limit:
-                cursor.execute(
-                    "SELECT role, content FROM ("
-                    f"  SELECT role, content, msg_id FROM conversation_messages {where}"
-                    "  ORDER BY msg_id DESC LIMIT ?"
-                    ") ORDER BY msg_id",
-                    params + [limit],
-                )
-            else:
-                cursor.execute(
-                    f"SELECT role, content FROM conversation_messages {where} ORDER BY msg_id",
-                    params,
-                )
+            cursor.execute(
+                f"SELECT cm.role, cm.content FROM {from_clause} {where} ORDER BY cm.msg_id",
+                params,
+            )
         return [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
     finally:
         conn.close()

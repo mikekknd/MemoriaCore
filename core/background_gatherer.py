@@ -11,6 +11,16 @@ from core.system_logger import SystemLogger
 
 _next_gather_time = None
 
+
+def _resolve_background_gather_scope(storage: StorageManager) -> tuple[str, str, str] | None:
+    """背景話題只服務首位 admin，並固定寫入 private topic cache。"""
+    admin = storage.get_first_admin_user()
+    if not admin:
+        return None
+    prefs = storage.load_prefs()
+    character_id = prefs.get("active_character_id", "default") or "default"
+    return str(admin["id"]), character_id, "private"
+
 def run_background_topic_gather(
     db_path: str,
     router: LLMRouter,
@@ -97,9 +107,6 @@ async def start_background_gather_loop(
     router: LLMRouter,
     storage: StorageManager,
     default_interval_seconds: int = 14400,
-    user_id: str = "default",
-    character_id: str = "default",
-    visibility: str = "public",
 ):
     """
     啟動無限迴圈定時執行搜集。
@@ -122,10 +129,18 @@ async def start_background_gather_loop(
             now = datetime.now()
             if _next_gather_time and now >= _next_gather_time:
                 SystemLogger.log_system_event("BackgroundGather","觸發背景話題蒐集任務...")
-                await asyncio.to_thread(
-                    run_background_topic_gather, db_path, router, storage,
-                    user_id, character_id, visibility,
-                )
+                scope = _resolve_background_gather_scope(storage)
+                if scope is None:
+                    SystemLogger.log_system_event(
+                        "BackgroundGather",
+                        "找不到 admin 使用者，跳過背景話題蒐集。",
+                    )
+                else:
+                    user_id, character_id, visibility = scope
+                    await asyncio.to_thread(
+                        run_background_topic_gather, db_path, router, storage,
+                        user_id, character_id, visibility,
+                    )
 
                 # 執行完畢後，重新讀取最新頻率，並以「此刻 + N 小時」重新計算下次發動時間
                 prefs = storage.load_prefs()

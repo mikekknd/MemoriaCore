@@ -78,6 +78,8 @@ class ConfigUpdateRequest(BaseModel):
     bg_gather_interval: Optional[int] = None
     active_character_id: Optional[str] = None
     dual_layer_enabled: Optional[bool] = None
+    group_chat_max_bot_turns: Optional[int] = None
+    group_chat_turn_delay_seconds: Optional[float] = None
     tts_enabled: Optional[bool] = None
     image_generation_enabled: Optional[bool] = None
     minimax_api_key: Optional[str] = None
@@ -114,6 +116,8 @@ class CreateSessionRequest(BaseModel):
     channel_uid: str = ""
     user_id: Optional[str] = None
     character_id: Optional[str] = None
+    character_ids: list[str] = []
+    group_name: str = ""
 
 
 class PersonalityUpdateRequest(BaseModel):

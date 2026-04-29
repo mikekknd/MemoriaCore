@@ -90,15 +90,18 @@ def test_system_config_roundtrips_admin_bypass(monkeypatch):
         config = client.get("/api/v1/system/config")
         assert config.status_code == 200, config.text
         assert config.json()["admin_bypass_enabled"] is False
+        assert config.json()["group_chat_turn_delay_seconds"] == 2.0
 
         updated = client.put(
             "/api/v1/system/config",
             headers={"X-CSRF-Token": csrf},
-            json={"admin_bypass_enabled": True},
+            json={"admin_bypass_enabled": True, "group_chat_turn_delay_seconds": 0.5},
         )
         assert updated.status_code == 200, updated.text
         assert updated.json()["admin_bypass_enabled"] is True
+        assert updated.json()["group_chat_turn_delay_seconds"] == 0.5
         assert storage.load_prefs()["admin_bypass_enabled"] is True
+        assert storage.load_prefs()["group_chat_turn_delay_seconds"] == 0.5
     finally:
         deps.storage = None
         shutil.rmtree(base, ignore_errors=True)
@@ -165,11 +168,67 @@ def test_conversation_message_persists_character_name():
             "assistant",
             "hello",
             character_name="角色 A",
+            character_id="char-a",
         )
 
         messages = storage.load_conversation_messages("sid-a")
         assert messages[0]["character_name"] == "角色 A"
+        assert messages[0]["character_id"] == "char-a"
     finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_group_session_creation_dedupes_and_persists_participants(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-group-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            if character_id in {"char-a", "char-b"}:
+                return {"character_id": character_id, "name": character_id}
+            return None
+
+    deps.character_mgr = FakeCharacterManager()
+
+    try:
+        client = TestClient(_app(), client=("127.0.0.1", 50000))
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "owner",
+                "password": "abc123",
+                "password_confirm": "abc123",
+            },
+        )
+        csrf = registered.json()["csrf_token"]
+
+        created = client.post(
+            "/api/v1/session",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "channel": "dashboard",
+                "character_ids": ["char-a", "char-b", "char-a"],
+                "group_name": "測試群組",
+            },
+        )
+        assert created.status_code == 200, created.text
+        payload = created.json()
+        assert payload["session_mode"] == "group"
+        assert payload["character_ids"] == ["char-a", "char-b"]
+
+        info = storage.get_session_info(payload["session_id"])
+        assert info["session_mode"] == "group"
+        assert info["group_name"] == "測試群組"
+        assert info["character_ids"] == ["char-a", "char-b"]
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
+        deps.character_mgr = None
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -236,10 +295,12 @@ def test_chat_sync_returns_and_persists_character_name(monkeypatch):
         )
         assert response.status_code == 200, response.text
         assert response.json()["character_name"] == "角色 B"
+        assert response.json()["character_id"] == "char-b"
 
         messages = storage.load_conversation_messages(session_id)
         assistant = [m for m in messages if m["role"] == "assistant"][0]
         assert assistant["character_name"] == "角色 B"
+        assert assistant["character_id"] == "char-b"
     finally:
         session_manager._sessions.clear()
         session_manager.set_storage(None)

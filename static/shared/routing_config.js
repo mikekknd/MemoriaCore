@@ -12,6 +12,7 @@ const TASK_INFOS = {
   background_gather: { desc:'背景話題摘要',              help:'在背景將 Tavily 搜尋下來的資料摘要成主動話題。建議不需太強的模型。' },
   character_gen:     { desc:'角色設定生成',              help:'根據簡短描述利用 AI 擴充出完整的角色系統提示詞與心理指標。' },
   router:            { desc:'意圖路由預處理',            help:'工具意圖偵測：判斷是否需要呼叫外部工具並產生過渡語音。建議使用輕量快速模型以降低延遲。' },
+  group_router:      { desc:'群組發話路由',              help:'多 AI 群組對話中決定下一位應發話的角色。預設跟隨 chat 設定，可指定較輕量的路由模型。' },
   translate:         { desc:'TTS 語音翻譯',              help:'將角色回覆翻譯為 TTS 目標語言（如日文），獨立於主對話執行。預設跟隨 chat 設定，可指定較輕量的翻譯專用模型。' },
   browser:           { desc:'Browser Agent 瀏覽器代理',  help:'多輪瀏覽器自動化 Subagent，逐步執行網頁操作任務。建議使用支援 Function Calling 的模型。' },
 };

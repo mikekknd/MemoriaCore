@@ -42,7 +42,9 @@ def _run_memory_pipeline_sync(ctx: PipelineContext) -> list[dict]:
     character_id = sctx.get("character_id", "default")
     write_visibility = sctx.get("persona_face", "public")  # persona_face == write_visibility
     channel = sctx.get("channel", "")
-    profile_allowed = should_extract_profile(channel) if channel else True
+    profile_allowed = bool(sctx.get("profile_allowed", True)) and (
+        should_extract_profile(channel) if channel else True
+    )
 
     t_start = time.perf_counter()
 

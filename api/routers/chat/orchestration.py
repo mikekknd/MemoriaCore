@@ -13,6 +13,7 @@ from api.dependencies import (
 from core.prompt_manager import get_prompt_manager
 from core.prompt_utils import build_user_prefix
 from core.chat_orchestrator.router_agent import run_router_agent
+from core.chat_orchestrator.message_format import format_history_for_llm
 from api.routers.chat.timer import StepTimer
 from api.routers.chat.pipeline import PipelineContext
 
@@ -189,7 +190,7 @@ def _run_chat_orchestration(
     # ⚠️ 上下文組裝必須在 debug 預覽之前完成（修正原本 clean_history 引用順序錯誤）。
     with timer.step("上下文組裝 (Context Assembly)"):
         api_messages = [{"role": "system", "content": sys_prompt}]
-        clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-context_window:]]
+        clean_history = format_history_for_llm(session_messages[-context_window:])
         # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
         # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
         api_messages.extend(clean_history)
