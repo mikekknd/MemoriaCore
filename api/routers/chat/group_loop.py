@@ -174,7 +174,14 @@ async def run_group_chat_loop(
             await asyncio.sleep(turn_delay_seconds)
 
     if turns:
+        was_final = turns[-1]["is_final"]
         turns[-1]["is_final"] = True
+        # 若迴圈提前結束（早退），最後一個 turn 的 is_final 在 on_turn 時是 False，
+        # 需補送一次更正過的 snapshot，讓 WS/SSE 客戶端感知真實的結束旗標。
+        if not was_final and on_turn:
+            callback_result = on_turn(dict(turns[-1]))
+            if inspect.isawaitable(callback_result):
+                await callback_result
     return turns
 
 

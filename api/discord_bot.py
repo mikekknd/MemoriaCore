@@ -446,8 +446,12 @@ class DiscordBotManager:
         saved_reply_text = reply_text
         if cited_uids:
             saved_reply_text = f"{reply_text} " + " ".join([f"[Ref: {u}]" for u in cited_uids])
+        from api.dependencies import get_character_manager
+        _char = get_character_manager().get_character(character_id) or {}
+        character_name = _char.get("name") or character_id
         await session_manager.add_assistant_message(
             sid, saved_reply_text, retrieval_ctx, new_entities,
+            character_name=character_name,
             character_id=character_id,
         )
 

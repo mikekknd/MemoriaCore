@@ -2,12 +2,20 @@
 
 
 def format_history_for_llm(messages: list[dict]) -> list[dict]:
-    """將 assistant 訊息加上 speaker 標籤，讓群組對話上下文可辨識發話角色。"""
+    """將群組對話的 assistant 訊息加上 speaker 標籤，讓上下文可辨識發話角色。
+    單 AI session（僅一個 character_id）不加前綴，避免 LLM 自我污染。
+    """
+    assistant_char_ids = {
+        m.get("character_id") for m in messages
+        if m.get("role") == "assistant" and m.get("character_id")
+    }
+    is_group = len(assistant_char_ids) > 1
+
     formatted: list[dict] = []
     for m in messages:
         role = m.get("role", "")
         content = m.get("content", "")
-        if role == "assistant":
+        if is_group and role == "assistant":
             label = _speaker_label(m)
             if label:
                 content = f"[{label}]: {content}"

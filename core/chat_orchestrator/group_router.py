@@ -104,14 +104,23 @@ def _latest_user_text(messages: list[dict]) -> str:
 
 
 def _detect_mention(text: str, participants: list[dict]) -> str | None:
+    """偵測使用者是否 @ 了某位參與者。
+    依 needle 長度由長到短比對，避免短名稱是長名稱前綴時誤命中。
+    """
     if not text:
         return None
     normalized_text = text.replace("＠", "@")
+    # 收集 (needle, character_id) 並依 needle 長度降冪排序
+    candidates: list[tuple[str, str]] = []
     for participant in participants:
         cid = participant["character_id"]
         name = participant.get("name") or cid
-        needles = [f"@{cid}", f"@{name}", f"＠{cid}", f"＠{name}"]
-        if any(needle and needle in normalized_text for needle in needles):
+        for needle in (f"@{cid}", f"@{name}"):
+            if needle and len(needle) > 1:
+                candidates.append((needle, cid))
+    candidates.sort(key=lambda x: len(x[0]), reverse=True)
+    for needle, cid in candidates:
+        if needle in normalized_text:
             return cid
     return None
 
