@@ -86,10 +86,10 @@ def init_all():
     # 路由註冊
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate", "browser", "character_gen"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "group_router", "translate", "browser", "character_gen"]
     for task_key in tasks:
-        # router / translate / character_gen 預設跟隨 chat 的 provider/model 設定
-        fallback = routing_config.get("chat", {}) if task_key in ("router", "translate", "character_gen") else {}
+        # router / group_router / translate / character_gen 預設跟隨 chat 的 provider/model 設定
+        fallback = routing_config.get("chat", {}) if task_key in ("router", "group_router", "translate", "character_gen") else {}
         cfg = routing_config.get(task_key, fallback)
         p_name = cfg.get("provider", "Ollama (本地)")
         m_name = cfg.get("model", "qwen3.5")
@@ -149,9 +149,9 @@ def reload_router():
 
     routing_config = user_prefs.get("routing_config", {})
     global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "translate", "browser", "character_gen"]
+    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "group_router", "translate", "browser", "character_gen"]
     for task_key in tasks:
-        fallback = routing_config.get("chat", {}) if task_key in ("router", "translate", "character_gen") else {}
+        fallback = routing_config.get("chat", {}) if task_key in ("router", "group_router", "translate", "character_gen") else {}
         cfg = routing_config.get(task_key, fallback)
         p_name = cfg.get("provider", "Ollama (本地)")
         m_name = cfg.get("model", "qwen3.5")

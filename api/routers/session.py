@@ -17,6 +17,7 @@ def _message_to_dto(m: dict) -> SessionMessageDTO:
         role=m["role"],
         content=m["content"],
         debug_info=m.get("debug_info"),
+        character_id=m.get("character_id"),
         character_name=m.get("character_name"),
     )
 
@@ -27,6 +28,9 @@ def _state_to_dto(s: SessionState) -> SessionDTO:
         messages=[_message_to_dto(m) for m in s.messages],
         last_entities=s.last_entities,
         character_id=s.character_id,
+        character_ids=s.active_character_ids or [s.character_id],
+        session_mode=s.session_mode,
+        group_name=s.group_name,
         created_at=s.created_at.isoformat(),
         last_active=s.last_active.isoformat(),
     )
@@ -40,14 +44,26 @@ async def create_session(
     channel_class = "private" if current_user.get("role") == "admin" else "public"
     persona_face = "private" if current_user.get("role") == "admin" else "public"
     prefs = get_storage().load_prefs()
-    character_id = body.character_id or prefs.get("active_character_id", "default")
-    if body.character_id and not get_character_manager().get_character(character_id):
-        raise HTTPException(404, detail="Character not found")
+    requested_ids = body.character_ids or ([body.character_id] if body.character_id else [])
+    if not requested_ids:
+        requested_ids = [prefs.get("active_character_id", "default")]
+    character_ids = [cid for cid in dict.fromkeys((c or "").strip() for c in requested_ids) if cid]
+    if not character_ids:
+        character_ids = ["default"]
+    if len(character_ids) > 6:
+        raise HTTPException(400, detail="Group session supports at most 6 characters")
+    char_mgr = get_character_manager()
+    missing = [cid for cid in character_ids if not char_mgr.get_character(cid)]
+    if missing:
+        raise HTTPException(404, detail=f"Character not found: {', '.join(missing)}")
     s = await session_manager.create(
         channel=body.channel,
         channel_uid=body.channel_uid or str(current_user["id"]),
         user_id=str(current_user["id"]),
-        character_id=character_id,
+        character_id=character_ids[0],
+        character_ids=character_ids,
+        session_mode="group" if len(character_ids) > 1 else "single",
+        group_name=body.group_name.strip(),
         channel_class=channel_class,
         persona_face=persona_face,
     )

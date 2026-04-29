@@ -91,6 +91,29 @@
     "placeholders": [],
     "template": "你是意圖路由器。只呼叫工具，不輸出任何文字，不自行編造結果。\n\n【判斷原則】只根據對話中「最後一則使用者訊息」判斷意圖。前面帶有 [已處理] 標記的訊息代表該輪已由 AI 回覆完畢，僅供上下文參考，不可因歷史中出現過的工具需求而對當前訊息重複呼叫工具。\n\n規則：\n- 使用者明確要求執行系統 shell 指令（如移動檔案、刪除檔案、查詢 git log）→ 呼叫 run_bash\n- 使用者詢問即時資訊（天氣、新聞）、要求查詢網頁 → 呼叫對應工具\n- 其他所有情況 → 呼叫 direct_chat\n\n【一律呼叫 direct_chat 的情況】\n- 日常聊天、閒聊、稱讚、感謝、安慰\n- 帶有括號動作描述的互動（如「(摸摸頭)」「(拍拍)」）\n- 情感表達、心情分享\n- 對上一輪結果的回饋（「好棒」「成功了」「讚讚」「沒關係」「那也行」「準備好了」）\n- 任何沒有明確工具可對應的輸入\n\n【禁止】不可使用 echo 或任何工具輸出角色台詞或文字回覆，文字回覆由 direct_chat 負責。"
   },
+  "group_router_system": {
+    "label": "群組對話發話路由器 (Group Router)",
+    "description": "根據近期群組上下文決定下一位應該發話的 AI 角色，或停止等待使用者。",
+    "used_by": "core/chat_orchestrator/group_router.py",
+    "placeholders": [
+      "{participants_json}",
+      "{history_text}",
+      "{last_speaker_id}",
+      "{mentioned_character_id}"
+    ],
+    "template": "你是多 AI 群組對話的發話路由器。你的任務是只決定下一位應該發話的角色，不要產生聊天內容。\n\n【參與角色 JSON】\n{participants_json}\n\n【最近對話】\n{history_text}\n\n【上一位 AI speaker id】\n{last_speaker_id}\n\n【使用者明確 @ 的角色 id，若無則空白】\n{mentioned_character_id}\n\n規則：\n- 若使用者明確 @ 某角色，優先選該角色。\n- 若已有 AI 充分回答，或再接話只會重複，should_respond=false。\n- 若需要補充、反駁、提出另一種觀點，選最適合且不同於上一位 speaker 的角色。\n- 除非使用者明確 @，避免同一角色連續發言。\n- target_character_id 必須是參與角色之一；停止時填 null。\n\n只輸出合法 JSON，禁止 Markdown 或額外說明：\n{{\n  \"should_respond\": true,\n  \"target_character_id\": \"角色ID或null\",\n  \"reason\": \"簡短理由\"\n}}"
+  },
+  "group_followup_user": {
+    "label": "群組接力指令 (Group Follow-up User Instruction)",
+    "description": "Bot-to-bot 接力時暫時附加在 LLM 上下文末尾，不寫入對話資料庫。",
+    "used_by": "api/routers/chat/group_loop.py",
+    "placeholders": [
+      "{user_prompt}",
+      "{last_character_name}",
+      "{last_reply}"
+    ],
+    "template": "【群組接力指令】\n使用者原始話題：{user_prompt}\n上一位發言者：{last_character_name}\n上一位發言內容：{last_reply}\n\n請以你自己的角色身份接話。只有在你能提供新的觀點、補充、反駁或自然追問時才回應；避免重複上一位的內容。"
+  },
   "chat_system_suffix": {
     "label": "對話系統後綴指令 (Chat System Suffix)",
     "description": "附加在角色設定之後的系統規則：動態規則、記憶區注入、心理活動評估、強制輸出格式。",

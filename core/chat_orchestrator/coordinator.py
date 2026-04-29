@@ -14,6 +14,7 @@ from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.middleware import run_middleware
 from core.chat_orchestrator.persona_agent import run_persona_agent, _parse_persona_response
 from core.chat_orchestrator.dataclasses import PipelineContext
+from core.chat_orchestrator.message_format import format_history_for_llm
 
 
 def _generate_tts_speech(reply_text: str, tts_lang: str, tts_rules: str, rtr) -> str | None:
@@ -263,7 +264,7 @@ def run_dual_layer_orchestration(
 
             # 上下文組裝
             api_messages = [{"role": "system", "content": sys_prompt}]
-            clean_history = [{"role": m["role"], "content": m["content"]} for m in session_messages[-context_window:]]
+            clean_history = format_history_for_llm(session_messages[-context_window:])
             # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
             # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
             api_messages.extend(clean_history)

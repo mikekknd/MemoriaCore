@@ -68,6 +68,7 @@ class SessionMessageDTO(BaseModel):
     role: str
     content: str
     debug_info: Optional[dict] = None
+    character_id: Optional[str] = None
     character_name: Optional[str] = None
 
 
@@ -76,6 +77,9 @@ class SessionDTO(BaseModel):
     messages: list[SessionMessageDTO] = []
     last_entities: list[str] = []
     character_id: str = "default"
+    character_ids: list[str] = []
+    session_mode: str = "single"
+    group_name: str = ""
     created_at: str
     last_active: str
 
@@ -151,6 +155,20 @@ class RetrievalContextDTO(BaseModel):
     perf_timing: PerfTimingDTO = PerfTimingDTO()
 
 
+class ChatTurnDTO(BaseModel):
+    reply: str
+    extracted_entities: list[str] = []
+    retrieval_context: RetrievalContextDTO = RetrievalContextDTO()
+    cited_memory_uids: list[str] = []
+    internal_thought: Optional[str] = None
+    speech: Optional[str] = None
+    thinking_speech: Optional[str] = None
+    character_id: str = "default"
+    character_name: str = ""
+    turn_index: int = 0
+    is_final: bool = True
+
+
 class ChatSyncResponseDTO(BaseModel):
     reply: str
     extracted_entities: list[str] = []
@@ -159,7 +177,9 @@ class ChatSyncResponseDTO(BaseModel):
     internal_thought: Optional[str] = None
     speech: Optional[str] = None
     thinking_speech: Optional[str] = None
+    character_id: Optional[str] = None
     character_name: Optional[str] = None
+    turns: list[ChatTurnDTO] = []
 
 
 # ── Auth ─────────────────────────────────────────────────
@@ -231,6 +251,8 @@ class SystemConfigDTO(BaseModel):
     bg_gather_interval: int = 14400
     active_character_id: Optional[str] = "default"
     dual_layer_enabled: bool = False
+    group_chat_max_bot_turns: int = 3
+    group_chat_turn_delay_seconds: float = 2.0
     tts_enabled: bool = False
     image_generation_enabled: bool = False
     minimax_api_key: str = ""
@@ -256,6 +278,9 @@ class ConversationSessionDTO(BaseModel):
     channel_uid: str = ""
     bot_id: str = ""
     character_id: str = "default"
+    character_ids: list[str] = []
+    session_mode: str = "single"
+    group_name: str = ""
     user_id: str = "default"
     channel_class: str = "public"
     persona_face: Optional[str] = None

@@ -19,6 +19,7 @@ from api.routers.chat.orchestration import (
     _unpack_orchestration_result,
 )
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
+from api.routers.chat.group_loop import is_group_session, run_group_chat_loop
 from api.routers.chat.timer import StepTimer
 
 
@@ -114,6 +115,9 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 old_bot_id = session.bot_id
                 old_user_id = session.user_id
                 old_character_id = session.character_id
+                old_character_ids = list(session.active_character_ids or [session.character_id])
+                old_session_mode = session.session_mode
+                old_group_name = session.group_name
                 old_persona_face = session.persona_face
                 old_channel_class = session.channel_class
                 await session_manager.delete(sid)
@@ -123,6 +127,9 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                     bot_id=old_bot_id,
                     user_id=old_user_id,
                     character_id=old_character_id,
+                    character_ids=old_character_ids,
+                    session_mode=old_session_mode,
+                    group_name=old_group_name,
                     channel_class=old_channel_class,
                     persona_face=old_persona_face,
                 )
@@ -170,6 +177,61 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             # 選擇對話編排函式（雙層 or 單層）
             orchestration_fn = _select_orchestration(user_prefs)
 
+            if is_group_session(s):
+                async def _send_group_turn(turn: dict):
+                    await ws.send_json({"type": "retrieval_context", "data": turn["retrieval_context"],
+                                        "turn_index": turn["turn_index"],
+                                        "character_id": turn["character_id"],
+                                        "character_name": turn["character_name"]})
+                    await ws.send_json({"type": "token", "content": turn["reply"],
+                                        "turn_index": turn["turn_index"],
+                                        "character_id": turn["character_id"],
+                                        "character_name": turn["character_name"]})
+                    await ws.send_json({
+                        "type": "chat_done",
+                        "reply": turn["reply"],
+                        "extracted_entities": turn["extracted_entities"],
+                        "internal_thought": turn["internal_thought"],
+                        "turn_index": turn["turn_index"],
+                        "is_final": turn["is_final"],
+                        "character_id": turn["character_id"],
+                        "character_name": turn["character_name"],
+                    })
+
+                task = asyncio.create_task(run_group_chat_loop(
+                    session=s,
+                    user_prompt=content,
+                    user_prefs=user_prefs,
+                    orchestration_fn=orchestration_fn,
+                    on_event=_ws_event_cb,
+                    on_turn=_send_group_turn,
+                ))
+                ws_manager.set_active_task(sid, task)
+                try:
+                    turns = await task
+                except asyncio.CancelledError:
+                    continue
+                finally:
+                    ws_manager.clear_active_task(sid)
+
+                await ws.send_json({"type": "group_done", "session_id": sid, "turn_count": len(turns)})
+
+                tts = get_tts_client()
+                if tts:
+                    from api.dependencies import get_router
+                    for turn in turns:
+                        reply_char = _get_session_character(turn["character_id"])
+                        asyncio.create_task(_translate_and_tts_send(
+                            ws, tts, turn["reply"],
+                            reply_char.get("tts_language", ""),
+                            reply_char.get("tts_rules", ""),
+                            get_router(),
+                            turn_index=turn["turn_index"],
+                            character_id=turn["character_id"],
+                            character_name=turn["character_name"],
+                        ))
+                continue
+
             # 在執行緒池中跑關鍵路徑，包裝為 Task 以支援取消
             task = asyncio.create_task(asyncio.to_thread(
                 orchestration_fn,
@@ -197,16 +259,29 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                     asyncio.create_task(_run_memory_pipeline_bg(sid, pipeline_data))
 
             # 推送檢索上下文
-            await ws.send_json({"type": "retrieval_context", "data": retrieval_ctx})
+            await ws.send_json({
+                "type": "retrieval_context",
+                "data": retrieval_ctx,
+                "turn_index": 0,
+                "character_id": s.character_id,
+            })
 
             # 推送完整回覆（非串流模式，因為底層 LLM 目前不支援 async yield）
-            await ws.send_json({"type": "token", "content": reply_text})
+            await ws.send_json({
+                "type": "token",
+                "content": reply_text,
+                "turn_index": 0,
+                "character_id": s.character_id,
+            })
             # 準備包含詳細狀態的 done payload
             done_payload = {
                 "type": "chat_done",
                 "reply": reply_text,
                 "extracted_entities": new_entities,
                 "internal_thought": inner_thought,
+                "character_id": s.character_id,
+                "turn_index": 0,
+                "is_final": True,
             }
             reply_char = _get_session_character(s.character_id)
             character_name = reply_char.get("name") or s.character_id
@@ -222,6 +297,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 sid, saved_reply_text, retrieval_ctx, new_entities,
                 persona_state={"internal_thought": inner_thought},
                 character_name=character_name,
+                character_id=s.character_id,
             )
 
             # 如果話題偏移，執行橋接
@@ -237,6 +313,9 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                     reply_char.get("tts_language", ""),
                     reply_char.get("tts_rules", ""),
                     get_router(),
+                    turn_index=0,
+                    character_id=s.character_id,
+                    character_name=character_name,
                 ))
 
     except WebSocketDisconnect:
@@ -256,6 +335,9 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 async def _translate_and_tts_send(
     ws: WebSocket, tts, reply_text: str,
     char_tts_lang: str, tts_rules: str, rtr,
+    turn_index: int = 0,
+    character_id: str | None = None,
+    character_name: str | None = None,
 ) -> None:
     """背景翻譯 + TTS 合成：文字回覆已送出後才執行，不阻塞顯示。"""
     from api.routers.chat_rest import _strip_markdown
@@ -269,10 +351,22 @@ async def _translate_and_tts_send(
     raw_text = speech or _strip_markdown(reply_text)
     text = raw_text[:400]
     if text:
-        await _tts_and_send(ws, tts, text)
+        await _tts_and_send(
+            ws, tts, text,
+            turn_index=turn_index,
+            character_id=character_id,
+            character_name=character_name,
+        )
 
 
-async def _tts_and_send(ws: WebSocket, tts, text: str) -> None:
+async def _tts_and_send(
+    ws: WebSocket,
+    tts,
+    text: str,
+    turn_index: int = 0,
+    character_id: str | None = None,
+    character_name: str | None = None,
+) -> None:
     """
     背景合成 TTS 並以 tts_audio 事件推送給 client。
 
@@ -289,6 +383,9 @@ async def _tts_and_send(ws: WebSocket, tts, text: str) -> None:
                 "type": "tts_audio",
                 "format": "mp3",
                 "data": base64.b64encode(audio_bytes).decode("ascii"),
+                "turn_index": turn_index,
+                "character_id": character_id,
+                "character_name": character_name,
             })
     except Exception:
         pass  # 合成失敗不中斷對話，SystemLogger 已在 tts_client 內記錄

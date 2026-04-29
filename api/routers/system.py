@@ -46,6 +46,8 @@ async def get_config():
         bg_gather_interval=int(prefs.get("bg_gather_interval", 14400)),
         active_character_id=prefs.get("active_character_id", "default"),
         dual_layer_enabled=prefs.get("dual_layer_enabled", False),
+        group_chat_max_bot_turns=int(prefs.get("group_chat_max_bot_turns", 3)),
+        group_chat_turn_delay_seconds=float(prefs.get("group_chat_turn_delay_seconds", 2.0)),
         tts_enabled=prefs.get("tts_enabled", False),
         image_generation_enabled=prefs.get("image_generation_enabled", False),
         minimax_api_key=prefs.get("minimax_api_key", ""),
@@ -99,23 +101,24 @@ async def trigger_gather_now():
 
 
 @router.get("/weather-cache")
-async def get_weather_cache():
-    """取得今天的天氣快取"""
+async def get_weather_cache(city: Optional[str] = Query(None)):
+    """取得今天的天氣快取。未指定 city 時使用系統設定的 weather_city。"""
     from tools.weather_cache import WeatherCache
     wc = WeatherCache()
-    slots = wc.get_full_today()
-    current = wc.get_current_slot()
+    target_city = city or get_storage().load_prefs().get("weather_city", "")
+    slots = wc.get_full_today(target_city)
+    current = wc.get_current_slot(target_city)
     if slots is None:
-        return {"status": "no_cache", "current": None, "slots": []}
-    return {"status": "ok", "current": current, "slots": slots}
+        return {"status": "no_cache", "city": target_city, "current": None, "slots": []}
+    return {"status": "ok", "city": target_city, "current": current, "slots": slots}
 
 
 @router.post("/weather-cache/refresh")
-async def refresh_weather_cache():
-    """強制刷新天氣快取"""
+async def refresh_weather_cache(city: Optional[str] = Query(None)):
+    """強制刷新天氣快取。未指定 city 時使用系統設定的 weather_city。"""
     sto = get_storage()
     prefs = sto.load_prefs()
-    city = prefs.get("weather_city", "")
+    city = city or prefs.get("weather_city", "")
     api_key = prefs.get("openweather_api_key", "")
     if not city or not api_key:
         return {"status": "error", "message": "未設定 weather_city 或 openweather_api_key"}

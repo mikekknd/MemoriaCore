@@ -446,7 +446,10 @@ class DiscordBotManager:
         saved_reply_text = reply_text
         if cited_uids:
             saved_reply_text = f"{reply_text} " + " ".join([f"[Ref: {u}]" for u in cited_uids])
-        await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
+        await session_manager.add_assistant_message(
+            sid, saved_reply_text, retrieval_ctx, new_entities,
+            character_id=character_id,
+        )
 
         if topic_shifted:
             await session_manager.bridge(sid)

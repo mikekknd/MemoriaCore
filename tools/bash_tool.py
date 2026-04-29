@@ -4,6 +4,7 @@ import shlex
 import json
 import platform
 import locale
+import re
 from core.system_logger import SystemLogger
 
 # 拒絕包含 shell 指令串接符的輸入（allowlist 模式下）
@@ -80,7 +81,34 @@ def _load_prefs() -> dict:
         return {}
 
 
-def run_bash(command: str) -> str:
+def _admin_user_from_context(runtime_context: dict | None) -> dict | None:
+    """從工具執行脈絡取得登入使用者，並確認是否為 admin。"""
+    ctx = runtime_context or {}
+    user_id = ctx.get("user_id")
+    if not user_id and isinstance(ctx.get("session_ctx"), dict):
+        user_id = ctx["session_ctx"].get("user_id")
+    if not user_id:
+        return None
+
+    try:
+        from core.storage_manager import StorageManager
+        user = StorageManager().get_user_by_id(user_id)
+    except Exception as e:
+        SystemLogger.log_error("BashTool", f"admin check failed: {e}")
+        return None
+
+    if user and user.get("role") == "admin":
+        return user
+    return None
+
+
+def run_bash(command: str, runtime_context: dict | None = None) -> str:
+    if not _admin_user_from_context(runtime_context):
+        return json.dumps(
+            {"error": "權限不足，僅系統管理員(SU)可執行系統指令。"},
+            ensure_ascii=False,
+        )
+
     prefs = _load_prefs()
     allow_all = prefs.get("bash_tool_allow_all", False)
     allowed = [c.strip().lower() for c in prefs.get("bash_tool_allowed_commands", []) if c.strip()]

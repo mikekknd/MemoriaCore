@@ -1101,6 +1101,7 @@ class StorageManager:
         if session_ids:
             placeholders = ",".join("?" * len(session_ids))
             cur.execute(f"DELETE FROM conversation_messages WHERE session_id IN ({placeholders})", session_ids)
+            cur.execute(f"DELETE FROM conversation_session_participants WHERE session_id IN ({placeholders})", session_ids)
         cur.execute("DELETE FROM conversation_sessions WHERE user_id = ?", (str(user_id),))
         conv.commit()
         conv.close()
@@ -1243,7 +1244,9 @@ class StorageManager:
                 user_id TEXT NOT NULL DEFAULT 'default',
                 character_id TEXT NOT NULL DEFAULT 'default',
                 channel_class TEXT NOT NULL DEFAULT 'public',
-                persona_face TEXT DEFAULT NULL
+                persona_face TEXT DEFAULT NULL,
+                session_mode TEXT NOT NULL DEFAULT 'single',
+                group_name TEXT DEFAULT ''
             )
         ''')
         # Schema evolution for older DBs
@@ -1256,6 +1259,8 @@ class StorageManager:
             ('character_id', "TEXT NOT NULL DEFAULT 'default'"),
             ('channel_class', "TEXT NOT NULL DEFAULT 'public'"),
             ('persona_face', "TEXT DEFAULT NULL"),
+            ('session_mode', "TEXT NOT NULL DEFAULT 'single'"),
+            ('group_name', "TEXT DEFAULT ''"),
         ]:
             if col not in cs_cols:
                 cursor.execute(f"ALTER TABLE conversation_sessions ADD COLUMN {col} {typedef}")
@@ -1270,6 +1275,7 @@ class StorageManager:
                 content TEXT NOT NULL,
                 debug_info TEXT,
                 character_name TEXT,
+                character_id TEXT,
                 timestamp TEXT,
                 FOREIGN KEY (session_id) REFERENCES conversation_sessions(session_id)
             )
@@ -1278,11 +1284,36 @@ class StorageManager:
         cm_cols = [info[1] for info in cursor.fetchall()]
         if "character_name" not in cm_cols:
             cursor.execute("ALTER TABLE conversation_messages ADD COLUMN character_name TEXT")
+        if "character_id" not in cm_cols:
+            cursor.execute("ALTER TABLE conversation_messages ADD COLUMN character_id TEXT")
         cursor.execute(
             'CREATE INDEX IF NOT EXISTS idx_conv_msg_session ON conversation_messages(session_id)'
         )
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversation_session_participants (
+                session_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (session_id, character_id),
+                FOREIGN KEY (session_id) REFERENCES conversation_sessions(session_id)
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_csp_session_order "
+            "ON conversation_session_participants(session_id, display_order)"
+        )
         conn.commit()
         return conn
+
+    def _load_conversation_participants_with_conn(self, cursor, session_id: str) -> list[str]:
+        cursor.execute(
+            "SELECT character_id FROM conversation_session_participants "
+            "WHERE session_id = ? AND is_active = 1 "
+            "ORDER BY display_order ASC, character_id ASC",
+            (session_id,),
+        )
+        return [r[0] for r in cursor.fetchall()]
 
     def create_conversation_session(
         self,
@@ -1294,28 +1325,59 @@ class StorageManager:
         character_id: str = "default",
         channel_class: str = "public",
         persona_face: str | None = None,
+        session_mode: str = "single",
+        group_name: str = "",
+        character_ids: list[str] | None = None,
     ):
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
+        participant_ids = list(dict.fromkeys(character_ids or [character_id]))
+        if not participant_ids:
+            participant_ids = [character_id]
+        effective_mode = "group" if session_mode == "group" or len(participant_ids) > 1 else "single"
         cursor.execute(
             "INSERT OR IGNORE INTO conversation_sessions "
-            "(session_id, channel, channel_uid, created_at, last_active, bot_id, user_id, character_id, channel_class, persona_face) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (session_id, channel, channel_uid, now, now, bot_id, user_id, character_id, channel_class, persona_face)
+            "(session_id, channel, channel_uid, created_at, last_active, bot_id, user_id, "
+            "character_id, channel_class, persona_face, session_mode, group_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id, channel, channel_uid, now, now, bot_id, user_id,
+                participant_ids[0] if participant_ids else character_id,
+                channel_class, persona_face, effective_mode, group_name,
+            )
         )
+        cursor.execute(
+            "DELETE FROM conversation_session_participants WHERE session_id = ?",
+            (session_id,),
+        )
+        for idx, cid in enumerate(participant_ids):
+            cursor.execute(
+                "INSERT OR REPLACE INTO conversation_session_participants "
+                "(session_id, character_id, display_order, is_active) VALUES (?, ?, ?, 1)",
+                (session_id, cid, idx),
+            )
         conn.commit()
         conn.close()
 
-    def save_conversation_message(self, session_id, role, content, debug_info=None, character_name=None):
+    def save_conversation_message(
+        self,
+        session_id,
+        role,
+        content,
+        debug_info=None,
+        character_name=None,
+        character_id=None,
+    ):
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
         debug_json = json.dumps(debug_info, ensure_ascii=False) if debug_info else None
         cursor.execute(
-            "INSERT INTO conversation_messages (session_id, role, content, debug_info, character_name, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, role, content, debug_json, character_name, now)
+            "INSERT INTO conversation_messages "
+            "(session_id, role, content, debug_info, character_name, character_id, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, role, content, debug_json, character_name, character_id, now)
         )
         cursor.execute(
             'UPDATE conversation_sessions SET last_active = ? WHERE session_id = ?', (now, session_id)
@@ -1328,7 +1390,7 @@ class StorageManager:
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT role, content, debug_info, timestamp, character_name "
+            "SELECT role, content, debug_info, timestamp, character_name, character_id "
             "FROM conversation_messages WHERE session_id = ? AND msg_id > ? "
             "ORDER BY msg_id ASC",
             (session_id, since_msg_id)
@@ -1340,6 +1402,8 @@ class StorageManager:
             msg = {"role": r[0], "content": r[1], "timestamp": r[3]}
             if r[4]:
                 msg["character_name"] = r[4]
+            if r[5]:
+                msg["character_id"] = r[5]
             if r[2]:
                 try:
                     msg["debug_info"] = json.loads(r[2])
@@ -1347,6 +1411,21 @@ class StorageManager:
                     pass
             results.append(msg)
         return results
+
+    def load_conversation_participants(self, session_id: str) -> list[str]:
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        participants = self._load_conversation_participants_with_conn(cursor, session_id)
+        if not participants:
+            cursor.execute(
+                "SELECT character_id FROM conversation_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            if row and row[0]:
+                participants = [row[0]]
+        conn.close()
+        return participants
 
     def update_bridge_point(self, session_id: str, keep_last_n: int = 2):
         """記錄 bridge 截斷點：保留最後 N 筆訊息，之前的訊息在 restore 時不載入。"""
@@ -1394,20 +1473,26 @@ class StorageManager:
         cursor.execute(
             "SELECT s.session_id, s.channel, s.channel_uid, s.created_at, s.last_active, "
                 "       s.is_active, s.bot_id, s.user_id, s.character_id, s.channel_class, s.persona_face, "
+                "       s.session_mode, s.group_name, "
                 "       (SELECT COUNT(*) FROM conversation_messages m WHERE m.session_id = s.session_id) "
             f"FROM conversation_sessions s {where_clause}"
             "ORDER BY s.last_active DESC LIMIT ?",
             params
         )
         rows = cursor.fetchall()
+        results = []
+        for r in rows:
+            participants = self._load_conversation_participants_with_conn(cursor, r[0]) or [r[8]]
+            results.append(
+                {"session_id": r[0], "channel": r[1], "channel_uid": r[2],
+                 "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
+                 "bot_id": r[6], "user_id": r[7], "character_id": r[8],
+                 "channel_class": r[9], "persona_face": r[10],
+                 "session_mode": r[11] or "single", "group_name": r[12] or "",
+                 "character_ids": participants, "message_count": r[13]}
+            )
         conn.close()
-        return [
-            {"session_id": r[0], "channel": r[1], "channel_uid": r[2],
-             "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
-             "bot_id": r[6], "user_id": r[7], "character_id": r[8],
-             "channel_class": r[9], "persona_face": r[10], "message_count": r[11]}
-            for r in rows
-        ]
+        return results
 
     def deactivate_session(self, session_id):
         conn = self._init_conversation_db()
@@ -1433,6 +1518,7 @@ class StorageManager:
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM conversation_messages WHERE session_id = ?', (session_id,))
+        cursor.execute('DELETE FROM conversation_session_participants WHERE session_id = ?', (session_id,))
         cursor.execute('DELETE FROM conversation_sessions WHERE session_id = ?', (session_id,))
         conn.commit()
         conn.close()
@@ -1451,6 +1537,9 @@ class StorageManager:
                 f'DELETE FROM conversation_messages WHERE session_id IN ({placeholders})', old_ids
             )
             cursor.execute(
+                f'DELETE FROM conversation_session_participants WHERE session_id IN ({placeholders})', old_ids
+            )
+            cursor.execute(
                 f'DELETE FROM conversation_sessions WHERE session_id IN ({placeholders})', old_ids
             )
             conn.commit()
@@ -1463,19 +1552,25 @@ class StorageManager:
         cursor.execute(
             "SELECT s.session_id, s.channel, s.channel_uid, s.created_at, s.last_active, "
             "       s.is_active, s.bot_id, s.user_id, s.character_id, s.channel_class, s.persona_face, "
+            "       s.session_mode, s.group_name, "
             "       (SELECT COUNT(*) FROM conversation_messages m WHERE m.session_id = s.session_id) "
             "FROM conversation_sessions s WHERE s.session_id = ?",
             (session_id,)
         )
         r = cursor.fetchone()
+        participants = self._load_conversation_participants_with_conn(cursor, session_id) if r else []
         conn.close()
         if not r:
             return None
+        if not participants and r[8]:
+            participants = [r[8]]
         return {
             "session_id": r[0], "channel": r[1], "channel_uid": r[2],
             "created_at": r[3], "last_active": r[4], "is_active": bool(r[5]),
             "bot_id": r[6], "user_id": r[7], "character_id": r[8],
-            "channel_class": r[9], "persona_face": r[10], "message_count": r[11],
+            "channel_class": r[9], "persona_face": r[10],
+            "session_mode": r[11] or "single", "group_name": r[12] or "",
+            "character_ids": participants, "message_count": r[13],
         }
 
     # ════════════════════════════════════════════════════════════
@@ -1523,14 +1618,14 @@ class StorageManager:
     def get_last_message_time_by_character_and_channel_class(
         self, character_id: str, channel_class: str
     ) -> "datetime | None":
-        """回傳指定 character_id + channel_class 的最後訊息時間。"""
+        """回傳指定角色在指定 channel_class 的最後 assistant 發言時間。"""
         try:
             conn = self._init_conversation_db()
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT cm.timestamp FROM conversation_messages cm "
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
-                "WHERE cs.character_id = ? AND cs.channel_class = ? "
+                "WHERE cm.character_id = ? AND cm.role = 'assistant' AND cs.channel_class = ? "
                 "ORDER BY cm.msg_id DESC LIMIT 1",
                 (character_id, channel_class),
             )
@@ -1584,14 +1679,15 @@ class StorageManager:
     def count_messages_since_by_character_and_channel_class(
         self, since_iso: str, character_id: str, channel_class: str
     ) -> int:
-        """計算指定 character_id + channel_class 在 since_iso 之後的訊息數。"""
+        """計算指定角色在 since_iso 之後的 assistant 發言數。"""
         try:
             conn = self._init_conversation_db()
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT COUNT(*) FROM conversation_messages cm "
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
-                "WHERE cs.character_id = ? AND cs.channel_class = ? AND cm.timestamp > ?",
+                "WHERE cm.character_id = ? AND cm.role = 'assistant' "
+                "AND cs.channel_class = ? AND cm.timestamp > ?",
                 (character_id, channel_class, since_iso),
             )
             count = cursor.fetchone()[0]
@@ -1601,16 +1697,17 @@ class StorageManager:
             return 0
 
     def list_recent_conversation_character_ids(self, limit: int = 50) -> list[str]:
-        """列出近期有對話的 character_id，供 PersonaSync 掃描候選角色。"""
+        """列出近期實際有 assistant 發言的 character_id，供 PersonaSync 掃描候選角色。"""
         try:
             conn = self._init_conversation_db()
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT cs.character_id, MAX(cm.timestamp) AS last_ts "
+                "SELECT cm.character_id, MAX(cm.timestamp) AS last_ts "
                 "FROM conversation_messages cm "
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
-                "WHERE cs.character_id IS NOT NULL AND cs.character_id != '' "
-                "GROUP BY cs.character_id "
+                "WHERE cm.role = 'assistant' "
+                "AND cm.character_id IS NOT NULL AND cm.character_id != '' "
+                "GROUP BY cm.character_id "
                 "ORDER BY last_ts DESC LIMIT ?",
                 (limit,),
             )

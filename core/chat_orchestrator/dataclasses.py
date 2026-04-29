@@ -14,6 +14,14 @@ class RouterResult:
     thinking_speech: str = ""
 
 
+@dataclass
+class GroupRouterResult:
+    """群組路由器的輸出。"""
+    should_respond: bool
+    target_character_id: str | None = None
+    reason: str = ""
+
+
 # ════════════════════════════════════════════════════════════
 # SECTION: Module B 輸出
 # ════════════════════════════════════════════════════════════
