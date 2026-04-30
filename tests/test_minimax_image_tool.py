@@ -149,3 +149,50 @@ def test_append_generated_images_adds_missing_markdown():
 
     assert "已經為你生成圖片。" in reply
     assert "![generated image](/api/v1/chat/generated-images/s/abc.jpeg)" in reply
+
+
+def test_strip_generated_images_removes_known_markdown():
+    tool_results = [
+        {
+            "tool_name": "generate_image",
+            "result": json.dumps(
+                {
+                    "generated_images": [
+                        {
+                            "url": "/api/v1/chat/generated-images/s/abc.jpeg",
+                            "markdown": "![generated image](/api/v1/chat/generated-images/s/abc.jpeg)",
+                        }
+                    ]
+                }
+            ),
+        }
+    ]
+
+    reply = minimax_image.strip_generated_images(
+        "沿用剛剛那張圖。\n\n![generated image](/api/v1/chat/generated-images/s/abc.jpeg)",
+        tool_results,
+    )
+
+    assert reply == "沿用剛剛那張圖。"
+
+
+def test_strip_generated_images_removes_same_url_with_different_alt_text():
+    tool_results = [
+        {
+            "tool_name": "generate_image",
+            "result": json.dumps(
+                {
+                    "generated_images": [
+                        {"url": "/api/v1/chat/generated-images/s/abc.jpeg"}
+                    ]
+                }
+            ),
+        }
+    ]
+
+    reply = minimax_image.strip_generated_images(
+        "我只評論前面那張。\n\n![same image](/api/v1/chat/generated-images/s/abc.jpeg)",
+        tool_results,
+    )
+
+    assert reply == "我只評論前面那張。"

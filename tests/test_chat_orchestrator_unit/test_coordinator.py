@@ -1,4 +1,5 @@
 """coordinator 測試：run_dual_layer_orchestration 雙層 Agent 編排"""
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 import api.dependencies
@@ -353,6 +354,135 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_dual_layer_group_followup_reuses_image_without_reappending(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """群組接力復用生圖結果時，第二位 AI 不應再次附上同一張圖片。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+        from core.chat_orchestrator.dataclasses import SharedToolState
+
+        image_markdown = "![generated image](/api/v1/chat/generated-images/s/abc.jpeg)"
+        shared_state = SharedToolState(
+            tool_results=[
+                {
+                    "tool_name": "generate_image",
+                    "result": json.dumps(
+                        {
+                            "generated_images": [{
+                                "url": "/api/v1/chat/generated-images/s/abc.jpeg",
+                                "markdown": image_markdown,
+                            }]
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            tool_results_formatted="<tool_results>generated image</tool_results>",
+            executed=True,
+        )
+        mock_router_with_tools.set_chat_response({
+            "internal_thought": "沿用結果",
+            "reply": f"我沿用剛剛那張圖來看。\n\n{image_markdown}",
+            "extracted_entities": [],
+        })
+
+        result = run_dual_layer_orchestration(
+            session_messages=[
+                {"role": "user", "content": "畫一張貓"},
+                {"role": "assistant", "content": f"[可可|char-a]: 好，完成了。\n\n{image_markdown}"},
+            ],
+            last_entities=[],
+            user_prompt="畫一張貓",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "session_mode": "group",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "default",
+                "shared_tool_state": shared_state,
+                "followup_instruction": {
+                    "user_prompt_original": "畫一張貓",
+                    "last_character_name": "可可",
+                    "last_reply": f"好，完成了。\n\n{image_markdown}",
+                },
+            },
+        )
+
+        assert result[0] == "我沿用剛剛那張圖來看。"
+
+    def test_single_layer_group_followup_reuses_image_without_reappending(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排復用生圖結果時，也不應自動重貼同一張圖片。"""
+        from api.routers.chat import orchestration
+        from core.chat_orchestrator.dataclasses import SharedToolState
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        image_markdown = "![generated image](/api/v1/chat/generated-images/s/abc.jpeg)"
+        shared_state = SharedToolState(
+            tool_results=[
+                {
+                    "tool_name": "generate_image",
+                    "result": json.dumps(
+                        {
+                            "generated_images": [{
+                                "url": "/api/v1/chat/generated-images/s/abc.jpeg",
+                                "markdown": image_markdown,
+                            }]
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            tool_results_formatted="<tool_results>generated image</tool_results>",
+            executed=True,
+        )
+        mock_router_with_tools.set_chat_response({
+            "internal_thought": "沿用結果",
+            "reply": f"我沿用剛剛那張圖。\n\n{image_markdown}",
+            "extracted_entities": [],
+        })
+
+        result = orchestration._run_chat_orchestration(
+            session_messages=[
+                {"role": "user", "content": "畫一張貓"},
+                {"role": "assistant", "content": f"[可可|char-a]: 好，完成了。\n\n{image_markdown}"},
+            ],
+            last_entities=[],
+            user_prompt="畫一張貓",
+            user_prefs={
+                **sample_user_prefs,
+                "dual_layer_enabled": False,
+                "image_generation_enabled": True,
+                "minimax_api_key": "test-key",
+            },
+            session_ctx={
+                "session_mode": "group",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "default",
+                "shared_tool_state": shared_state,
+                "followup_instruction": {
+                    "user_prompt_original": "畫一張貓",
+                    "last_character_name": "可可",
+                    "last_reply": f"好，完成了。\n\n{image_markdown}",
+                },
+            },
+        )
+
+        assert result[0] == "我沿用剛剛那張圖。"
 
     def test_dual_layer_updates_opening_penalty_state_by_character(
         self, mock_deps, sample_user_prefs

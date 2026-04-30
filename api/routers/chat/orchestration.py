@@ -71,6 +71,11 @@ def _run_chat_orchestration(
     visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
     force_group = is_group_context(ctx)
     is_group_followup_turn = bool(ctx.get("followup_instruction"))
+    cached_shared_tool_state = ctx.get("shared_tool_state")
+    reusing_shared_tool_state = (
+        isinstance(cached_shared_tool_state, SharedToolState)
+        and cached_shared_tool_state.executed
+    )
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -317,7 +322,7 @@ def _run_chat_orchestration(
             # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call。
             # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
             # 會同時出現在已處理歷史與當前訊息，污染意圖判斷。
-            cached_state = (session_ctx or {}).get("shared_tool_state")
+            cached_state = cached_shared_tool_state
             tool_calls = []
             tool_results = []
             if isinstance(cached_state, SharedToolState) and cached_state.executed:
@@ -492,8 +497,11 @@ def _run_chat_orchestration(
         )
 
     if "tool_results" in locals():
-        from tools.minimax_image import append_generated_images
-        reply_text = append_generated_images(reply_text, tool_results)
+        from tools.minimax_image import append_generated_images, strip_generated_images
+        if reusing_shared_tool_state:
+            reply_text = strip_generated_images(reply_text, tool_results)
+        else:
+            reply_text = append_generated_images(reply_text, tool_results)
 
     speech = None  # 翻譯移至端點層背景任務，不在此阻塞文字回覆
 

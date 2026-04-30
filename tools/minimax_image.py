@@ -220,6 +220,22 @@ def collect_generated_image_markdown(tool_results: list[dict] | None) -> list[st
     return markdowns
 
 
+def collect_generated_image_urls(tool_results: list[dict] | None) -> list[str]:
+    """從工具結果中收集圖片 URL。"""
+    urls: list[str] = []
+    for item in tool_results or []:
+        raw = item.get("result", "")
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            continue
+        for img in payload.get("generated_images", []) if isinstance(payload, dict) else []:
+            url = img.get("url")
+            if url:
+                urls.append(url)
+    return urls
+
+
 def append_generated_images(reply_text: str, tool_results: list[dict] | None) -> str:
     """若模型沒有自行引用圖片 URL，將產圖結果附加到回覆尾端。"""
     output = reply_text or ""
@@ -231,3 +247,15 @@ def append_generated_images(reply_text: str, tool_results: list[dict] | None) ->
         return output
     suffix = "\n\n" + "\n\n".join(missing)
     return output.rstrip() + suffix
+
+
+def strip_generated_images(reply_text: str, tool_results: list[dict] | None) -> str:
+    """移除指定工具結果中的圖片 Markdown，供群組接力避免重貼同一張圖。"""
+    output = reply_text or ""
+    for markdown in collect_generated_image_markdown(tool_results):
+        output = output.replace(markdown, "")
+    for url in collect_generated_image_urls(tool_results):
+        output = re.sub(rf"!\[[^\]]*\]\({re.escape(url)}\)", "", output)
+        output = output.replace(url, "")
+    output = re.sub(r"\n{3,}", "\n\n", output)
+    return output.strip()

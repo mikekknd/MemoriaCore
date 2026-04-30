@@ -96,6 +96,11 @@ def run_dual_layer_orchestration(
     visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
     force_group = is_group_context(_ctx)
     is_group_followup_turn = bool(_ctx.get("followup_instruction"))
+    cached_shared_tool_state = _ctx.get("shared_tool_state")
+    reusing_shared_tool_state = (
+        isinstance(cached_shared_tool_state, SharedToolState)
+        and cached_shared_tool_state.executed
+    )
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -371,7 +376,7 @@ def run_dual_layer_orchestration(
         # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/middleware。
         # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
         # 會同時出現在已處理歷史與當前訊息，污染意圖判斷。
-        cached = (session_ctx or {}).get("shared_tool_state")
+        cached = cached_shared_tool_state
         if isinstance(cached, SharedToolState) and cached.executed:
             return {
                 "tool_context": ToolContext(
@@ -444,8 +449,8 @@ def run_dual_layer_orchestration(
     # ════════════════════════════════════════════════════════════
     parallel_start = time.perf_counter()
 
-    if tools_list:
-        # 有工具可用：兩條分支平行跑
+    if tools_list or reusing_shared_tool_state:
+        # 有工具可用或已有共享工具結果：兩條分支平行跑
         with ThreadPoolExecutor(max_workers=2) as pool:
             mem_future = pool.submit(_memory_branch)
             tool_future = pool.submit(_tool_branch)
@@ -504,8 +509,11 @@ def run_dual_layer_orchestration(
 
     reply_text = persona_result.reply_text
     if tool_context:
-        from tools.minimax_image import append_generated_images
-        reply_text = append_generated_images(reply_text, tool_context.tool_results)
+        from tools.minimax_image import append_generated_images, strip_generated_images
+        if reusing_shared_tool_state:
+            reply_text = strip_generated_images(reply_text, tool_context.tool_results)
+        else:
+            reply_text = append_generated_images(reply_text, tool_context.tool_results)
     if opening_penalty_plan.enabled and opening_penalty_mgr.extract_reply_from_response(raw_res):
         opening_penalty_mgr.record_reply(
             session_id=_ctx.get("session_id", ""),
