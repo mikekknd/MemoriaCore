@@ -240,6 +240,7 @@ def test_conversation_message_persists_character_name():
         )
 
         messages = storage.load_conversation_messages("sid-a")
+        assert isinstance(messages[0]["message_id"], int)
         assert messages[0]["character_name"] == "角色 A"
         assert messages[0]["character_id"] == "char-a"
     finally:

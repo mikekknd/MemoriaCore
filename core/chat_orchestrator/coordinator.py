@@ -13,7 +13,7 @@ from core.prompt_utils import build_user_prefix, format_latest_user_message_for_
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.middleware import run_middleware
 from core.chat_orchestrator.persona_agent import run_persona_agent, _parse_persona_response
-from core.chat_orchestrator.dataclasses import PipelineContext, SharedToolState, ToolContext
+from core.chat_orchestrator.dataclasses import PipelineContext, SharedExpandState, SharedToolState, ToolContext
 from core.chat_orchestrator.dialogue_format import (
     format_history_for_llm,
     format_dialogue_for_analysis,
@@ -98,6 +98,7 @@ def run_dual_layer_orchestration(
     force_group = is_group_context(_ctx)
     is_group_followup_turn = bool(_ctx.get("followup_instruction"))
     cached_shared_tool_state = _ctx.get("shared_tool_state")
+    shared_expand_state = _ctx.get("shared_expand_state")
     reusing_shared_tool_state = (
         isinstance(cached_shared_tool_state, SharedToolState)
         and cached_shared_tool_state.executed
@@ -208,7 +209,13 @@ def run_dual_layer_orchestration(
 
         # 查詢擴展（LLM 呼叫）
         with t.step("查詢擴展 (Query Expansion LLM)"):
-            expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
+            if isinstance(shared_expand_state, SharedExpandState) and shared_expand_state.executed:
+                expand_res = dict(shared_expand_state.expand_result or {})
+            else:
+                expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
+                if isinstance(shared_expand_state, SharedExpandState):
+                    shared_expand_state.expand_result = dict(expand_res)
+                    shared_expand_state.executed = True
         inherited_str = " ".join(last_entities)
         combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
 
@@ -486,6 +493,9 @@ def run_dual_layer_orchestration(
         api_messages,
         (session_ctx or {}).get("followup_instruction"),
         user_prompt,
+        session_messages=session_messages,
+        user_prefs=user_prefs,
+        session_ctx=session_ctx,
     )
 
     # ════════════════════════════════════════════════════════════

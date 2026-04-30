@@ -55,6 +55,8 @@ body { height:100vh; overflow:hidden; }
 @keyframes spin { to{transform:rotate(360deg)} }
 .debug-toggle { font-size:11px; color:var(--text2); cursor:pointer; margin-top:6px; user-select:none; }
 .debug-toggle:hover { color:var(--accent); }
+.msg-id { display:block; margin-bottom:4px; color:var(--text2); font-size:10px; font-family:'Cascadia Code','Fira Code',monospace; opacity:.7; cursor:pointer; user-select:text; }
+.msg-id:hover { color:var(--accent); opacity:1; }
 .debug-panel { display:none; margin-top:8px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:12px; line-height:1.6; max-height:400px; overflow-y:auto; }
 .debug-panel.open { display:block; }
 .debug-section { margin-bottom:8px; }
@@ -336,9 +338,9 @@ async function switchSession(sessionId) {
     const msgs = data.messages || [];
     msgs.forEach(m => {
       if (m.role === 'system_event') {
-        appendSystemEvent(m.content, null, false);
+        appendSystemEvent(m.content, null, false, m.message_id);
       } else {
-        appendMessage(m.role, m.content, null, false, m.character_name, m.character_id);
+        appendMessage(m.role, m.content, null, false, m.character_name, m.character_id, m.message_id);
       }
     });
     scrollToBottom();
@@ -569,6 +571,7 @@ async function sendMessage() {
           }
           const mdDiv = targetEl.querySelector('.md-content');
           targetEl.classList.remove('typing');
+          setMessageId(targetEl, event.message_id);
           mdDiv.innerHTML = marked.parse(event.reply || '');
           enhanceRenderedMarkdown(mdDiv);
           setMessageAuthor(targetEl, event.character_name);
@@ -613,11 +616,16 @@ async function sendMessage() {
   loadSessionList();
 }
 
-function appendSystemEvent(content, beforeEl=null, scroll=true) {
+function appendSystemEvent(content, beforeEl=null, scroll=true, messageId=null) {
   const container = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'msg system-info';
-  div.textContent = content || '';
+  if (messageId !== null && messageId !== undefined) {
+    addMessageIdBadge(div, messageId);
+  }
+  const contentSpan = document.createElement('span');
+  contentSpan.textContent = content || '';
+  div.appendChild(contentSpan);
   if (beforeEl && beforeEl.parentNode === container) {
     container.insertBefore(div, beforeEl);
   } else {
@@ -627,14 +635,17 @@ function appendSystemEvent(content, beforeEl=null, scroll=true) {
   return div;
 }
 
-function appendMessage(role, content, debugData, scroll=true, characterName=null, characterId=null) {
+function appendMessage(role, content, debugData, scroll=true, characterName=null, characterId=null, messageId=null) {
   const container = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = `msg ${role}`;
   if (characterId) div.dataset.characterId = characterId;
+  if (messageId !== null && messageId !== undefined) addMessageIdBadge(div, messageId);
 
   if (role === 'user') {
-    div.textContent = content;
+    const text = document.createElement('span');
+    text.textContent = content;
+    div.appendChild(text);
   } else {
     if (characterName) {
       const author = document.createElement('div');
@@ -654,6 +665,28 @@ function appendMessage(role, content, debugData, scroll=true, characterName=null
   container.appendChild(div);
   if (scroll) scrollToBottom();
   return div;
+}
+
+function addMessageIdBadge(msgEl, messageId) {
+  msgEl.dataset.messageId = String(messageId);
+  const badge = document.createElement('span');
+  badge.className = 'msg-id';
+  badge.textContent = `#${messageId}`;
+  badge.title = 'Click to copy message_id';
+  badge.onclick = (event) => {
+    event.stopPropagation();
+    navigator.clipboard?.writeText(String(messageId));
+    toast(`Copied message_id #${messageId}`, 'info');
+  };
+  msgEl.insertBefore(badge, msgEl.firstChild);
+}
+
+function setMessageId(msgEl, messageId) {
+  if (!msgEl || messageId === null || messageId === undefined) return;
+  if (msgEl.dataset.messageId === String(messageId)) return;
+  const existing = msgEl.querySelector(':scope > .msg-id');
+  if (existing) existing.remove();
+  addMessageIdBadge(msgEl, messageId);
 }
 
 function setMessageAuthor(msgEl, characterName) {

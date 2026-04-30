@@ -270,15 +270,18 @@ class SessionManager:
                     session_mode=effective_mode,
                     group_name=s.group_name,
                 )
-                self._storage.save_conversation_message(
+                message_id = self._storage.save_conversation_message(
                     session_id,
                     "system_event",
                     content,
                     event["debug_info"],
                 )
+                if message_id is not None:
+                    event["message_id"] = message_id
             return {
                 "type": "roster_changed",
                 "session_id": session_id,
+                "message_id": event.get("message_id"),
                 "content": content,
                 "added_character_ids": added,
                 "removed_character_ids": removed,
@@ -287,16 +290,19 @@ class SessionManager:
                 "group_name": s.group_name,
             }
 
-    async def add_user_message(self, session_id: str, content: str) -> bool:
+    async def add_user_message(self, session_id: str, content: str) -> int | None:
         async with self._lock:
             s = self._sessions.get(session_id)
             if not s:
-                return False
-            s.messages.append({"role": "user", "content": content})
+                return None
+            msg = {"role": "user", "content": content}
             s.last_active = datetime.now()
             if self._storage:
-                self._storage.save_conversation_message(session_id, "user", content)
-            return True
+                message_id = self._storage.save_conversation_message(session_id, "user", content)
+                if message_id is not None:
+                    msg["message_id"] = message_id
+            s.messages.append(msg)
+            return msg.get("message_id")
 
     async def add_assistant_message(
         self,
@@ -307,7 +313,7 @@ class SessionManager:
         persona_state: dict | None = None,
         character_name: str | None = None,
         character_id: str | None = None,
-    ) -> bool:
+    ) -> int | None:
         """
         persona_state: {"internal_thought": str, "status_metrics": dict, "tone": str}
         僅存於記憶體，不持久化到 DB（伺服器重啟後情緒軌跡自然重置）。
@@ -315,7 +321,7 @@ class SessionManager:
         async with self._lock:
             s = self._sessions.get(session_id)
             if not s:
-                return False
+                return None
             msg = {"role": "assistant", "content": content}
             if debug_info:
                 msg["debug_info"] = debug_info
@@ -330,12 +336,14 @@ class SessionManager:
                 s.last_entities = extracted_entities
             s.last_active = datetime.now()
             if self._storage:
-                self._storage.save_conversation_message(
+                message_id = self._storage.save_conversation_message(
                     session_id, "assistant", content, debug_info,
                     character_name=character_name,
                     character_id=character_id,
                 )
-            return True
+                if message_id is not None:
+                    msg["message_id"] = message_id
+            return msg.get("message_id")
 
     async def get_pipeline_context(self, session_id: str) -> list[dict]:
         """回傳排除最新 User 訊息的歷史（供記憶管線用）"""

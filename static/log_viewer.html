@@ -74,6 +74,8 @@
   .entry-type.error { background: var(--error-bg); color: var(--error); }
   .entry-cat { font-size: 12px; color: var(--warn); font-weight: 500; white-space: nowrap; flex-shrink: 0; }
   .entry-model { font-size: 11px; color: var(--text2); background: var(--surface2); padding: 1px 6px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; }
+  .entry-id { font-size: 11px; color: var(--text2); font-family: 'Cascadia Code', 'Fira Code', monospace; background: var(--surface2); padding: 1px 6px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; cursor: pointer; }
+  .entry-id:hover { color: var(--accent); }
   .entry-summary { font-size: 13px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .entry-summary mark { background: #6e40c966; color: var(--text); border-radius: 2px; padding: 0 2px; }
 
@@ -434,6 +436,10 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function shortLogId(logId) {
+  return logId ? String(logId).substring(0, 10) : '';
+}
+
 function highlightText(text, term) {
   if (!term) return escapeHtml(text);
   const escaped = escapeHtml(text);
@@ -452,7 +458,7 @@ function renderLogContext(ctx) {
   ].filter(([, val]) => val);
   const participants = Array.isArray(ctx.participants) ? ctx.participants : [];
   let html = '<div class="msg-block">';
-  html += '<div class="msg-role system">log_context</div>';
+  html += '<div class="msg-role system">debug log_context（未送入 LLM）</div>';
   html += '<div class="detail-grid">';
   rows.forEach(([key, val]) => {
     html += `<span class="detail-key">${escapeHtml(key)}</span><span class="detail-val">${highlightText(String(val), searchTerm)}</span>`;
@@ -461,8 +467,7 @@ function renderLogContext(ctx) {
     const text = participants.map(p => {
       const name = p.name || '';
       const cid = p.character_id || '';
-      const summary = p.character_summary || '';
-      return `${name}${cid ? ` (${cid})` : ''}${summary ? `: ${summary}` : ''}`;
+      return `${name}${cid ? ` (${cid})` : ''}`;
     }).join('\n');
     html += `<span class="detail-key">participants</span><span class="detail-val">${highlightText(text, searchTerm)}</span>`;
   }
@@ -509,6 +514,7 @@ function renderEntries() {
         <span class="entry-type ${type}">${getTypeLabel(type)}</span>
         <span class="entry-cat">${entry.category || ''}</span>
         ${entry.model ? `<span class="entry-model">${entry.model}</span>` : ''}
+        ${entry.log_id ? `<span class="entry-id" onclick="event.stopPropagation(); copyText('${escapeHtml(entry.log_id)}')" title="Copy log_id">#${escapeHtml(shortLogId(entry.log_id))}</span>` : ''}
         <span class="entry-summary">${escapeHtml(summary)}</span>
         ${pairLabel}
       </div>
@@ -526,6 +532,9 @@ function renderBody(idx) {
 
   const type = getEntryType(entry);
   let html = '';
+  if (entry.log_id) {
+    html += `<div class="detail-grid"><span class="detail-key">log_id</span><span class="detail-val">${highlightText(entry.log_id, searchTerm)}</span></div>`;
+  }
 
   if (type === 'prompt' && entry.messages) {
     html += renderLogContext(entry.log_context);
@@ -603,6 +612,10 @@ function scrollToEntry(idx) {
     el.style.outline = '2px solid var(--accent)';
     setTimeout(() => el.style.outline = '', 1500);
   }
+}
+
+function copyText(text) {
+  navigator.clipboard?.writeText(text);
 }
 
 // ===== Filtering =====

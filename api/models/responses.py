@@ -65,6 +65,7 @@ class ProfileSearchResultDTO(BaseModel):
 
 # ── Session ───────────────────────────────────────────────
 class SessionMessageDTO(BaseModel):
+    message_id: Optional[int] = None
     role: str
     content: str
     debug_info: Optional[dict] = None
@@ -86,6 +87,7 @@ class SessionDTO(BaseModel):
 
 # ── Log ───────────────────────────────────────────────────
 class LogEntryDTO(BaseModel):
+    log_id: Optional[str] = None
     timestamp: str
     type: str
     category: Optional[str] = None
@@ -157,6 +159,7 @@ class RetrievalContextDTO(BaseModel):
 
 
 class ChatTurnDTO(BaseModel):
+    message_id: Optional[int] = None
     reply: str
     extracted_entities: list[str] = []
     retrieval_context: RetrievalContextDTO = RetrievalContextDTO()
@@ -171,6 +174,7 @@ class ChatTurnDTO(BaseModel):
 
 
 class ChatSyncResponseDTO(BaseModel):
+    message_id: Optional[int] = None
     reply: str
     extracted_entities: list[str] = []
     retrieval_context: RetrievalContextDTO = RetrievalContextDTO()

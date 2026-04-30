@@ -209,6 +209,7 @@ class TestDualLayerCoordinator:
             user_prefs=sample_user_prefs,
             session_ctx={
                 "session_mode": "group",
+                "user_name": "夏雪",
                 "active_character_ids": ["char-a", "default"],
                 "character_id": "default",
                 "followup_instruction": {
@@ -224,6 +225,11 @@ class TestDualLayerCoordinator:
         assert messages[0]["role"] == "system"
         assert "<group_followup_instruction" not in messages[0]["content"]
         assert messages[-1]["role"] == "user"
+        assert "<environment_context" in messages[-1]["content"]
+        assert "<user_identity" not in messages[-1]["content"]
+        assert '<user user_name="夏雪" />' not in messages[-1]["content"]
+        assert '<latest_user_message speaker="human_user" user_name="夏雪">' in messages[-1]["content"]
+        assert "兩位早安阿" in messages[-1]["content"]
         assert '<group_followup_instruction source="system_control">' in messages[-1]["content"]
         assert messages[-1]["content"].count("<group_followup_instruction") == 1
         assert "<group_followup_control" not in messages[-1]["content"]
@@ -263,6 +269,58 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_dual_layer_group_reuses_query_expand_state(
+        self, mock_deps, mock_memory_system, sample_user_prefs
+    ):
+        """同一輪群組接力應沿用 turn 0 的 query expansion 結果。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+        from core.chat_orchestrator.dataclasses import SharedExpandState
+
+        calls = []
+
+        def fake_expand_query(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"expanded_keywords": "快取標籤", "entity_confidence": 0.8}
+
+        mock_memory_system.expand_query = fake_expand_query
+        shared_expand_state = SharedExpandState()
+        base_ctx = {
+            "session_mode": "group",
+            "active_character_ids": ["char-a", "default"],
+            "shared_expand_state": shared_expand_state,
+        }
+
+        first = run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "一起分析這件事"}],
+            last_entities=[],
+            user_prompt="一起分析這件事",
+            user_prefs=sample_user_prefs,
+            session_ctx={**base_ctx, "character_id": "char-a"},
+        )
+        second = run_dual_layer_orchestration(
+            session_messages=[
+                {"role": "user", "content": "一起分析這件事"},
+                {"role": "assistant", "content": "第一位回覆", "character_id": "char-a"},
+            ],
+            last_entities=[],
+            user_prompt="一起分析這件事",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                **base_ctx,
+                "character_id": "default",
+                "followup_instruction": {
+                    "user_prompt_original": "一起分析這件事",
+                    "last_character_name": "char-a",
+                    "last_reply": "第一位回覆",
+                },
+            },
+        )
+
+        assert len(calls) == 1
+        assert shared_expand_state.executed is True
+        assert first[2]["expanded_keywords"] == "快取標籤"
+        assert second[2]["expanded_keywords"] == "快取標籤"
 
     def test_group_latest_user_message_is_marked_as_human(
         self, mock_deps, mock_router_with_tools, sample_user_prefs
@@ -305,7 +363,8 @@ class TestDualLayerCoordinator:
         chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
         latest_user = chat_call["messages"][-1]
         assert latest_user["role"] == "user"
-        assert '<latest_user_message speaker="human_user" user_name="mikekknd" user_id="user-1">' in latest_user["content"]
+        assert '<latest_user_message speaker="human_user" user_name="mikekknd">' in latest_user["content"]
+        assert "user-1" not in latest_user["content"]
         assert "嗚嗚，可可都無視我拉!" in latest_user["content"]
 
     def test_single_layer_group_followup_turn_skips_tool_router(
@@ -354,6 +413,73 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_single_layer_group_reuses_query_expand_state(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排的群組接力也應沿用同一輪 query expansion 結果。"""
+        from api.routers.chat import orchestration
+        from core.chat_orchestrator.dataclasses import SharedExpandState
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        calls = []
+
+        def fake_expand_query(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"expanded_keywords": "單層快取", "entity_confidence": 0.7}
+
+        mock_memory_system.expand_query = fake_expand_query
+        shared_expand_state = SharedExpandState()
+        prefs = {**sample_user_prefs, "dual_layer_enabled": False}
+        base_ctx = {
+            "session_mode": "group",
+            "active_character_ids": ["char-a", "default"],
+            "shared_expand_state": shared_expand_state,
+        }
+
+        first = orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "一起看這段"}],
+            last_entities=[],
+            user_prompt="一起看這段",
+            user_prefs=prefs,
+            session_ctx={**base_ctx, "character_id": "char-a"},
+        )
+        second = orchestration._run_chat_orchestration(
+            session_messages=[
+                {"role": "user", "content": "一起看這段"},
+                {"role": "assistant", "content": "第一位回覆", "character_id": "char-a"},
+            ],
+            last_entities=[],
+            user_prompt="一起看這段",
+            user_prefs=prefs,
+            session_ctx={
+                **base_ctx,
+                "character_id": "default",
+                "followup_instruction": {
+                    "user_prompt_original": "一起看這段",
+                    "last_character_name": "char-a",
+                    "last_reply": "第一位回覆",
+                },
+            },
+        )
+
+        assert len(calls) == 1
+        assert shared_expand_state.executed is True
+        assert first[2]["expanded_keywords"] == "單層快取"
+        assert second[2]["expanded_keywords"] == "單層快取"
 
     def test_dual_layer_group_followup_reuses_image_without_reappending(
         self, mock_deps, mock_router_with_tools, sample_user_prefs

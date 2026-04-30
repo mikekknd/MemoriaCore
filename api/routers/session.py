@@ -14,6 +14,7 @@ router = APIRouter(prefix="/session", tags=["session"])
 
 def _message_to_dto(m: dict) -> SessionMessageDTO:
     return SessionMessageDTO(
+        message_id=m.get("message_id"),
         role=m["role"],
         content=m["content"],
         debug_info=m.get("debug_info"),

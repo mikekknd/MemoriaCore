@@ -96,4 +96,5 @@ def test_llm_log_context_lists_user_current_ai_and_participants():
     assert log_context["session_mode"] == "group"
     assert log_context["user_name"] == "使用者A"
     assert log_context["current_character_name"] == "角色A"
-    assert log_context["participants"][0]["character_summary"] == "角色 A 簡介"
+    assert log_context["participants"][0] == {"character_id": "char-a", "name": "角色A"}
+    assert "character_summary" not in log_context["participants"][0]

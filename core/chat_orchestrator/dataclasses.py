@@ -50,6 +50,17 @@ class SharedToolState:
     executed: bool = False
 
 
+@dataclass
+class SharedExpandState:
+    """跨 turn 共用的查詢擴展狀態。
+
+    群組接力中，同一則 user 輸入的檢索意圖相同；只需在 turn 0 呼叫一次
+    expand_query，後續角色沿用結果即可。
+    """
+    expand_result: dict | None = None
+    executed: bool = False
+
+
 # ════════════════════════════════════════════════════════════
 # SECTION: Module C 輸出
 # ════════════════════════════════════════════════════════════

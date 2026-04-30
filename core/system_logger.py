@@ -2,6 +2,7 @@
 # 同時輸出至終端機與結構化 JSON Lines 日誌檔。
 import json
 import os
+import uuid
 from datetime import datetime
 
 # 日誌檔路徑 (專案根目錄)
@@ -26,6 +27,7 @@ class SystemLogger:
     def _write_entry(entry: dict):
         """將一筆結構化紀錄以 JSON Lines 格式追加寫入日誌檔。"""
         try:
+            entry.setdefault("log_id", uuid.uuid4().hex)
             with open(_LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:

@@ -20,7 +20,7 @@ from core.chat_orchestrator.dialogue_format import (
     strip_system_events,
 )
 from core.chat_orchestrator.router_hints import build_router_context_hints
-from core.chat_orchestrator.dataclasses import SharedToolState
+from core.chat_orchestrator.dataclasses import SharedExpandState, SharedToolState
 from core.xml_prompt import format_tool_context_xml, format_tool_results_xml, xml_attr
 from core.chat_orchestrator.group_context import (
     build_group_participants_block,
@@ -73,6 +73,7 @@ def _run_chat_orchestration(
     force_group = is_group_context(ctx)
     is_group_followup_turn = bool(ctx.get("followup_instruction"))
     cached_shared_tool_state = ctx.get("shared_tool_state")
+    shared_expand_state = ctx.get("shared_expand_state")
     reusing_shared_tool_state = (
         isinstance(cached_shared_tool_state, SharedToolState)
         and cached_shared_tool_state.executed
@@ -117,7 +118,13 @@ def _run_chat_orchestration(
 
     # ─── 雙軌檢索 ───
     with timer.step("查詢擴展 (Query Expansion LLM)"):
-        expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
+        if isinstance(shared_expand_state, SharedExpandState) and shared_expand_state.executed:
+            expand_res = dict(shared_expand_state.expand_result or {})
+        else:
+            expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
+            if isinstance(shared_expand_state, SharedExpandState):
+                shared_expand_state.expand_result = dict(expand_res)
+                shared_expand_state.executed = True
     inherited_str = " ".join(last_entities)
     combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
 
@@ -414,6 +421,9 @@ def _run_chat_orchestration(
                 api_messages,
                 (session_ctx or {}).get("followup_instruction"),
                 user_prompt,
+                session_messages=session_messages,
+                user_prefs=user_prefs,
+                session_ctx=session_ctx,
             )
 
             if opening_penalty_plan.prompt_block:

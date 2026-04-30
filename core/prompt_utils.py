@@ -52,21 +52,17 @@ def _build_su_weather_block(user_prefs: dict | None, session_ctx: dict | None) -
 
 
 def _build_user_identity_block(session_ctx: dict | None) -> str:
-    """注入目前真人使用者的顯示身份，供模型回答稱呼類問題。"""
+    """注入目前真人使用者的顯示名稱，避免把後端 ID 類 metadata 暴露給模型。"""
     if not session_ctx:
         return ""
+    if _is_group_prompt_context(session_ctx):
+        return ""
     user_name = str(session_ctx.get("user_name") or "").strip()
-    user_id = str(session_ctx.get("user_id") or "").strip()
-    telegram_user_id = str(session_ctx.get("telegram_user_id") or "").strip()
-    discord_user_id = str(session_ctx.get("discord_user_id") or "").strip()
-    if not any([user_name, user_id, telegram_user_id, discord_user_id]):
+    if not user_name:
         return ""
 
     return get_prompt_manager().get("user_identity_block").format(
         user_name=xml_attr(user_name),
-        user_id=xml_attr(user_id),
-        telegram_user_id=xml_attr(telegram_user_id),
-        discord_user_id=xml_attr(discord_user_id),
     )
 
 
@@ -124,7 +120,6 @@ def format_latest_user_message_for_llm(content: str, session_ctx: dict | None = 
         attrs={
             "speaker": "human_user",
             "user_name": ctx.get("user_name") or "",
-            "user_id": ctx.get("user_id") or "",
         },
     )
 

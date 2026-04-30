@@ -10,10 +10,7 @@ class _FakePromptManager:
         return {
             "environment_context_block": "<environment_context>\nCurrent Time: {current_time}{weather_block}\n</environment_context>",
             "user_identity_block": (
-                "<user_identity><display_name>{user_name}</display_name>"
-                "<local_user_id>{user_id}</local_user_id>"
-                "<telegram_user_id>{telegram_user_id}</telegram_user_id>"
-                "<discord_user_id>{discord_user_id}</discord_user_id></user_identity>"
+                '<user_identity><user user_name="{user_name}" /></user_identity>'
             ),
             "emotional_trajectory_block": "<emotional_trajectory>{internal_thought}</emotional_trajectory>",
         }.get(key, "")
@@ -157,10 +154,26 @@ def test_user_prefix_includes_display_name(monkeypatch):
     )
 
     assert "<user_identity>" in prefix
-    assert "<display_name>本機暱稱</display_name>" in prefix
-    assert "<local_user_id>42</local_user_id>" in prefix
-    assert "<telegram_user_id>123456</telegram_user_id>" in prefix
-    assert "<discord_user_id>987654</discord_user_id>" in prefix
+    assert '<user user_name="本機暱稱" />' in prefix
+    assert "42" not in prefix
+    assert "123456" not in prefix
+    assert "987654" not in prefix
+
+
+def test_group_user_prefix_omits_redundant_identity(monkeypatch):
+    monkeypatch.setattr(prompt_utils, "get_prompt_manager", lambda: _FakePromptManager())
+
+    prefix = prompt_utils.build_user_prefix(
+        [{"role": "user", "content": "早安"}],
+        session_ctx={
+            "session_mode": "group",
+            "active_character_ids": ["char-a", "char-b"],
+            "user_name": "夏雪",
+        },
+    )
+
+    assert "<user_identity>" not in prefix
+    assert '<user user_name="夏雪" />' not in prefix
 
 
 def test_emotional_trajectory_omits_when_group_character_has_no_prior_thought(monkeypatch):
@@ -192,7 +205,8 @@ def test_latest_user_message_wraps_group_human_speaker():
         },
     )
 
-    assert '<latest_user_message speaker="human_user" user_name="mikekknd" user_id="user-1">' in wrapped
+    assert '<latest_user_message speaker="human_user" user_name="mikekknd">' in wrapped
+    assert "user-1" not in wrapped
     assert "嗚嗚，可可都無視我拉!" in wrapped
     assert wrapped.strip().endswith("</latest_user_message>")
 

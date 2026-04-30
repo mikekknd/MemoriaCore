@@ -8,7 +8,7 @@ from api.session_manager import SessionState, session_manager
 from api.routers.chat.orchestration import _unpack_orchestration_result
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
 from core.chat_orchestrator.group_router import run_group_router
-from core.chat_orchestrator.dataclasses import SharedToolState
+from core.chat_orchestrator.dataclasses import SharedExpandState, SharedToolState
 from core.prompt_manager import get_prompt_manager
 
 
@@ -55,6 +55,8 @@ async def run_group_chat_loop(
     last_character_name = ""
     # 跨 turn 共用的工具狀態：turn 0 跑完工具後填入，後續 turn 直接復用，避免重複呼叫外部 API。
     shared_tool_state: SharedToolState | None = None
+    # 同一輪 user 輸入的檢索意圖固定，query expansion 只需呼叫一次。
+    shared_expand_state = SharedExpandState()
 
     for turn_index in range(max_turns):
         route = await asyncio.to_thread(
@@ -112,6 +114,7 @@ async def run_group_chat_loop(
             "group_name": session.group_name,
             "profile_allowed": turn_index == 0,
             "shared_tool_state": shared_tool_state,
+            "shared_expand_state": shared_expand_state,
             "followup_instruction": followup_instruction,
         }
 
@@ -133,7 +136,7 @@ async def run_group_chat_loop(
             shared_tool_state = tool_state_export
 
         # cited_uids 透過 retrieval_ctx 進入 debug_info 持久化，不再拼進 content
-        await session_manager.add_assistant_message(
+        message_id = await session_manager.add_assistant_message(
             session.session_id,
             reply_text,
             retrieval_ctx,
@@ -144,6 +147,7 @@ async def run_group_chat_loop(
         )
 
         assistant_msg = {
+            "message_id": message_id,
             "role": "assistant",
             "content": reply_text,
             "debug_info": retrieval_ctx,
@@ -163,6 +167,7 @@ async def run_group_chat_loop(
             await session_manager.bridge(session.session_id)
 
         turn = {
+            "message_id": message_id,
             "reply": reply_text,
             "extracted_entities": new_entities,
             "retrieval_context": retrieval_ctx,

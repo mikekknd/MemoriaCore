@@ -97,7 +97,7 @@ def build_llm_log_context(
     character_manager,
     current_character_id: str,
 ) -> dict:
-    """建立 LLM prompt log 的可觀測性上下文。"""
+    """建立 LLM trace 的可觀測性上下文，不直接送進 LLM messages。"""
     ctx = session_ctx or {}
     current_char = character_manager.get_character(current_character_id) or {}
     participants = []
@@ -106,7 +106,6 @@ def build_llm_log_context(
         participants.append({
             "character_id": cid,
             "name": char.get("name") or cid,
-            "character_summary": character_summary_text(char),
         })
 
     return {

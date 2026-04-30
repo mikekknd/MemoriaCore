@@ -1846,18 +1846,20 @@ class StorageManager:
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (session_id, role, content, debug_json, character_name, character_id, now)
         )
+        msg_id = cursor.lastrowid
         cursor.execute(
             'UPDATE conversation_sessions SET last_active = ? WHERE session_id = ?', (now, session_id)
         )
         conn.commit()
         conn.close()
+        return msg_id
 
     def load_conversation_messages(self, session_id, since_msg_id: int = 0):
         """載入對話訊息。since_msg_id > 0 時只載入該 msg_id 之後的訊息（用於 bridge 還原）。"""
         conn = self._init_conversation_db()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT role, content, debug_info, timestamp, character_name, character_id "
+            "SELECT msg_id, role, content, debug_info, timestamp, character_name, character_id "
             "FROM conversation_messages WHERE session_id = ? AND msg_id > ? "
             "ORDER BY msg_id ASC",
             (session_id, since_msg_id)
@@ -1866,14 +1868,14 @@ class StorageManager:
         conn.close()
         results = []
         for r in rows:
-            msg = {"role": r[0], "content": r[1], "timestamp": r[3]}
-            if r[4]:
-                msg["character_name"] = r[4]
+            msg = {"message_id": r[0], "role": r[1], "content": r[2], "timestamp": r[4]}
             if r[5]:
-                msg["character_id"] = r[5]
-            if r[2]:
+                msg["character_name"] = r[5]
+            if r[6]:
+                msg["character_id"] = r[6]
+            if r[3]:
                 try:
-                    msg["debug_info"] = json.loads(r[2])
+                    msg["debug_info"] = json.loads(r[3])
                 except Exception:
                     pass
             results.append(msg)

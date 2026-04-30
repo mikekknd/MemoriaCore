@@ -143,6 +143,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             f"{turn['character_name']}: {turn['reply']}" for turn in turns
         )
         return ChatSyncResponseDTO(
+            message_id=final_turn.get("message_id"),
             reply=joined_reply,
             extracted_entities=final_turn.get("extracted_entities", []),
             retrieval_context=RetrievalContextDTO(**final_turn.get("retrieval_context", {})),
@@ -181,7 +182,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     reply_char = _get_session_character(session.character_id)
     character_name = reply_char.get("name") or session.character_id
     # cited_uids 透過 retrieval_ctx["cited_uids"] 隨 debug_info 持久化（見 storage_manager.save_conversation_message）
-    await session_manager.add_assistant_message(
+    message_id = await session_manager.add_assistant_message(
         sid, reply_text, retrieval_ctx, new_entities,
         persona_state={"internal_thought": inner_thought},
         character_name=character_name,
@@ -204,6 +205,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         )
 
     return ChatSyncResponseDTO(
+        message_id=message_id,
         reply=reply_text,
         extracted_entities=new_entities,
         retrieval_context=RetrievalContextDTO(**retrieval_ctx),
@@ -214,6 +216,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         character_id=session.character_id,
         character_name=character_name,
         turns=[ChatTurnDTO(
+            message_id=message_id,
             reply=reply_text,
             extracted_entities=new_entities,
             retrieval_context=RetrievalContextDTO(**retrieval_ctx),
@@ -385,7 +388,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         reply_char = _get_session_character(session.character_id)
         character_name = reply_char.get("name") or session.character_id
         # cited_uids 透過 retrieval_ctx["cited_uids"] 隨 debug_info 持久化
-        await session_manager.add_assistant_message(
+        message_id = await session_manager.add_assistant_message(
             sid, reply_text, retrieval_ctx, new_entities,
             persona_state={"internal_thought": inner_thought},
             character_name=character_name,
@@ -401,6 +404,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         final = {
             "type": "result",
             "session_id": sid,
+            "message_id": message_id,
             "reply": reply_text,
             "extracted_entities": new_entities,
             "retrieval_context": retrieval_ctx,

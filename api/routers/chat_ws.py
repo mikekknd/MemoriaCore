@@ -310,8 +310,20 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 "character_id": s.character_id,
             })
             # 準備包含詳細狀態的 done payload
+            reply_char = _get_session_character(s.character_id)
+            character_name = reply_char.get("name") or s.character_id
+            # 寫入 assistant 回覆（cited_uids 隨 retrieval_ctx 進入 debug_info 持久化，
+            # 不再拼進 content；上下文清洗由 dialogue_format 負責）
+            message_id = await session_manager.add_assistant_message(
+                sid, reply_text, retrieval_ctx, new_entities,
+                persona_state={"internal_thought": inner_thought},
+                character_name=character_name,
+                character_id=s.character_id,
+            )
+
             done_payload = {
                 "type": "chat_done",
+                "message_id": message_id,
                 "reply": reply_text,
                 "extracted_entities": new_entities,
                 "internal_thought": inner_thought,
@@ -319,19 +331,8 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 "turn_index": 0,
                 "is_final": True,
             }
-            reply_char = _get_session_character(s.character_id)
-            character_name = reply_char.get("name") or s.character_id
             done_payload["character_name"] = character_name
             await ws.send_json(done_payload)
-
-            # 寫入 assistant 回覆（cited_uids 隨 retrieval_ctx 進入 debug_info 持久化，
-            # 不再拼進 content；上下文清洗由 dialogue_format 負責）
-            await session_manager.add_assistant_message(
-                sid, reply_text, retrieval_ctx, new_entities,
-                persona_state={"internal_thought": inner_thought},
-                character_name=character_name,
-                character_id=s.character_id,
-            )
 
             # 如果話題偏移，執行橋接
             if topic_shifted:
