@@ -203,6 +203,30 @@ def test_storage_finds_user_by_telegram_uid_and_prefers_local_nickname():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_storage_finds_user_by_discord_uid():
+    tmp_dir = _tmp_dir()
+    storage = StorageManager(
+        prefs_file=str(tmp_dir / "prefs.json"),
+        history_file=str(tmp_dir / "history.json"),
+    )
+    storage._USERS_DB = str(tmp_dir / "users.db")
+
+    try:
+        user = storage.create_user(
+            "discord-user",
+            "hash",
+            nickname="DC 暱稱",
+            discord_uid="987654",
+        )
+
+        matched = storage.get_user_by_discord_uid(987654)
+
+        assert matched["id"] == user["id"]
+        assert matched["nickname"] == "DC 暱稱"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_telegram_id_query_detection():
     assert _is_telegram_id_query("我的 Telegram ID 是多少？")
     assert _is_telegram_id_query("what is my telegram id")

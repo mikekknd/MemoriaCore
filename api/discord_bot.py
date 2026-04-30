@@ -33,6 +33,14 @@ class DiscordRuntime:
     character_id: str = "default"
 
 
+@dataclass
+class DiscordUserIdentity:
+    discord_id: str
+    owner_user_id: str
+    display_name: str
+    matched_account: dict[str, Any] | None = None
+
+
 def _split_message(text: str, max_len: int = DISCORD_MESSAGE_SAFE_LIMIT) -> list[str]:
     """將 Discord 訊息切成安全長度，避免超過 2000 字元限制。"""
     text = (text or "").strip()
@@ -91,9 +99,38 @@ def _message_author_display_name(message: Any) -> str:
     )
 
 
+def _account_display_name(account: dict[str, Any] | None, message: Any) -> str:
+    if account:
+        local_name = (account.get("nickname") or account.get("username") or "").strip()
+        if local_name:
+            return local_name
+    return _message_author_display_name(message)
+
+
+def _message_author_id(message: Any) -> str:
+    return str(getattr(getattr(message, "author", None), "id", "") or "")
+
+
+def _is_discord_id_query(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text or "").lower()
+    if not normalized:
+        return False
+    patterns = [
+        "我的discordid",
+        "我的discorduid",
+        "discordid是多少",
+        "discorduid是多少",
+        "我的dcid",
+        "dcid是多少",
+        "mydiscordid",
+        "whatismydiscordid",
+    ]
+    return any(pattern in normalized for pattern in patterns)
+
+
 def _session_key(bot_id: str, message: Any) -> tuple[str, str, str, str, str]:
     channel = _message_channel(message)
-    author_id = str(getattr(getattr(message, "author", None), "id", ""))
+    author_id = _message_author_id(message)
     guild_id = str(getattr(getattr(message, "guild", None), "id", ""))
     channel_id = str(getattr(getattr(message, "channel", None), "id", ""))
     return (bot_id, channel, author_id, guild_id, channel_id)
@@ -134,24 +171,31 @@ class DiscordSessionMap:
     def __init__(self):
         self._map: dict[tuple[str, str, str, str, str], str] = {}
 
-    async def get_or_create_session(self, bot_id: str, message: Any, character_id: str) -> str:
+    async def get_or_create_session(
+        self,
+        bot_id: str,
+        message: Any,
+        character_id: str,
+        owner_user_id: str | None = None,
+    ) -> str:
         from api.dependencies import get_storage
         from api.session_manager import session_manager
 
         key = _session_key(bot_id, message)
+        fallback_user_id = _message_author_id(message)
+        owner_id = str(owner_user_id or fallback_user_id)
         sid = self._map.get(key)
         if sid:
             s = await session_manager.get(sid)
-            if s:
+            if s and s.user_id == owner_id:
                 return sid
             del self._map[key]
 
         get_storage().load_prefs()
-        user_id = str(getattr(message.author, "id", ""))
         session = await session_manager.create(
             channel=_message_channel(message),
             channel_uid=_message_channel_uid(message),
-            user_id=user_id,
+            user_id=owner_id,
             character_id=character_id,
             bot_id=bot_id,
         )
@@ -393,6 +437,21 @@ class DiscordBotManager:
         runtime.status = "disabled"
         logger.info("Discord Bot stopped: bot_id=%s", bot_id)
 
+    def _resolve_user_identity(self, message: Any) -> DiscordUserIdentity | None:
+        discord_id = _message_author_id(message)
+        if not discord_id:
+            return None
+        from api.dependencies import get_storage
+
+        account = get_storage().get_user_by_discord_uid(discord_id)
+        owner_user_id = str(account["id"]) if account else discord_id
+        return DiscordUserIdentity(
+            discord_id=discord_id,
+            owner_user_id=owner_user_id,
+            display_name=_account_display_name(account, message),
+            matched_account=account,
+        )
+
     async def _handle_message(self, bot_id: str, character_id: str, client: Any, message: Any) -> None:
         author = getattr(message, "author", None)
         if not author or getattr(author, "bot", False) or getattr(message, "webhook_id", None):
@@ -402,6 +461,10 @@ class DiscordBotManager:
 
         content = _clean_bot_mentions(getattr(message, "content", "") or "", getattr(getattr(client, "user", None), "id", None))
         if not content:
+            return
+
+        identity = self._resolve_user_identity(message)
+        if identity is None:
             return
 
         if content == "/clear":
@@ -415,12 +478,24 @@ class DiscordBotManager:
         if content == "/status":
             await self._send_status(bot_id, message)
             return
+        if content == "/id" or _is_discord_id_query(content):
+            await message.reply(
+                f"你的 Discord ID 是：{identity.discord_id}",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
 
         from api.dependencies import get_storage
         from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
         from api.session_manager import session_manager
 
-        sid = await self._session_map.get_or_create_session(bot_id, message, character_id)
+        sid = await self._session_map.get_or_create_session(
+            bot_id,
+            message,
+            character_id,
+            owner_user_id=identity.owner_user_id,
+        )
         await session_manager.add_user_message(sid, content)
         s = await session_manager.get(sid)
         if not s:
@@ -437,7 +512,8 @@ class DiscordBotManager:
             "session_id": sid,
             "bot_id": s.bot_id,
             "channel": s.channel,
-            "user_name": _message_author_display_name(message),
+            "user_name": identity.display_name,
+            "discord_user_id": identity.discord_id,
             "active_character_ids": list(s.active_character_ids or [s.character_id]),
             "session_mode": s.session_mode,
             "group_name": s.group_name,

@@ -1197,6 +1197,7 @@ class StorageManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_uid ON users(telegram_uid)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_discord_uid ON users(discord_uid)")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS auth_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1309,6 +1310,23 @@ class StorageManager:
             "SELECT id, username, nickname, password_hash, role, token_version, "
             "telegram_uid, discord_uid, created_at, updated_at "
             "FROM users WHERE telegram_uid = ? ORDER BY id ASC LIMIT 1",
+            (uid,),
+        )
+        user = self._row_to_user(cursor.fetchone())
+        conn.close()
+        return user
+
+    def get_user_by_discord_uid(self, discord_uid: str | int) -> dict | None:
+        """以 Discord UID 對應登入帳號；若重複設定，取最早建立的帳號。"""
+        uid = str(discord_uid).strip()
+        if not uid:
+            return None
+        conn = self._init_users_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, username, nickname, password_hash, role, token_version, "
+            "telegram_uid, discord_uid, created_at, updated_at "
+            "FROM users WHERE discord_uid = ? ORDER BY id ASC LIMIT 1",
             (uid,),
         )
         user = self._row_to_user(cursor.fetchone())

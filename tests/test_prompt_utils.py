@@ -9,6 +9,12 @@ class _FakePromptManager:
     def get(self, key: str) -> str:
         return {
             "environment_context_block": "<environment_context>\nCurrent Time: {current_time}{weather_block}\n</environment_context>",
+            "user_identity_block": (
+                "<user_identity><display_name>{user_name}</display_name>"
+                "<local_user_id>{user_id}</local_user_id>"
+                "<telegram_user_id>{telegram_user_id}</telegram_user_id>"
+                "<discord_user_id>{discord_user_id}</discord_user_id></user_identity>"
+            ),
             "emotional_trajectory_block": "<emotional_trajectory>{internal_thought}</emotional_trajectory>",
         }.get(key, "")
 
@@ -135,6 +141,26 @@ def test_emotional_trajectory_uses_same_character_only(monkeypatch):
 
     assert "A 的內在思考" in prefix
     assert "B 的內在思考" not in prefix
+
+
+def test_user_prefix_includes_display_name(monkeypatch):
+    monkeypatch.setattr(prompt_utils, "get_prompt_manager", lambda: _FakePromptManager())
+
+    prefix = prompt_utils.build_user_prefix(
+        [{"role": "user", "content": "你知道我的名字嗎？"}],
+        session_ctx={
+            "user_id": "42",
+            "user_name": "本機暱稱",
+            "telegram_user_id": "123456",
+            "discord_user_id": "987654",
+        },
+    )
+
+    assert "<user_identity>" in prefix
+    assert "<display_name>本機暱稱</display_name>" in prefix
+    assert "<local_user_id>42</local_user_id>" in prefix
+    assert "<telegram_user_id>123456</telegram_user_id>" in prefix
+    assert "<discord_user_id>987654</discord_user_id>" in prefix
 
 
 def test_emotional_trajectory_omits_when_group_character_has_no_prior_thought(monkeypatch):

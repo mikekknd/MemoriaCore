@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 from api.discord_bot import (
     DISCORD_MESSAGE_SAFE_LIMIT,
+    _account_display_name,
     _clean_bot_mentions,
+    _is_discord_id_query,
     _is_guild_trigger,
     _session_key,
     _split_message,
@@ -64,3 +66,18 @@ def test_guild_trigger_requires_mention_or_reply():
 def test_clean_bot_mentions_removes_discord_mention_forms():
     assert _clean_bot_mentions("<@999> 你好", 999) == "你好"
     assert _clean_bot_mentions("<@!999> 你好", 999) == "你好"
+
+
+def test_discord_display_name_prefers_local_nickname():
+    msg = _message(author_id="123")
+    msg.author.display_name = "Discord Name"
+    msg.author.global_name = "Global Name"
+    account = {"nickname": "本機暱稱", "username": "local-user"}
+
+    assert _account_display_name(account, msg) == "本機暱稱"
+
+
+def test_discord_id_query_detection():
+    assert _is_discord_id_query("我的 Discord ID 是多少？")
+    assert _is_discord_id_query("what is my discord id")
+    assert not _is_discord_id_query("今天想聊 Discord bot 設定")

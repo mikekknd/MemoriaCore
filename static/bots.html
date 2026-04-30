@@ -24,6 +24,8 @@ body { min-height:100vh; overflow:hidden; }
 .badge.error { color:var(--error); border-color:var(--error); }
 .meta { color:var(--text2); font-size:12px; line-height:1.6; font-family:'Cascadia Code',monospace; }
 .bot-actions { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+.bot-actions button.toggle-on { border-color:var(--accent2); color:var(--accent2); }
+.bot-actions button.toggle-off { border-color:var(--text2); color:var(--text2); }
 .form { padding:12px; display:flex; flex-direction:column; gap:10px; }
 label { color:var(--text2); font-size:12px; display:block; margin-bottom:4px; }
 input, select { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); padding:7px 9px; font-size:13px; box-sizing:border-box; }
@@ -144,6 +146,7 @@ function renderBots() {
       <div class="meta">id=${escapeHtml(bot.bot_id)}<br>character=${escapeHtml(bot.character_id)}<br>enabled=${bot.enabled}</div>
       ${st.last_error ? `<div class="error-text">${escapeHtml(st.last_error)}</div>` : ''}
       <div class="bot-actions">
+        <button class="${bot.enabled ? 'toggle-on' : 'toggle-off'}" onclick="toggleBotEnabled('${escapeHtml(bot.bot_id)}', ${bot.enabled ? 'false' : 'true'})">${bot.enabled ? 'disable' : 'enable'}</button>
         <button onclick="editBot('${escapeHtml(bot.bot_id)}')">edit</button>
         <button onclick="reloadBot('${escapeHtml(bot.bot_id)}')">reload</button>
         <button onclick="deleteBot('${escapeHtml(bot.bot_id)}')">delete</button>
@@ -230,6 +233,30 @@ async function reloadBot(id) {
   if (!r.ok) return toast('reload failed', 'error');
   await loadAll();
   toast('reloaded', 'success');
+}
+
+async function toggleBotEnabled(id, enabled) {
+  const bot = bots.find(b => b.bot_id === id);
+  if (!bot) return toast('bot not found', 'error');
+  const payload = {
+    platform: bot.platform || 'telegram',
+    display_name: bot.display_name || '',
+    character_id: bot.character_id || 'default',
+    token: bot.token || '',
+    enabled,
+  };
+  const r = await fetch(`${API}/bots/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => null);
+    return toast(apiErrorMessage(data, enabled ? 'enable failed' : 'disable failed'), 'error');
+  }
+  if (editingId === id) document.getElementById('enabled').checked = enabled;
+  await loadAll();
+  toast(enabled ? 'enabled' : 'disabled', 'success');
 }
 
 async function deleteBot(id) {

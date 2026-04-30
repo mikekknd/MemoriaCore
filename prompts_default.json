@@ -197,6 +197,18 @@
     ],
     "template": "<environment_context source=\"system_control\">\n<current_time>{current_time}</current_time>{weather_block}\n</environment_context>"
   },
+  "user_identity_block": {
+    "label": "使用者身份區塊 (User Identity Block)",
+    "description": "注入在最新使用者訊息前的暫態真人身份資訊，供模型知道目前對話者顯示名稱；不寫入對話資料庫。",
+    "used_by": "core/chat_orchestrator/coordinator.py, api/routers/chat/orchestration.py → build_user_prefix()",
+    "placeholders": [
+      "{user_name}",
+      "{user_id}",
+      "{telegram_user_id}",
+      "{discord_user_id}"
+    ],
+    "template": "<user_identity source=\"system_control\">\n<display_name>{user_name}</display_name>\n<local_user_id>{user_id}</local_user_id>\n<telegram_user_id>{telegram_user_id}</telegram_user_id>\n<discord_user_id>{discord_user_id}</discord_user_id>\n<instruction>若使用者詢問自己的名稱或稱呼，請使用 display_name 回答；不要宣稱不知道。telegram_user_id 僅在使用者詢問 Telegram ID 時使用；discord_user_id 僅在使用者詢問 Discord ID 時使用。</instruction>\n</user_identity>"
+  },
   "emotional_trajectory_block": {
     "label": "情緒軌跡區塊 (Emotional Trajectory Block)",
     "description": "注入上一輪的情緒狀態，幫助 LLM 維持角色情緒節奏的連貫性。無前輪紀錄時省略整個區塊。",

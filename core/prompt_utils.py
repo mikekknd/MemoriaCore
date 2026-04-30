@@ -5,7 +5,7 @@
 from datetime import datetime, timezone, timedelta
 
 from core.prompt_manager import get_prompt_manager
-from core.xml_prompt import xml_block
+from core.xml_prompt import xml_attr, xml_block
 
 
 def _is_su_private_weather_context(session_ctx: dict | None) -> bool:
@@ -51,6 +51,25 @@ def _build_su_weather_block(user_prefs: dict | None, session_ctx: dict | None) -
     return ""
 
 
+def _build_user_identity_block(session_ctx: dict | None) -> str:
+    """注入目前真人使用者的顯示身份，供模型回答稱呼類問題。"""
+    if not session_ctx:
+        return ""
+    user_name = str(session_ctx.get("user_name") or "").strip()
+    user_id = str(session_ctx.get("user_id") or "").strip()
+    telegram_user_id = str(session_ctx.get("telegram_user_id") or "").strip()
+    discord_user_id = str(session_ctx.get("discord_user_id") or "").strip()
+    if not any([user_name, user_id, telegram_user_id, discord_user_id]):
+        return ""
+
+    return get_prompt_manager().get("user_identity_block").format(
+        user_name=xml_attr(user_name),
+        user_id=xml_attr(user_id),
+        telegram_user_id=xml_attr(telegram_user_id),
+        discord_user_id=xml_attr(discord_user_id),
+    )
+
+
 def build_user_prefix(
     session_messages: list[dict],
     user_prefs: dict | None = None,
@@ -64,6 +83,7 @@ def build_user_prefix(
     pm = get_prompt_manager()
     current_time = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S CST")
     weather_block = _build_su_weather_block(user_prefs, session_ctx)
+    user_identity_block = _build_user_identity_block(session_ctx)
 
     env_block = pm.get("environment_context_block").format(
         current_time=current_time,
@@ -84,7 +104,7 @@ def build_user_prefix(
             )
             break
 
-    return env_block + emo_block + "\n\n"
+    return env_block + user_identity_block + emo_block + "\n\n"
 
 
 def format_latest_user_message_for_llm(content: str, session_ctx: dict | None = None) -> str:
