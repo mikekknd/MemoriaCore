@@ -498,6 +498,57 @@ class LLMRouter:
         except (TypeError, ValueError):
             return False
 
+    @staticmethod
+    def _normalize_json_response_text(text: str) -> str | None:
+        """抽取模型常見包裝格式中的合法 JSON，避免把格式瑕疵誤判為內容污染。"""
+        stripped = (text or "").strip()
+        if not stripped:
+            return None
+
+        def _dump(parsed):
+            return json.dumps(parsed, ensure_ascii=False)
+
+        invalid = object()
+
+        def _loads_exact(candidate: str):
+            try:
+                return json.loads(candidate)
+            except (ValueError, TypeError):
+                return invalid
+
+        parsed = _loads_exact(stripped)
+        if parsed is not invalid:
+            return _dump(parsed)
+
+        # 只接受整段回覆是一個 JSON/空語言 code fence；shell/python 文件範例不可被誤抽。
+        fence_match = re.fullmatch(
+            r"\s*```(?P<lang>[A-Za-z0-9_-]*)\s*\n(?P<body>.*?)\n?\s*```\s*",
+            stripped,
+            flags=re.DOTALL,
+        )
+        if fence_match:
+            lang = (fence_match.group("lang") or "").lower()
+            if lang in ("", "json"):
+                parsed = _loads_exact(fence_match.group("body").strip())
+                if parsed is not invalid:
+                    return _dump(parsed)
+
+        # 允許短前言/結語包住單一 JSON，例如「以下是 JSON: {...}」。
+        starts = [idx for idx in (stripped.find("{"), stripped.find("[")) if idx != -1]
+        if not starts:
+            return None
+        start = min(starts)
+        try:
+            parsed, end = json.JSONDecoder().raw_decode(stripped, start)
+        except (ValueError, TypeError):
+            return None
+        wrapper = (stripped[:start] + stripped[end:]).strip()
+        wrapper_lower = wrapper.lower()
+        unsafe_wrapper_tokens = ("```", "docker-compose", "sudo pip", "pip install", "command] [args")
+        if len(wrapper) <= 160 and not any(token in wrapper_lower for token in unsafe_wrapper_tokens):
+            return _dump(parsed)
+        return None
+
     def _generate_chat_with_optional_limit(
         self,
         provider: ILLMProvider,
@@ -560,14 +611,7 @@ class LLMRouter:
         # 雲端代理模型（如 deepseek-v3.1:671b-cloud）有時會忽略 format 參數直接回覆純文字。
         # 注意：合法回傳可能是 [] 或 {}，需用 json.loads 驗證而非單純檢查 { 是否存在。
         def _is_valid_json(text: str) -> bool:
-            if not text:
-                return False
-            try:
-                import json as _json
-                _json.loads(text)
-                return True
-            except (ValueError, TypeError):
-                return False
+            return self._normalize_json_response_text(text) is not None
 
         def _looks_like_document_dump(text: str) -> bool:
             stripped = (text or "").strip()
@@ -596,6 +640,11 @@ class LLMRouter:
                 if f"|{cid}]:" in text or (name and f"[{name}|" in text):
                     return True
             return False
+
+        if response_format:
+            normalized_json = self._normalize_json_response_text(response_text)
+            if normalized_json is not None:
+                response_text = normalized_json
 
         if response_format and not _is_valid_json(response_text):
             original_prompt = "\n\n".join(

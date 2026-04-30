@@ -1,4 +1,5 @@
 from core.llm_gateway import ILLMProvider, LLMRouter
+import json
 
 
 class _FakeProvider(ILLMProvider):
@@ -27,6 +28,53 @@ class _FakeProvider(ILLMProvider):
         if self.calls == 1:
             return self.first_response, []
         return '{"reply": "ok"}', []
+
+
+def test_fenced_json_response_is_normalized_without_retry(monkeypatch):
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_prompt",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_response",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_error",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不應觸發 JSON 重試")),
+    )
+
+    fenced_json = """```json
+{
+  "facts": [
+    {
+      "action": "INSERT",
+      "fact_key": "owned_item",
+      "fact_value": "草莓口味蛋糕"
+    }
+  ]
+}
+```"""
+    provider = _FakeProvider(fenced_json)
+    router = LLMRouter()
+    router.register_route("chat", provider, "fake-model")
+
+    result = router.generate(
+        "chat",
+        [{"role": "user", "content": "我買了草莓口味蛋糕回來"}],
+        response_format={"type": "object"},
+    )
+
+    assert provider.calls == 1
+    assert json.loads(result) == {
+        "facts": [
+            {
+                "action": "INSERT",
+                "fact_key": "owned_item",
+                "fact_value": "草莓口味蛋糕",
+            }
+        ]
+    }
 
 
 def test_non_json_retry_regenerates_when_response_looks_like_document_dump(monkeypatch):
