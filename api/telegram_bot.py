@@ -35,21 +35,36 @@ class TelegramRuntime:
     character_id: str = "default"
 
 
+@dataclass
+class TelegramUserIdentity:
+    telegram_id: int
+    owner_user_id: str
+    display_name: str
+    matched_account: dict[str, Any] | None = None
+
+
 class TelegramSessionMap:
     """管理 (bot_id, Telegram user_id) 到 API session_id 的映射。"""
 
     def __init__(self):
         self._map: dict[tuple[str, int], str] = {}
 
-    async def get_or_create_session(self, bot_id: str, user_id: int, character_id: str) -> str:
+    async def get_or_create_session(
+        self,
+        bot_id: str,
+        telegram_user_id: int,
+        character_id: str,
+        owner_user_id: str | None = None,
+    ) -> str:
         from api.dependencies import get_storage
         from api.session_manager import session_manager
 
-        key = (bot_id, user_id)
+        owner_id = str(owner_user_id or telegram_user_id)
+        key = (bot_id, telegram_user_id)
         sid = self._map.get(key)
         if sid:
             s = await session_manager.get(sid)
-            if s:
+            if s and s.user_id == owner_id:
                 return sid
             del self._map[key]
 
@@ -57,8 +72,8 @@ class TelegramSessionMap:
         get_storage().load_prefs()
         session = await session_manager.create(
             channel="telegram",
-            channel_uid=str(user_id),
-            user_id=str(user_id),
+            channel_uid=str(telegram_user_id),
+            user_id=owner_id,
             character_id=character_id,
             bot_id=bot_id,
         )
@@ -98,6 +113,31 @@ def _telegram_user_display_name(message: types.Message) -> str:
         or user.username
         or str(user.id)
     )
+
+
+def _account_display_name(account: dict[str, Any] | None, message: types.Message) -> str:
+    if account:
+        local_name = (account.get("nickname") or account.get("username") or "").strip()
+        if local_name:
+            return local_name
+    return _telegram_user_display_name(message)
+
+
+def _is_telegram_id_query(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text or "").lower()
+    if not normalized:
+        return False
+    patterns = [
+        "我的telegramid",
+        "我的telegramuid",
+        "telegramid是多少",
+        "telegramuid是多少",
+        "我的tgid",
+        "tgid是多少",
+        "mytelegramid",
+        "whatismytelegramid",
+    ]
+    return any(pattern in normalized for pattern in patterns)
 
 
 def _split_message(text: str, max_len: int = 4000) -> list[str]:
@@ -287,6 +327,7 @@ class TelegramBotManager:
             dispatcher.message.register(self._cmd_start(bot_id, character_id), CommandStart())
             dispatcher.message.register(self._cmd_clear(bot_id), Command("clear"))
             dispatcher.message.register(self._cmd_status(bot_id), Command("status"))
+            dispatcher.message.register(self._cmd_id(), Command("id"))
             dispatcher.message.register(self._handle_message(bot_id, character_id))
             await bot.delete_webhook(drop_pending_updates=False)
 
@@ -337,31 +378,60 @@ class TelegramBotManager:
         runtime.status = "disabled"
         logger.info("Telegram Bot stopped: bot_id=%s", bot_id)
 
+    def _resolve_user_identity(self, message: types.Message) -> TelegramUserIdentity | None:
+        telegram_id = self._message_user_id(message)
+        if telegram_id is None:
+            return None
+        from api.dependencies import get_storage
+
+        account = get_storage().get_user_by_telegram_uid(telegram_id)
+        owner_user_id = str(account["id"]) if account else str(telegram_id)
+        return TelegramUserIdentity(
+            telegram_id=telegram_id,
+            owner_user_id=owner_user_id,
+            display_name=_account_display_name(account, message),
+            matched_account=account,
+        )
+
     def _cmd_start(self, bot_id: str, character_id: str):
         async def handler(message: types.Message):
-            user_id = self._message_user_id(message)
-            if user_id is None:
+            identity = self._resolve_user_identity(message)
+            if identity is None:
                 return
-            await self._session_map.get_or_create_session(bot_id, user_id, character_id)
+            await self._session_map.get_or_create_session(
+                bot_id,
+                identity.telegram_id,
+                character_id,
+                owner_user_id=identity.owner_user_id,
+            )
             await message.answer(
                 "你好！我是你的 AI 助手。\n"
                 "直接發送訊息即可開始對話。\n\n"
                 "可用指令：\n"
                 "/clear — 清空對話歷史\n"
-                "/status — 查看 Session 狀態"
+                "/status — 查看 Session 狀態\n"
+                "/id — 查看你的 Telegram ID"
             )
         return handler
 
     def _cmd_clear(self, bot_id: str):
         async def handler(message: types.Message):
-            user_id = self._message_user_id(message)
-            if user_id is None:
+            identity = self._resolve_user_identity(message)
+            if identity is None:
                 return
-            cleared = await self._session_map.clear_session(bot_id, user_id)
+            cleared = await self._session_map.clear_session(bot_id, identity.telegram_id)
             if cleared:
                 await message.answer("對話歷史已清空！發送訊息開始新對話。")
             else:
                 await message.answer("目前沒有活躍的對話 Session。")
+        return handler
+
+    def _cmd_id(self):
+        async def handler(message: types.Message):
+            identity = self._resolve_user_identity(message)
+            if identity is None:
+                return
+            await message.answer(f"你的 Telegram ID 是：{identity.telegram_id}")
         return handler
 
     def _cmd_status(self, bot_id: str):
@@ -369,10 +439,10 @@ class TelegramBotManager:
             from api.dependencies import get_memory_sys
             from api.session_manager import session_manager
 
-            user_id = self._message_user_id(message)
-            if user_id is None:
+            identity = self._resolve_user_identity(message)
+            if identity is None:
                 return
-            sid = self._session_map.get_session_id(bot_id, user_id)
+            sid = self._session_map.get_session_id(bot_id, identity.telegram_id)
             if not sid:
                 await message.answer("目前沒有活躍的 Session。發送任何訊息即可自動建立。")
                 return
@@ -408,15 +478,24 @@ class TelegramBotManager:
             if not user_text:
                 return
 
-            user_id = self._message_user_id(message)
-            if user_id is None:
+            identity = self._resolve_user_identity(message)
+            if identity is None:
                 return
 
             from api.dependencies import get_storage
             from api.session_manager import session_manager
             from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 
-            sid = await self._session_map.get_or_create_session(bot_id, user_id, character_id)
+            if _is_telegram_id_query(user_text):
+                await message.answer(f"你的 Telegram ID 是：{identity.telegram_id}")
+                return
+
+            sid = await self._session_map.get_or_create_session(
+                bot_id,
+                identity.telegram_id,
+                character_id,
+                owner_user_id=identity.owner_user_id,
+            )
             await session_manager.add_user_message(sid, user_text)
             s = await session_manager.get(sid)
             if not s:
@@ -434,7 +513,8 @@ class TelegramBotManager:
                 "session_id": sid,
                 "bot_id": s.bot_id,
                 "channel": s.channel,
-                "user_name": _telegram_user_display_name(message),
+                "user_name": identity.display_name,
+                "telegram_user_id": str(identity.telegram_id),
                 "active_character_ids": list(s.active_character_ids or [s.character_id]),
                 "session_mode": s.session_mode,
                 "group_name": s.group_name,

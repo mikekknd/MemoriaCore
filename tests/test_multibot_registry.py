@@ -8,6 +8,7 @@ import pytest
 from core.bot_registry import BotRegistry, BotRegistryError
 from core.persona_sync import PersonaSyncManager
 from core.storage_manager import StorageManager
+from api.telegram_bot import _account_display_name, _is_telegram_id_query
 
 
 def _tmp_dir() -> Path:
@@ -168,6 +169,44 @@ def test_persona_sync_state_is_per_character():
     finally:
         os.chdir(original_cwd)
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_storage_finds_user_by_telegram_uid_and_prefers_local_nickname():
+    tmp_dir = _tmp_dir()
+    storage = StorageManager(
+        prefs_file=str(tmp_dir / "prefs.json"),
+        history_file=str(tmp_dir / "history.json"),
+    )
+    storage._USERS_DB = str(tmp_dir / "users.db")
+
+    class TelegramUser:
+        id = 123456
+        full_name = "Telegram Name"
+        username = "telegram_user"
+
+    class Message:
+        from_user = TelegramUser()
+
+    try:
+        user = storage.create_user(
+            "local-user",
+            "hash",
+            nickname="本機暱稱",
+            telegram_uid="123456",
+        )
+
+        matched = storage.get_user_by_telegram_uid(123456)
+
+        assert matched["id"] == user["id"]
+        assert _account_display_name(matched, Message()) == "本機暱稱"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_telegram_id_query_detection():
+    assert _is_telegram_id_query("我的 Telegram ID 是多少？")
+    assert _is_telegram_id_query("what is my telegram id")
+    assert not _is_telegram_id_query("今天想聊 Telegram bot 設定")
 
 
 @pytest.mark.asyncio
