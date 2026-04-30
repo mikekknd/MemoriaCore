@@ -1667,6 +1667,14 @@ class StorageManager:
                 FOREIGN KEY (session_id) REFERENCES conversation_sessions(session_id)
             )
         ''')
+        cursor.execute("PRAGMA table_info(conversation_session_participants)")
+        csp_cols = [info[1] for info in cursor.fetchall()]
+        for col, typedef in [
+            ('display_order', 'INTEGER NOT NULL DEFAULT 0'),
+            ('is_active', 'INTEGER NOT NULL DEFAULT 1'),
+        ]:
+            if col not in csp_cols:
+                cursor.execute(f"ALTER TABLE conversation_session_participants ADD COLUMN {col} {typedef}")
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_csp_session_order "
             "ON conversation_session_participants(session_id, display_order)"
@@ -1724,6 +1732,61 @@ class StorageManager:
                 "INSERT OR REPLACE INTO conversation_session_participants "
                 "(session_id, character_id, display_order, is_active) VALUES (?, ?, ?, 1)",
                 (session_id, cid, idx),
+            )
+        conn.commit()
+        conn.close()
+
+    def update_conversation_session_roster(
+        self,
+        session_id: str,
+        character_ids: list[str],
+        *,
+        session_mode: str,
+        group_name: str | None = None,
+    ) -> None:
+        """更新 session 目前在場角色；保留曾參與資料，只切換 is_active。
+
+        ⚠️ `conversation_sessions.character_id` 語意警告：
+        此欄位為舊 schema 遺產（每 session 單一 AI 時代）。本函式會把它更新為
+        `participant_ids[0]`（目前在場第一順位），意即同一個 session_id 在不同
+        時間點查 `cs.character_id` 可能拿到不同答案，並非「session 創建時的主角色」。
+
+        新代碼若需要：
+        - 「目前在場名單」→ 查 `conversation_session_participants WHERE is_active=1`
+        - 「歷史曾出現的角色」→ 查 `conversation_messages.character_id` distinct
+        - 「session 創建時的主角色」→ 目前無此資訊，需另外擴 schema
+        不要用 `cs.character_id` 推斷上述任何語意。
+        """
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        participant_ids = list(dict.fromkeys(str(cid).strip() for cid in character_ids if str(cid).strip()))
+        if not participant_ids:
+            conn.close()
+            return
+        cursor.execute(
+            "UPDATE conversation_session_participants SET is_active = 0 WHERE session_id = ?",
+            (session_id,),
+        )
+        for idx, cid in enumerate(participant_ids):
+            cursor.execute(
+                "INSERT OR REPLACE INTO conversation_session_participants "
+                "(session_id, character_id, display_order, is_active) VALUES (?, ?, ?, 1)",
+                (session_id, cid, idx),
+            )
+        if group_name is None:
+            cursor.execute(
+                "UPDATE conversation_sessions "
+                "SET character_id = ?, session_mode = ?, last_active = ? "
+                "WHERE session_id = ?",
+                (participant_ids[0], session_mode, now, session_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE conversation_sessions "
+                "SET character_id = ?, session_mode = ?, group_name = ?, last_active = ? "
+                "WHERE session_id = ?",
+                (participant_ids[0], session_mode, group_name, now, session_id),
             )
         conn.commit()
         conn.close()

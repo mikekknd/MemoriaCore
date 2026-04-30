@@ -193,6 +193,100 @@ class SessionManager:
                 self._storage.update_bridge_point(session_id, keep_last_n=len(bridged))
             return True
 
+    async def update_roster(
+        self,
+        session_id: str,
+        character_ids: list[str],
+        *,
+        character_names: dict[str, str] | None = None,
+        group_name: str | None = None,
+    ) -> dict | None:
+        """更新目前在場 AI 名單；名單集合未變時不寫事件。"""
+        async with self._lock:
+            s = self._sessions.get(session_id)
+            if not s:
+                return None
+
+            new_ids = [cid for cid in dict.fromkeys(str(cid).strip() for cid in character_ids) if cid]
+            if not new_ids:
+                return None
+
+            old_ids = list(s.active_character_ids or [s.character_id])
+            if set(old_ids) == set(new_ids):
+                if group_name is not None:
+                    s.group_name = group_name
+                    s.last_active = datetime.now()
+                    if self._storage:
+                        effective_mode = "group" if len(old_ids) > 1 else "single"
+                        self._storage.update_conversation_session_roster(
+                            session_id,
+                            old_ids,
+                            session_mode=effective_mode,
+                            group_name=group_name,
+                        )
+                return None
+
+            names = character_names or {}
+
+            def _name(cid: str) -> str:
+                return names.get(cid) or cid
+
+            added = [cid for cid in new_ids if cid not in old_ids]
+            removed = [cid for cid in old_ids if cid not in new_ids]
+            current = "、".join(_name(cid) for cid in new_ids)
+            parts = []
+            if added:
+                parts.append("加入 " + "、".join(_name(cid) for cid in added))
+            if removed:
+                parts.append("退出 " + "、".join(_name(cid) for cid in removed))
+            parts.append("目前在場 " + current)
+            content = "AI 成員變更：" + "；".join(parts)
+
+            effective_mode = "group" if len(new_ids) > 1 else "single"
+            s.character_id = new_ids[0]
+            s.active_character_ids = new_ids
+            s.session_mode = effective_mode
+            if group_name is not None:
+                s.group_name = group_name
+            s.last_active = datetime.now()
+
+            event = {
+                "role": "system_event",
+                "content": content,
+                "debug_info": {
+                    "event_type": "roster_changed",
+                    "added_character_ids": added,
+                    "removed_character_ids": removed,
+                    "active_character_ids": new_ids,
+                    "session_mode": effective_mode,
+                },
+            }
+            s.messages.append(event)
+
+            if self._storage:
+                self._storage.update_conversation_session_roster(
+                    session_id,
+                    new_ids,
+                    session_mode=effective_mode,
+                    group_name=s.group_name,
+                )
+                self._storage.save_conversation_message(
+                    session_id,
+                    "system_event",
+                    content,
+                    event["debug_info"],
+                )
+            return {
+                "type": "roster_changed",
+                "session_id": session_id,
+                "content": content,
+                "added_character_ids": added,
+                "removed_character_ids": removed,
+                "active_character_ids": new_ids,
+                "session_mode": effective_mode,
+                "group_name": s.group_name,
+            }
+
     async def add_user_message(self, session_id: str, content: str) -> bool:
         async with self._lock:
             s = self._sessions.get(session_id)

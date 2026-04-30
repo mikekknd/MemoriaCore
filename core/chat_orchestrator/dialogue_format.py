@@ -9,6 +9,8 @@
 """
 import re
 
+from core.xml_prompt import xml_block
+
 
 # ════════════════════════════════════════════════════════════
 # SECTION: 內部標記偵測 regex
@@ -49,6 +51,23 @@ def sanitize_message_for_llm(content: str) -> str:
     cleaned = _ENV_BLOCK.sub('', cleaned)
     cleaned = _EMO_BLOCK.sub('', cleaned)
     return cleaned.strip()
+
+
+# ════════════════════════════════════════════════════════════
+# SECTION: Router 用：過濾 system_event
+# ════════════════════════════════════════════════════════════
+
+def strip_system_events(messages: list[dict]) -> list[dict]:
+    """過濾 role='system_event' 訊息。
+
+    供 router agent 使用：
+    - router_agent 內部只挑 role=='user' 的訊息，遇 raw `system_event` 會被自然濾掉
+    - 但若先過 format_history_for_llm，system_event 會被轉成 user 角色 + `<session_event>`
+      包裝，反而被 router 當成一般 user 訊息誤處理
+    本函式統一在傳給 router 之前先剝掉 system_event，讓 router 的輸入契約不依賴呼叫端
+    是用 raw 還是 formatted 訊息。
+    """
+    return [m for m in messages if m.get("role") != "system_event"]
 
 
 # ════════════════════════════════════════════════════════════
@@ -125,6 +144,18 @@ def format_history_for_llm(messages: list[dict], force_group: bool = False) -> l
         if not cleaned:
             # sanitize 完空字串：通常是接力指令訊息，跳過
             continue
+        if role == "system_event":
+            debug_info = m.get("debug_info") or {}
+            event_type = debug_info.get("event_type") if isinstance(debug_info, dict) else ""
+            formatted.append({
+                "role": "user",
+                "content": xml_block(
+                    "session_event",
+                    cleaned,
+                    attrs={"type": event_type or "system_event"},
+                ),
+            })
+            continue
         if is_group and role == "assistant":
             label = speaker_label(m)
             if label:
@@ -151,6 +182,8 @@ def format_dialogue_for_analysis(messages: list[dict], force_group: bool = False
     lines: list[str] = []
     for m in messages:
         role = m.get("role", "") or ""
+        if role == "system_event":
+            continue
         raw_content = m.get("content", "")
         cleaned = sanitize_message_for_llm(raw_content)
         if not cleaned:

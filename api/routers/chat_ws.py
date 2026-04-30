@@ -20,6 +20,7 @@ from api.routers.chat.orchestration import (
 )
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
 from api.routers.chat.group_loop import is_group_session, run_group_chat_loop
+from api.routers.chat.roster import apply_roster_update
 from api.routers.chat.timer import StepTimer
 
 
@@ -166,6 +167,19 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
 
             # 打斷機制：取消前一個活躍任務
             await ws_manager.cancel_active_task(sid)
+
+            try:
+                roster_event = await apply_roster_update(
+                    session,
+                    frame.get("character_ids") if "character_ids" in frame else None,
+                    group_name=frame.get("group_name"),
+                )
+            except ValueError as exc:
+                await ws.send_json({"type": "error", "code": "INVALID_ROSTER", "message": str(exc)})
+                continue
+            if roster_event:
+                session = await session_manager.get(sid) or session
+                await ws.send_json(roster_event)
 
             # 加入使用者訊息
             await session_manager.add_user_message(sid, content)

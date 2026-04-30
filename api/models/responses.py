@@ -181,6 +181,7 @@ class ChatSyncResponseDTO(BaseModel):
     character_id: Optional[str] = None
     character_name: Optional[str] = None
     turns: list[ChatTurnDTO] = []
+    roster_event: Optional[dict] = None
 
 
 # ── Auth ─────────────────────────────────────────────────

@@ -56,6 +56,9 @@ def run_router_agent(
         temperature: LLM 溫度參數。
         recent_history: 最近的對話歷史（用於提供上下文判斷意圖）。
                         ⚠️ 不應包含當前 user_prompt（會自行追加），否則重複。
+                        ⚠️ 呼叫端應先用 `strip_system_events` 過濾掉 role='system_event'，
+                           本函式僅取 role='user' 訊息，但 system_event 經過 format_history_for_llm
+                           會被改寫成 user 角色 + `<session_event>` 包裝，需在更上游剝除。
         context_hints: 上下文線索 dict（例如 user_profile_location、su_weather_city、
                        recent_mentions）。供 LLM 在使用者最新訊息缺少工具參數時參考；
                        若依然無法可靠解析，應改呼叫 direct_chat（見 router_system prompt）。

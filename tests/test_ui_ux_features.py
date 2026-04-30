@@ -1,4 +1,5 @@
 """UI/UX 修正項目的 API 與儲存層測試。"""
+import asyncio
 from pathlib import Path
 import shutil
 import uuid
@@ -299,6 +300,117 @@ def test_group_session_creation_dedupes_and_persists_participants(monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_session_roster_update_persists_single_event_and_active_participants():
+    base = _tmp_dir()
+    storage = _storage(base)
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+
+    try:
+        session = asyncio.run(session_manager.create(
+            channel="dashboard",
+            user_id="owner",
+            character_id="char-a",
+            character_ids=["char-a"],
+        ))
+
+        event = asyncio.run(session_manager.update_roster(
+            session.session_id,
+            ["char-a", "char-b"],
+            character_names={"char-a": "角色 A", "char-b": "角色 B"},
+        ))
+        assert event["type"] == "roster_changed"
+        assert event["active_character_ids"] == ["char-a", "char-b"]
+        assert "加入 角色 B" in event["content"]
+
+        duplicate = asyncio.run(session_manager.update_roster(
+            session.session_id,
+            ["char-b", "char-a"],
+            character_names={"char-a": "角色 A", "char-b": "角色 B"},
+        ))
+        assert duplicate is None
+
+        messages = storage.load_conversation_messages(session.session_id)
+        roster_events = [m for m in messages if m["role"] == "system_event"]
+        assert len(roster_events) == 1
+        assert roster_events[0]["debug_info"]["event_type"] == "roster_changed"
+
+        info = storage.get_session_info(session.session_id)
+        assert info["session_mode"] == "group"
+        assert info["character_ids"] == ["char-a", "char-b"]
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_stream_sync_emits_roster_changed_before_group_done(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-roster-stream-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            if character_id in {"char-a", "char-b"}:
+                return {
+                    "character_id": character_id,
+                    "name": {"char-a": "角色 A", "char-b": "角色 B"}[character_id],
+                    "tts_language": "",
+                    "tts_rules": "",
+                }
+            return None
+
+    async def fake_group_loop(**kwargs):
+        return []
+
+    deps.character_mgr = FakeCharacterManager()
+    monkeypatch.setattr(chat_rest, "run_group_chat_loop", fake_group_loop)
+
+    try:
+        client = TestClient(_app(), client=("127.0.0.1", 50000))
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "owner",
+                "password": "abc123",
+                "password_confirm": "abc123",
+            },
+        )
+        csrf = registered.json()["csrf_token"]
+
+        created = client.post(
+            "/api/v1/session",
+            headers={"X-CSRF-Token": csrf},
+            json={"channel": "dashboard", "character_ids": ["char-a"]},
+        )
+        session_id = created.json()["session_id"]
+
+        response = client.post(
+            "/api/v1/chat/stream-sync",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "session_id": session_id,
+                "content": "hello",
+                "character_ids": ["char-a", "char-b"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.text
+        assert body.index('"type": "roster_changed"') < body.index('"type": "group_done"')
+
+        messages = storage.load_conversation_messages(session_id)
+        assert [m["role"] for m in messages[:2]] == ["system_event", "user"]
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
+        deps.character_mgr = None
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_chat_sync_returns_and_persists_character_name(monkeypatch):
     monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-chat-secret")
     base = _tmp_dir()
@@ -368,6 +480,91 @@ def test_chat_sync_returns_and_persists_character_name(monkeypatch):
         assistant = [m for m in messages if m["role"] == "assistant"][0]
         assert assistant["character_name"] == "角色 B"
         assert assistant["character_id"] == "char-b"
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
+        deps.character_mgr = None
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_chat_sync_returns_roster_event_when_roster_changes(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-chat-roster-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            if character_id in {"char-a", "char-b"}:
+                return {
+                    "character_id": character_id,
+                    "name": {"char-a": "角色 A", "char-b": "角色 B"}[character_id],
+                    "tts_language": "",
+                    "tts_rules": "",
+                }
+            return None
+
+    def fake_orchestration(*args, **kwargs):
+        return ("ok", [], {}, False, None, "", None, None, "ok", "", [])
+
+    async def fake_group_loop(**kwargs):
+        return [{
+            "reply": "ok",
+            "extracted_entities": [],
+            "retrieval_context": {},
+            "cited_memory_uids": [],
+            "internal_thought": "",
+            "speech": "ok",
+            "thinking_speech": "",
+            "character_id": "char-a",
+            "character_name": "角色 A",
+            "turn_index": 0,
+            "is_final": True,
+        }]
+
+    deps.character_mgr = FakeCharacterManager()
+    monkeypatch.setattr(chat_rest, "_select_orchestration", lambda prefs: fake_orchestration)
+    monkeypatch.setattr(chat_rest, "run_group_chat_loop", fake_group_loop)
+
+    try:
+        client = TestClient(_app(), client=("127.0.0.1", 50000))
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={"username": "owner", "password": "abc123", "password_confirm": "abc123"},
+        )
+        csrf = registered.json()["csrf_token"]
+
+        created = client.post(
+            "/api/v1/session",
+            headers={"X-CSRF-Token": csrf},
+            json={"channel": "dashboard", "character_ids": ["char-a"]},
+        )
+        session_id = created.json()["session_id"]
+
+        # 同樣 roster：不應產生 roster_event
+        unchanged = client.post(
+            "/api/v1/chat/sync",
+            headers={"X-CSRF-Token": csrf},
+            json={"session_id": session_id, "content": "hi", "character_ids": ["char-a"]},
+        )
+        assert unchanged.status_code == 200, unchanged.text
+        assert unchanged.json().get("roster_event") is None
+
+        # 變更 roster：應在回應中帶 roster_event
+        changed = client.post(
+            "/api/v1/chat/sync",
+            headers={"X-CSRF-Token": csrf},
+            json={"session_id": session_id, "content": "hi again", "character_ids": ["char-a", "char-b"]},
+        )
+        assert changed.status_code == 200, changed.text
+        roster_event = changed.json().get("roster_event")
+        assert roster_event is not None
+        assert roster_event["type"] == "roster_changed"
+        assert roster_event["active_character_ids"] == ["char-a", "char-b"]
+        assert "char-b" in roster_event["added_character_ids"]
     finally:
         session_manager._sessions.clear()
         session_manager.set_storage(None)

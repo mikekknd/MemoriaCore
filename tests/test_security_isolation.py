@@ -85,6 +85,58 @@ def test_load_fragments_keeps_other_assistants_as_context_in_group_session():
     assert "AI：B 的回答" in text
 
 
+def test_load_fragments_includes_exited_character_by_message_speaker_id():
+    base = _test_dir()
+    db_path = base / "conversation.db"
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE conversation_sessions ("
+        "session_id TEXT PRIMARY KEY, user_id TEXT, character_id TEXT, "
+        "channel_class TEXT, session_mode TEXT)"
+    )
+    cur.execute(
+        "CREATE TABLE conversation_session_participants ("
+        "session_id TEXT, character_id TEXT, is_active INTEGER DEFAULT 1)"
+    )
+    cur.execute(
+        "CREATE TABLE conversation_messages ("
+        "msg_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
+        "content TEXT, character_id TEXT)"
+    )
+    cur.execute(
+        "INSERT INTO conversation_sessions VALUES (?, ?, ?, ?, ?)",
+        ("sid", "user-1", "char-a", "public", "single"),
+    )
+    cur.executemany(
+        "INSERT INTO conversation_session_participants VALUES (?, ?, ?)",
+        [("sid", "char-a", 1), ("sid", "char-b", 0)],
+    )
+    cur.executemany(
+        "INSERT INTO conversation_messages (session_id, role, content, character_id) VALUES (?, ?, ?, ?)",
+        [
+            ("sid", "user", "使用者問題", None),
+            ("sid", "assistant", "A 的回答", "char-a"),
+            ("sid", "system_event", "AI 成員變更：退出 角色 B", None),
+            ("sid", "assistant", "B 退出前的回答", "char-b"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    messages = load_fragments_from_db(
+        str(db_path),
+        channel_class_filter=["public"],
+        character_id="char-b",
+    )
+
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", "使用者問題"),
+        ("context", "A 的回答"),
+        ("assistant", "B 退出前的回答"),
+    ]
+
+
 def test_storage_counts_only_target_assistant_messages():
     base = _test_dir()
     storage = StorageManager(

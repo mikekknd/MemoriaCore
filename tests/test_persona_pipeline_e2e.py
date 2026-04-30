@@ -155,7 +155,7 @@ class TestV1Pipeline:
             model_name="test-model",
             ollama_url="http://localhost:11434",
             or_key="",
-            active_character_id=CHAR,
+            character_id=CHAR,
         )
 
         assert result["persona"].startswith("# Persona")
@@ -183,7 +183,7 @@ class TestV1Pipeline:
         _run_probe_sync(
             db_path=db_path, existing_persona="", llm_provider="ollama",
             model_name="m", ollama_url="", or_key="",
-            active_character_id=CHAR,
+            character_id=CHAR,
         )
 
         client = instances[0]
@@ -206,7 +206,7 @@ class TestV1Pipeline:
         result = _run_probe_sync(
             db_path=db_path, existing_persona="", llm_provider="ollama",
             model_name="m", ollama_url="", or_key="",
-            active_character_id=CHAR,
+            character_id=CHAR,
         )
 
         out_dir = Path(result["output_dir"])
@@ -262,7 +262,7 @@ class TestVnPipeline:
             model_name="anthropic/claude",
             ollama_url="",
             or_key="sk-test",
-            active_character_id=CHAR,
+            character_id=CHAR,
         )
 
         td = result["trait_diff"]
@@ -304,7 +304,7 @@ class TestVnPipeline:
         _run_probe_sync(
             db_path=db_path, existing_persona="", llm_provider="ollama",
             model_name="m", ollama_url="", or_key="",
-            active_character_id=CHAR,
+            character_id=CHAR,
         )
 
         persona_call = instances[0].calls[2]
@@ -342,7 +342,7 @@ class TestVnPipeline:
         _run_probe_sync(
             db_path=db_path, existing_persona="", llm_provider="ollama",
             model_name="m", ollama_url="", or_key="",
-            active_character_id=CHAR,
+            character_id=CHAR,
         )
 
         report_call = instances[0].calls[1]
@@ -376,7 +376,7 @@ class TestEdgeCases:
             _run_probe_sync(
                 db_path=str(db), existing_persona="", llm_provider="ollama",
                 model_name="m", ollama_url="", or_key="",
-                active_character_id=CHAR,
+                character_id=CHAR,
             )
 
     def test_summary_skips_markdown_headers(self, db_path, patch_env):
@@ -393,7 +393,7 @@ class TestEdgeCases:
         result = _run_probe_sync(
             db_path=db_path, existing_persona="", llm_provider="ollama",
             model_name="m", ollama_url="", or_key="",
-            active_character_id=CHAR,
+            character_id=CHAR,
         )
 
         assert result["summary"] == "這是第一段純文字敘述"

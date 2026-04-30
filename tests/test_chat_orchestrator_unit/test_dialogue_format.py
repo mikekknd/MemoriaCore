@@ -177,6 +177,21 @@ class TestFormatHistoryForLLM:
         assert len(out) == 2
         assert all("group_followup" not in m["content"] for m in out)
 
+    def test_system_event_becomes_user_context_block(self):
+        msgs = [
+            {
+                "role": "system_event",
+                "content": "AI 成員變更：加入 角色 B；目前在場 角色 A、角色 B",
+                "debug_info": {"event_type": "roster_changed"},
+            },
+            {"role": "user", "content": "繼續"},
+        ]
+        out = format_history_for_llm(msgs)
+        assert out[0]["role"] == "user"
+        assert '<session_event type="roster_changed">' in out[0]["content"]
+        assert "AI 成員變更" in out[0]["content"]
+        assert out[1] == {"role": "user", "content": "繼續"}
+
 
 class TestFormatDialogueForAnalysis:
     def test_single_character_uses_role_prefix(self):
@@ -222,6 +237,15 @@ class TestFormatDialogueForAnalysis:
         out = format_dialogue_for_analysis(msgs)
         assert "<environment_context>" not in out
         assert "[Ref:" not in out
+
+    def test_system_event_is_skipped_for_analysis(self):
+        msgs = [
+            {"role": "system_event", "content": "AI 成員變更：加入 角色 B"},
+            {"role": "user", "content": "嗨"},
+        ]
+        out = format_dialogue_for_analysis(msgs)
+        assert "AI 成員變更" not in out
+        assert out == "user: 嗨"
 
     def test_skips_followup_message(self):
         msgs = [

@@ -713,28 +713,75 @@ def load_fragments_from_db(
             params.append(user_id)
         if character_id is not None and needs_join:
             if has_participants and has_session_character_id:
-                conds.append(
-                    "("
-                    "cs.character_id = ? OR EXISTS ("
-                    "SELECT 1 FROM conversation_session_participants csp "
-                    "WHERE csp.session_id = cm.session_id "
-                    "AND csp.character_id = ? AND csp.is_active = 1"
-                    ")"
-                    ")"
-                )
-                params.extend([character_id, character_id])
+                if has_message_character_id:
+                    conds.append(
+                        "("
+                        "cs.character_id = ? OR EXISTS ("
+                        "SELECT 1 FROM conversation_session_participants csp "
+                        "WHERE csp.session_id = cm.session_id "
+                        "AND csp.character_id = ? AND csp.is_active = 1"
+                        ") OR EXISTS ("
+                        "SELECT 1 FROM conversation_messages cm_target "
+                        "WHERE cm_target.session_id = cm.session_id "
+                        "AND cm_target.role = 'assistant' "
+                        "AND cm_target.character_id = ?"
+                        ")"
+                        ")"
+                    )
+                    params.extend([character_id, character_id, character_id])
+                else:
+                    conds.append(
+                        "("
+                        "cs.character_id = ? OR EXISTS ("
+                        "SELECT 1 FROM conversation_session_participants csp "
+                        "WHERE csp.session_id = cm.session_id "
+                        "AND csp.character_id = ? AND csp.is_active = 1"
+                        ")"
+                        ")"
+                    )
+                    params.extend([character_id, character_id])
             elif has_participants:
-                conds.append(
-                    "EXISTS ("
-                    "SELECT 1 FROM conversation_session_participants csp "
-                    "WHERE csp.session_id = cm.session_id "
-                    "AND csp.character_id = ? AND csp.is_active = 1"
-                    ")"
-                )
-                params.append(character_id)
+                if has_message_character_id:
+                    conds.append(
+                        "("
+                        "EXISTS ("
+                        "SELECT 1 FROM conversation_session_participants csp "
+                        "WHERE csp.session_id = cm.session_id "
+                        "AND csp.character_id = ? AND csp.is_active = 1"
+                        ") OR EXISTS ("
+                        "SELECT 1 FROM conversation_messages cm_target "
+                        "WHERE cm_target.session_id = cm.session_id "
+                        "AND cm_target.role = 'assistant' "
+                        "AND cm_target.character_id = ?"
+                        ")"
+                        ")"
+                    )
+                    params.extend([character_id, character_id])
+                else:
+                    conds.append(
+                        "EXISTS ("
+                        "SELECT 1 FROM conversation_session_participants csp "
+                        "WHERE csp.session_id = cm.session_id "
+                        "AND csp.character_id = ? AND csp.is_active = 1"
+                        ")"
+                    )
+                    params.append(character_id)
             elif has_session_character_id:
-                conds.append("cs.character_id = ?")
-                params.append(character_id)
+                if has_message_character_id:
+                    conds.append(
+                        "("
+                        "cs.character_id = ? OR EXISTS ("
+                        "SELECT 1 FROM conversation_messages cm_target "
+                        "WHERE cm_target.session_id = cm.session_id "
+                        "AND cm_target.role = 'assistant' "
+                        "AND cm_target.character_id = ?"
+                        ")"
+                        ")"
+                    )
+                    params.extend([character_id, character_id])
+                else:
+                    conds.append("cs.character_id = ?")
+                    params.append(character_id)
         if channel_class_filter and needs_join and has_session_channel_class:
             placeholders = ",".join("?" * len(channel_class_filter))
             conds.append(f"cs.channel_class IN ({placeholders})")
@@ -780,6 +827,8 @@ def load_fragments_from_db(
             )
         messages: list[dict] = []
         for role, content, speaker_name, speaker_id, session_mode in cursor.fetchall():
+            if role == "system_event":
+                continue
             msg = {"role": role, "content": content}
             if speaker_name:
                 msg["character_name"] = speaker_name

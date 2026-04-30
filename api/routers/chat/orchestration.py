@@ -17,6 +17,7 @@ from core.chat_orchestrator.dialogue_format import (
     format_dialogue_for_analysis,
     collect_cited_uids,
     snapshot_messages_for_pipeline,
+    strip_system_events,
 )
 from core.chat_orchestrator.router_hints import build_router_context_hints
 from core.chat_orchestrator.dataclasses import SharedToolState
@@ -352,12 +353,13 @@ def _run_chat_orchestration(
                     session_ctx=ctx,
                     profile_facts=_profile_facts,
                 )
+                _recent_for_router = strip_system_events(session_messages[-context_window:][-5:-1])
                 router_result = run_router_agent(
                     user_prompt=user_prompt,
                     tools_list=tools_list,
                     router=rtr,
                     temperature=0.0,
-                    recent_history=clean_history[-5:-1] or None,
+                    recent_history=_recent_for_router or None,
                     context_hints=_hints if _hints else None,
                 )
                 tool_calls = router_result.tool_calls if router_result.needs_tools else []

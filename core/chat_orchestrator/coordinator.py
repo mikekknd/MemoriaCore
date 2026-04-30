@@ -19,6 +19,7 @@ from core.chat_orchestrator.dialogue_format import (
     format_dialogue_for_analysis,
     collect_cited_uids,
     snapshot_messages_for_pipeline,
+    strip_system_events,
 )
 from core.chat_orchestrator.router_hints import build_router_context_hints
 from core.chat_orchestrator.group_context import (
@@ -397,7 +398,8 @@ def run_dual_layer_orchestration(
         with t.step("[並行] 意圖路由判斷 (Router Agent LLM)"):
             # session_messages 末尾已含當前 user_prompt（add_user_message 在 orchestration 前執行）。
             # run_router_agent 會自行在末尾追加 user_prompt，故此處傳入 [:-1] 排除最後一筆，避免重複。
-            _recent_for_router = session_messages[-context_window:-1]
+            # 同時剝掉 system_event：router 統一收 raw 訊息（user/assistant），不要看到 roster 變更事件。
+            _recent_for_router = strip_system_events(session_messages[-context_window:-1])
             try:
                 _profile_facts = (
                     storage.load_all_profiles(ms.db_path, user_id=user_id)

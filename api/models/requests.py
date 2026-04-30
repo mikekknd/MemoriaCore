@@ -111,6 +111,8 @@ class ExpandQueryRequest(BaseModel):
 class ChatSyncRequest(BaseModel):
     content: str
     session_id: Optional[str] = None
+    character_ids: Optional[list[str]] = None
+    group_name: Optional[str] = None
 
 
 class CreateSessionRequest(BaseModel):

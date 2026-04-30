@@ -21,6 +21,7 @@ from api.models.responses import ChatSyncResponseDTO, ChatTurnDTO, RetrievalCont
 from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
 from api.routers.chat.group_loop import is_group_session, run_group_chat_loop
+from api.routers.chat.roster import apply_roster_update, normalize_character_ids
 from tools.minimax_image import generated_image_path
 
 
@@ -49,7 +50,12 @@ def _get_session_character(character_id: str) -> dict:
 # SECTION: 共用 — Session 取得/還原/建立
 # ════════════════════════════════════════════════════════════
 
-async def _resolve_session(session_id: str | None, current_user: dict):
+async def _resolve_session(
+    session_id: str | None,
+    current_user: dict,
+    character_ids: list[str] | None = None,
+    group_name: str | None = None,
+):
     """取得 session：優先從記憶體取，其次從 DB 還原，最後才建新 session。"""
     user_id = str(current_user["id"])
     session = None
@@ -66,11 +72,22 @@ async def _resolve_session(session_id: str | None, current_user: dict):
         prefs = get_storage().load_prefs()
         channel_class = "private" if current_user.get("role") == "admin" else "public"
         persona_face = "private" if current_user.get("role") == "admin" else "public"
+        try:
+            normalized = normalize_character_ids(character_ids)
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc))
+        if normalized is not None:
+            requested_ids, _names = normalized
+        else:
+            requested_ids = [prefs.get("active_character_id", "default")]
         session = await session_manager.create(
             channel="dashboard",
             channel_uid=user_id,
             user_id=user_id,
-            character_id=prefs.get("active_character_id", "default"),
+            character_id=requested_ids[0],
+            character_ids=requested_ids,
+            session_mode="group" if len(requested_ids) > 1 else "single",
+            group_name=group_name.strip() if isinstance(group_name, str) else "",
             channel_class=channel_class,
             persona_face=persona_face,
         )
@@ -83,13 +100,20 @@ async def _resolve_session(session_id: str | None, current_user: dict):
 
 @router.post("/sync", response_model=ChatSyncResponseDTO)
 async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_current_user)):
-    session = await _resolve_session(body.session_id, current_user)
+    session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
     sid = session.session_id
+
+    try:
+        roster_event = await apply_roster_update(session, body.character_ids, group_name=body.group_name)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    if roster_event:
+        session = await session_manager.get(sid) or session
 
     await session_manager.add_user_message(sid, body.content)
     s = await session_manager.get(sid)
     if not s:
-        return ChatSyncResponseDTO(reply="Session error")
+        return ChatSyncResponseDTO(reply="Session error", roster_event=roster_event)
 
     user_prefs = get_storage().load_prefs()
     orchestration_fn = _select_orchestration(user_prefs)
@@ -103,7 +127,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             user_name=_user_display_name(current_user),
         )
         if not turns:
-            return ChatSyncResponseDTO(reply="（無回應）", turns=[])
+            return ChatSyncResponseDTO(reply="（無回應）", turns=[], roster_event=roster_event)
         from core.chat_orchestrator.coordinator import _generate_tts_speech
         for turn in turns:
             if not turn.get("speech"):
@@ -129,6 +153,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             character_id=final_turn.get("character_id"),
             character_name=final_turn.get("character_name"),
             turns=[ChatTurnDTO(**turn) for turn in turns],
+            roster_event=roster_event,
         )
 
     session_ctx = {
@@ -201,6 +226,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             turn_index=0,
             is_final=True,
         )],
+        roster_event=roster_event,
     )
 
 
@@ -216,8 +242,15 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
     """
     # 優先從記憶體取得 session；找不到時先嘗試從 DB 還原（後端重啟後記憶體清空的情況）；
     # 都沒有才建新 session（channel 統一用 streamlit，確保能出現在 UI session 列表）
-    session = await _resolve_session(body.session_id, current_user)
+    session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
     sid = session.session_id
+
+    try:
+        roster_event = await apply_roster_update(session, body.character_ids, group_name=body.group_name)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    if roster_event:
+        session = await session_manager.get(sid) or session
 
     await session_manager.add_user_message(sid, body.content)
     s = await session_manager.get(sid)
@@ -247,6 +280,9 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         event_q.put(data)
 
     async def event_generator():
+        if roster_event:
+            yield f"data: {json.dumps(roster_event, ensure_ascii=False)}\n\n"
+
         if is_group_session(s):
             def on_turn(turn: dict):
                 event_q.put({
