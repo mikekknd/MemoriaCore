@@ -4,7 +4,6 @@
 依 user_prefs["dual_layer_enabled"] 由 _select_orchestration() 決定。
 """
 import json
-import re
 
 from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_analyzer,
@@ -13,7 +12,20 @@ from api.dependencies import (
 from core.prompt_manager import get_prompt_manager
 from core.prompt_utils import build_user_prefix
 from core.chat_orchestrator.router_agent import run_router_agent
-from core.chat_orchestrator.message_format import format_history_for_llm
+from core.chat_orchestrator.dialogue_format import (
+    format_history_for_llm,
+    format_dialogue_for_analysis,
+    collect_cited_uids,
+    snapshot_messages_for_pipeline,
+)
+from core.chat_orchestrator.router_hints import build_router_context_hints
+from core.chat_orchestrator.dataclasses import SharedToolState
+from core.chat_orchestrator.group_context import (
+    build_group_participants_block,
+    build_llm_log_context,
+    is_group_context,
+)
+from core.chat_orchestrator.persona_agent import _sanitize_group_reply
 from api.routers.chat.timer import StepTimer
 from api.routers.chat.pipeline import PipelineContext
 
@@ -33,11 +45,14 @@ def _run_chat_orchestration(
     """
     同步執行對話編排的關鍵路徑（在執行緒池中跑）。
     話題偏移時的記憶管線已拆至背景，此處只做偵測 → 檢索 → 生成。
-    回傳 (reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data,
-          inner_thought, status_metrics, tone, speech, cited_uids)
+    回傳 12-tuple：(reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data,
+                    inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids,
+                    tool_state_export)
     pipeline_data: 若話題偏移，回傳 PipelineContext 供呼叫端發起背景任務；否則為 None。
     on_event: 可選的 callback，用於即時推送中間狀態（如工具呼叫通知）給前端。
-    session_ctx: {"user_id": str, "character_id": str, "persona_face": str}
+    session_ctx: {"user_id": str, "character_id": str, "persona_face": str,
+                  "shared_tool_state": SharedToolState | None,
+                  "followup_instruction": dict | None}
     """
     ms = get_memory_sys()
     analyzer = get_analyzer()
@@ -51,6 +66,7 @@ def _run_chat_orchestration(
     persona_face = ctx.get("persona_face", "public")
     write_visibility = persona_face  # persona_face == write_visibility（由 resolve_context 保證）
     visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
+    force_group = is_group_context(ctx)
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -64,10 +80,10 @@ def _run_chat_orchestration(
     timer = StepTimer()
 
     # ─── 提取 Active UIDs ───
+    # 主路徑：debug_info["cited_uids"]；缺值時 fallback 到 content regex（相容舊資料）
     active_uids = set()
     for m in session_messages[-4:]:
-        matches = re.findall(r'\[Ref:\s*([^\]]+)\]', m.get("content", ""))
-        for uid in matches:
+        for uid in collect_cited_uids(m):
             active_uids.add(uid)
 
     # ─── 話題偏移偵測 ───
@@ -80,8 +96,7 @@ def _run_chat_orchestration(
         topic_shifted = True
         # 準備背景管線所需的資料快照（不在此處執行管線）
         import copy
-        msgs_to_extract = [{"role": m["role"], "content": m["content"]}
-                           for m in session_messages[:-1]]
+        msgs_to_extract = snapshot_messages_for_pipeline(session_messages[:-1])
         _user_blocks = ms._get_memory_blocks(user_id, character_id, write_visibility)
         last_block = copy.deepcopy(_user_blocks[-1]) if _user_blocks else None
         pipeline_data = PipelineContext(
@@ -92,7 +107,7 @@ def _run_chat_orchestration(
 
     # ─── 雙軌檢索 ───
     with timer.step("查詢擴展 (Query Expansion LLM)"):
-        expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand")
+        expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
     inherited_str = " ".join(last_entities)
     combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
 
@@ -132,7 +147,7 @@ def _run_chat_orchestration(
     if blocks:
         formatted_blocks = []
         for i, block in enumerate(blocks):
-            raw_text = "\n".join([f"  - {m['role']}: {m['content']}" for m in block["raw_dialogues"] if "role" in m])
+            raw_text = format_dialogue_for_analysis(block["raw_dialogues"], force_group=force_group)
             formatted_blocks.append(
                 f"【情境回憶 {i + 1}】[UID: {block.get('block_id', 'unknown')}]\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
             overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
@@ -171,6 +186,8 @@ def _run_chat_orchestration(
     tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
     char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or storage.load_system_prompt()
+    group_participants_block = build_group_participants_block(ctx, char_mgr, character_id)
+    log_context = build_llm_log_context(ctx, char_mgr, character_id)
 
     pm = get_prompt_manager()
     speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
@@ -183,6 +200,7 @@ def _run_chat_orchestration(
     )
 
     sys_prompt = f"""{char_sys_prompt}
+{group_participants_block}
 {static_profile_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
 {_suffix}"""
@@ -190,7 +208,7 @@ def _run_chat_orchestration(
     # ⚠️ 上下文組裝必須在 debug 預覽之前完成（修正原本 clean_history 引用順序錯誤）。
     with timer.step("上下文組裝 (Context Assembly)"):
         api_messages = [{"role": "system", "content": sys_prompt}]
-        clean_history = format_history_for_llm(session_messages[-context_window:])
+        clean_history = format_history_for_llm(session_messages[-context_window:], force_group=force_group)
         # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
         # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
         api_messages.extend(clean_history)
@@ -276,17 +294,47 @@ def _run_chat_orchestration(
             except ImportError:
                 pass
 
-            # ── 第一輪：輕量工具偵測（共用 run_router_agent）──────
-            # clean_history 末尾含當前 user_prompt，傳 [:-1] 避免重複追加。
-            router_result = run_router_agent(
-                user_prompt=user_prompt,
-                tools_list=tools_list,
-                router=rtr,
-                temperature=0.0,
-                recent_history=clean_history[-5:-1] or None,
-            )
-            tool_calls = router_result.tool_calls if router_result.needs_tools else []
+            # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call
+            cached_state = (session_ctx or {}).get("shared_tool_state")
+            tool_calls = []
             tool_results = []
+            if isinstance(cached_state, SharedToolState) and cached_state.executed:
+                tool_results = list(cached_state.tool_results)
+                if cached_state.tool_results_formatted and api_messages and api_messages[-1]["role"] == "user":
+                    tool_notice = (
+                        "\n\n[系統通知：以下是根據前一位角色的工具查詢自動回傳的外部數據，"
+                        "請依據此數據回答使用者的問題]\n"
+                        + cached_state.tool_results_formatted
+                    )
+                    api_messages[-1] = {
+                        **api_messages[-1],
+                        "content": api_messages[-1]["content"] + tool_notice,
+                    }
+            else:
+                # ── 第一輪：輕量工具偵測（共用 run_router_agent）──────
+                # clean_history 末尾含當前 user_prompt，傳 [:-1] 避免重複追加。
+                try:
+                    _profile_facts = (
+                        storage.load_all_profiles(ms.db_path, user_id=user_id)
+                        if getattr(ms, "db_path", None) else []
+                    )
+                except Exception:
+                    _profile_facts = []
+                _hints = build_router_context_hints(
+                    session_messages=session_messages,
+                    user_prefs=user_prefs,
+                    session_ctx=ctx,
+                    profile_facts=_profile_facts,
+                )
+                router_result = run_router_agent(
+                    user_prompt=user_prompt,
+                    tools_list=tools_list,
+                    router=rtr,
+                    temperature=0.0,
+                    recent_history=clean_history[-5:-1] or None,
+                    context_hints=_hints if _hints else None,
+                )
+                tool_calls = router_result.tool_calls if router_result.needs_tools else []
 
             # ── 若有工具呼叫：執行工具並將結果注入完整上下文 ──
             if tool_calls:
@@ -332,11 +380,30 @@ def _run_chat_orchestration(
                         "message": "搜尋完成，正在整理回覆...",
                     })
 
+            # 群組接力指令（若有）：附加到最後一則 user 訊息；若最近一則是其他 AI，
+            # 則追加一則暫時 user 指令，僅供本次 LLM 使用。
+            # 不寫進 generation_messages / session_messages，故不影響 expand/pipeline/profile。
+            followup = (session_ctx or {}).get("followup_instruction")
+            if followup and api_messages:
+                followup_text = get_prompt_manager().get("group_followup_user").format(
+                    user_prompt=followup.get("user_prompt_original", user_prompt),
+                    last_character_name=followup.get("last_character_name", ""),
+                    last_reply=followup.get("last_reply", ""),
+                )
+                if api_messages[-1]["role"] == "user":
+                    api_messages[-1] = {
+                        **api_messages[-1],
+                        "content": api_messages[-1]["content"] + "\n\n" + followup_text,
+                    }
+                else:
+                    api_messages.append({"role": "user", "content": followup_text})
+
             # ── 第二輪：完整人格上下文 + schema 強制格式化 ────
             # 無論是否使用工具，都用完整 api_messages 生成最終回應。
             full_res = rtr.generate(
                 "chat", api_messages, temperature=temperature,
                 response_format=chat_schema,
+                log_context=log_context,
             )
 
         except Exception as e:
@@ -357,14 +424,14 @@ def _run_chat_orchestration(
             if _start != -1:
                 try:
                     parsed, _ = json.JSONDecoder().raw_decode(full_res, _start)
-                    reply_text = parsed.get("reply", "解析錯誤")
+                    reply_text = _sanitize_group_reply(parsed.get("reply", "解析錯誤"), log_context)
                     new_entities = parsed.get("extracted_entities", [])
                     inner_thought = parsed.get("internal_thought")
                 except Exception:
-                    reply_text = full_res
+                    reply_text = _sanitize_group_reply(full_res, log_context)
                     new_entities = []
             else:
-                reply_text = full_res
+                reply_text = _sanitize_group_reply(full_res, log_context)
                 new_entities = []
 
     if "tool_results" in locals():
@@ -376,7 +443,30 @@ def _run_chat_orchestration(
     # 將效能計時結果注入 retrieval_ctx
     retrieval_ctx["perf_timing"] = timer.summary()
 
-    return reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, inner_thought, status_metrics, tone, speech, "", cited_uids
+    # 工具狀態 export：給群組接力 turn 1+ 復用
+    _has_tool_results = "tool_results" in locals() and bool(tool_results)
+    if _has_tool_results:
+        # 重新格式化以供 cached 復用（與 middleware 的 ToolContext.tool_results_formatted 風格一致）
+        _formatted_parts = [f"【{r['tool_name']} 查詢結果】\n{r['result']}" for r in tool_results]
+        _formatted_text = (
+            "[系統自動查詢結果 — 以下資料由外部工具回傳，非使用者輸入]\n"
+            + "\n".join(_formatted_parts)
+            + "\n[查詢結果結束]"
+        )
+        tool_state_export = SharedToolState(
+            tool_results=list(tool_results),
+            tool_results_formatted=_formatted_text,
+            thinking_speech_sent="",
+            executed=True,
+        )
+    else:
+        tool_state_export = SharedToolState(executed=False)
+
+    return (
+        reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data,
+        inner_thought, status_metrics, tone, speech, "", cited_uids,
+        tool_state_export,
+    )
 
 
 # ════════════════════════════════════════════════════════════
@@ -392,10 +482,18 @@ def _select_orchestration(user_prefs: dict):
 
 
 def _unpack_orchestration_result(result: tuple):
-    """統一解構 9/10/11-tuple 的編排結果。"""
+    """統一解構 9/10/11/12-tuple 的編排結果。
+
+    12-tuple（最新）：
+        (reply, entities, ctx, shifted, pipeline, thought, metrics, tone,
+         speech, thinking_speech, cited_uids, tool_state_export)
+    舊版會在末尾補預設值（cited_uids=[], thinking_speech="", tool_state_export=None）。
+    """
+    if len(result) == 12:
+        return result
     if len(result) == 11:
-        return result  # (reply, entities, ctx, shifted, pipeline, thought, metrics, tone, speech, thinking_speech, cited_uids)
+        return (*result, None)
     if len(result) == 10:
-        return (*result, [])
-    # 舊版 9-tuple，補上 thinking_speech="" 和 cited_uids=[]
-    return (*result, "", [])
+        return (*result, [], None)
+    # 舊版 9-tuple，補上 thinking_speech="" 和 cited_uids=[] 和 tool_state_export=None
+    return (*result, "", [], None)

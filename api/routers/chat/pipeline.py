@@ -15,6 +15,7 @@ from api.dependencies import get_memory_sys, get_router, get_analyzer, get_embed
 from api.routers.chat.ws_manager import ws_manager
 from core.deployment_config import should_extract_profile
 from core.chat_orchestrator.dataclasses import PipelineContext  # re-export，保持向後相容
+from core.chat_orchestrator.group_context import is_group_context
 
 __all__ = ["PipelineContext"]
 
@@ -42,6 +43,7 @@ def _run_memory_pipeline_sync(ctx: PipelineContext) -> list[dict]:
     character_id = sctx.get("character_id", "default")
     write_visibility = sctx.get("persona_face", "public")  # persona_face == write_visibility
     channel = sctx.get("channel", "")
+    force_group = is_group_context(sctx)
     profile_allowed = bool(sctx.get("profile_allowed", True)) and (
         should_extract_profile(channel) if channel else True
     )
@@ -52,6 +54,7 @@ def _run_memory_pipeline_sync(ctx: PipelineContext) -> list[dict]:
     try:
         pipeline_res = analyzer.process_memory_pipeline(
             msgs_to_extract, last_block, rtr, embed_model, task_key="pipeline",
+            force_group=force_group,
         )
     except Exception as e:
         pipeline_res = {"error": str(e)}
@@ -83,7 +86,10 @@ def _run_memory_pipeline_sync(ctx: PipelineContext) -> list[dict]:
     if profile_allowed:
         try:
             current_profile = ms.storage.load_all_profiles(ms.db_path, user_id=user_id) if ms.db_path else []
-            profile_facts = analyzer.extract_user_facts(msgs_to_extract, current_profile, rtr, task_key="profile")
+            profile_facts = analyzer.extract_user_facts(
+                msgs_to_extract, current_profile, rtr, task_key="profile",
+                force_group=force_group,
+            )
             if profile_facts:
                 ms.apply_profile_facts(profile_facts, embed_model,
                                        user_id=user_id, visibility=write_visibility)

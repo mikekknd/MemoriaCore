@@ -27,6 +27,14 @@ from tools.minimax_image import generated_image_path
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+def _user_display_name(current_user: dict) -> str:
+    return (
+        current_user.get("nickname")
+        or current_user.get("username")
+        or str(current_user.get("id", ""))
+    )
+
+
 def _get_session_character(character_id: str) -> dict:
     char_mgr = get_character_manager()
     char = char_mgr.get_character(character_id)
@@ -92,6 +100,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             user_prompt=body.content,
             user_prefs=user_prefs,
             orchestration_fn=orchestration_fn,
+            user_name=_user_display_name(current_user),
         )
         if not turns:
             return ChatSyncResponseDTO(reply="（無回應）", turns=[])
@@ -129,6 +138,10 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         "session_id": sid,
         "bot_id": session.bot_id,
         "channel": session.channel,
+        "user_name": _user_display_name(current_user),
+        "active_character_ids": list(session.active_character_ids or [session.character_id]),
+        "session_mode": session.session_mode,
+        "group_name": session.group_name,
     }
 
     result = await asyncio.to_thread(
@@ -137,17 +150,14 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         session_ctx=session_ctx,
     )
     reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-        inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
-        _unpack_orchestration_result(result)
+        inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
+        _tool_state_export = _unpack_orchestration_result(result)
 
-    saved_reply_text = reply_text
-    if cited_uids:
-        refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
-        saved_reply_text = f"{reply_text} {refs_str}"
     reply_char = _get_session_character(session.character_id)
     character_name = reply_char.get("name") or session.character_id
+    # cited_uids 透過 retrieval_ctx["cited_uids"] 隨 debug_info 持久化（見 storage_manager.save_conversation_message）
     await session_manager.add_assistant_message(
-        sid, saved_reply_text, retrieval_ctx, new_entities,
+        sid, reply_text, retrieval_ctx, new_entities,
         persona_state={"internal_thought": inner_thought},
         character_name=character_name,
         character_id=session.character_id,
@@ -227,6 +237,10 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         "session_id": sid,
         "bot_id": session.bot_id,
         "channel": session.channel,
+        "user_name": _user_display_name(current_user),
+        "active_character_ids": list(session.active_character_ids or [session.character_id]),
+        "session_mode": session.session_mode,
+        "group_name": session.group_name,
     }
 
     def on_event(data: dict):
@@ -248,6 +262,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
                 orchestration_fn=orchestration_fn,
                 on_event=on_event,
                 on_turn=on_turn,
+                user_name=_user_display_name(current_user),
             ))
 
             while not group_task.done():
@@ -327,18 +342,15 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
             return
 
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-            inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
-            _unpack_orchestration_result(result)
+            inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
+            _tool_state_export = _unpack_orchestration_result(result)
 
         # 寫入 session 及背景任務（與 /sync 相同）
-        saved_reply_text = reply_text
-        if cited_uids:
-            refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
-            saved_reply_text = f"{reply_text} {refs_str}"
         reply_char = _get_session_character(session.character_id)
         character_name = reply_char.get("name") or session.character_id
+        # cited_uids 透過 retrieval_ctx["cited_uids"] 隨 debug_info 持久化
         await session_manager.add_assistant_message(
-            sid, saved_reply_text, retrieval_ctx, new_entities,
+            sid, reply_text, retrieval_ctx, new_entities,
             persona_state={"internal_thought": inner_thought},
             character_name=character_name,
             character_id=session.character_id,

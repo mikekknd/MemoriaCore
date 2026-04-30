@@ -6,9 +6,45 @@
 - 強制 response_format=chat_schema，並由 LLMRouter.generate() 處理非 JSON 自動重試。
 """
 import json
+import re
 
 from core.system_logger import SystemLogger
 from core.chat_orchestrator.dataclasses import ToolContext, PersonaResult
+
+
+_GROUP_SPEAKER_RE = re.compile(r"\[([^\]\|\n]+)\|([^\]\|\n]+)\]:\s*")
+
+
+def _sanitize_group_reply(reply_text: str, log_context: dict | None = None) -> str:
+    """群組模式下移除模型誤複製的其他 AI speaker 段落。"""
+    if not reply_text or not log_context or log_context.get("session_mode") != "group":
+        return reply_text
+
+    matches = list(_GROUP_SPEAKER_RE.finditer(reply_text))
+    if not matches:
+        return reply_text
+
+    current_id = str(log_context.get("current_character_id") or "")
+    current_name = str(log_context.get("current_character_name") or "")
+    own_segments: list[str] = []
+    for idx, match in enumerate(matches):
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(reply_text)
+        name = match.group(1).strip()
+        cid = match.group(2).strip()
+        if cid == current_id or (current_name and name == current_name):
+            segment = reply_text[start:end].strip()
+            if segment:
+                own_segments.append(segment)
+
+    if own_segments:
+        return "\n".join(own_segments).strip()
+
+    prefix = reply_text[:matches[0].start()].strip()
+    if prefix:
+        return prefix
+
+    return "（回覆格式異常，已略過其他角色內容）"
 
 
 # ════════════════════════════════════════════════════════════
@@ -22,6 +58,7 @@ def run_persona_agent(
     chat_schema: dict,
     router,
     temperature: float = 0.7,
+    log_context: dict | None = None,
 ) -> tuple[str | None, PersonaResult | None]:
     """
     Module C — 角色渲染層：載入完整角色設定，生成結構化 JSON 回覆。
@@ -69,6 +106,7 @@ def run_persona_agent(
         full_res = router.generate(
             "chat", final_messages, temperature=temperature,
             response_format=chat_schema,
+            log_context=log_context,
         )
     except Exception as e:
         SystemLogger.log_error("PersonaAgent", f"{type(e).__name__}: {e}")
@@ -82,21 +120,21 @@ def run_persona_agent(
 # SECTION: _parse_persona_response
 # ════════════════════════════════════════════════════════════
 
-def _parse_persona_response(full_res: str | None) -> PersonaResult:
+def _parse_persona_response(full_res: str | None, log_context: dict | None = None) -> PersonaResult:
     """從 LLM 原始回應中解析結構化 JSON。"""
     if not full_res:
         return PersonaResult(reply_text="（無回應）")
 
     start = full_res.find('{')
     if start == -1:
-        return PersonaResult(reply_text=full_res)
+        return PersonaResult(reply_text=_sanitize_group_reply(full_res, log_context))
 
     try:
         parsed, _ = json.JSONDecoder().raw_decode(full_res, start)
         return PersonaResult(
-            reply_text=parsed.get("reply", "解析錯誤"),
+            reply_text=_sanitize_group_reply(parsed.get("reply", "解析錯誤"), log_context),
             new_entities=parsed.get("extracted_entities", []),
             inner_thought=parsed.get("internal_thought"),
         )
     except Exception:
-        return PersonaResult(reply_text=full_res)
+        return PersonaResult(reply_text=_sanitize_group_reply(full_res, log_context))

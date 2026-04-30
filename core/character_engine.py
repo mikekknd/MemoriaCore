@@ -18,6 +18,7 @@ class CharacterManager:
                 {
                     "character_id": "default",
                     "name": "預設助理",
+                    "character_summary": "具備情境記憶與核心認知的通用 AI 助理，語氣親切穩定，適合在單人或群組對話中協助整理資訊、回應問題並延續脈絡。",
                     "system_prompt": "你是一個具備情境記憶與核心認知的 AI 助理。",
                     "visual_prompt": "具備情境記憶與核心認知的 AI 助理形象，乾淨、親切、專業的角色肖像。",
                     "evolved_prompt": None,
@@ -37,8 +38,16 @@ class CharacterManager:
             return []
 
     def save_characters(self, characters: List[Dict[str, Any]]):
+        characters = [self._normalize_character(c) for c in characters]
         with open(self.characters_file, "w", encoding="utf-8") as f:
             json.dump(characters, f, ensure_ascii=False, indent=2)
+
+    def _normalize_character(self, character: Dict[str, Any]) -> Dict[str, Any]:
+        """補齊相容欄位並限制短簡介長度。"""
+        data = dict(character)
+        summary = " ".join(str(data.get("character_summary") or "").split())
+        data["character_summary"] = summary[:240]
+        return data
 
     def get_character(self, character_id: str) -> Dict[str, Any] | None:
         chars = self.load_characters()
@@ -144,6 +153,10 @@ class CharacterManager:
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "角色的名稱"},
+                "character_summary": {
+                    "type": "string",
+                    "description": "角色簡介，約 200 字以內，濃縮身份、性格、互動風格與群組中可辨識特徵。"
+                },
                 "system_prompt": {"type": "string", "description": "核心人格與世界觀設定的 System Prompt"},
                 "reply_rules": {
                     "type": "string",
@@ -162,7 +175,7 @@ class CharacterManager:
                     "description": "如果角色發音語言與字幕不同，請填寫此欄位（例如 '日文', '英文'）。若無需雙語分離則留空字串。"
                 }
             },
-            "required": ["name", "system_prompt", "reply_rules", "visual_prompt", "tts_rules", "tts_language"]
+            "required": ["name", "character_summary", "system_prompt", "reply_rules", "visual_prompt", "tts_rules", "tts_language"]
         }
 
         prompt = get_prompt_manager().get("character_generate").format(
@@ -176,7 +189,7 @@ class CharacterManager:
             if not parsed:
                 SystemLogger.log_error("CharacterGenerate", f"LLM 回傳空 JSON。Prompt 前100字: {prompt[:100]!r}")
                 return {"error": "Invalid JSON format"}
-            return parsed
+            return self._normalize_character(parsed)
         except Exception as e:
             SystemLogger.log_error("CharacterGenerate", f"例外: {e} | Prompt 前100字: {prompt[:100]!r}")
             return {"error": str(e)}

@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from core.system_logger import SystemLogger
 from core.prompt_manager import get_prompt_manager
+from core.chat_orchestrator.dialogue_format import format_dialogue_for_analysis
 
 class MemoryAnalyzer:
     def __init__(self, memory_sys):
@@ -53,14 +54,16 @@ class MemoryAnalyzer:
             
         return is_shift, score
 
-    def process_memory_pipeline(self, messages_to_extract, last_block, router, embed_model, task_key="pipeline"):
+    def process_memory_pipeline(
+        self, messages_to_extract, last_block, router, embed_model,
+        task_key="pipeline", force_group: bool = False,
+    ):
         if not messages_to_extract:
             return {"new_memories": [], "error": "無新對話可供提取。"}
 
-        dialogue_text = ""
-        for m in messages_to_extract:
-            dialogue_text += f"{m['role']}: {m['content']}\n"
-            
+        # 群組對話會帶 [name|character_id]: 前綴；內部標記（[Ref:]、環境/情緒/接力指令）會被清洗。
+        dialogue_text = format_dialogue_for_analysis(messages_to_extract, force_group=force_group)
+
         last_overview = "無"
         if last_block:
             last_overview = f"時間: {last_block['timestamp']}\n概覽: {last_block['overview']}"
@@ -192,14 +195,14 @@ class MemoryAnalyzer:
     def extract_multiple_memories(self, messages_to_extract, router, embed_model, task_key="pipeline"):
         return self.process_memory_pipeline(messages_to_extract, None, router, embed_model, task_key).get("new_memories", [])
 
-    def extract_user_facts(self, messages, current_profile, router, task_key="profile"):
+    def extract_user_facts(self, messages, current_profile, router, task_key="profile", force_group: bool = False):
         """從對話中提取使用者的客觀事實資訊 (姓名、偏好、禁忌等)"""
         if not messages:
             return []
 
-        dialogue_text = ""
-        for m in messages:  # 訊息已由話題偏移偵測的 get_pipeline_context() 界定範圍，無需再截斷
-            dialogue_text += f"{m['role']}: {m['content']}\n"
+        # 訊息已由話題偏移偵測的 get_pipeline_context() 界定範圍，無需再截斷。
+        # 群組對話會帶 [name|character_id]: 前綴，prompt 會明確指示只看 user 訊息抽取事實。
+        dialogue_text = format_dialogue_for_analysis(messages, force_group=force_group)
 
         profile_json = "無已知事實"
         if current_profile:

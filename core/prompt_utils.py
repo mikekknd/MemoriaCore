@@ -70,8 +70,12 @@ def build_user_prefix(
     )
 
     emo_block = ""
+    current_character_id = str((session_ctx or {}).get("character_id") or "").strip()
     for msg in reversed(session_messages):
         if msg.get("role") == "assistant" and msg.get("persona_state"):
+            msg_character_id = str(msg.get("character_id") or "").strip()
+            if current_character_id and msg_character_id and msg_character_id != current_character_id:
+                continue
             ps = msg["persona_state"]
             internal_thought = ps.get("internal_thought") or "—"
             emo_block = "\n" + pm.get("emotional_trajectory_block").format(

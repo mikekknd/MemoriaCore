@@ -325,12 +325,19 @@ class LLMRouter:
         self.routes[task_key] = {"provider": provider, "model": model_name}
 
     # 【核心修正】：Router 層級開放參數
-    def generate(self, task_key: str, messages: list, temperature: float = 0.0, response_format: dict = None) -> str:
+    def generate(
+        self,
+        task_key: str,
+        messages: list,
+        temperature: float = 0.0,
+        response_format: dict = None,
+        log_context: dict | None = None,
+    ) -> str:
         route = self.routes.get(task_key)
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
-        SystemLogger.log_llm_prompt(task_key, route["model"], messages)
+        SystemLogger.log_llm_prompt(task_key, route["model"], messages, log_context=log_context)
         response_text, _ = route["provider"].generate_chat(messages, route["model"], temperature, response_format)
 
         # 若有 response_format 但模型回傳無法解析的純文字，自動重試一次。
@@ -346,22 +353,91 @@ class LLMRouter:
             except (ValueError, TypeError):
                 return False
 
+        def _looks_like_document_dump(text: str) -> bool:
+            stripped = (text or "").strip()
+            if not stripped:
+                return False
+            lines = stripped.splitlines()
+            heading_count = sum(1 for line in lines if line.lstrip().startswith("#"))
+            bullet_count = sum(1 for line in lines if line.lstrip().startswith(("- ", "* ")))
+            has_code_fence = "```" in stripped
+            has_shell_doc = any(token in stripped.lower() for token in (
+                "docker-compose", "sudo pip", "pip install", "command] [args",
+            ))
+            long_markdown_doc = len(stripped) > 500 and (heading_count >= 2 or bullet_count >= 8)
+            return has_shell_doc or has_code_fence or long_markdown_doc
+
+        def _looks_like_group_speaker_leak(text: str, ctx: dict | None) -> bool:
+            if not text or not ctx or ctx.get("session_mode") != "group":
+                return False
+            current_id = str(ctx.get("current_character_id") or "")
+            participants = ctx.get("participants") or []
+            for participant in participants:
+                cid = str(participant.get("character_id") or "")
+                name = str(participant.get("name") or "")
+                if not cid or cid == current_id:
+                    continue
+                if f"|{cid}]:" in text or (name and f"[{name}|" in text):
+                    return True
+            return False
+
         if response_format and not _is_valid_json(response_text):
-            SystemLogger.log_error(
-                "LLMRouter",
-                f"[{task_key}] 非 JSON 回應，自動重試。前100字: {response_text[:100]!r}"
+            original_prompt = "\n\n".join(
+                f"[{msg.get('role', 'unknown')}]\n{msg.get('content', '')}"
+                for msg in messages
             )
-            retry_msgs = list(messages) + [
-                {"role": "assistant", "content": response_text},
-                {
-                    "role": "user",
-                    "content": (
-                        "[系統警告] 你的上一則回覆格式錯誤，無法解析為合法 JSON。"
-                        "請將上一則回覆的內容原封不動地重新包裝為合法 JSON 格式，"
-                        "禁止修改內容、禁止重新生成新的回覆、禁止任何前導文字或 Markdown 格式。"
-                    ),
+            retry_reason = ""
+            if _looks_like_group_speaker_leak(response_text, log_context):
+                retry_strategy = "regenerate"
+                retry_reason = "group_speaker_leak"
+            elif _looks_like_document_dump(response_text):
+                retry_strategy = "regenerate"
+                retry_reason = "document_dump"
+            else:
+                retry_strategy = "preserve_previous"
+                retry_reason = "format_only"
+            if retry_strategy == "preserve_previous":
+                retry_warning = (
+                    "[系統警告] 你的上一則回覆格式錯誤，無法解析為合法 JSON。"
+                    "上一則內容本身可用，請將上一則 assistant 回覆的內容原封不動地重新包裝為合法 JSON 格式，"
+                    "禁止修改內容、禁止重新生成新的回覆、禁止任何前導文字或 Markdown 格式。"
+                )
+            else:
+                retry_warning = (
+                    "[系統警告] 你的上一則回覆格式錯誤，且內容看起來混入無關文件或其他 AI 的發言。"
+                    "請忽略上一則錯誤輸出，重新依照原始對話與系統指令回答。"
+                    "你只能代表目前指定角色發言，禁止輸出其他 AI 的 speaker tag 或台詞。"
+                    "輸出必須是合法 JSON，禁止任何前導文字、Markdown 或額外說明。"
+                )
+            SystemLogger.log_error(
+                f"LLMRouter/{task_key}",
+                f"非 JSON 回應，自動重試。前100字: {response_text[:100]!r}",
+                details={
+                    "model": route["model"],
+                    "temperature": temperature,
+                    "retry_strategy": retry_strategy,
+                    "retry_reason": retry_reason,
+                    "response_preview": response_text[:1000],
+                    "retry_warning": retry_warning,
+                    "original_prompt": original_prompt,
+                    "original_messages": messages,
+                    "log_context": log_context or {},
                 },
-            ]
+            )
+            if retry_strategy == "preserve_previous":
+                retry_msgs = list(messages) + [
+                    {"role": "assistant", "content": response_text},
+                    {"role": "user", "content": retry_warning},
+                ]
+            else:
+                retry_msgs = list(messages)
+                if retry_msgs and retry_msgs[-1].get("role") == "user":
+                    retry_msgs[-1] = {
+                        **retry_msgs[-1],
+                        "content": retry_msgs[-1].get("content", "") + "\n\n" + retry_warning,
+                    }
+                else:
+                    retry_msgs.append({"role": "user", "content": retry_warning})
             response_text, _ = route["provider"].generate_chat(
                 retry_msgs, route["model"], max(temperature * 0.5, 0.1), response_format
             )
@@ -369,12 +445,21 @@ class LLMRouter:
         SystemLogger.log_llm_response(task_key, route["model"], response_text)
         return response_text
 
-    def generate_with_tools(self, task_key: str, messages: list, tools: list | None = None, temperature: float = 0.0, tool_choice: str | dict = "auto", response_format: dict | None = None) -> tuple[str, list]:
+    def generate_with_tools(
+        self,
+        task_key: str,
+        messages: list,
+        tools: list | None = None,
+        temperature: float = 0.0,
+        tool_choice: str | dict = "auto",
+        response_format: dict | None = None,
+        log_context: dict | None = None,
+    ) -> tuple[str, list]:
         route = self.routes.get(task_key)
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
-        SystemLogger.log_llm_prompt(task_key, route["model"], messages, tools)
+        SystemLogger.log_llm_prompt(task_key, route["model"], messages, tools, log_context=log_context)
         response_text, tool_calls = route["provider"].generate_chat(messages, route["model"], temperature, response_format, tools, tool_choice)
         log_content = f"Content: {response_text}, Tools: {tool_calls}"
         SystemLogger.log_llm_response(task_key, route["model"], log_content)
@@ -387,6 +472,7 @@ class LLMRouter:
         messages: list,
         schema: dict = None,
         temperature: float = 0.1,
+        log_context: dict | None = None,
     ) -> dict:
         """嘗試取得結構化 JSON 輸出，失敗時自動降級並嘗試提取。
 
@@ -403,12 +489,15 @@ class LLMRouter:
             解析後的 dict，失敗時回傳 {}
         """
         try:
-            raw = self.generate(task_key, messages, temperature=temperature, response_format=schema)
+            raw = self.generate(
+                task_key, messages, temperature=temperature,
+                response_format=schema, log_context=log_context,
+            )
         except Exception:
             if schema is not None:
                 # Provider 不支援 response_format，降級為純文字
                 try:
-                    raw = self.generate(task_key, messages, temperature=temperature)
+                    raw = self.generate(task_key, messages, temperature=temperature, log_context=log_context)
                 except Exception:
                     return {}
             else:

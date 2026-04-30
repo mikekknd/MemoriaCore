@@ -130,8 +130,10 @@ class MemorySystem:
     # SECTION: 查詢擴展（LLM Query Expansion）
     # ════════════════════════════════════════════════════════════
 
-    def expand_query(self, user_query, recent_history, router, task_key="expand"):
-        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent_history[-6:]])
+    def expand_query(self, user_query, recent_history, router, task_key="expand", force_group: bool = False):
+        # 群組對話會帶 [name|character_id]: 前綴；內部標記與接力指令會被清洗。
+        from core.chat_orchestrator.dialogue_format import format_dialogue_for_analysis
+        history_text = format_dialogue_for_analysis(recent_history[-6:], force_group=force_group)
         prompt = get_prompt_manager().get("query_expand").format(
             history_text=history_text, user_query=user_query
         )
@@ -283,7 +285,11 @@ class MemorySystem:
             return dialogues  # 無舊對話需壓縮
 
         # 用 LLM 將舊對話壓縮為編年史
-        old_dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in old_messages])
+        from core.chat_orchestrator.dialogue_format import format_dialogue_for_analysis
+        old_dialogue_text = format_dialogue_for_analysis(
+            old_messages,
+            force_group=any(m.get("role") == "assistant" and m.get("character_id") for m in old_messages),
+        )
 
         compress_prompt = get_prompt_manager().get("dialogue_compress").format(
             old_dialogue_text=old_dialogue_text
@@ -545,7 +551,14 @@ class MemorySystem:
 
             if old_dialogues_pool:
                 SystemLogger.log_system_event("記憶壓縮閘道", f"啟動歷史記憶編年史化 (共 {len(older_blocks)} 筆舊區塊)。")
-                old_dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in old_dialogues_pool])
+                from core.chat_orchestrator.dialogue_format import format_dialogue_for_analysis
+                old_dialogue_text = format_dialogue_for_analysis(
+                    old_dialogues_pool,
+                    force_group=any(
+                        m.get("role") == "assistant" and m.get("character_id")
+                        for m in old_dialogues_pool
+                    ),
+                )
 
                 compress_prompt = get_prompt_manager().get("history_compress").format(
                     old_dialogue_text=old_dialogue_text
@@ -602,7 +615,14 @@ class MemorySystem:
                     seen_latest.add(dedup_key)
                     combined_dialogues.append(msg)
 
-        dialogue_text = "\n".join([f"{m['role']}: {m['content']}" for m in combined_dialogues])
+        from core.chat_orchestrator.dialogue_format import format_dialogue_for_analysis
+        dialogue_text = format_dialogue_for_analysis(
+            combined_dialogues,
+            force_group=any(
+                m.get("role") == "assistant" and m.get("character_id")
+                for m in combined_dialogues
+            ),
+        )
 
         episodic_prompt = get_prompt_manager().get("episodic_overview").format(
             dialogue_text=dialogue_text

@@ -108,3 +108,46 @@ def test_weather_prefix_does_not_refresh_when_cache_hits(monkeypatch):
 
     assert "Weather: Taipei cached" in prefix
     assert calls["ensure"] == 0
+
+
+def test_emotional_trajectory_uses_same_character_only(monkeypatch):
+    monkeypatch.setattr(prompt_utils, "get_prompt_manager", lambda: _FakePromptManager())
+
+    prefix = prompt_utils.build_user_prefix(
+        [
+            {
+                "role": "assistant",
+                "content": "A 回覆",
+                "character_id": "char-a",
+                "persona_state": {"internal_thought": "A 的內在思考"},
+            },
+            {
+                "role": "assistant",
+                "content": "B 回覆",
+                "character_id": "char-b",
+                "persona_state": {"internal_thought": "B 的內在思考"},
+            },
+        ],
+        session_ctx={"character_id": "char-a"},
+    )
+
+    assert "A 的內在思考" in prefix
+    assert "B 的內在思考" not in prefix
+
+
+def test_emotional_trajectory_omits_when_group_character_has_no_prior_thought(monkeypatch):
+    monkeypatch.setattr(prompt_utils, "get_prompt_manager", lambda: _FakePromptManager())
+
+    prefix = prompt_utils.build_user_prefix(
+        [
+            {
+                "role": "assistant",
+                "content": "B 回覆",
+                "character_id": "char-b",
+                "persona_state": {"internal_thought": "B 的內在思考"},
+            },
+        ],
+        session_ctx={"character_id": "char-a", "session_mode": "group"},
+    )
+
+    assert "<emotional_trajectory>" not in prefix

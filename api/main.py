@@ -36,6 +36,7 @@ def _persona_sync_candidate_character_ids(storage) -> list[str]:
 def _should_log_persona_sync_skip(reason: str) -> bool:
     """判斷 PersonaSync skip 是否需要寫系統 log。"""
     quiet_prefixes = (
+        "no_messages_yet",
         "insufficient_messages(",
     )
     return not any(reason.startswith(prefix) for prefix in quiet_prefixes)

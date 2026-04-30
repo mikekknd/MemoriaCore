@@ -116,23 +116,47 @@ class SystemLogger:
         })
 
     @staticmethod
-    def log_error(context, error_msg):
+    def log_error(context, error_msg, details: dict | None = None):
         ts = SystemLogger._get_time()
         print(f"\n[{ts}] 錯誤 ({context}): {error_msg}\n")
 
-        SystemLogger._write_entry({
+        entry = {
             "timestamp": SystemLogger._get_iso_time(),
             "type": "error",
             "category": context,
             "message": error_msg,
-        })
+        }
+        if details:
+            entry["details"] = details
+        SystemLogger._write_entry(entry)
 
     @staticmethod
-    def log_llm_prompt(task_key, model_name, api_messages, tools: list | None = None):
+    def log_llm_prompt(
+        task_key,
+        model_name,
+        api_messages,
+        tools: list | None = None,
+        log_context: dict | None = None,
+    ):
         """紀錄發送給 LLM 的完整 Prompt"""
         ts = SystemLogger._get_time()
         print(f"\n[{ts}] >>> 發送至 LLM [任務: {task_key} | 模型: {model_name}]")
         print(f"{'-'*60}")
+        if log_context:
+            print("  [LOG CONTEXT]:")
+            for key in ("session_id", "session_mode", "group_name", "user_id", "user_name",
+                        "current_character_id", "current_character_name"):
+                val = log_context.get(key)
+                if val:
+                    print(f"    {key}: {val}")
+            participants = log_context.get("participants") or []
+            if participants:
+                names = [
+                    f"{p.get('name') or p.get('character_id')}({p.get('character_id')})"
+                    for p in participants
+                ]
+                print(f"    participants: {', '.join(names)}")
+            print()
         for msg in api_messages:
             role = msg.get("role", "unknown").upper()
             content = msg.get("content", "")
@@ -158,6 +182,8 @@ class SystemLogger:
         }
         if tools:
             entry["tools"] = tools
+        if log_context:
+            entry["log_context"] = log_context
         SystemLogger._write_entry(entry)
 
     @staticmethod

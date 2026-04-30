@@ -91,7 +91,7 @@
 
   .detail-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin-top: 8px; }
   .detail-key { color: var(--text2); font-weight: 500; }
-  .detail-val { color: var(--text); word-break: break-all; }
+  .detail-val { color: var(--text); word-break: break-all; white-space: pre-wrap; }
 
   /* ===== Scrollbar ===== */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -411,9 +411,13 @@ function toStr(val) {
 
 function getSummary(entry, type) {
   if (type === 'prompt') {
+    const ctx = entry.log_context || {};
+    const speaker = ctx.current_character_name || ctx.current_character_id || '';
+    const mode = ctx.session_mode ? `[${ctx.session_mode}]` : '';
     const msgs = entry.messages || [];
     const last = msgs[msgs.length - 1];
-    return last ? toStr(last.content).substring(0, 120) : '';
+    const content = last ? toStr(last.content) : '';
+    return `${mode}${speaker ? ' ' + speaker + ' ' : ''}${content}`.substring(0, 120);
   }
   if (type === 'response') return toStr(entry.content).substring(0, 120);
   return toStr(entry.message).substring(0, 120);
@@ -435,6 +439,35 @@ function highlightText(text, term) {
   const escaped = escapeHtml(text);
   const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
   return escaped.replace(regex, '<mark>$1</mark>');
+}
+
+function renderLogContext(ctx) {
+  if (!ctx || typeof ctx !== 'object') return '';
+  const rows = [
+    ['session_id', ctx.session_id || ''],
+    ['session_mode', ctx.session_mode || ''],
+    ['group_name', ctx.group_name || ''],
+    ['user', [ctx.user_name, ctx.user_id].filter(Boolean).join(' / ')],
+    ['current_ai', [ctx.current_character_name, ctx.current_character_id].filter(Boolean).join(' / ')],
+  ].filter(([, val]) => val);
+  const participants = Array.isArray(ctx.participants) ? ctx.participants : [];
+  let html = '<div class="msg-block">';
+  html += '<div class="msg-role system">log_context</div>';
+  html += '<div class="detail-grid">';
+  rows.forEach(([key, val]) => {
+    html += `<span class="detail-key">${escapeHtml(key)}</span><span class="detail-val">${highlightText(String(val), searchTerm)}</span>`;
+  });
+  if (participants.length) {
+    const text = participants.map(p => {
+      const name = p.name || '';
+      const cid = p.character_id || '';
+      const summary = p.character_summary || '';
+      return `${name}${cid ? ` (${cid})` : ''}${summary ? `: ${summary}` : ''}`;
+    }).join('\n');
+    html += `<span class="detail-key">participants</span><span class="detail-val">${highlightText(text, searchTerm)}</span>`;
+  }
+  html += '</div></div>';
+  return html;
 }
 
 function renderEntries() {
@@ -495,6 +528,7 @@ function renderBody(idx) {
   let html = '';
 
   if (type === 'prompt' && entry.messages) {
+    html += renderLogContext(entry.log_context);
     entry.messages.forEach(msg => {
       html += `<div class="msg-block">
         <div class="msg-role ${msg.role}">${msg.role}</div>

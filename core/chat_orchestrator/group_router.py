@@ -2,6 +2,7 @@
 import json
 
 from core.chat_orchestrator.dataclasses import GroupRouterResult
+from core.chat_orchestrator.group_context import character_summary_text
 from core.prompt_manager import get_prompt_manager
 from core.system_logger import SystemLogger
 
@@ -92,8 +93,7 @@ def _normalize_characters(active_characters: list[dict]) -> list[dict]:
 
 
 def _summarize_character(char: dict) -> str:
-    text = char.get("system_prompt") or char.get("reply_rules") or ""
-    return " ".join(str(text).split())[:240]
+    return character_summary_text(char, fallback_to_prompt=True)
 
 
 def _latest_user_text(messages: list[dict]) -> str:

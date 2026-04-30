@@ -43,6 +43,7 @@ def run_router_agent(
     router,
     temperature: float = 0.7,
     recent_history: list[dict] | None = None,
+    context_hints: dict | None = None,
 ) -> RouterResult:
     """
     Module A — 輕量 LLM 判斷是否需要工具。只輸出 tool call，不產生文字。
@@ -54,6 +55,9 @@ def run_router_agent(
         temperature: LLM 溫度參數。
         recent_history: 最近的對話歷史（用於提供上下文判斷意圖）。
                         ⚠️ 不應包含當前 user_prompt（會自行追加），否則重複。
+        context_hints: 上下文線索 dict（例如 user_profile_location、su_weather_city、
+                       recent_mentions）。供 LLM 在使用者最新訊息缺少工具參數時參考；
+                       若依然無法可靠解析，應改呼叫 direct_chat（見 router_system prompt）。
 
     Returns:
         RouterResult — needs_tools / tool_calls。
@@ -62,6 +66,13 @@ def run_router_agent(
     augmented_tools = tools_list + [DIRECT_CHAT_SCHEMA]
 
     sys_prompt = _get_router_prompt()
+    if context_hints:
+        hint_lines = [f"- {k}: {v}" for k, v in context_hints.items() if v]
+        if hint_lines:
+            sys_prompt = (
+                f"{sys_prompt}\n\n【上下文線索（供工具參數提取參考）】\n"
+                + "\n".join(hint_lines)
+            )
     messages = [{"role": "system", "content": sys_prompt}]
 
     # 注入最近對話歷史（僅 user 訊息），在歷史訊息後附加 [已處理] 標記，

@@ -9,6 +9,8 @@ class _Router:
 
     def generate_json(self, *args, **kwargs):
         self.called = True
+        self.args = args
+        self.kwargs = kwargs
         return self.parsed
 
 
@@ -61,3 +63,34 @@ def test_repeated_speaker_is_replaced_with_alternative():
 
     assert result.should_respond is True
     assert result.target_character_id == "char-b"
+
+
+def test_router_participant_summary_prefers_character_summary():
+    router = _Router({"should_respond": False, "target_character_id": None, "reason": "stop"})
+    chars = [
+        {
+            "character_id": "char-a",
+            "name": "角色A",
+            "character_summary": "短版簡介 A",
+            "system_prompt": "很長的完整人設 A",
+        },
+        {
+            "character_id": "char-b",
+            "name": "角色B",
+            "character_summary": "",
+            "system_prompt": " fallback 人設 B ",
+        },
+    ]
+
+    run_group_router(
+        [{"role": "user", "content": "大家怎麼看？"}],
+        chars,
+        router,
+        honor_mentions=False,
+    )
+
+    prompt_messages = router.args[1]
+    prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
+    assert "短版簡介 A" in prompt_text
+    assert "很長的完整人設 A" not in prompt_text
+    assert "fallback 人設 B" in prompt_text

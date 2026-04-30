@@ -26,17 +26,21 @@ class MockRouter:
         """模擬路由註冊"""
         self.routes[task_key] = {"provider": provider, "model": model_name}
 
-    def generate(self, task_key, messages, temperature=0.0, response_format=None):
+    def generate(self, task_key, messages, temperature=0.0, response_format=None, log_context=None):
         """模擬 LLM generate 呼叫，返回預定義的 JSON 字串"""
         self.generate_calls.append({
             "task_key": task_key,
             "messages": messages,
             "temperature": temperature,
-            "response_format": response_format
+            "response_format": response_format,
+            "log_context": log_context,
         })
         return self._default_response
 
-    def generate_with_tools(self, task_key, messages, tools=None, temperature=0.0, tool_choice="auto", response_format=None):
+    def generate_with_tools(
+        self, task_key, messages, tools=None, temperature=0.0,
+        tool_choice="auto", response_format=None, log_context=None,
+    ):
         """模擬 LLM generate_with_tools 呼叫"""
         self.generate_calls.append({
             "task_key": task_key,
@@ -44,17 +48,19 @@ class MockRouter:
             "tools": tools,
             "temperature": temperature,
             "tool_choice": tool_choice,
-            "response_format": response_format
+            "response_format": response_format,
+            "log_context": log_context,
         })
         return self._default_response, self._tool_calls
 
-    def generate_json(self, task_key, messages, schema=None, temperature=0.1):
+    def generate_json(self, task_key, messages, schema=None, temperature=0.1, log_context=None):
         """模擬 LLM generate_json 呼叫，返回預定義的 dict"""
         self.generate_json_calls.append({
             "task_key": task_key,
             "messages": messages,
             "schema": schema,
-            "temperature": temperature
+            "temperature": temperature,
+            "log_context": log_context,
         })
         return self._default_json_response
 
@@ -140,7 +146,7 @@ class MockMemorySystem:
         """模擬使用者畫像搜尋"""
         return []
 
-    def expand_query(self, query, messages, router, task_key="expand"):
+    def expand_query(self, query, messages, router, task_key="expand", force_group=False):
         """模擬查詢擴展"""
         return {"expanded_keywords": "", "entity_confidence": 0.5}
 

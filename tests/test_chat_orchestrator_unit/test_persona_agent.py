@@ -196,3 +196,23 @@ class TestParsePersonaResponse:
 
         # parsed 只取必要欄位，忽略 extra_field
         assert result.reply_text == "回覆"
+
+    def test_group_reply_strips_other_agent_segments(self):
+        """群組 reply 若誤含其他 AI speaker 段落，只保留目前角色自己的台詞。"""
+        raw = (
+            '{"reply": "[白蓮|char-lotus]: 哼...本座姑且指點一二。'
+            '[可可|char-coco]: 太好了喵～主人好厲害！",'
+            '"extracted_entities": [], "internal_thought": "思考"}'
+        )
+
+        result = _parse_persona_response(
+            raw,
+            log_context={
+                "session_mode": "group",
+                "current_character_id": "char-lotus",
+                "current_character_name": "白蓮",
+            },
+        )
+
+        assert result.reply_text == "哼...本座姑且指點一二。"
+        assert "可可" not in result.reply_text

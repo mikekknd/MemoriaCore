@@ -13,6 +13,7 @@ router = APIRouter(prefix="/character", tags=["character"])
 class CharacterProfileDTO(BaseModel):
     character_id: Optional[str] = None
     name: str
+    character_summary: str = ""
     system_prompt: str
     visual_prompt: str = ""
     evolved_prompt: Optional[str | Dict[str, Optional[str]]] = None
@@ -122,6 +123,7 @@ async def generate_from_existing_persona(req: GenerateFromSeedRequest):
         "輸出格式：只輸出合法 JSON 物件，不要有任何解釋、前言或 Markdown 外框。\n"
         "JSON 欄位必須符合下方 schema：\n"
         "- name：根據人格種子推導出的角色名稱。\n"
+        "- character_summary：角色簡介，約 200 字以內；根據完整人格濃縮身份、性格、互動風格與群組中可辨識特徵。\n"
         "- system_prompt：填寫完整的 PersonaProbe 行為模板內容；請把完整模板文字放在這個字串欄位內。\n"
         "- visual_prompt：角色外觀專用的圖片生成提示詞，只描述可視覺化元素，不寫對話規則或抽象心理分析。\n"
         "- reply_rules：字幕文字的格式與語氣規定。\n"
@@ -141,6 +143,10 @@ async def generate_from_existing_persona(req: GenerateFromSeedRequest):
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "角色的名稱"},
+            "character_summary": {
+                "type": "string",
+                "description": "角色簡介，約 200 字以內，濃縮身份、性格、互動風格與群組中可辨識特徵。"
+            },
             "system_prompt": {"type": "string", "description": "核心人格與世界觀設定的 System Prompt"},
             "visual_prompt": {
                 "type": "string",
@@ -159,7 +165,7 @@ async def generate_from_existing_persona(req: GenerateFromSeedRequest):
                 "description": "如果角色發音語言與字幕不同，請填寫此欄位（例如 '日文', '英文'）。若無需雙語分離則留空字串。"
             }
         },
-        "required": ["name", "system_prompt", "visual_prompt", "reply_rules", "tts_rules", "tts_language"]
+        "required": ["name", "character_summary", "system_prompt", "visual_prompt", "reply_rules", "tts_rules", "tts_language"]
     }
 
     api_messages = [
@@ -178,7 +184,7 @@ async def generate_from_existing_persona(req: GenerateFromSeedRequest):
         if not parsed:
             SystemLogger.log_error("GenerateFromSeed", f"LLM 回傳空 JSON。Seed 前50字: {req.existing_persona[:50]!r}")
             return {"error": "LLM 回傳格式無效，請稍後再試"}
-        return parsed
+        return get_character_manager()._normalize_character(parsed)
     except Exception as e:
         SystemLogger.log_error("GenerateFromSeed", f"例外: {e}")
         return {"error": str(e)}

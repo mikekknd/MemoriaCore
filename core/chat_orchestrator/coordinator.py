@@ -13,8 +13,19 @@ from core.prompt_utils import build_user_prefix
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.middleware import run_middleware
 from core.chat_orchestrator.persona_agent import run_persona_agent, _parse_persona_response
-from core.chat_orchestrator.dataclasses import PipelineContext
-from core.chat_orchestrator.message_format import format_history_for_llm
+from core.chat_orchestrator.dataclasses import PipelineContext, SharedToolState, ToolContext
+from core.chat_orchestrator.dialogue_format import (
+    format_history_for_llm,
+    format_dialogue_for_analysis,
+    collect_cited_uids,
+    snapshot_messages_for_pipeline,
+)
+from core.chat_orchestrator.router_hints import build_router_context_hints
+from core.chat_orchestrator.group_context import (
+    build_group_participants_block,
+    build_llm_log_context,
+    is_group_context,
+)
 
 
 def _generate_tts_speech(reply_text: str, tts_lang: str, tts_rules: str, rtr) -> str | None:
@@ -54,10 +65,12 @@ def run_dual_layer_orchestration(
     異步雙層 Agent 對話編排 — 取代舊版 _run_chat_orchestration()。
 
     記憶檢索管線與工具路由管線平行執行，兩邊完成後再進入 Module C。
-    回傳 11-tuple：(reply_text, new_entities, retrieval_ctx, topic_shifted,
+    回傳 12-tuple：(reply_text, new_entities, retrieval_ctx, topic_shifted,
                     pipeline_data, inner_thought, status_metrics, tone,
-                    speech, thinking_speech, cited_uids)
-    session_ctx: {"user_id": str, "character_id": str, "persona_face": str}
+                    speech, thinking_speech, cited_uids, tool_state_export)
+    session_ctx: {"user_id": str, "character_id": str, "persona_face": str,
+                  "shared_tool_state": SharedToolState | None,
+                  "followup_instruction": dict | None}
     """
     from api.dependencies import (
         get_memory_sys, get_storage, get_router, get_analyzer,
@@ -78,6 +91,7 @@ def run_dual_layer_orchestration(
     persona_face = _ctx.get("persona_face", "public")
     write_visibility = persona_face
     visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
+    force_group = is_group_context(_ctx)
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -88,11 +102,10 @@ def run_dual_layer_orchestration(
 
     main_timer = StepTimer()
 
-    import re
+    # active_uids 主路徑讀 message["debug_info"]["cited_uids"]，缺則 fallback 到 content regex（相容舊資料）
     active_uids = set()
     for m in session_messages[-context_window:]:
-        matches = re.findall(r'\[Ref:\s*([^\]]+)\]', m.get("content", ""))
-        for uid in matches:
+        for uid in collect_cited_uids(m):
             active_uids.add(uid)
 
     # ════════════════════════════════════════════════════════════
@@ -114,6 +127,8 @@ def run_dual_layer_orchestration(
     char_tts_lang = active_char.get("tts_language", "")
     char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or storage.load_system_prompt()
     char_name = active_char.get("name", "助理")
+    group_participants_block = build_group_participants_block(_ctx, char_mgr, character_id)
+    log_context = build_llm_log_context(_ctx, char_mgr, character_id)
 
     tools_list = []
     try:
@@ -165,8 +180,7 @@ def run_dual_layer_orchestration(
         if is_shift:
             topic_shifted = True
             import copy
-            msgs_to_extract = [{"role": m["role"], "content": m["content"]}
-                               for m in session_messages[:-1]]
+            msgs_to_extract = snapshot_messages_for_pipeline(session_messages[:-1])
             _user_blocks = ms._get_memory_blocks(user_id, character_id, write_visibility)
             last_block = copy.deepcopy(_user_blocks[-1]) if _user_blocks else None
             pipeline_data = PipelineContext(
@@ -177,7 +191,7 @@ def run_dual_layer_orchestration(
 
         # 查詢擴展（LLM 呼叫）
         with t.step("查詢擴展 (Query Expansion LLM)"):
-            expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand")
+            expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
         inherited_str = " ".join(last_entities)
         combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
 
@@ -221,7 +235,7 @@ def run_dual_layer_orchestration(
         if blocks:
             formatted_blocks = []
             for i, block in enumerate(blocks):
-                raw_text = "\n".join([f"  - {m['role']}: {m['content']}" for m in block["raw_dialogues"] if "role" in m])
+                raw_text = format_dialogue_for_analysis(block["raw_dialogues"], force_group=force_group)
                 formatted_blocks.append(
                     f"【情境回憶 {i + 1}】[UID: {block.get('block_id', 'unknown')}]\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
                 overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
@@ -258,13 +272,14 @@ def run_dual_layer_orchestration(
             )
 
             sys_prompt = f"""{char_sys_prompt}
+{group_participants_block}
 {static_profile_block}
 {core_ctx}{profile_ctx}{proactive_topics_block}
 {_suffix}"""
 
             # 上下文組裝
             api_messages = [{"role": "system", "content": sys_prompt}]
-            clean_history = format_history_for_llm(session_messages[-context_window:])
+            clean_history = format_history_for_llm(session_messages[-context_window:], force_group=force_group)
             # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
             # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
             api_messages.extend(clean_history)
@@ -333,6 +348,19 @@ def run_dual_layer_orchestration(
         thinking = ""
         ctx = None
 
+        # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/middleware
+        cached = (session_ctx or {}).get("shared_tool_state")
+        if isinstance(cached, SharedToolState) and cached.executed:
+            return {
+                "tool_context": ToolContext(
+                    tool_results=list(cached.tool_results),
+                    tool_results_formatted=cached.tool_results_formatted,
+                    thinking_speech_sent=cached.thinking_speech_sent,
+                ),
+                "thinking_speech": "",  # 不再二次推語音
+                "timer_steps": [],
+            }
+
         if not tools_list:
             return {"tool_context": None, "thinking_speech": "", "timer_steps": []}
 
@@ -340,12 +368,26 @@ def run_dual_layer_orchestration(
             # session_messages 末尾已含當前 user_prompt（add_user_message 在 orchestration 前執行）。
             # run_router_agent 會自行在末尾追加 user_prompt，故此處傳入 [:-1] 排除最後一筆，避免重複。
             _recent_for_router = session_messages[-context_window:-1]
+            try:
+                _profile_facts = (
+                    storage.load_all_profiles(ms.db_path, user_id=user_id)
+                    if getattr(ms, "db_path", None) else []
+                )
+            except Exception:
+                _profile_facts = []
+            _hints = build_router_context_hints(
+                session_messages=session_messages,
+                user_prefs=user_prefs,
+                session_ctx=_ctx,
+                profile_facts=_profile_facts,
+            )
             router_result = run_router_agent(
                 user_prompt=user_prompt,
                 tools_list=tools_list,
                 router=rtr,
                 temperature=temperature,
                 recent_history=_recent_for_router if _recent_for_router else None,
+                context_hints=_hints if _hints else None,
             )
 
         if router_result.needs_tools:
@@ -406,6 +448,24 @@ def run_dual_layer_orchestration(
     thinking_speech = tool_result["thinking_speech"]
 
     # ════════════════════════════════════════════════════════════
+    # SECTION: 群組接力指令注入（不影響 expand/pipeline/profile）
+    # ════════════════════════════════════════════════════════════
+    followup = (session_ctx or {}).get("followup_instruction")
+    if followup and api_messages:
+        followup_text = get_prompt_manager().get("group_followup_user").format(
+            user_prompt=followup.get("user_prompt_original", user_prompt),
+            last_character_name=followup.get("last_character_name", ""),
+            last_reply=followup.get("last_reply", ""),
+        )
+        if api_messages[-1]["role"] == "user":
+            api_messages[-1] = {
+                **api_messages[-1],
+                "content": api_messages[-1]["content"] + "\n\n" + followup_text,
+            }
+        else:
+            api_messages.append({"role": "user", "content": followup_text})
+
+    # ════════════════════════════════════════════════════════════
     # SECTION: Module C — 角色渲染（等兩條分支都完成後才執行）
     # ════════════════════════════════════════════════════════════
     with main_timer.step("角色渲染生成 (Persona Agent LLM)"):
@@ -416,13 +476,14 @@ def run_dual_layer_orchestration(
             chat_schema=chat_schema,
             router=rtr,
             temperature=temperature,
+            log_context=log_context,
         )
 
     if error_result is not None:
         persona_result = error_result
     else:
         with main_timer.step("回應解析 (Response Parsing)"):
-            persona_result = _parse_persona_response(raw_res)
+            persona_result = _parse_persona_response(raw_res, log_context=log_context)
 
     reply_text = persona_result.reply_text
     if tool_context:
@@ -438,7 +499,19 @@ def run_dual_layer_orchestration(
     # 將效能計時結果注入 retrieval_ctx
     retrieval_ctx["perf_timing"] = main_timer.summary()
 
+    # 工具狀態 export：給群組接力 turn 1+ 復用，避免重複呼叫工具
+    if tool_context is not None:
+        tool_state_export = SharedToolState(
+            tool_results=list(tool_context.tool_results),
+            tool_results_formatted=tool_context.tool_results_formatted,
+            thinking_speech_sent=thinking_speech,
+            executed=True,
+        )
+    else:
+        tool_state_export = SharedToolState(executed=False)
+
     return (
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data,
-        inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids
+        inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids,
+        tool_state_export,
     )

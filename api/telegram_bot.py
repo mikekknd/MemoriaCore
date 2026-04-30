@@ -88,6 +88,18 @@ class TelegramSessionMap:
 # ══════════════════════════════════════════════════════════
 _IMAGE_MARKDOWN_RE = re.compile(r"!\[.*?\]\(/api/v1/chat/generated-images/([^/]+)/([^/]+)\.jpeg\)")
 
+
+def _telegram_user_display_name(message: types.Message) -> str:
+    user = message.from_user
+    if not user:
+        return ""
+    return (
+        user.full_name
+        or user.username
+        or str(user.id)
+    )
+
+
 def _split_message(text: str, max_len: int = 4000) -> list[str]:
     """將長訊息分割為多段，優先在換行或句號處分割。"""
     if len(text) <= max_len:
@@ -422,6 +434,10 @@ class TelegramBotManager:
                 "session_id": sid,
                 "bot_id": s.bot_id,
                 "channel": s.channel,
+                "user_name": _telegram_user_display_name(message),
+                "active_character_ids": list(s.active_character_ids or [s.character_id]),
+                "session_mode": s.session_mode,
+                "group_name": s.group_name,
             }
 
             try:
@@ -432,17 +448,23 @@ class TelegramBotManager:
                     session_ctx=session_ctx,
                 )
                 reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-                    _inner_thought, _status_metrics, _tone, _speech, _thinking_speech, cited_uids = \
-                    _unpack_orchestration_result(result)
+                    _inner_thought, _status_metrics, _tone, _speech, _thinking_speech, cited_uids, \
+                    _tool_state_export = _unpack_orchestration_result(result)
             except Exception as exc:
                 logger.error("Chat orchestration failed: %s", exc, exc_info=True)
                 await message.answer(f"處理失敗: {exc}")
                 return
 
-            saved_reply_text = reply_text
-            if cited_uids:
-                saved_reply_text = f"{reply_text} " + " ".join([f"[Ref: {u}]" for u in cited_uids])
-            await session_manager.add_assistant_message(sid, saved_reply_text, retrieval_ctx, new_entities)
+            from api.dependencies import get_character_manager
+            _reply_character_id = s.character_id
+            _char = get_character_manager().get_character(_reply_character_id) or {}
+            character_name = _char.get("name") or _reply_character_id
+            # cited_uids 透過 retrieval_ctx 進入 debug_info 持久化，不再拼進 content
+            await session_manager.add_assistant_message(
+                sid, reply_text, retrieval_ctx, new_entities,
+                character_name=character_name,
+                character_id=_reply_character_id,
+            )
 
             if topic_shifted:
                 await session_manager.bridge(sid)

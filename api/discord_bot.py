@@ -79,6 +79,18 @@ def _message_channel_uid(message: Any) -> str:
     return f"guild:{getattr(guild, 'id', '')}:channel:{channel_id}"
 
 
+def _message_author_display_name(message: Any) -> str:
+    author = getattr(message, "author", None)
+    if not author:
+        return ""
+    return (
+        str(getattr(author, "display_name", "") or "")
+        or str(getattr(author, "global_name", "") or "")
+        or str(getattr(author, "name", "") or "")
+        or str(getattr(author, "id", "") or "")
+    )
+
+
 def _session_key(bot_id: str, message: Any) -> tuple[str, str, str, str, str]:
     channel = _message_channel(message)
     author_id = str(getattr(getattr(message, "author", None), "id", ""))
@@ -425,6 +437,10 @@ class DiscordBotManager:
             "session_id": sid,
             "bot_id": s.bot_id,
             "channel": s.channel,
+            "user_name": _message_author_display_name(message),
+            "active_character_ids": list(s.active_character_ids or [s.character_id]),
+            "session_mode": s.session_mode,
+            "group_name": s.group_name,
         }
 
         try:
@@ -436,23 +452,22 @@ class DiscordBotManager:
                     session_ctx=session_ctx,
                 )
             reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-                _inner_thought, _status_metrics, _tone, _speech, _thinking_speech, cited_uids = \
-                _unpack_orchestration_result(result)
+                _inner_thought, _status_metrics, _tone, _speech, _thinking_speech, cited_uids, \
+                _tool_state_export = _unpack_orchestration_result(result)
         except Exception as exc:
             logger.error("Discord chat orchestration failed: %s", exc, exc_info=True)
             await message.reply(f"處理失敗: {exc}", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             return
 
-        saved_reply_text = reply_text
-        if cited_uids:
-            saved_reply_text = f"{reply_text} " + " ".join([f"[Ref: {u}]" for u in cited_uids])
         from api.dependencies import get_character_manager
-        _char = get_character_manager().get_character(character_id) or {}
-        character_name = _char.get("name") or character_id
+        _reply_character_id = s.character_id
+        _char = get_character_manager().get_character(_reply_character_id) or {}
+        character_name = _char.get("name") or _reply_character_id
+        # cited_uids 透過 retrieval_ctx 進入 debug_info 持久化，不再拼進 content
         await session_manager.add_assistant_message(
-            sid, saved_reply_text, retrieval_ctx, new_entities,
+            sid, reply_text, retrieval_ctx, new_entities,
             character_name=character_name,
-            character_id=character_id,
+            character_id=_reply_character_id,
         )
 
         if topic_shifted:

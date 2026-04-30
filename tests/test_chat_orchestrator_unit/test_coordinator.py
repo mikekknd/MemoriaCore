@@ -60,10 +60,10 @@ class TestDualLayerCoordinator:
         )
 
         assert isinstance(result, tuple)
-        assert len(result) == 11
+        assert len(result) == 12
 
     def test_reply_in_result(self, mock_deps, mock_router_with_tools, sample_user_prefs):
-        """11-tuple 的第一個元素應是回覆文字"""
+        """12-tuple 的第一個元素應是回覆文字"""
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
@@ -190,7 +190,39 @@ class TestDualLayerCoordinator:
 
         # 只要不拋例外即通過
         assert isinstance(result, tuple)
-        assert len(result) == 11
+        assert len(result) == 12
+
+    def test_group_followup_appended_when_history_ends_with_assistant(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """群組接力時，即使最近一則是其他 AI，也要追加暫時 user 指令。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        run_dual_layer_orchestration(
+            session_messages=[
+                {"role": "user", "content": "兩位早安阿"},
+                {"role": "assistant", "content": "[可可|char-a]: 早安呀"},
+            ],
+            last_entities=[],
+            user_prompt="兩位早安阿",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "session_mode": "group",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "default",
+                "followup_instruction": {
+                    "user_prompt_original": "兩位早安阿",
+                    "last_character_name": "可可",
+                    "last_reply": "早安呀",
+                },
+            },
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        messages = chat_call["messages"]
+        assert messages[-1]["role"] == "user"
+        assert "【群組接力指令】" in messages[-1]["content"]
+        assert "上一位發言者：可可" in messages[-1]["content"]
 
 
 class TestSelectOrchestration:
@@ -217,33 +249,45 @@ class TestSelectOrchestration:
 
 
 class TestUnpackOrchestrationResult:
-    def test_handles_11_tuple(self):
-        """11-tuple 應直接回傳"""
+    def test_handles_12_tuple(self):
+        """12-tuple（最新）應直接回傳"""
+        from api.routers.chat.orchestration import _unpack_orchestration_result
+
+        result = tuple(range(12))
+        unpacked = _unpack_orchestration_result(result)
+
+        assert len(unpacked) == 12
+        assert unpacked == result
+
+    def test_handles_11_tuple_pads_tool_state(self):
+        """舊 11-tuple 應補足 tool_state_export=None"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
         result = tuple(range(11))
         unpacked = _unpack_orchestration_result(result)
 
-        assert len(unpacked) == 11
-        assert unpacked == result
+        assert len(unpacked) == 12
+        assert unpacked[-1] is None
 
-    def test_handles_10_tuple_pads_cited_uids(self):
-        """10-tuple 應補足 cited_uids=[]"""
+    def test_handles_10_tuple_pads_cited_uids_and_tool_state(self):
+        """10-tuple 應補足 cited_uids=[] 和 tool_state_export=None"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
         result = tuple(range(10))
         unpacked = _unpack_orchestration_result(result)
 
-        assert len(unpacked) == 11
-        assert unpacked[-1] == []
+        assert len(unpacked) == 12
+        assert unpacked[-2] == []
+        assert unpacked[-1] is None
 
-    def test_handles_9_tuple_pads_thinking_speech_and_cited_uids(self):
-        """9-tuple 應補足 thinking_speech="" 和 cited_uids=[]"""
+    def test_handles_9_tuple_pads_full(self):
+        """9-tuple 應補足 thinking_speech=""、cited_uids=[]、tool_state_export=None"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
         result = tuple(range(9))
         unpacked = _unpack_orchestration_result(result)
 
-        assert len(unpacked) == 11
-        assert unpacked[-2] == ""
-        assert unpacked[-1] == []
+        assert len(unpacked) == 12
+        assert unpacked[-3] == ""
+        assert unpacked[-2] == []
+        assert unpacked[-1] is None

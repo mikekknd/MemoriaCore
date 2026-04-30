@@ -26,6 +26,14 @@ from api.routers.chat.timer import StepTimer
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+def _user_display_name(current_user: dict) -> str:
+    return (
+        current_user.get("nickname")
+        or current_user.get("username")
+        or str(current_user.get("id", ""))
+    )
+
+
 def _get_session_character(character_id: str) -> dict:
     from api.dependencies import get_character_manager
     char_mgr = get_character_manager()
@@ -65,12 +73,24 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
     if not current_user:
         return
     user_id = str(current_user["id"])
+    user_name = _user_display_name(current_user)
     channel_class = "private" if current_user.get("role") == "admin" else "public"
     persona_face = "private" if current_user.get("role") == "admin" else "public"
     user_prefs = get_storage().load_prefs()
-    try:
-        session = await session_manager.get_or_create(
-            session_id,
+    session = None
+    if session_id:
+        session = await session_manager.get(session_id)
+        if session is not None and session.user_id != user_id:
+            await ws.close(code=1008)
+            return
+        if session is None:
+            try:
+                session = await session_manager.restore_from_db(session_id, user_id=user_id)
+            except PermissionError:
+                await ws.close(code=1008)
+                return
+    if session is None:
+        session = await session_manager.create(
             channel="websocket",
             channel_uid=user_id,
             user_id=user_id,
@@ -78,9 +98,6 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             channel_class=channel_class,
             persona_face=persona_face,
         )
-    except PermissionError:
-        await ws.close(code=1008)
-        return
     sid = session.session_id
     await ws_manager.connect(sid, ws)
 
@@ -166,6 +183,10 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 "session_id": sid,
                 "bot_id": s.bot_id,
                 "channel": s.channel,
+                "user_name": user_name,
+                "active_character_ids": list(s.active_character_ids or [s.character_id]),
+                "session_mode": s.session_mode,
+                "group_name": s.group_name,
             }
 
             # 建立即時事件推送 callback（從工作執行緒安全呼叫 async WS send）
@@ -205,6 +226,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                     orchestration_fn=orchestration_fn,
                     on_event=_ws_event_cb,
                     on_turn=_send_group_turn,
+                    user_name=user_name,
                 ))
                 ws_manager.set_active_task(sid, task)
                 try:
@@ -249,8 +271,8 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 ws_manager.clear_active_task(sid)
 
             reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-                inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
-                _unpack_orchestration_result(result)
+                inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
+                _tool_state_export = _unpack_orchestration_result(result)
 
             # 如果話題偏移，通知客戶端並在背景啟動記憶管線
             if topic_shifted:
@@ -288,13 +310,10 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
             done_payload["character_name"] = character_name
             await ws.send_json(done_payload)
 
-            # 寫入 assistant 回覆（後端隱性掛載引用 UID）
-            saved_reply_text = reply_text
-            if cited_uids:
-                refs_str = " ".join([f"[Ref: {u}]" for u in cited_uids])
-                saved_reply_text = f"{reply_text} {refs_str}"
+            # 寫入 assistant 回覆（cited_uids 隨 retrieval_ctx 進入 debug_info 持久化，
+            # 不再拼進 content；上下文清洗由 dialogue_format 負責）
             await session_manager.add_assistant_message(
-                sid, saved_reply_text, retrieval_ctx, new_entities,
+                sid, reply_text, retrieval_ctx, new_entities,
                 persona_state={"internal_thought": inner_thought},
                 character_name=character_name,
                 character_id=s.character_id,

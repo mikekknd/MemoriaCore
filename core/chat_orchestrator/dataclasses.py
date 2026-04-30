@@ -34,6 +34,22 @@ class ToolContext:
     thinking_speech_sent: str = ""                            # 已推播給前端的過渡語
 
 
+@dataclass
+class SharedToolState:
+    """跨 turn 共用的工具執行狀態。
+
+    群組接力情境中，同一個 user 輸入內所有 AI turn 共用 turn 0 執行的工具結果，
+    避免重複呼叫 get_weather 等外部 API。group_loop 在 turn 0 從 orchestration 結果
+    取出此 state，於後續 turn 透過 session_ctx["shared_tool_state"] 注入。
+
+    若 executed=False 表示 turn 0 沒觸發任何工具，後續 turn 也不需要工具分支。
+    """
+    tool_results: list[dict] = field(default_factory=list)
+    tool_results_formatted: str = ""
+    thinking_speech_sent: str = ""
+    executed: bool = False
+
+
 # ════════════════════════════════════════════════════════════
 # SECTION: Module C 輸出
 # ════════════════════════════════════════════════════════════

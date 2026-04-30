@@ -1,31 +1,11 @@
-"""對話歷史格式化工具。"""
+"""對話歷史格式化工具（向後相容包裝層）。
 
+實作已移至 dialogue_format.py — 集中清洗、群組標籤、citation metadata 讀取。
+保留此模組是為了維持舊 import 路徑不破壞。
+"""
+from core.chat_orchestrator.dialogue_format import (
+    format_history_for_llm,
+    speaker_label as _speaker_label,
+)
 
-def format_history_for_llm(messages: list[dict]) -> list[dict]:
-    """將群組對話的 assistant 訊息加上 speaker 標籤，讓上下文可辨識發話角色。
-    單 AI session（僅一個 character_id）不加前綴，避免 LLM 自我污染。
-    """
-    assistant_char_ids = {
-        m.get("character_id") for m in messages
-        if m.get("role") == "assistant" and m.get("character_id")
-    }
-    is_group = len(assistant_char_ids) > 1
-
-    formatted: list[dict] = []
-    for m in messages:
-        role = m.get("role", "")
-        content = m.get("content", "")
-        if is_group and role == "assistant":
-            label = _speaker_label(m)
-            if label:
-                content = f"[{label}]: {content}"
-        formatted.append({"role": role, "content": content})
-    return formatted
-
-
-def _speaker_label(message: dict) -> str:
-    name = str(message.get("character_name") or "").strip()
-    character_id = str(message.get("character_id") or "").strip()
-    if name and character_id:
-        return f"{name}|{character_id}"
-    return name or character_id
+__all__ = ["format_history_for_llm", "_speaker_label"]

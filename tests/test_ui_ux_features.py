@@ -169,6 +169,7 @@ def test_auto_persona_sync_uses_conversation_candidates_without_default_fallback
 
 
 def test_auto_persona_sync_skip_log_suppresses_insufficient_messages():
+    assert _should_log_persona_sync_skip("no_messages_yet") is False
     assert _should_log_persona_sync_skip("insufficient_messages(12/50)") is False
     assert _should_log_persona_sync_skip("not_idle(1.0min < 10min)") is True
 

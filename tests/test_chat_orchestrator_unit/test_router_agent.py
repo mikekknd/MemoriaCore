@@ -160,6 +160,46 @@ class TestRunRouterAgent:
         assert "weather" in tool_names
 
 
+    def test_context_hints_injected_into_system_prompt(self, mock_pm):
+        """context_hints 應被附加到 system prompt 末尾，供 LLM 提取工具參數參考。"""
+        from tests.mock_llm import MockRouter
+        router = MockRouter()
+        router.set_tool_calls([])
+
+        with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
+            run_router_agent(
+                user_prompt="外面下大雨",
+                tools_list=[],
+                router=router,
+                context_hints={"recent_mentions": "台中", "su_weather_city": "Taipei"},
+            )
+
+        calls = router.generate_calls
+        assert len(calls) == 1
+        sys_msg = calls[0]["messages"][0]
+        assert sys_msg["role"] == "system"
+        assert "【上下文線索" in sys_msg["content"]
+        assert "recent_mentions: 台中" in sys_msg["content"]
+        assert "su_weather_city: Taipei" in sys_msg["content"]
+
+    def test_no_hints_means_no_extra_block(self, mock_pm):
+        """無 hints 或空 dict 時不應加 [上下文線索] 區塊。"""
+        from tests.mock_llm import MockRouter
+        router = MockRouter()
+        router.set_tool_calls([])
+
+        with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
+            run_router_agent(
+                user_prompt="嗨",
+                tools_list=[],
+                router=router,
+                context_hints=None,
+            )
+
+        sys_msg = router.generate_calls[0]["messages"][0]
+        assert "上下文線索" not in sys_msg["content"]
+
+
 class TestDirectChatSchema:
     def test_direct_chat_schema_structure(self):
         """DIRECT_CHAT_SCHEMA 結構驗證"""

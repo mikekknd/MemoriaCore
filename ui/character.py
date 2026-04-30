@@ -63,6 +63,9 @@ def render_character_page(api_base: str, user_prefs: dict):
                     if char.get("visual_prompt"):
                         st.write("**圖片生成外觀提示 (Visual Prompt):**")
                         st.info(char.get("visual_prompt", ""))
+                    if char.get("character_summary"):
+                        st.write("**角色簡介:**")
+                        st.info(char.get("character_summary", ""))
                     st.write("**回覆文字規則 (Reply Rules):**")
                     st.info(char.get("reply_rules", ""))
                     if char.get("tts_rules"):
@@ -252,6 +255,12 @@ def render_character_page(api_base: str, user_prefs: dict):
                 height=120,
                 help="當使用者要求生成目前角色本人、你的自畫像或你的形象時，generate_image tool 會把此欄位注入圖片 prompt。請只描述可視覺化元素，例如物種、髮色、眼睛、服裝、尾巴、配件、畫風。",
             )
+            c_summary = st.text_area(
+                "角色簡介 (character_summary)",
+                value=str(draft.get("character_summary") or ""),
+                height=100,
+                help="約 200 字以內，供角色列表與多 AI 群組對話快速辨識角色。可描述身份、性格、互動風格與群組中其他 AI 需要知道的特徵。",
+            )
 
             with st.expander("🧬 演化人設（進階，由 PersonaProbe 生成）"):
                 st.caption("📌 演化人設分為 **public** 與 **private** 兩份，各自獨立演化。SU 身份使用 private 分支。")
@@ -298,6 +307,7 @@ def render_character_page(api_base: str, user_prefs: dict):
 
                     payload = {
                         "name": c_name,
+                        "character_summary": c_summary.strip(),
                         "system_prompt": c_prompt,
                         "visual_prompt": c_visual_prompt.strip(),
                         "evolved_prompt": evolved_payload,

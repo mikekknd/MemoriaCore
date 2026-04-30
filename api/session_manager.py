@@ -249,7 +249,8 @@ class SessionManager:
             s = self._sessions.get(session_id)
             if not s:
                 return []
-            return [{"role": m["role"], "content": m["content"]} for m in s.messages[:-1]]
+            from core.chat_orchestrator.dialogue_format import snapshot_messages_for_pipeline
+            return snapshot_messages_for_pipeline(s.messages[:-1])
 
     async def expire_stale(self):
         """清理過期 session"""

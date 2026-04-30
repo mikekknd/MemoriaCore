@@ -8,6 +8,7 @@ from api.session_manager import SessionState, session_manager
 from api.routers.chat.orchestration import _unpack_orchestration_result
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
 from core.chat_orchestrator.group_router import run_group_router
+from core.chat_orchestrator.dataclasses import SharedToolState
 from core.prompt_manager import get_prompt_manager
 
 
@@ -37,6 +38,7 @@ async def run_group_chat_loop(
     orchestration_fn: Callable[..., tuple],
     on_event: Callable[[dict], None] | None = None,
     on_turn: Callable[[dict[str, Any]], Any] | None = None,
+    user_name: str = "",
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
@@ -51,6 +53,8 @@ async def run_group_chat_loop(
     last_speaker_id: str | None = None
     last_reply = ""
     last_character_name = ""
+    # 跨 turn 共用的工具狀態：turn 0 跑完工具後填入，後續 turn 直接復用，避免重複呼叫外部 API。
+    shared_tool_state: SharedToolState | None = None
 
     for turn_index in range(max_turns):
         route = await asyncio.to_thread(
@@ -83,15 +87,17 @@ async def run_group_chat_loop(
                 "character_name": character_name,
             })
 
+        # 不再 append 接力指令到 generation_messages — 改透過 followup_instruction
+        # 注入到 orchestration 的 api_messages（只給最終 LLM 看，不污染 expand/pipeline）。
         generation_messages = list(working_messages)
-        generation_prompt = user_prompt
+
+        followup_instruction: dict | None = None
         if turn_index > 0:
-            generation_prompt = _build_followup_prompt(
-                user_prompt=user_prompt,
-                last_character_name=last_character_name,
-                last_reply=last_reply,
-            )
-            generation_messages = generation_messages + [{"role": "user", "content": generation_prompt}]
+            followup_instruction = {
+                "last_character_name": last_character_name,
+                "last_reply": last_reply,
+                "user_prompt_original": user_prompt,
+            }
 
         session_ctx = {
             "user_id": session.user_id,
@@ -100,29 +106,36 @@ async def run_group_chat_loop(
             "session_id": session.session_id,
             "bot_id": session.bot_id,
             "channel": session.channel,
+            "user_name": user_name,
+            "active_character_ids": list(session.active_character_ids or [session.character_id]),
+            "session_mode": session.session_mode,
+            "group_name": session.group_name,
             "profile_allowed": turn_index == 0,
+            "shared_tool_state": shared_tool_state,
+            "followup_instruction": followup_instruction,
         }
 
         result = await asyncio.to_thread(
             orchestration_fn,
             generation_messages,
             last_entities,
-            generation_prompt,
+            user_prompt,
             user_prefs,
             on_event=on_event,
             session_ctx=session_ctx,
         )
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
-            inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids = \
-            _unpack_orchestration_result(result)
+            inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
+            tool_state_export = _unpack_orchestration_result(result)
 
-        saved_reply_text = reply_text
-        if cited_uids:
-            saved_reply_text = f"{reply_text} " + " ".join([f"[Ref: {u}]" for u in cited_uids])
+        # turn 0 完成後鎖定工具狀態，後續 turn 共用；若 turn 0 沒觸發工具就保持 None。
+        if shared_tool_state is None and isinstance(tool_state_export, SharedToolState) and tool_state_export.executed:
+            shared_tool_state = tool_state_export
 
+        # cited_uids 透過 retrieval_ctx 進入 debug_info 持久化，不再拼進 content
         await session_manager.add_assistant_message(
             session.session_id,
-            saved_reply_text,
+            reply_text,
             retrieval_ctx,
             new_entities,
             persona_state={"internal_thought": inner_thought},
@@ -132,7 +145,7 @@ async def run_group_chat_loop(
 
         assistant_msg = {
             "role": "assistant",
-            "content": saved_reply_text,
+            "content": reply_text,
             "debug_info": retrieval_ctx,
             "character_id": target_character_id,
             "character_name": character_name,
