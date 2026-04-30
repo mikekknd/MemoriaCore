@@ -178,9 +178,9 @@ class TestRunRouterAgent:
         assert len(calls) == 1
         sys_msg = calls[0]["messages"][0]
         assert sys_msg["role"] == "system"
-        assert "【上下文線索" in sys_msg["content"]
-        assert "recent_mentions: 台中" in sys_msg["content"]
-        assert "su_weather_city: Taipei" in sys_msg["content"]
+        assert "<router_context_hints>" in sys_msg["content"]
+        assert '<hint key="recent_mentions">台中</hint>' in sys_msg["content"]
+        assert '<hint key="su_weather_city">Taipei</hint>' in sys_msg["content"]
 
     def test_no_hints_means_no_extra_block(self, mock_pm):
         """無 hints 或空 dict 時不應加 [上下文線索] 區塊。"""
@@ -197,7 +197,7 @@ class TestRunRouterAgent:
             )
 
         sys_msg = router.generate_calls[0]["messages"][0]
-        assert "上下文線索" not in sys_msg["content"]
+        assert "router_context_hints" not in sys_msg["content"]
 
 
 class TestDirectChatSchema:

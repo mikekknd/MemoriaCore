@@ -15,10 +15,10 @@ import re
 # ════════════════════════════════════════════════════════════
 
 _REF_TAG = re.compile(r'\s*\[Ref:\s*[^\]]+\]\s*')
-_ENV_BLOCK = re.compile(r'<environment_context>.*?</environment_context>\s*', re.DOTALL)
-_EMO_BLOCK = re.compile(r'<emotional_trajectory>.*?</emotional_trajectory>\s*', re.DOTALL)
+_ENV_BLOCK = re.compile(r'<environment_context\b[^>]*>.*?</environment_context>\s*', re.DOTALL)
+_EMO_BLOCK = re.compile(r'<emotional_trajectory\b[^>]*>.*?</emotional_trajectory>\s*', re.DOTALL)
 _FOLLOWUP_HEADER = '【群組接力指令】'
-_FOLLOWUP_XML = '<group_followup_instruction>'
+_FOLLOWUP_XML = '<group_followup_instruction'
 
 
 # ════════════════════════════════════════════════════════════
@@ -40,7 +40,10 @@ def sanitize_message_for_llm(content: str) -> str:
         return ""
     # 接力指令訊息整則丟棄
     stripped = content.lstrip()
-    if stripped.startswith(_FOLLOWUP_HEADER) or stripped.startswith(_FOLLOWUP_XML):
+    if (
+        stripped.startswith(_FOLLOWUP_HEADER)
+        or stripped.startswith(_FOLLOWUP_XML)
+    ):
         return ""
     cleaned = _REF_TAG.sub(' ', content)
     cleaned = _ENV_BLOCK.sub('', cleaned)

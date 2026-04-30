@@ -20,7 +20,7 @@ TAVILY_SEARCH_SCHEMA = {
     "type": "function",
     "function": {
         "name": "search_web",
-        "description": "【功能】搜尋網際網路以取得客觀知識、最新資訊或時事解答。\n【觸發時機】當遇到知識盲區、需要查證事實，或使用者詢問真實世界存在的實體與事件時呼叫。\n【禁止事項】若使用者詢問天氣、氣溫、降雨機率等氣象數據，且 get_weather 工具可用，禁止呼叫本工具，應優先使用 get_weather。",
+        "description": "<tool_description>\n<function>搜尋網際網路以取得客觀知識、最新資訊或時事解答。</function>\n<trigger>當遇到知識盲區、需要查證事實，或使用者詢問真實世界存在的實體與事件時呼叫。</trigger>\n<forbidden>若使用者詢問天氣、氣溫、降雨機率等氣象數據，且 get_weather 工具可用，禁止呼叫本工具，應優先使用 get_weather。</forbidden>\n</tool_description>",
         "parameters": {
             "type": "object",
             "properties": {

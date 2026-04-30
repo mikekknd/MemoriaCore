@@ -79,7 +79,8 @@ def test_weather_prefix_uses_su_city_and_refreshes_on_miss(monkeypatch):
         session_ctx={"user_id": "su-1", "persona_face": "private"},
     )
 
-    assert "Weather: Taipei 天氣摘要" in prefix
+    assert "<weather>" in prefix
+    assert "Taipei 天氣摘要" in prefix
     assert calls["slots"] == ["Taipei", "Taipei"]
     assert calls["ensure"] == [("Taipei", "key")]
 
@@ -106,7 +107,8 @@ def test_weather_prefix_does_not_refresh_when_cache_hits(monkeypatch):
         session_ctx={"user_id": "su-1", "persona_face": "private"},
     )
 
-    assert "Weather: Taipei cached" in prefix
+    assert "<weather>" in prefix
+    assert "Taipei cached" in prefix
     assert calls["ensure"] == 0
 
 
@@ -151,3 +153,30 @@ def test_emotional_trajectory_omits_when_group_character_has_no_prior_thought(mo
     )
 
     assert "<emotional_trajectory>" not in prefix
+
+
+def test_latest_user_message_wraps_group_human_speaker():
+    wrapped = prompt_utils.format_latest_user_message_for_llm(
+        "嗚嗚，可可都無視我拉!",
+        session_ctx={
+            "session_mode": "group",
+            "active_character_ids": ["char-a", "char-b"],
+            "user_id": "user-1",
+            "user_name": "mikekknd",
+        },
+    )
+
+    assert '<latest_user_message speaker="human_user" user_name="mikekknd" user_id="user-1">' in wrapped
+    assert "嗚嗚，可可都無視我拉!" in wrapped
+    assert wrapped.strip().endswith("</latest_user_message>")
+
+
+def test_latest_user_message_single_session_stays_plain():
+    content = "嗚嗚，可可都無視我拉!"
+
+    wrapped = prompt_utils.format_latest_user_message_for_llm(
+        content,
+        session_ctx={"session_mode": "single", "active_character_ids": ["char-a"]},
+    )
+
+    assert wrapped == content

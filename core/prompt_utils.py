@@ -5,6 +5,7 @@
 from datetime import datetime, timezone, timedelta
 
 from core.prompt_manager import get_prompt_manager
+from core.xml_prompt import xml_block
 
 
 def _is_su_private_weather_context(session_ctx: dict | None) -> bool:
@@ -37,14 +38,14 @@ def _build_su_weather_block(user_prefs: dict | None, session_ctx: dict | None) -
         wc = WeatherCache()
         weather_summary = wc.get_current_slot(city)
         if weather_summary:
-            return f"\nWeather: {weather_summary}"
+            return "\n" + xml_block("weather", weather_summary)
 
         api_key = (prefs.get("openweather_api_key") or "").strip()
         if api_key:
             wc.ensure_today(city, api_key)
             weather_summary = wc.get_current_slot(city)
             if weather_summary:
-                return f"\nWeather: {weather_summary}"
+                return "\n" + xml_block("weather", weather_summary)
     except Exception:
         pass
     return ""
@@ -84,3 +85,32 @@ def build_user_prefix(
             break
 
     return env_block + emo_block + "\n\n"
+
+
+def format_latest_user_message_for_llm(content: str, session_ctx: dict | None = None) -> str:
+    """群組模式中明確標示最後一則訊息來自真人使用者。
+
+    Chat API 的 role=user 對多數模型已足夠，但群組模式同時存在多個 AI speaker
+    label 與 user-role 控制區塊時，部分模型會把「我」誤連到前一位 AI。這裡只
+    包裝送進 LLM 的暫態內容，不改寫 DB 中的原始使用者訊息。
+    """
+    if not _is_group_prompt_context(session_ctx):
+        return content
+
+    ctx = session_ctx or {}
+    return xml_block(
+        "latest_user_message",
+        content,
+        attrs={
+            "speaker": "human_user",
+            "user_name": ctx.get("user_name") or "",
+            "user_id": ctx.get("user_id") or "",
+        },
+    )
+
+
+def _is_group_prompt_context(session_ctx: dict | None) -> bool:
+    if not session_ctx:
+        return False
+    active_ids = session_ctx.get("active_character_ids") or []
+    return session_ctx.get("session_mode") == "group" or len(active_ids) > 1

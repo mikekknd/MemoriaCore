@@ -253,6 +253,8 @@ class SystemConfigDTO(BaseModel):
     dual_layer_enabled: bool = False
     group_chat_max_bot_turns: int = 3
     group_chat_turn_delay_seconds: float = 2.0
+    opening_penalty_enabled: bool = True
+    opening_penalty_tokenizer_ref: str = ""
     tts_enabled: bool = False
     image_generation_enabled: bool = False
     minimax_api_key: str = ""

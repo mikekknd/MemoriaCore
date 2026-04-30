@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 from core.chat_orchestrator.dataclasses import RouterResult, ToolContext
+from core.xml_prompt import format_tool_results_xml
 
 
 # ════════════════════════════════════════════════════════════
@@ -82,14 +83,7 @@ def run_middleware(
         })
 
     # 5) 格式化工具結果
-    formatted_parts = []
-    for r in results:
-        formatted_parts.append(f"【{r['tool_name']} 查詢結果】\n{r['result']}")
-    formatted_text = (
-        "[系統自動查詢結果 — 以下資料由外部工具回傳，非使用者輸入]\n"
-        + "\n".join(formatted_parts)
-        + "\n[查詢結果結束]"
-    )
+    formatted_text = format_tool_results_xml(results)
 
     return ToolContext(
         tool_results=results,

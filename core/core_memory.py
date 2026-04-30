@@ -9,6 +9,7 @@ from datetime import datetime
 from core.storage_manager import StorageManager
 from core.system_logger import SystemLogger
 from core.prompt_manager import get_prompt_manager
+from core.xml_prompt import xml_attr
 
 class MemorySystem:
     def __init__(self):
@@ -978,15 +979,20 @@ class MemorySystem:
         if not basic_facts and not critical_facts:
             return ""
 
-        lines = ["【使用者基本資料】"]
-        for f in basic_facts:
-            lines.append(f"- {f['fact_key']}: {f['fact_value']}")
+        lines = ["<user_static_profile>"]
+        if basic_facts:
+            lines.append("<basic_info>")
+            for f in basic_facts:
+                lines.append(f'<fact key="{xml_attr(f["fact_key"])}">{f["fact_value"]}</fact>')
+            lines.append("</basic_info>")
 
         if critical_facts:
-            lines.append("【核心注意事項】")
+            lines.append("<critical_rules>")
             for f in critical_facts:
-                lines.append(f"- ⚠️ {f['fact_key']}: {f['fact_value']}")
+                lines.append(f'<rule key="{xml_attr(f["fact_key"])}">{f["fact_value"]}</rule>')
+            lines.append("</critical_rules>")
 
+        lines.append("</user_static_profile>")
         return "\n".join(lines)
 
     # ════════════════════════════════════════════════════════════
@@ -1009,10 +1015,13 @@ class MemorySystem:
         if not topics:
             return ""
 
-        lines = ["【系統背景資訊】：我們在背景發現了您可能感興趣的最新資訊："]
+        lines = [
+            "<proactive_topics>",
+            "<instruction>以下是系統背景蒐集到、使用者可能感興趣的資訊。請視上下文自然融合，不要說「我查到了」或「根據背景資訊」。</instruction>",
+        ]
         for t in topics:
-            lines.append(f"({t['interest_keyword']}) {t['summary_content']}")
+            lines.append(f'<topic keyword="{xml_attr(t["interest_keyword"])}">{t["summary_content"]}</topic>')
             self.storage.mark_topic_mentioned(self.db_path, t['topic_id'])
 
-        lines.append("請視上下文，極度自然地在對話中提起或融合這些資訊。不要說「我查到了」或「根據背景資訊」。")
+        lines.append("</proactive_topics>")
         return "\n".join(lines)

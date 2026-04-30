@@ -80,6 +80,8 @@ class ConfigUpdateRequest(BaseModel):
     dual_layer_enabled: Optional[bool] = None
     group_chat_max_bot_turns: Optional[int] = None
     group_chat_turn_delay_seconds: Optional[float] = None
+    opening_penalty_enabled: Optional[bool] = None
+    opening_penalty_tokenizer_ref: Optional[str] = None
     tts_enabled: Optional[bool] = None
     image_generation_enabled: Optional[bool] = None
     minimax_api_key: Optional[str] = None

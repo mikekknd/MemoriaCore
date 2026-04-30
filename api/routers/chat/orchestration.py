@@ -10,7 +10,7 @@ from api.dependencies import (
     get_embed_model, get_character_manager,
 )
 from core.prompt_manager import get_prompt_manager
-from core.prompt_utils import build_user_prefix
+from core.prompt_utils import build_user_prefix, format_latest_user_message_for_llm
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.dialogue_format import (
     format_history_for_llm,
@@ -20,12 +20,15 @@ from core.chat_orchestrator.dialogue_format import (
 )
 from core.chat_orchestrator.router_hints import build_router_context_hints
 from core.chat_orchestrator.dataclasses import SharedToolState
+from core.xml_prompt import format_tool_context_xml, format_tool_results_xml, xml_attr
 from core.chat_orchestrator.group_context import (
     build_group_participants_block,
     build_llm_log_context,
     is_group_context,
 )
+from core.chat_orchestrator.group_followup import inject_group_followup_instruction
 from core.chat_orchestrator.persona_agent import _sanitize_group_reply
+from core.opening_penalty import get_opening_penalty_manager
 from api.routers.chat.timer import StepTimer
 from api.routers.chat.pipeline import PipelineContext
 
@@ -67,6 +70,7 @@ def _run_chat_orchestration(
     write_visibility = persona_face  # persona_face == write_visibility（由 resolve_context 保證）
     visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
     force_group = is_group_context(ctx)
+    is_group_followup_turn = bool(ctx.get("followup_instruction"))
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -127,7 +131,7 @@ def _run_chat_orchestration(
     core_ctx = ""
     core_debug_text = "未觸發核心認知。"
     if core_insights:
-        core_ctx = f"【使用者核心資訊】：{core_insights[0]['insight']}\n"
+        core_ctx = f"<user_core_memory>\n{core_insights[0]['insight']}\n</user_core_memory>\n"
         core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
 
     with timer.step("使用者偏好檢索 (Profile Search)"):
@@ -137,8 +141,11 @@ def _run_chat_orchestration(
     profile_ctx = ""
     profile_debug_text = "未觸發使用者偏好。"
     if profile_matches:
-        profile_lines = [f"- {pm['fact_key']}: {pm['fact_value']}" for pm in profile_matches]
-        profile_ctx = f"【使用者相關偏好】\n" + "\n".join(profile_lines) + "\n"
+        profile_lines = [
+            f'<preference key="{xml_attr(pm["fact_key"])}">{pm["fact_value"]}</preference>'
+            for pm in profile_matches
+        ]
+        profile_ctx = "<user_relevant_preferences>\n" + "\n".join(profile_lines) + "\n</user_relevant_preferences>\n"
         profile_debug_text = f"觸發 {len(profile_matches)} 筆偏好: " + ", ".join(
             [f"{pm['fact_key']}={pm['fact_value']} ({pm['score']:.3f})" for pm in profile_matches])
 
@@ -149,7 +156,12 @@ def _run_chat_orchestration(
         for i, block in enumerate(blocks):
             raw_text = format_dialogue_for_analysis(block["raw_dialogues"], force_group=force_group)
             formatted_blocks.append(
-                f"【情境回憶 {i + 1}】[UID: {block.get('block_id', 'unknown')}]\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
+                f'<episodic_memory index="{i + 1}" uid="{xml_attr(block.get("block_id", "unknown"))}">\n'
+                f"<timestamp>{block['timestamp']}</timestamp>\n"
+                f"<overview>\n{block['overview']}\n</overview>\n"
+                f"<dialogue>\n{raw_text}\n</dialogue>\n"
+                "</episodic_memory>"
+            )
             overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
             block_details.append({
                 "id": i + 1, "overview": overview_header,
@@ -188,6 +200,13 @@ def _run_chat_orchestration(
     char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or storage.load_system_prompt()
     group_participants_block = build_group_participants_block(ctx, char_mgr, character_id)
     log_context = build_llm_log_context(ctx, char_mgr, character_id)
+    opening_penalty_mgr = get_opening_penalty_manager()
+    opening_penalty_plan = opening_penalty_mgr.build_plan(
+        session_id=ctx.get("session_id", ""),
+        character_id=character_id,
+        persona_face=persona_face,
+        user_prefs=user_prefs,
+    )
 
     pm = get_prompt_manager()
     speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
@@ -216,7 +235,8 @@ def _run_chat_orchestration(
         # 注入環境上下文 + 情緒軌跡前綴到當前使用者訊息（不放 system prompt，以保留 prefix cache）
         if api_messages and api_messages[-1]["role"] == "user":
             _prefix = build_user_prefix(session_messages, user_prefs=user_prefs, session_ctx=ctx)
-            api_messages[-1] = {**api_messages[-1], "content": _prefix + api_messages[-1]["content"]}
+            _latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], ctx)
+            api_messages[-1] = {**api_messages[-1], "content": _prefix + _latest_user}
 
     # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）
     _ctx_preview_lines = []
@@ -294,23 +314,24 @@ def _run_chat_orchestration(
             except ImportError:
                 pass
 
-            # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call
+            # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call。
+            # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
+            # 會同時出現在已處理歷史與當前訊息，污染意圖判斷。
             cached_state = (session_ctx or {}).get("shared_tool_state")
             tool_calls = []
             tool_results = []
             if isinstance(cached_state, SharedToolState) and cached_state.executed:
                 tool_results = list(cached_state.tool_results)
                 if cached_state.tool_results_formatted and api_messages and api_messages[-1]["role"] == "user":
-                    tool_notice = (
-                        "\n\n[系統通知：以下是根據前一位角色的工具查詢自動回傳的外部數據，"
-                        "請依據此數據回答使用者的問題]\n"
-                        + cached_state.tool_results_formatted
+                    tool_notice = "\n\n" + format_tool_context_xml(
+                        cached_state.tool_results_formatted,
+                        source="shared_tool_state",
                     )
                     api_messages[-1] = {
                         **api_messages[-1],
                         "content": api_messages[-1]["content"] + tool_notice,
                     }
-            else:
+            elif not is_group_followup_turn:
                 # ── 第一輪：輕量工具偵測（共用 run_router_agent）──────
                 # clean_history 末尾含當前 user_prompt，傳 [:-1] 避免重複追加。
                 try:
@@ -380,22 +401,19 @@ def _run_chat_orchestration(
                         "message": "搜尋完成，正在整理回覆...",
                     })
 
-            # 群組接力指令（若有）：附加到 system prompt，僅供本次 LLM 使用。
+            # 群組接力指令（若有）：追加為最後一則 user control，僅供本次 LLM 使用。
             # 不寫進 generation_messages / session_messages，故不影響 expand/pipeline/profile。
-            followup = (session_ctx or {}).get("followup_instruction")
-            if followup and api_messages:
-                followup_text = get_prompt_manager().get("group_followup_user").format(
-                    user_prompt=followup.get("user_prompt_original", user_prompt),
-                    last_character_name=followup.get("last_character_name", ""),
-                    last_reply=followup.get("last_reply", ""),
+            inject_group_followup_instruction(
+                api_messages,
+                (session_ctx or {}).get("followup_instruction"),
+                user_prompt,
+            )
+
+            if opening_penalty_plan.prompt_block:
+                opening_penalty_mgr.apply_instruction_to_messages(
+                    api_messages,
+                    opening_penalty_plan.prompt_block,
                 )
-                if api_messages[0].get("role") == "system":
-                    api_messages[0] = {
-                        **api_messages[0],
-                        "content": api_messages[0]["content"] + "\n\n" + followup_text,
-                    }
-                else:
-                    api_messages.insert(0, {"role": "system", "content": followup_text})
 
             # ── 第二輪：完整人格上下文 + schema 強制格式化 ────
             # 無論是否使用工具，都用完整 api_messages 生成最終回應。
@@ -403,7 +421,36 @@ def _run_chat_orchestration(
                 "chat", api_messages, temperature=temperature,
                 response_format=chat_schema,
                 log_context=log_context,
+                logit_bias=opening_penalty_plan.logit_bias,
             )
+            if opening_penalty_plan.blocked_openings:
+                reply_for_check = opening_penalty_mgr.extract_reply_from_response(full_res)
+                violated = opening_penalty_mgr.find_violation(reply_for_check, opening_penalty_plan)
+                if violated:
+                    retry_messages = list(api_messages)
+                    retry_instruction = opening_penalty_mgr.build_retry_instruction(
+                        opening_penalty_plan,
+                        violated_opening=violated,
+                    )
+                    opening_penalty_mgr.apply_instruction_to_messages(
+                        retry_messages,
+                        retry_instruction,
+                    )
+                    from core.system_logger import SystemLogger
+                    SystemLogger.log_error(
+                        "OpeningPenalty",
+                        f"reply 開場仍命中短期抑制片段，重試一次: {violated!r}",
+                        details={
+                            "blocked_openings": list(opening_penalty_plan.blocked_openings),
+                            "log_context": log_context or {},
+                        },
+                    )
+                    full_res = rtr.generate(
+                        "chat", retry_messages, temperature=max(temperature * 0.5, 0.1),
+                        response_format=chat_schema,
+                        log_context=log_context,
+                        logit_bias=opening_penalty_plan.logit_bias,
+                    )
 
         except Exception as e:
             from core.system_logger import SystemLogger
@@ -417,6 +464,7 @@ def _run_chat_orchestration(
     tone = None
     speech = None
 
+    parsed_reply_valid = False
     if full_res is not None:
         with timer.step("回應解析 (Response Parsing)"):
             _start = full_res.find('{')
@@ -424,6 +472,7 @@ def _run_chat_orchestration(
                 try:
                     parsed, _ = json.JSONDecoder().raw_decode(full_res, _start)
                     reply_text = _sanitize_group_reply(parsed.get("reply", "解析錯誤"), log_context)
+                    parsed_reply_valid = isinstance(parsed.get("reply"), str)
                     new_entities = parsed.get("extracted_entities", [])
                     inner_thought = parsed.get("internal_thought")
                 except Exception:
@@ -432,6 +481,15 @@ def _run_chat_orchestration(
             else:
                 reply_text = _sanitize_group_reply(full_res, log_context)
                 new_entities = []
+
+    if parsed_reply_valid and opening_penalty_plan.enabled:
+        opening_penalty_mgr.record_reply(
+            session_id=ctx.get("session_id", ""),
+            character_id=character_id,
+            persona_face=persona_face,
+            reply_text=reply_text,
+            enabled=True,
+        )
 
     if "tool_results" in locals():
         from tools.minimax_image import append_generated_images
@@ -446,12 +504,7 @@ def _run_chat_orchestration(
     _has_tool_results = "tool_results" in locals() and bool(tool_results)
     if _has_tool_results:
         # 重新格式化以供 cached 復用（與 middleware 的 ToolContext.tool_results_formatted 風格一致）
-        _formatted_parts = [f"【{r['tool_name']} 查詢結果】\n{r['result']}" for r in tool_results]
-        _formatted_text = (
-            "[系統自動查詢結果 — 以下資料由外部工具回傳，非使用者輸入]\n"
-            + "\n".join(_formatted_parts)
-            + "\n[查詢結果結束]"
-        )
+        _formatted_text = format_tool_results_xml(tool_results)
         tool_state_export = SharedToolState(
             tool_results=list(tool_results),
             tool_results_formatted=_formatted_text,

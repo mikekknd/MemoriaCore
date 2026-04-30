@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from core.prompt_manager import get_prompt_manager
-from core.prompt_utils import build_user_prefix
+from core.prompt_utils import build_user_prefix, format_latest_user_message_for_llm
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.middleware import run_middleware
 from core.chat_orchestrator.persona_agent import run_persona_agent, _parse_persona_response
@@ -26,6 +26,9 @@ from core.chat_orchestrator.group_context import (
     build_llm_log_context,
     is_group_context,
 )
+from core.chat_orchestrator.group_followup import inject_group_followup_instruction
+from core.xml_prompt import xml_attr
+from core.opening_penalty import get_opening_penalty_manager
 
 
 def _generate_tts_speech(reply_text: str, tts_lang: str, tts_rules: str, rtr) -> str | None:
@@ -92,6 +95,7 @@ def run_dual_layer_orchestration(
     write_visibility = persona_face
     visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
     force_group = is_group_context(_ctx)
+    is_group_followup_turn = bool(_ctx.get("followup_instruction"))
 
     shift_threshold = user_prefs.get("shift_threshold", 0.55)
     ui_alpha = user_prefs.get("ui_alpha", 0.6)
@@ -129,6 +133,13 @@ def run_dual_layer_orchestration(
     char_name = active_char.get("name", "助理")
     group_participants_block = build_group_participants_block(_ctx, char_mgr, character_id)
     log_context = build_llm_log_context(_ctx, char_mgr, character_id)
+    opening_penalty_mgr = get_opening_penalty_manager()
+    opening_penalty_plan = opening_penalty_mgr.build_plan(
+        session_id=_ctx.get("session_id", ""),
+        character_id=character_id,
+        persona_face=persona_face,
+        user_prefs=user_prefs,
+    )
 
     tools_list = []
     try:
@@ -219,14 +230,17 @@ def run_dual_layer_orchestration(
         core_ctx = ""
         core_debug_text = "未觸發核心認知。"
         if core_insights:
-            core_ctx = f"【使用者核心資訊】：{core_insights[0]['insight']}\n"
+            core_ctx = f"<user_core_memory>\n{core_insights[0]['insight']}\n</user_core_memory>\n"
             core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
 
         profile_ctx = ""
         profile_debug_text = "未觸發使用者偏好。"
         if profile_matches:
-            profile_lines = [f"- {pm['fact_key']}: {pm['fact_value']}" for pm in profile_matches]
-            profile_ctx = "【使用者相關偏好】\n" + "\n".join(profile_lines) + "\n"
+            profile_lines = [
+                f'<preference key="{xml_attr(pm["fact_key"])}">{pm["fact_value"]}</preference>'
+                for pm in profile_matches
+            ]
+            profile_ctx = "<user_relevant_preferences>\n" + "\n".join(profile_lines) + "\n</user_relevant_preferences>\n"
             profile_debug_text = f"觸發 {len(profile_matches)} 筆偏好: " + ", ".join(
                 [f"{pm['fact_key']}={pm['fact_value']} ({pm['score']:.3f})" for pm in profile_matches])
 
@@ -237,7 +251,12 @@ def run_dual_layer_orchestration(
             for i, block in enumerate(blocks):
                 raw_text = format_dialogue_for_analysis(block["raw_dialogues"], force_group=force_group)
                 formatted_blocks.append(
-                    f"【情境回憶 {i + 1}】[UID: {block.get('block_id', 'unknown')}]\n[時間]: {block['timestamp']}\n[概覽]: {block['overview']}\n[當時的詳細對話]:\n{raw_text}")
+                    f'<episodic_memory index="{i + 1}" uid="{xml_attr(block.get("block_id", "unknown"))}">\n'
+                    f"<timestamp>{block['timestamp']}</timestamp>\n"
+                    f"<overview>\n{block['overview']}\n</overview>\n"
+                    f"<dialogue>\n{raw_text}\n</dialogue>\n"
+                    "</episodic_memory>"
+                )
                 overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
                 block_details.append({
                     "id": i + 1, "overview": overview_header,
@@ -287,7 +306,8 @@ def run_dual_layer_orchestration(
             # 注入環境上下文 + 情緒軌跡前綴到當前使用者訊息（不放 system prompt，以保留 prefix cache）
             if api_messages and api_messages[-1]["role"] == "user":
                 _prefix = build_user_prefix(session_messages, user_prefs=user_prefs, session_ctx=_ctx)
-                api_messages[-1] = {**api_messages[-1], "content": _prefix + api_messages[-1]["content"]}
+                _latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], _ctx)
+                api_messages[-1] = {**api_messages[-1], "content": _prefix + _latest_user}
 
         # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）
         _ctx_preview_lines = []
@@ -348,7 +368,9 @@ def run_dual_layer_orchestration(
         thinking = ""
         ctx = None
 
-        # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/middleware
+        # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/middleware。
+        # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
+        # 會同時出現在已處理歷史與當前訊息，污染意圖判斷。
         cached = (session_ctx or {}).get("shared_tool_state")
         if isinstance(cached, SharedToolState) and cached.executed:
             return {
@@ -360,6 +382,9 @@ def run_dual_layer_orchestration(
                 "thinking_speech": "",  # 不再二次推語音
                 "timer_steps": [],
             }
+
+        if is_group_followup_turn:
+            return {"tool_context": None, "thinking_speech": "", "timer_steps": []}
 
         if not tools_list:
             return {"tool_context": None, "thinking_speech": "", "timer_steps": []}
@@ -450,20 +475,11 @@ def run_dual_layer_orchestration(
     # ════════════════════════════════════════════════════════════
     # SECTION: 群組接力指令注入（不影響 expand/pipeline/profile）
     # ════════════════════════════════════════════════════════════
-    followup = (session_ctx or {}).get("followup_instruction")
-    if followup and api_messages:
-        followup_text = get_prompt_manager().get("group_followup_user").format(
-            user_prompt=followup.get("user_prompt_original", user_prompt),
-            last_character_name=followup.get("last_character_name", ""),
-            last_reply=followup.get("last_reply", ""),
-        )
-        if api_messages[0].get("role") == "system":
-            api_messages[0] = {
-                **api_messages[0],
-                "content": api_messages[0]["content"] + "\n\n" + followup_text,
-            }
-        else:
-            api_messages.insert(0, {"role": "system", "content": followup_text})
+    inject_group_followup_instruction(
+        api_messages,
+        (session_ctx or {}).get("followup_instruction"),
+        user_prompt,
+    )
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Module C — 角色渲染（等兩條分支都完成後才執行）
@@ -477,6 +493,7 @@ def run_dual_layer_orchestration(
             router=rtr,
             temperature=temperature,
             log_context=log_context,
+            opening_penalty_plan=opening_penalty_plan,
         )
 
     if error_result is not None:
@@ -489,6 +506,14 @@ def run_dual_layer_orchestration(
     if tool_context:
         from tools.minimax_image import append_generated_images
         reply_text = append_generated_images(reply_text, tool_context.tool_results)
+    if opening_penalty_plan.enabled and opening_penalty_mgr.extract_reply_from_response(raw_res):
+        opening_penalty_mgr.record_reply(
+            session_id=_ctx.get("session_id", ""),
+            character_id=character_id,
+            persona_face=persona_face,
+            reply_text=persona_result.reply_text,
+            enabled=True,
+        )
     new_entities = persona_result.new_entities
     cited_uids = retrieval_ctx.get("cited_uids", [])
     inner_thought = persona_result.inner_thought

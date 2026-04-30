@@ -21,7 +21,7 @@ WEATHER_SCHEMA = {
     "type": "function",
     "function": {
         "name": "get_weather",
-        "description": "【功能】查詢指定城市的即時天氣或未來天氣預報。回傳真實氣象數據。\n【觸發時機】當使用者詢問天氣、氣溫、降雨機率、穿搭建議等依賴真實環境數據的問題時，必須優先呼叫此工具，禁止改用 search_web 代替，絕對禁止憑空捏造。",
+        "description": "<tool_description>\n<function>查詢指定城市的即時天氣或未來天氣預報。回傳真實氣象數據。</function>\n<trigger>當使用者詢問天氣、氣溫、降雨機率、穿搭建議等依賴真實環境數據的問題時，必須優先呼叫此工具。</trigger>\n<forbidden>禁止改用 search_web 代替，絕對禁止憑空捏造。</forbidden>\n</tool_description>",
         "parameters": {
             "type": "object",
             "properties": {

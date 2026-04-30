@@ -8,6 +8,7 @@
 from core.system_logger import SystemLogger
 from core.prompt_manager import get_prompt_manager
 from core.chat_orchestrator.dataclasses import RouterResult
+from core.xml_prompt import xml_attr
 
 
 # ════════════════════════════════════════════════════════════
@@ -67,11 +68,16 @@ def run_router_agent(
 
     sys_prompt = _get_router_prompt()
     if context_hints:
-        hint_lines = [f"- {k}: {v}" for k, v in context_hints.items() if v]
+        hint_lines = [
+            f'<hint key="{xml_attr(k)}">{v}</hint>'
+            for k, v in context_hints.items()
+            if v
+        ]
         if hint_lines:
             sys_prompt = (
-                f"{sys_prompt}\n\n【上下文線索（供工具參數提取參考）】\n"
+                f"{sys_prompt}\n\n<router_context_hints>\n"
                 + "\n".join(hint_lines)
+                + "\n</router_context_hints>"
             )
     messages = [{"role": "system", "content": sys_prompt}]
 

@@ -1,5 +1,6 @@
 # 【環境假設】：Python 3.12, ollama, openai, numpy, onnxruntime, transformers 庫可用。
 # 已在當前目錄透過 hf download 取得 BGE-M3 的 INT8 量化檔 (*.onnx)
+import inspect
 import re
 import ollama
 from openai import OpenAI
@@ -12,6 +13,7 @@ from core.system_logger import SystemLogger
 
 _onnx_session = None
 _tokenizer = None
+CHAT_JSON_MAX_TOKENS = 768
 
 def get_bge_m3_onnx_instance():
     global _onnx_session, _tokenizer
@@ -26,7 +28,7 @@ def get_bge_m3_onnx_instance():
 
 class ILLMProvider:
     # 【核心修正】：新增 response_format 參數，並擴充 tools 與 tool_choice 以支援函數呼叫
-    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto") -> tuple[str, list]:
+    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto", max_tokens: int | None = None, logit_bias: dict | None = None) -> tuple[str, list]:
         raise NotImplementedError
         
     def get_embedding(self, text: str, model: str) -> dict:
@@ -34,7 +36,18 @@ class ILLMProvider:
 
 class OllamaProvider(ILLMProvider):
     def __init__(self, host: str = "http://localhost:11434"):
-        self._client = ollama.Client(host=host)
+        self.host = (host or "http://localhost:11434").rstrip("/")
+        self._client = ollama.Client(host=self.host)
+        self._openai_client = OpenAI(api_key="ollama", base_url=self._openai_base_url(self.host))
+
+    @staticmethod
+    def _openai_base_url(host: str) -> str:
+        root = (host or "http://localhost:11434").rstrip("/")
+        if root.endswith("/api"):
+            root = root[:-4]
+        if root.endswith("/v1"):
+            return root
+        return f"{root}/v1"
 
     def _normalize_messages(self, messages: list) -> list:
         """Ollama 格式正規化：tool 訊息只保留 role + content，arguments 維持 dict"""
@@ -55,11 +68,108 @@ class OllamaProvider(ILLMProvider):
                 normalized.append(msg)
         return normalized
 
-    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto") -> tuple[str, list]:
+    def _normalize_messages_openai(self, messages: list) -> list:
+        """Ollama OpenAI-compatible 格式正規化。"""
+        normalized = []
+        for msg in messages:
+            if msg.get("role") == "tool":
+                normalized.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_call_id", "call_unknown"),
+                    "content": msg.get("content", ""),
+                })
+            elif msg.get("role") == "assistant" and "tool_calls" in msg:
+                tcs = []
+                for tc in msg["tool_calls"]:
+                    args = tc.get("function", {}).get("arguments", {})
+                    if isinstance(args, dict):
+                        args = json.dumps(args, ensure_ascii=False)
+                    tcs.append({
+                        "id": tc.get("id", f"call_{tc['function']['name']}"),
+                        "type": "function",
+                        "function": {"name": tc["function"]["name"], "arguments": args},
+                    })
+                normalized.append({"role": "assistant", "content": msg.get("content", ""), "tool_calls": tcs})
+            else:
+                normalized.append(msg)
+        return normalized
+
+    @staticmethod
+    def _extract_openai_response(response) -> tuple[str, list]:
+        choice = response.choices[0]
+        msg = choice.message
+        content = msg.content or ""
+        tool_calls_out = []
+        if getattr(msg, "tool_calls", None):
+            for tc in msg.tool_calls:
+                args = tc.function.arguments
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {}
+                tool_calls_out.append({
+                    "id": getattr(tc, "id", f"call_{tc.function.name}"),
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": args,
+                    },
+                })
+        return content.strip(), tool_calls_out
+
+    def _generate_chat_openai_compatible(
+        self,
+        messages: list,
+        model: str,
+        temperature: float = 0.0,
+        response_format: dict | None = None,
+        tools: list | None = None,
+        tool_choice: str | dict = "auto",
+        max_tokens: int | None = None,
+        logit_bias: dict | None = None,
+    ) -> tuple[str, list]:
+        kwargs = {
+            "model": model,
+            "messages": self._normalize_messages_openai(messages),
+            "temperature": temperature,
+        }
+        if max_tokens:
+            kwargs["max_tokens"] = int(max_tokens)
+        if response_format:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "dynamic_schema",
+                    "schema": response_format,
+                    "strict": False,
+                },
+            }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+        if logit_bias:
+            kwargs["logit_bias"] = logit_bias
+
+        response = self._openai_client.chat.completions.create(**kwargs)
+        return self._extract_openai_response(response)
+
+    def _generate_chat_native(
+        self,
+        messages: list,
+        model: str,
+        temperature: float = 0.0,
+        response_format: dict | None = None,
+        tools: list | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[str, list]:
+        options = {"temperature": temperature}
+        if max_tokens:
+            options["num_predict"] = int(max_tokens)
         kwargs = {
             "model": model,
             "messages": self._normalize_messages(messages),
-            "options": {"temperature": temperature}
+            "options": options,
         }
         # 【核心修正】：Ollama 原生支援直接將 Schema 字典傳入 format 參數
         if response_format:
@@ -101,6 +211,35 @@ class OllamaProvider(ILLMProvider):
                 })
                 
         return content.strip(), clean_tcs
+
+    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto", max_tokens: int | None = None, logit_bias: dict | None = None) -> tuple[str, list]:
+        if logit_bias:
+            try:
+                return self._generate_chat_openai_compatible(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    response_format=response_format,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    max_tokens=max_tokens,
+                    logit_bias=logit_bias,
+                )
+            except Exception as exc:
+                SystemLogger.log_error(
+                    "OllamaProvider",
+                    f"OpenAI-compatible logit_bias 呼叫失敗，改用 native Ollama 降級: {type(exc).__name__}: {exc}",
+                    details={"model": model, "base_url": self._openai_base_url(self.host)},
+                )
+
+        return self._generate_chat_native(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            response_format=response_format,
+            tools=tools,
+            max_tokens=max_tokens,
+        )
 
     def get_embedding(self, text: str, model: str) -> dict:
         clean_text = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
@@ -170,12 +309,16 @@ class OpenAICompatibleProvider(ILLMProvider):
                 normalized.append(msg)
         return normalized
 
-    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto") -> tuple[str, list]:
+    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto", max_tokens: int | None = None, logit_bias: dict | None = None) -> tuple[str, list]:
         kwargs = {
             "model": model,
             "messages": self._normalize_messages(messages),
             "temperature": temperature,
         }
+        if max_tokens:
+            kwargs["max_tokens"] = int(max_tokens)
+        if logit_bias:
+            kwargs["logit_bias"] = logit_bias
         # 【核心修正】：OpenAI 格式自動轉譯包裝
         if response_format:
             kwargs["response_format"] = {
@@ -202,6 +345,15 @@ class OpenAICompatibleProvider(ILLMProvider):
                 if "temperature" in err_str and "unsupported_value" in err_str:
                     if attempt < max_retries:
                         kwargs.pop("temperature", None)
+                        continue
+                    raise
+                if "logit_bias" in err_str and any(token in err_str.lower() for token in ("unsupported", "unknown", "extra", "not supported")):
+                    if attempt < max_retries and "logit_bias" in kwargs:
+                        kwargs.pop("logit_bias", None)
+                        SystemLogger.log_error(
+                            "LLMRouter",
+                            f"[{model}] provider 不支援 logit_bias，已移除後重試",
+                        )
                         continue
                     raise
                 
@@ -264,12 +416,16 @@ class LlamaCppProvider(OpenAICompatibleProvider):
     """llama.cpp server 專用 Provider — response_format 自動降級。
     """
 
-    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto") -> tuple[str, list]:
+    def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto", max_tokens: int | None = None, logit_bias: dict | None = None) -> tuple[str, list]:
         kwargs = {
             "model": model,
             "messages": self._normalize_messages(messages),
             "temperature": temperature
         }
+        if max_tokens:
+            kwargs["max_tokens"] = int(max_tokens)
+        if logit_bias:
+            kwargs["logit_bias"] = logit_bias
         if tools:
             kwargs["tools"] = tools
 
@@ -324,6 +480,56 @@ class LLMRouter:
     def register_route(self, task_key: str, provider: ILLMProvider, model_name: str):
         self.routes[task_key] = {"provider": provider, "model": model_name}
 
+    @staticmethod
+    def _structured_chat_max_tokens(
+        task_key: str,
+        response_format: dict | None,
+        log_context: dict | None,
+    ) -> int | None:
+        """最終角色 JSON 回覆很短，限制輸出可避免模型發散時長篇續寫。"""
+        if task_key == "chat" and response_format and log_context:
+            return CHAT_JSON_MAX_TOKENS
+        return None
+
+    @staticmethod
+    def _provider_accepts_param(provider: ILLMProvider, param_name: str) -> bool:
+        try:
+            return param_name in inspect.signature(provider.generate_chat).parameters
+        except (TypeError, ValueError):
+            return False
+
+    def _generate_chat_with_optional_limit(
+        self,
+        provider: ILLMProvider,
+        messages: list,
+        model: str,
+        temperature: float,
+        response_format: dict | None,
+        tools: list | None = None,
+        tool_choice: str | dict = "auto",
+        max_tokens: int | None = None,
+        logit_bias: dict | None = None,
+    ) -> tuple[str, list]:
+        optional_kwargs = {}
+        if max_tokens and self._provider_accepts_param(provider, "max_tokens"):
+            optional_kwargs["max_tokens"] = max_tokens
+        if logit_bias and self._provider_accepts_param(provider, "logit_bias"):
+            optional_kwargs["logit_bias"] = logit_bias
+        elif logit_bias:
+            SystemLogger.log_system_event(
+                "LLMRouter",
+                f"[{model}] provider 不支援 logit_bias，已忽略本次開場抑制 bias",
+            )
+        return provider.generate_chat(
+            messages,
+            model,
+            temperature,
+            response_format,
+            tools,
+            tool_choice,
+            **optional_kwargs,
+        )
+
     # 【核心修正】：Router 層級開放參數
     def generate(
         self,
@@ -332,13 +538,23 @@ class LLMRouter:
         temperature: float = 0.0,
         response_format: dict = None,
         log_context: dict | None = None,
+        logit_bias: dict | None = None,
     ) -> str:
         route = self.routes.get(task_key)
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
         SystemLogger.log_llm_prompt(task_key, route["model"], messages, log_context=log_context)
-        response_text, _ = route["provider"].generate_chat(messages, route["model"], temperature, response_format)
+        max_tokens = self._structured_chat_max_tokens(task_key, response_format, log_context)
+        response_text, _ = self._generate_chat_with_optional_limit(
+            route["provider"],
+            messages,
+            route["model"],
+            temperature,
+            response_format,
+            max_tokens=max_tokens,
+            logit_bias=logit_bias,
+        )
 
         # 若有 response_format 但模型回傳無法解析的純文字，自動重試一次。
         # 雲端代理模型（如 deepseek-v3.1:671b-cloud）有時會忽略 format 參數直接回覆純文字。
@@ -398,16 +614,20 @@ class LLMRouter:
                 retry_reason = "format_only"
             if retry_strategy == "preserve_previous":
                 retry_warning = (
-                    "[系統警告] 你的上一則回覆格式錯誤，無法解析為合法 JSON。"
+                    "<retry_instruction reason=\"invalid_json\" strategy=\"preserve_previous\">"
+                    "你的上一則回覆格式錯誤，無法解析為合法 JSON。"
                     "上一則內容本身可用，請將上一則 assistant 回覆的內容原封不動地重新包裝為合法 JSON 格式，"
                     "禁止修改內容、禁止重新生成新的回覆、禁止任何前導文字或 Markdown 格式。"
+                    "</retry_instruction>"
                 )
             else:
                 retry_warning = (
-                    "[系統警告] 你的上一則回覆格式錯誤，且內容看起來混入無關文件或其他 AI 的發言。"
+                    f"<retry_instruction reason=\"{retry_reason}\" strategy=\"regenerate\">"
+                    "你的上一則回覆格式錯誤，且內容看起來混入無關文件或其他 AI 的發言。"
                     "請忽略上一則錯誤輸出，重新依照原始對話與系統指令回答。"
                     "你只能代表目前指定角色發言，禁止輸出其他 AI 的 speaker tag 或台詞。"
                     "輸出必須是合法 JSON，禁止任何前導文字、Markdown 或額外說明。"
+                    "</retry_instruction>"
                 )
             SystemLogger.log_error(
                 f"LLMRouter/{task_key}",
@@ -417,6 +637,7 @@ class LLMRouter:
                     "temperature": temperature,
                     "retry_strategy": retry_strategy,
                     "retry_reason": retry_reason,
+                    "max_tokens": max_tokens,
                     "response_preview": response_text[:1000],
                     "retry_warning": retry_warning,
                     "original_prompt": original_prompt,
@@ -438,8 +659,14 @@ class LLMRouter:
                     }
                 else:
                     retry_msgs.append({"role": "user", "content": retry_warning})
-            response_text, _ = route["provider"].generate_chat(
-                retry_msgs, route["model"], max(temperature * 0.5, 0.1), response_format
+            response_text, _ = self._generate_chat_with_optional_limit(
+                route["provider"],
+                retry_msgs,
+                route["model"],
+                max(temperature * 0.5, 0.1),
+                response_format,
+                max_tokens=max_tokens,
+                logit_bias=logit_bias,
             )
 
         SystemLogger.log_llm_response(task_key, route["model"], response_text)
@@ -454,13 +681,23 @@ class LLMRouter:
         tool_choice: str | dict = "auto",
         response_format: dict | None = None,
         log_context: dict | None = None,
+        logit_bias: dict | None = None,
     ) -> tuple[str, list]:
         route = self.routes.get(task_key)
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
         SystemLogger.log_llm_prompt(task_key, route["model"], messages, tools, log_context=log_context)
-        response_text, tool_calls = route["provider"].generate_chat(messages, route["model"], temperature, response_format, tools, tool_choice)
+        response_text, tool_calls = self._generate_chat_with_optional_limit(
+            route["provider"],
+            messages,
+            route["model"],
+            temperature,
+            response_format,
+            tools,
+            tool_choice,
+            logit_bias=logit_bias,
+        )
         log_content = f"Content: {response_text}, Tools: {tool_calls}"
         SystemLogger.log_llm_response(task_key, route["model"], log_content)
 

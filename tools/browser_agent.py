@@ -19,9 +19,11 @@ BROWSER_AGENT_SCHEMA = {
     "function": {
         "name": "browser_task",
         "description": (
-            "【功能】控制本機瀏覽器執行網頁自動化任務，包含導航、表單填寫、按鈕點擊、截圖、資料擷取等操作。\n"
-            "【觸發時機】需要開啟瀏覽器操作網頁時呼叫，例如：開啟網址、自動填表、抓取動態網頁、登入網站、點擊頁面元素。\n"
-            "【不適用】本機檔案操作、執行腳本、系統指令等，請改用 run_bash。"
+            "<tool_description>\n"
+            "<function>控制本機瀏覽器執行網頁自動化任務，包含導航、表單填寫、按鈕點擊、截圖、資料擷取等操作。</function>\n"
+            "<trigger>需要開啟瀏覽器操作網頁時呼叫，例如：開啟網址、自動填表、抓取動態網頁、登入網站、點擊頁面元素。</trigger>\n"
+            "<not_applicable>本機檔案操作、執行腳本、系統指令等，請改用 run_bash。</not_applicable>\n"
+            "</tool_description>"
         ),
         "parameters": {
             "type": "object",
@@ -313,7 +315,14 @@ def run_browser_agent(task: str) -> str:
                 hint = _make_error_hint(args_str, result_str)
                 if hint:
                     SystemLogger.log_system_event("BrowserAgent", f"Step {step}: 偵測到錯誤，注入提示：{hint[:100]}")
-                    messages.append({"role": "user", "content": f"[系統診斷提示] {hint}"})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "<browser_diagnostic_hint>\n"
+                            f"{hint}\n"
+                            "</browser_diagnostic_hint>"
+                        ),
+                    })
 
     return json.dumps(
         {"error": f"Browser Agent 已達到最大步驟數（{_MAX_STEPS}），任務未完成。"},

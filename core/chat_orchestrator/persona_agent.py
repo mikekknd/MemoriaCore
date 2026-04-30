@@ -10,6 +10,8 @@ import re
 
 from core.system_logger import SystemLogger
 from core.chat_orchestrator.dataclasses import ToolContext, PersonaResult
+from core.xml_prompt import format_tool_context_xml
+from core.opening_penalty import OpeningPenaltyPlan, get_opening_penalty_manager
 
 
 _GROUP_SPEAKER_RE = re.compile(r"\[([^\]\|\n]+)\|([^\]\|\n]+)\]:\s*")
@@ -59,6 +61,7 @@ def run_persona_agent(
     router,
     temperature: float = 0.7,
     log_context: dict | None = None,
+    opening_penalty_plan: OpeningPenaltyPlan | None = None,
 ) -> tuple[str | None, PersonaResult | None]:
     """
     Module C — 角色渲染層：載入完整角色設定，生成結構化 JSON 回覆。
@@ -88,18 +91,23 @@ def run_persona_agent(
         # 工具結果合併進最後一條 user 訊息，避免連續兩條 user 訊息。
         # 部分 provider（Ollama strict mode 等）要求 user/assistant 嚴格交替，
         # 連續兩條 user 訊息會觸發 400 錯誤或被靜默忽略。
-        tool_notice = (
-            f"\n\n[系統通知：以下是根據你的工具查詢自動回傳的外部數據，請依據此數據回答使用者的問題]\n"
-            f"{tool_context.tool_results_formatted}"
-        )
-        if final_messages and final_messages[-1]["role"] == "user":
-            final_messages[-1] = {
-                **final_messages[-1],
-                "content": final_messages[-1]["content"] + tool_notice,
-            }
-        else:
-            # 防禦性 fallback：末尾非 user 訊息時（理論上不應發生）補上
-            final_messages.append({"role": "user", "content": tool_notice.lstrip()})
+        if tool_context.tool_results_formatted:
+            tool_notice = "\n\n" + format_tool_context_xml(
+                tool_context.tool_results_formatted,
+                source="persona_agent",
+            )
+            if final_messages and final_messages[-1]["role"] == "user":
+                final_messages[-1] = {
+                    **final_messages[-1],
+                    "content": final_messages[-1]["content"] + tool_notice,
+                }
+            else:
+                # 防禦性 fallback：末尾非 user 訊息時（理論上不應發生）補上
+                final_messages.append({"role": "user", "content": tool_notice.lstrip()})
+
+    penalty_mgr = get_opening_penalty_manager()
+    if opening_penalty_plan and opening_penalty_plan.prompt_block:
+        penalty_mgr.apply_instruction_to_messages(final_messages, opening_penalty_plan.prompt_block)
 
     # 呼叫 LLM — 不帶 tools，帶 response_format
     try:
@@ -107,10 +115,39 @@ def run_persona_agent(
             "chat", final_messages, temperature=temperature,
             response_format=chat_schema,
             log_context=log_context,
+            logit_bias=(opening_penalty_plan.logit_bias if opening_penalty_plan else None),
         )
     except Exception as e:
         SystemLogger.log_error("PersonaAgent", f"{type(e).__name__}: {e}")
         return None, PersonaResult(reply_text=f"生成錯誤: {e}")
+
+    if opening_penalty_plan and opening_penalty_plan.blocked_openings:
+        reply_for_check = penalty_mgr.extract_reply_from_response(full_res)
+        violated = penalty_mgr.find_violation(reply_for_check, opening_penalty_plan)
+        if violated:
+            retry_messages = list(final_messages)
+            retry_instruction = penalty_mgr.build_retry_instruction(
+                opening_penalty_plan,
+                violated_opening=violated,
+            )
+            penalty_mgr.apply_instruction_to_messages(retry_messages, retry_instruction)
+            SystemLogger.log_error(
+                "OpeningPenalty",
+                f"reply 開場仍命中短期抑制片段，重試一次: {violated!r}",
+                details={
+                    "blocked_openings": list(opening_penalty_plan.blocked_openings),
+                    "log_context": log_context or {},
+                },
+            )
+            try:
+                full_res = router.generate(
+                    "chat", retry_messages, temperature=max(temperature * 0.5, 0.1),
+                    response_format=chat_schema,
+                    log_context=log_context,
+                    logit_bias=opening_penalty_plan.logit_bias,
+                )
+            except Exception as e:
+                SystemLogger.log_error("PersonaAgent", f"Opening penalty retry failed: {type(e).__name__}: {e}")
 
     # 回傳原始 LLM 回應，讓呼叫端可以分別計時解析步驟
     return full_res, None

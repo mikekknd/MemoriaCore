@@ -8,7 +8,7 @@
       "{history_text}",
       "{user_query}"
     ],
-    "template": "請精準判斷使用者的「最新提問」意圖，提取檢索標籤。\n【層級 1：明確名詞或要求回憶】-> 動作：精準提取核心名詞，自動補充 1~2 個同義詞。\n【層級 2：暫態行為與閒聊】-> 動作：返回空陣列 []。\n\n【格式說明】[上下文] 中 assistant 訊息可能以 `[角色名|character_id]:` 為前綴（多角色群組對話），角色標籤本身不是實體，禁止當作 keyword 提取。\n\n[上下文]\n{history_text}\n\n[最新提問]\n{user_query}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"expanded_keywords\": [\"標籤1\", \"同義詞1\"], \"entity_confidence\": 0.0 }}"
+    "template": "請精準判斷使用者的「最新提問」意圖，提取檢索標籤。\n【層級 1：明確名詞或要求回憶】-> 動作：精準提取核心名詞，自動補充 1~2 個同義詞。\n【層級 2：暫態行為與閒聊】-> 動作：返回空陣列 []。\n\n<format_note><history> 中 assistant 訊息可能以 `[角色名|character_id]:` 為前綴（多角色群組對話），角色標籤本身不是實體，禁止當作 keyword 提取。</format_note>\n\n<query_expand_context>\n<history>\n{history_text}\n</history>\n<latest_user_query>\n{user_query}\n</latest_user_query>\n</query_expand_context>\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"expanded_keywords\": [\"標籤1\", \"同義詞1\"], \"entity_confidence\": 0.0 }}"
   },
   "dialogue_compress": {
     "label": "對話壓縮 (Dialogue Compression)",
@@ -17,7 +17,7 @@
     "placeholders": [
       "{old_dialogue_text}"
     ],
-    "template": "將以下對話壓縮為客觀事件摘要。\n\n【核心規則】\n1. 以「使用者」為主語，用 150 字以內高密度總結核心事件與結論。嚴禁流水帳！\n2. 保留對話中的專有名詞。\n3. 嚴禁在 summary 內容中重複提及時間。\n\n[原始對話]\n{old_dialogue_text}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"summary\": \"150字以內的客觀事件摘要\" }}"
+    "template": "將以下對話壓縮為客觀事件摘要。\n\n【核心規則】\n1. 以「使用者」為主語，用 150 字以內高密度總結核心事件與結論。嚴禁流水帳！\n2. 保留對話中的專有名詞。\n3. 嚴禁在 summary 內容中重複提及時間。\n\n<source_dialogue>\n{old_dialogue_text}\n</source_dialogue>\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"summary\": \"150字以內的客觀事件摘要\" }}"
   },
   "core_distill": {
     "label": "核心記憶提煉 (Core Distillation)",
@@ -29,7 +29,7 @@
       "{context_text}",
       "{existing_cores_text}"
     ],
-    "template": "你是記憶提煉引擎。從以下 {block_count} 段情境記憶（累計權重積分 {total_weight}）提煉出「使用者的人物側寫與深層特徵 (Insight)」。\n\n【提煉目標】（重點關注以下維度）\n1. 核心價值觀：使用者在探討這些事物時，真正看重的是什麼？（例如：比起技術本身，更在乎情感連結）\n2. 行為模式：使用者解決問題或思考的習慣？（例如：偏好實作驗證、喜歡哲學思辨）\n3. 長期偏好：跨越單一事件的通用喜好。\n\n【輸出規則】\n- 必須是可跨話題適用的「廣義結論」，再輔以「具體事物」佐證。\n- 直接以「使用者...」為主語，用一句順暢的文字表達。\n- 若權重積分 ≤ 1、或對話太過瑣碎、缺乏深層特徵，直接輸出 NULL。\n【關係保留】未明確說明關係時，寫「使用者經常提及 [人物] 的 [事件特徵]」\n\n[情境記憶]\n{context_text}\n\n[現有核心記憶（供維度對齊與矛盾偵測用）]\n{existing_cores_text}\n\n【維度對齊判定】：請判斷提煉出的新 Insight，是否與上方「現有核心記憶」中的某一筆探討「相同的維度或主題」（包含完全一致、互相矛盾、或隨時間演進的習慣改變）。\n- 若有相同維度的記憶，填入該筆記憶的 ID。\n- 若無，或無法確定，填 null。\n\n請僅輸出以下 JSON 格式，禁止輸出任何額外說明、Markdown 符號或註解：\n{{ \"insight\": \"提煉出的核心認知，若無則填 NULL\", \"target_core_id\": \"對應的現有記憶 ID，或填 null\" }}"
+    "template": "你是記憶提煉引擎。從以下 {block_count} 段情境記憶（累計權重積分 {total_weight}）提煉出「使用者的人物側寫與深層特徵 (Insight)」。\n\n【提煉目標】（重點關注以下維度）\n1. 核心價值觀：使用者在探討這些事物時，真正看重的是什麼？（例如：比起技術本身，更在乎情感連結）\n2. 行為模式：使用者解決問題或思考的習慣？（例如：偏好實作驗證、喜歡哲學思辨）\n3. 長期偏好：跨越單一事件的通用喜好。\n\n【輸出規則】\n- 必須是可跨話題適用的「廣義結論」，再輔以「具體事物」佐證。\n- 直接以「使用者...」為主語，用一句順暢的文字表達。\n- 若權重積分 ≤ 1、或對話太過瑣碎、缺乏深層特徵，直接輸出 NULL。\n【關係保留】未明確說明關係時，寫「使用者經常提及 [人物] 的 [事件特徵]」\n\n<core_distill_context>\n<context_memories>\n{context_text}\n</context_memories>\n<existing_core_memories>\n{existing_cores_text}\n</existing_core_memories>\n</core_distill_context>\n\n【維度對齊判定】：請判斷提煉出的新 Insight，是否與上方「現有核心記憶」中的某一筆探討「相同的維度或主題」（包含完全一致、互相矛盾、或隨時間演進的習慣改變）。\n- 若有相同維度的記憶，填入該筆記憶的 ID。\n- 若無，或無法確定，填 null。\n\n請僅輸出以下 JSON 格式，禁止輸出任何額外說明、Markdown 符號或註解：\n{{ \"insight\": \"提煉出的核心認知，若無則填 NULL\", \"target_core_id\": \"對應的現有記憶 ID，或填 null\" }}"
   },
   "core_fusion": {
     "label": "核心記憶融合 (Core Fusion)",
@@ -43,7 +43,7 @@
       "{total_weight}",
       "{new_insight}"
     ],
-    "template": "融合以下兩筆核心事實為一單一事實。\n\n【任務法則】\n當兩筆事實存在矛盾或轉變時，請根據「權重」與「時間」判斷使用者的真實狀態：\n1. 若時間差異大，可能是「習慣演進」（例：過去常X，但近期改為Y）。\n2. 若權重差異懸殊，以高權重為常態，低權重為例外或近期嘗試（例：通常X，但偶爾Y）。\n3. 允許保留雙重標準，將矛盾轉化為有層次的客觀敘述。若無矛盾則正常合併。\n\n【舊事實 (記錄時間：{old_time_str}，權重積分：{old_weight})】\n{old_insight}\n\n【新事實 (記錄時間：{new_time_str}，權重積分：{total_weight})】\n{new_insight}\n\n請僅輸出融合後的純文字結果，以「使用者」為主語。保留宏觀事實與時間演進感，禁止微觀細節、腦補關係、Markdown 符號或解釋。"
+    "template": "融合以下兩筆核心事實為一單一事實。\n\n【任務法則】\n當兩筆事實存在矛盾或轉變時，請根據「權重」與「時間」判斷使用者的真實狀態：\n1. 若時間差異大，可能是「習慣演進」（例：過去常X，但近期改為Y）。\n2. 若權重差異懸殊，以高權重為常態，低權重為例外或近期嘗試（例：通常X，但偶爾Y）。\n3. 允許保留雙重標準，將矛盾轉化為有層次的客觀敘述。若無矛盾則正常合併。\n\n<core_fusion_context>\n<old_insight timestamp=\"{old_time_str}\" weight=\"{old_weight}\">\n{old_insight}\n</old_insight>\n<new_insight timestamp=\"{new_time_str}\" total_weight=\"{total_weight}\">\n{new_insight}\n</new_insight>\n</core_fusion_context>\n\n請僅輸出融合後的純文字結果，以「使用者」為主語。保留宏觀事實與時間演進感，禁止微觀細節、腦補關係、Markdown 符號或解釋。"
   },
   "history_compress": {
     "label": "歷史記憶編年史化 (History Compression)",
@@ -52,7 +52,7 @@
     "placeholders": [
       "{old_dialogue_text}"
     ],
-    "template": "將以下長對話按時間段壓縮為客觀事件摘要。\n\n【核心規則】\n1. 時間區塊強制聚合：同一個 [系統標記] 內發生的所有對話，必須「強行合併」為單一個陣列元素。嚴禁拆分！\n2. 摘要視角：以「使用者」為主語，用 150 字以內高密度總結該時段的核心事件與結論。嚴禁流水帳！\n3. 負面約束：絕對禁止在 summary 內容中重複提及時間，時間資訊僅能填入 timestamp 欄位。\n4. 實體保留：必須保留並提取對話中的專有名詞。\n\n[原始長對話]\n{old_dialogue_text}\n\n請僅輸出以下 JSON 陣列，禁止輸出任何額外說明、Markdown 或註解：\n[\n  {{ \"timestamp\": \"對話原始標記的時間，如 2026-03-16 17:24\", \"summary\": \"150字以內的客觀事件摘要\" }}\n]"
+    "template": "將以下長對話按時間段壓縮為客觀事件摘要。\n\n【核心規則】\n1. 時間區塊強制聚合：同一個 [系統標記] 內發生的所有對話，必須「強行合併」為單一個陣列元素。嚴禁拆分！\n2. 摘要視角：以「使用者」為主語，用 150 字以內高密度總結該時段的核心事件與結論。嚴禁流水帳！\n3. 負面約束：絕對禁止在 summary 內容中重複提及時間，時間資訊僅能填入 timestamp 欄位。\n4. 實體保留：必須保留並提取對話中的專有名詞。\n\n<source_dialogue>\n{old_dialogue_text}\n</source_dialogue>\n\n請僅輸出以下 JSON 陣列，禁止輸出任何額外說明、Markdown 或註解：\n[\n  {{ \"timestamp\": \"對話原始標記的時間，如 2026-03-16 17:24\", \"summary\": \"150字以內的客觀事件摘要\" }}\n]"
   },
   "episodic_overview": {
     "label": "情境概覽生成 (Episodic Overview)",
@@ -61,7 +61,7 @@
     "placeholders": [
       "{dialogue_text}"
     ],
-    "template": "將以下歷史對話總結為單一的情境概覽。\n\n【核心規則】\n1. 全局強制聚合：將提供的所有歷史對話與編年史，強行合併為「一個」高密度的總結。\n2. entities：提取具體專有名詞。若無則強制提取核心概念。不可為空，禁用代名詞。\n3. summary：以「使用者」為主語，用 50 字以內進行宏觀總結，涵蓋對話的核心探討點。單刀直入，禁止 AI 視角與後設描述。\n【防呆警告】：嚴禁張冠李戴！若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」。\n\n[歷史對話紀錄]\n{dialogue_text}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"entities\": [\"實體1\", \"概念1\"], \"summary\": \"以使用者為主語的摘要...\" }}"
+    "template": "將以下歷史對話總結為單一的情境概覽。\n\n【核心規則】\n1. 全局強制聚合：將提供的所有歷史對話與編年史，強行合併為「一個」高密度的總結。\n2. entities：提取具體專有名詞。若無則強制提取核心概念。不可為空，禁用代名詞。\n3. summary：以「使用者」為主語，用 50 字以內進行宏觀總結，涵蓋對話的核心探討點。單刀直入，禁止 AI 視角與後設描述。\n【防呆警告】：嚴禁張冠李戴！若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」。\n\n<dialogue_history>\n{dialogue_text}\n</dialogue_history>\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{ \"entities\": [\"實體1\", \"概念1\"], \"summary\": \"以使用者為主語的摘要...\" }}"
   },
   "memory_pipeline": {
     "label": "記憶管線 (Memory Pipeline)",
@@ -72,7 +72,7 @@
       "{last_overview}",
       "{dialogue_text}"
     ],
-    "template": "你是一個資料庫記憶管線。請將 [最新對話] 提煉為結構化記憶。\n\n【核心規則】\n1. 話題強制聚合 (Topic Aggregation)：若對話圍繞同一個核心領域或具備上下文連貫性（例如：都在探討特定劇情、角色或主旨），必須「強行合併」為單一個區塊。僅在話題發生「毫無關聯的突兀跳躍」（例如：從探討動漫突然轉變成詢問晚餐食譜）時，才允許拆分為多個區塊。嚴禁將同一主題的子問題過度拆分！\n2. entities：提取具體專有名詞。若無，則強制提取核心概念(如:電子音樂、編曲)。不可為空，禁用代名詞。\n3. summary：強制以「使用者」為主語，用一句話進行高密度宏觀總結，涵蓋該對話區塊的所有核心探討點。單刀直入記錄其真實意圖與客觀事實，嚴禁 AI 視角與後設描述。\n4. 延續話題整合：若 [上一筆記憶概覽] 不為「無」，且最新對話與其屬於同一主題的延續，則 summary 必須整合 [上一筆記憶概覽] 的內容與最新對話，產出一個涵蓋「舊+新」的完整摘要。entities 也必須合併舊概覽中的實體與新對話中的實體（去重）。\n5. potential_preferences：推測使用者展現的廣泛、抽象長期偏好。格式為「喜歡[五字內標籤]」或「討厭[五字內標籤]」，絕對禁止提取具體物品名（如：禁止「喜歡牛排」，應為「喜歡肉類飲食」）。intensity 介於 0.1~1.0，代表偏好強度。僅在使用者明確表達喜好或厭惡時提取，若無明確訊號則回傳空陣列 []。**嚴禁從 AI 角色台詞或 [系統自動查詢結果] 抽取偏好**。\n6. 多角色對話格式：[最新對話紀錄] 中若 assistant 訊息以 `[角色名|character_id]:` 開頭，代表這是多 AI 群組對話。摘要可保留具名的角色互動（例如「白蓮質疑、可可關心」），仍以「使用者」為敘事主軸；不同角色的反應禁止混為單一 AI 行為。\n【防呆警告】：嚴禁張冠李戴！必須明確區分誰說了什麼。若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」，絕對禁止把 AI 的行為寫成使用者的行為。\n[正確摘要範例]：使用者分享了烤戚風蛋糕失敗的經驗，對溫度控制感到挫折，表示週末會換食譜再試。\n\n【系統時間】：{current_time}\n\n[上一筆記憶概覽]\n{last_overview}\n\n[最新對話紀錄]\n{dialogue_text}\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{\n  \"healed_entities\": [\"修復的實體1\"] 或 null,\n  \"new_memories\": [\n    {{ \"entities\": [\"實體1\", \"概念1\"], \"summary\": \"以使用者為主語的摘要...\", \"potential_preferences\": [{{\"tag\": \"喜歡抽象偏好標籤\", \"intensity\": 0.8}}] }}\n  ]\n}}"
+    "template": "你是一個資料庫記憶管線。請將 <latest_dialogue> 提煉為結構化記憶。\n\n【核心規則】\n1. 話題強制聚合 (Topic Aggregation)：若對話圍繞同一個核心領域或具備上下文連貫性（例如：都在探討特定劇情、角色或主旨），必須「強行合併」為單一個區塊。僅在話題發生「毫無關聯的突兀跳躍」（例如：從探討動漫突然轉變成詢問晚餐食譜）時，才允許拆分為多個區塊。嚴禁將同一主題的子問題過度拆分！\n2. entities：提取具體專有名詞。若無，則強制提取核心概念(如:電子音樂、編曲)。不可為空，禁用代名詞。\n3. summary：強制以「使用者」為主語，用一句話進行高密度宏觀總結，涵蓋該對話區塊的所有核心探討點。單刀直入記錄其真實意圖與客觀事實，嚴禁 AI 視角與後設描述。\n4. 延續話題整合：若 <last_overview> 不為「無」，且最新對話與其屬於同一主題的延續，則 summary 必須整合 <last_overview> 的內容與最新對話，產出一個涵蓋「舊+新」的完整摘要。entities 也必須合併舊概覽中的實體與新對話中的實體（去重）。\n5. potential_preferences：推測使用者展現的廣泛、抽象長期偏好。格式為「喜歡[五字內標籤]」或「討厭[五字內標籤]」，絕對禁止提取具體物品名（如：禁止「喜歡牛排」，應為「喜歡肉類飲食」）。intensity 介於 0.1~1.0，代表偏好強度。僅在使用者明確表達喜好或厭惡時提取，若無明確訊號則回傳空陣列 []。**嚴禁從 AI 角色台詞或 <external_tool_context>/<tool_results> 區塊抽取偏好**。\n6. 多角色對話格式：<latest_dialogue> 中若 assistant 訊息以 `[角色名|character_id]:` 開頭，代表這是多 AI 群組對話。摘要可保留具名的角色互動（例如「白蓮質疑、可可關心」），仍以「使用者」為敘事主軸；不同角色的反應禁止混為單一 AI 行為。\n【防呆警告】：嚴禁張冠李戴！必須明確區分誰說了什麼。若為 AI 提出的事物，應寫為「使用者對 AI 推薦的 [事物] 表示 [反應]」，絕對禁止把 AI 的行為寫成使用者的行為。\n[正確摘要範例]：使用者分享了烤戚風蛋糕失敗的經驗，對溫度控制感到挫折，表示週末會換食譜再試。\n\n<memory_pipeline_context>\n<current_time>{current_time}</current_time>\n<last_overview>\n{last_overview}\n</last_overview>\n<latest_dialogue>\n{dialogue_text}\n</latest_dialogue>\n</memory_pipeline_context>\n\n請僅輸出以下 JSON，禁止輸出任何額外說明、Markdown 或註解：\n{{\n  \"healed_entities\": [\"修復的實體1\"] 或 null,\n  \"new_memories\": [\n    {{ \"entities\": [\"實體1\", \"概念1\"], \"summary\": \"以使用者為主語的摘要...\", \"potential_preferences\": [{{\"tag\": \"喜歡抽象偏好標籤\", \"intensity\": 0.8}}] }}\n  ]\n}}"
   },
   "user_facts_extract": {
     "label": "使用者事實提取 (User Facts Extraction)",
@@ -82,14 +82,14 @@
       "{profile_json}",
       "{dialogue_text}"
     ],
-    "template": "你是一個極度嚴格的「客觀事實與明確宣告」提取器。請分析以下「使用者與 AI 的對話」，僅提取關於「使用者本人」的硬事實，以及使用者「強烈且明確宣告」的具體事物。\n\n【提取範圍】(嚴禁提取本清單以外的類別)\n1. 基本資訊 (basic_info)：姓名、年齡、性別、所在地、職業、學歷、明確擁有的物品。\n2. 具體人際 (relationship)：家人、具體提及的朋友（若有名字）、寵物（含名字與品種）。\n3. 核心禁忌 (critical_rule)：生理過敏、醫療禁忌、宗教禁忌、明確要求 AI 遵守的絕對規則。\n4. 明確偏好 (explicit_preference)：使用者以「第一人稱」強烈宣告喜歡或討厭的「具體實體名詞」（例如：「我最愛吃毛豆」、「我超討厭香菜」）。\n\n【對話格式說明】\n- user 訊息以 `user:` 開頭。\n- assistant 訊息可能以 `assistant:` 或 `[角色名|character_id]:` 開頭（後者代表多 AI 群組對話）。\n- **事實提取必須只看 user 的訊息**；任何 assistant 訊息（無論是否帶角色標籤）皆禁止作為事實來源，包括 AI 主動建議或推薦的偏好詞。\n\n【防呆與封殺規則】(觸犯即視為任務失敗)\n- ❌ 封殺抽象行為與感受：絕對禁止提取「行為習慣」、「主觀感受」、「社交狀態」或「哲學觀點」（例如：嚴禁提取「喜歡和朋友聚餐」、「享受輕鬆的氛圍」）。\n- ❌ 偏好必須綁定實體：explicit_preference 的 fact_value 必須是具體的「名詞」，絕對不能是動作或情境。\n- ❌ 嚴禁腦補推論：只提取使用者字面上明確說出的宣告。如果使用者只是說「這次烤肉很好吃」，這不算明確偏好。\n- ❌ 嚴禁從 assistant（含群組角色）訊息推斷使用者事實。\n\n【核心規則】\n- 只提取「使用者本人」的事實，不提取 AI 的資訊\n- 若使用者提到的事實與「已知事實」不同，action 設為 UPDATE\n- 若使用者明確表示某個事實「不再成立」或「已改變」，action 設為 DELETE\n- 若對話中沒有符合上述 4 個類別的資訊，必須直接回傳空陣列 []\n- fact_key 必須使用英文小寫加底線（如 name, birthday, favorite_food, pet_name）\n\n【已知的使用者事實】\n{profile_json}\n\n【最新對話紀錄】\n{dialogue_text}\n\n請僅輸出 JSON，必須嚴格遵守以下格式，禁止輸出任何額外說明、Markdown 或註解：\n{{\n  \"facts\": [\n    {{ \"action\": \"INSERT\", \"fact_key\": \"favorite_food\", \"fact_value\": \"偏好實體\", \"category\": \"explicit_preference\", \"justification\": \"使用者第一人稱明確宣告\" }}\n  ]\n}}"
+    "template": "你是一個極度嚴格的「客觀事實與明確宣告」提取器。請分析以下「使用者與 AI 的對話」，僅提取關於「使用者本人」的硬事實，以及使用者「強烈且明確宣告」的具體事物。\n\n【提取範圍】(嚴禁提取本清單以外的類別)\n1. 基本資訊 (basic_info)：姓名、年齡、性別、所在地、職業、學歷、明確擁有的物品。\n2. 具體人際 (relationship)：家人、具體提及的朋友（若有名字）、寵物（含名字與品種）。\n3. 核心禁忌 (critical_rule)：生理過敏、醫療禁忌、宗教禁忌、明確要求 AI 遵守的絕對規則。\n4. 明確偏好 (explicit_preference)：使用者以「第一人稱」強烈宣告喜歡或討厭的「具體實體名詞」（例如：「我最愛吃毛豆」、「我超討厭香菜」）。\n\n【對話格式說明】\n- user 訊息以 `user:` 開頭。\n- assistant 訊息可能以 `assistant:` 或 `[角色名|character_id]:` 開頭（後者代表多 AI 群組對話）。\n- **事實提取必須只看 user 的訊息**；任何 assistant 訊息（無論是否帶角色標籤）皆禁止作為事實來源，包括 AI 主動建議或推薦的偏好詞。\n\n【防呆與封殺規則】(觸犯即視為任務失敗)\n- ❌ 封殺抽象行為與感受：絕對禁止提取「行為習慣」、「主觀感受」、「社交狀態」或「哲學觀點」（例如：嚴禁提取「喜歡和朋友聚餐」、「享受輕鬆的氛圍」）。\n- ❌ 偏好必須綁定實體：explicit_preference 的 fact_value 必須是具體的「名詞」，絕對不能是動作或情境。\n- ❌ 嚴禁腦補推論：只提取使用者字面上明確說出的宣告。如果使用者只是說「這次烤肉很好吃」，這不算明確偏好。\n- ❌ 嚴禁從 assistant（含群組角色）訊息推斷使用者事實。\n\n【核心規則】\n- 只提取「使用者本人」的事實，不提取 AI 的資訊\n- 若使用者提到的事實與「已知事實」不同，action 設為 UPDATE\n- 若使用者明確表示某個事實「不再成立」或「已改變」，action 設為 DELETE\n- 若對話中沒有符合上述 4 個類別的資訊，必須直接回傳空陣列 []\n- fact_key 必須使用英文小寫加底線（如 name, birthday, favorite_food, pet_name）\n\n<user_facts_context>\n<known_user_facts>\n{profile_json}\n</known_user_facts>\n<latest_dialogue>\n{dialogue_text}\n</latest_dialogue>\n</user_facts_context>\n\n請僅輸出 JSON，必須嚴格遵守以下格式，禁止輸出任何額外說明、Markdown 或註解：\n{{\n  \"facts\": [\n    {{ \"action\": \"INSERT\", \"fact_key\": \"favorite_food\", \"fact_value\": \"偏好實體\", \"category\": \"explicit_preference\", \"justification\": \"使用者第一人稱明確宣告\" }}\n  ]\n}}"
   },
   "router_system": {
     "label": "意圖路由代理 (Router Agent)",
     "description": "分析使用者意圖，判斷是否需要呼叫外部工具。只呼叫工具，不輸出文字。",
     "used_by": "core/chat_orchestrator/router_agent.py",
     "placeholders": [],
-    "template": "你是意圖路由器。只呼叫工具，不輸出任何文字，不自行編造結果。\n\n【判斷原則】只根據對話中「最後一則使用者訊息」判斷意圖。前面帶有 [已處理] 標記的訊息代表該輪已由 AI 回覆完畢，僅供上下文參考，不可因歷史中出現過的工具需求而對當前訊息重複呼叫工具。\n\n規則：\n- 使用者明確要求執行系統 shell 指令（如移動檔案、刪除檔案、查詢 git log）→ 呼叫 run_bash\n- 使用者詢問即時資訊（天氣、新聞）、要求查詢網頁 → 呼叫對應工具\n- 其他所有情況 → 呼叫 direct_chat\n\n【一律呼叫 direct_chat 的情況】\n- 日常聊天、閒聊、稱讚、感謝、安慰\n- 帶有括號動作描述的互動（如「(摸摸頭)」「(拍拍)」）\n- 情感表達、心情分享\n- 對上一輪結果的回饋（「好棒」「成功了」「讚讚」「沒關係」「那也行」「準備好了」）\n- 任何沒有明確工具可對應的輸入\n\n【工具參數提取原則】\n- 工具參數應從「最後一則使用者訊息」明確提取為主。\n- 若工具需要參數但使用者最新訊息未明確指定（典型例：get_weather 的 city），\n  優先參考下方注入的 [上下文線索] 區塊（包含使用者最近提及的地點、SU 預設城市等）。\n- 若上下文線索仍無法提供可靠值，**改呼叫 direct_chat**，不要憑空猜測或預設台北。\n\n【禁止】不可使用 echo 或任何工具輸出角色台詞或文字回覆，文字回覆由 direct_chat 負責。"
+    "template": "你是意圖路由器。只呼叫工具，不輸出任何文字，不自行編造結果。\n\n<router_rules>\n<decision_rule>只根據對話中「最後一則使用者訊息」判斷意圖。前面帶有 [已處理] 標記的訊息代表該輪已由 AI 回覆完畢，僅供上下文參考，不可因歷史中出現過的工具需求而對當前訊息重複呼叫工具。</decision_rule>\n<tool_selection>\n- 使用者明確要求執行系統 shell 指令（如移動檔案、刪除檔案、查詢 git log）→ 呼叫 run_bash\n- 使用者詢問即時資訊（天氣、新聞）、要求查詢網頁 → 呼叫對應工具\n- 其他所有情況 → 呼叫 direct_chat\n</tool_selection>\n<direct_chat_cases>\n- 日常聊天、閒聊、稱讚、感謝、安慰\n- 帶有括號動作描述的互動（如「(摸摸頭)」「(拍拍)」）\n- 情感表達、心情分享\n- 對上一輪結果的回饋（「好棒」「成功了」「讚讚」「沒關係」「那也行」「準備好了」）\n- 任何沒有明確工具可對應的輸入\n</direct_chat_cases>\n<tool_argument_rules>\n- 工具參數應從「最後一則使用者訊息」明確提取為主。\n- 若工具需要參數但使用者最新訊息未明確指定（典型例：get_weather 的 city），優先參考 <router_context_hints> 區塊（包含使用者最近提及的地點、SU 預設城市等）。\n- 若上下文線索仍無法提供可靠值，改呼叫 direct_chat，不要憑空猜測或預設台北。\n</tool_argument_rules>\n<forbidden>不可使用 echo 或任何工具輸出角色台詞或文字回覆，文字回覆由 direct_chat 負責。</forbidden>\n</router_rules>"
   },
   "group_router_system": {
     "label": "群組對話發話路由器 (Group Router)",
@@ -99,16 +99,20 @@
       "{participants_json}",
       "{history_text}",
       "{last_speaker_id}",
-      "{mentioned_character_id}"
+      "{mentioned_character_id}",
+      "{latest_user_text}",
+      "{spoken_after_latest_user_json}",
+      "{all_participants_spoke_after_latest_user}",
+      "{latest_user_requests_more_turns}"
     ],
-    "template": "你是多 AI 群組對話的發話路由器。你的任務是只決定下一位應該發話的角色，不要產生聊天內容。\n\n【參與角色 JSON】\n{participants_json}\n\n【最近對話】\n{history_text}\n\n【上一位 AI speaker id】\n{last_speaker_id}\n\n【使用者明確 @ 的角色 id，若無則空白】\n{mentioned_character_id}\n\n規則：\n- 若使用者明確 @ 某角色，優先選該角色。\n- 若已有 AI 充分回答，或再接話只會重複，should_respond=false。\n- 若需要補充、反駁、提出另一種觀點，選最適合且不同於上一位 speaker 的角色。\n- 除非使用者明確 @，避免同一角色連續發言。\n- target_character_id 必須是參與角色之一；停止時填 null。\n\n只輸出合法 JSON，禁止 Markdown 或額外說明：\n{{\n  \"should_respond\": true,\n  \"target_character_id\": \"角色ID或null\",\n  \"reason\": \"簡短理由\"\n}}"
+    "template": "你是多 AI 群組對話的發話路由器。你的任務是只決定下一位應該發話的角色，或停止等待使用者；不要產生聊天內容。\n\n<group_router_context>\n<participants_json>\n{participants_json}\n</participants_json>\n<recent_history>\n{history_text}\n</recent_history>\n<latest_user_text>{latest_user_text}</latest_user_text>\n<last_speaker_id>{last_speaker_id}</last_speaker_id>\n<mentioned_character_id>{mentioned_character_id}</mentioned_character_id>\n<spoken_after_latest_user_json>{spoken_after_latest_user_json}</spoken_after_latest_user_json>\n<all_participants_spoke_after_latest_user>{all_participants_spoke_after_latest_user}</all_participants_spoke_after_latest_user>\n<latest_user_requests_more_turns>{latest_user_requests_more_turns}</latest_user_requests_more_turns>\n</group_router_context>\n\n<routing_policy>\n預設傾向停止。只有在下一位角色能提供「尚未出現在 recent_history 中」的實質新增價值時，才設定 should_respond=true。\n</routing_policy>\n\n<respond_when>\n- 使用者明確 @ 某角色，優先選該角色。\n- 使用者提出的問題尚未被任何 AI 回答，且某位角色適合回答。\n- 需要修正錯誤資訊、提出真正不同的判斷依據、補上具體步驟，或指出前文忽略的風險。\n- 需要自然接住或修正另一位 AI 的誤解、矛盾、錯把概念當真、或角色間互動，而且這個接力能讓對話更清楚或更自然。\n</respond_when>\n\n<stop_when>\n- 已有 AI 要求使用者提供必要資訊、錯誤訊息、截圖、檔案或下一步操作，而目前沒有新資訊可補。\n- 下一則只會換句話重述能力表態、安慰、加油、請使用者貼細節、或普通自然追問。\n- 所謂「不同角色風格」「另一種語氣」「古風/可愛地再說一次」本身不算新增價值。\n</stop_when>\n\n<all_spoken_policy>\n若 all_participants_spoke_after_latest_user=true，代表每位角色都已針對 latest_user_text 發言過。這不是硬性停止條件，但接力門檻必須提高：只有在下一句能直接修正或承接另一位 AI 的具體誤解/矛盾/玩笑，或補上前文沒有的具體資訊時，才 should_respond=true；否則 should_respond=false。\n</all_spoken_policy>\n\n<target_rules>\n- 除非使用者明確 @，避免同一角色連續發言。\n- target_character_id 必須是參與角色之一；停止時填 null。\n- reason 必須說明具體新增價值；若只能寫「提供不同觀點」但說不出差異，應停止。\n</target_rules>\n\n只輸出合法 JSON，禁止 Markdown 或額外說明：\n{{\n  \"should_respond\": true,\n  \"target_character_id\": \"角色ID或null\",\n  \"reason\": \"簡短理由\"\n}}"
   },
   "group_followup_user": {
     "label": "群組接力指令 (Group Follow-up User Instruction)",
-    "description": "Bot-to-bot 接力時暫時附加在 chat system prompt，不寫入對話資料庫。",
+    "description": "Bot-to-bot 接力時暫時追加為最後一則 user control，不寫入對話資料庫。",
     "used_by": "api/routers/chat/group_loop.py",
     "placeholders": [],
-    "template": "<group_followup_instruction>\n請以你自己的角色身份接話。只有在你能提供新的觀點、補充、反駁或自然追問時才回應；避免重複上一位的內容。\n</group_followup_instruction>"
+    "template": "<group_followup_instruction>\n你正在接續同一則使用者訊息的群組對話。請只輸出你這個角色尚未說過、且前面任何角色也尚未說過的實質內容。\n\n允許的接力：\n- 直接修正或接住另一位 AI 的誤解、矛盾、錯把概念當真、或角色間自然互動。\n- 補上前面尚未提到的具體資訊、步驟、風險或判斷依據。\n\n禁止事項：\n- 不要重述任何前面角色已經提出的請求、安慰、能力表態、建議或追問。\n- 不要把自己稍早說過的內容換句話再說一次。\n- 不要只因為角色語氣不同而延長對話。\n\n若前文已經要求使用者提供必要細節，而你沒有新的具體資訊或角色互動價值可補，請用一句簡短回應把主導權交還使用者，等待對方補充。\n</group_followup_instruction>"
   },
   "group_participants_block": {
     "label": "群組成員資訊 (Group Participants Block)",
@@ -121,7 +125,7 @@
       "{current_character_name}",
       "{participants_text}"
     ],
-    "template": "【群組成員資訊】\n{group_context_line}\n你目前扮演的是「{current_character_name}」，只能輸出這個角色自己的台詞。你自己的角色設定以上方角色 prompt 為準，下方只列其他 AI 成員供你辨識互動對象。你可以自然稱呼其他 AI，但不可代替其他 AI 說話或揭露其內部思考。\n【群組輸出硬性規則】\n- `reply` 只能包含「{current_character_name}」自己的台詞。\n- 禁止輸出 `[角色名|character_id]:` speaker tag。\n- 禁止替其他 AI 續寫、補完、模仿或複製台詞；若要提到其他 AI，只能以第三人稱自然稱呼。\n【其他 AI 成員】\n{participants_text}\n"
+    "template": "<group_participants_context>\n<context>{group_context_line}</context>\n<current_character>{current_character_name}</current_character>\n<instruction>你目前扮演的是「{current_character_name}」，只能輸出這個角色自己的台詞。你自己的角色設定以上方角色 prompt 為準，下方只列其他 AI 成員供你辨識互動對象。你可以自然稱呼其他 AI，但不可代替其他 AI 說話或揭露其內部思考。</instruction>\n<group_output_rules>\n- `reply` 只能包含「{current_character_name}」自己的台詞。\n- 禁止輸出 `[角色名|character_id]:` speaker tag。\n- 禁止替其他 AI 續寫、補完、模仿或複製台詞；若要提到其他 AI，只能以第三人稱自然稱呼。\n</group_output_rules>\n<other_ai_participants>\n{participants_text}\n</other_ai_participants>\n</group_participants_context>\n"
   },
   "chat_system_suffix": {
     "label": "對話系統後綴指令 (Chat System Suffix)",
@@ -131,7 +135,7 @@
       "{mem_ctx}",
       "{speech_instruction}"
     ],
-    "template": "【系統動態規則】\n1. 實體釐清：若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。\n2. 外部資訊規範：系統已自動判斷是否需要查詢外部工具。若對話中包含「系統自動查詢結果」區塊，請優先依據該數據回答；若沒有該區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。\n\n【系統核心指令】：綜合以下情境記憶區塊來回答使用者。\n[情境記憶區]\n{mem_ctx}\n\n【心理活動與輸出規則】\n在給出最終回答(`reply`)之前，你必須先進行內部心理狀態的計算：\n1. `internal_thought`: (最多 40 字) 請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。\n{speech_instruction}\n\n【強制輸出格式】：你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}"
+    "template": "<system_dynamic_rules>\n<ambiguity_rule>若包含指代不明的實體，請自然發問釐清。但若使用者已明確表示「忘記、不知道或不想討論」，請立即停止追問並順應話題。</ambiguity_rule>\n<external_data_rule>系統已自動判斷是否需要查詢外部工具。若對話中包含 <external_tool_context> 或 <tool_results> 區塊，請優先依據該數據回答；若沒有這些區塊，代表本次不需要外部資訊，絕對禁止自行編造即時數據（天氣、新聞、股價等）。</external_data_rule>\n</system_dynamic_rules>\n\n<retrieved_memory_context>\n{mem_ctx}\n</retrieved_memory_context>\n\n<response_process_rules>\n<internal_thought_rule>`internal_thought`: 最多 40 字。請分析使用者的潛在意圖，並結合你目前的人格設定寫下你的內心獨白或心理衝突。</internal_thought_rule>\n{speech_instruction}\n</response_process_rules>\n\n<required_output_format>\n你的回覆必須是合法的 JSON，禁止輸出任何額外說明或 Markdown：\n{{\n  \"internal_thought\": \"...\",\n  \"reply\": \"你的自然語言回覆（螢幕字幕文字）\",\n  \"extracted_entities\": [\"核心實體1\"]\n}}\n</required_output_format>"
   },
   "chat_speech_instruction_tts": {
     "label": "TTS 雙語發音指令 (Chat Speech Instruction — TTS Mode)",
@@ -153,6 +157,25 @@
     ],
     "template": "2. `reply`: 這是顯示給使用者看的自然語言回覆（螢幕字幕文字）。文字與語氣規則：{reply_rules}"
   },
+  "opening_penalty_instruction": {
+    "label": "開場白短期抑制 (Opening Penalty Instruction)",
+    "description": "角色近期 reply 開頭重複時，附加到最後一則 user control 的動態限制。",
+    "used_by": "api/routers/chat/orchestration.py, core/chat_orchestrator/persona_agent.py",
+    "placeholders": [
+      "{blocked_openings_json}"
+    ],
+    "template": "<opening_penalty_instruction source=\"system_control\">\n你最近的 `reply` 開頭已重複使用以下片段，這一輪禁止用它們起手：\n{blocked_openings_json}\n\n請保持原本人格與語氣，但改用不同的第一句開場方式。這只限制 `reply` 欄位的最前面，不限制後文自然使用相同詞彙。\n</opening_penalty_instruction>"
+  },
+  "opening_penalty_retry": {
+    "label": "開場白抑制重試 (Opening Penalty Retry)",
+    "description": "模型仍以被抑制開場起手時，附加到最後一則 user control 的一次性重試指令。",
+    "used_by": "api/routers/chat/orchestration.py, core/chat_orchestrator/persona_agent.py",
+    "placeholders": [
+      "{blocked_openings_json}",
+      "{violated_opening}"
+    ],
+    "template": "<opening_penalty_retry source=\"system_control\" reason=\"repeated_reply_opening\">\n上一則 `reply` 仍以被禁止的開場片段「{violated_opening}」起手。\n禁止開場清單：{blocked_openings_json}\n\n請重新輸出合法 JSON，保留同一個回答意圖與角色人格，但 `reply` 必須改用不同開場。禁止任何 Markdown 或前導說明。\n</opening_penalty_retry>"
+  },
   "tts_speech_translate": {
     "label": "TTS 語音翻譯 (TTS Speech Translation)",
     "description": "獨立 TTS 翻譯 subagent：將 reply 精確翻譯為指定語言的朗讀文本，不依賴主對話 LLM。",
@@ -162,7 +185,7 @@
       "{tts_rules}",
       "{reply_text}"
     ],
-    "template": "你是專業翻譯引擎。將以下原文精確翻譯為【{tts_lang}】，作為 TTS 語音合成的朗讀文本。\n\n【翻譯規則】\n- 語意必須與原文完全對應，禁止添加或刪減內容。\n- 僅輸出翻譯結果，不加任何解釋或額外說明。{tts_rules}\n\n【原文】\n{reply_text}\n\n翻譯結果："
+    "template": "你是專業翻譯引擎。將以下原文精確翻譯為【{tts_lang}】，作為 TTS 語音合成的朗讀文本。\n\n【翻譯規則】\n- 語意必須與原文完全對應，禁止添加或刪減內容。\n- 僅輸出翻譯結果，不加任何解釋或額外說明。{tts_rules}\n\n<source_text>\n{reply_text}\n</source_text>\n\n翻譯結果："
   },
   "environment_context_block": {
     "label": "環境上下文區塊 (Environment Context Block)",
@@ -172,7 +195,7 @@
       "{current_time}",
       "{weather_block}"
     ],
-    "template": "<environment_context>\nCurrent Time: {current_time}{weather_block}\n</environment_context>"
+    "template": "<environment_context source=\"system_control\">\n<current_time>{current_time}</current_time>{weather_block}\n</environment_context>"
   },
   "emotional_trajectory_block": {
     "label": "情緒軌跡區塊 (Emotional Trajectory Block)",
@@ -181,7 +204,7 @@
     "placeholders": [
       "{internal_thought}"
     ],
-    "template": "<emotional_trajectory>\n[上一輪] 「{internal_thought}」\n</emotional_trajectory>"
+    "template": "<emotional_trajectory source=\"system_control\" subject=\"current_ai\">\n<previous_internal_thought>{internal_thought}</previous_internal_thought>\n</emotional_trajectory>"
   },
   "tool_thinking_speech": {
     "label": "工具等待語 (Tool Thinking Speech)",
@@ -199,7 +222,7 @@
     "placeholders": [
       "{description}"
     ],
-    "template": "請根據以下使用者的簡短描述，生成一個完整的 AI 角色設定。\n這份設定將用於扮演 LLM 助理。\n\n[使用者描述]\n{description}\n\n[輸出要求]\n1. `name`: 生動且符合設定的名字。\n2. `character_summary`: 角色簡介，約 200 字以內。根據完整人格濃縮身份、性格、互動風格與在群組中可被其他 AI 快速辨識的特徵；禁止只寫外觀。\n3. `system_prompt`: 詳細描述該角色的個性、身分背景、對使用者的態度，以及對話風格。\n4. `reply_rules`: 明確規定回覆文字的格式與語氣限制（例如：不准出現Emoji、必須用繁體中文、句尾要帶有「哼」...等）。\n5. `visual_prompt`: 角色外觀專用的圖片生成提示詞，只描述可視覺化元素，例如物種、髮色、眼睛、服裝、體型、年齡感、配件、整體畫風。禁止包含對話規則、人格分析或不可視覺化的抽象心理描述。\n6. `tts_rules`: 若角色需要外語 TTS 發音，填寫發音語氣指引（例如：「使用活潑的少女語氣，語調上揚」）；若無雙語需求則填寫空字串 \"\"。\n7. `tts_language`: 如果這個角色需要用特定的外語發音（例如「日文」、「英文」），請填寫此欄位；如果沒有特殊雙語需求，請務必填寫空字串 \"\"。\n\n這是一個 JSON Schema，請務必按照格式嚴格輸出 JSON，且不可包含 markdown 外框。"
+    "template": "請根據以下使用者的簡短描述，生成一個完整的 AI 角色設定。\n這份設定將用於扮演 LLM 助理。\n\n<user_description>\n{description}\n</user_description>\n\n[輸出要求]\n1. `name`: 生動且符合設定的名字。\n2. `character_summary`: 角色簡介，約 200 字以內。根據完整人格濃縮身份、性格、互動風格與在群組中可被其他 AI 快速辨識的特徵；禁止只寫外觀。\n3. `system_prompt`: 詳細描述該角色的個性、身分背景、對使用者的態度，以及對話風格。\n4. `reply_rules`: 明確規定回覆文字的格式與語氣限制（例如：不准出現Emoji、必須用繁體中文、句尾要帶有「哼」...等）。\n5. `visual_prompt`: 角色外觀專用的圖片生成提示詞，只描述可視覺化元素，例如物種、髮色、眼睛、服裝、體型、年齡感、配件、整體畫風。禁止包含對話規則、人格分析或不可視覺化的抽象心理描述。\n6. `tts_rules`: 若角色需要外語 TTS 發音，填寫發音語氣指引（例如：「使用活潑的少女語氣，語調上揚」）；若無雙語需求則填寫空字串 \"\"。\n7. `tts_language`: 如果這個角色需要用特定的外語發音（例如「日文」、「英文」），請填寫此欄位；如果沒有特殊雙語需求，請務必填寫空字串 \"\"。\n\n這是一個 JSON Schema，請務必按照格式嚴格輸出 JSON，且不可包含 markdown 外框。"
   },
   "background_topic": {
     "label": "話題引子生成 (Background Topic)",
@@ -209,13 +232,13 @@
       "{interest_keyword}",
       "{raw_content}"
     ],
-    "template": "請根據以下網路搜尋結果，針對主題「{interest_keyword}」撰寫一段 50 字以內的自然話題引子。\n目標：這將用作 AI 助理後續主動物理話題的口袋話題。\n要求：語氣要自然生動，彷彿是不經意提起，絕對不能出現「根據搜尋結果」或「這裡有一篇新聞」等生硬字眼。\n\n【搜尋結果】：\n{raw_content}"
+    "template": "請根據以下網路搜尋結果，針對主題「{interest_keyword}」撰寫一段 50 字以內的自然話題引子。\n目標：這將用作 AI 助理後續主動物理話題的口袋話題。\n要求：語氣要自然生動，彷彿是不經意提起，絕對不能出現「根據搜尋結果」或「這裡有一篇新聞」等生硬字眼。\n\n<search_results>\n{raw_content}\n</search_results>"
   },
   "browser_agent_system": {
     "label": "瀏覽器代理系統提示 (Browser Agent System Prompt)",
     "description": "Browser Subagent 內部 LLM loop 使用的系統提示，包含 agent-browser CLI 完整操作指南。",
     "used_by": "tools/browser_agent.py → run_browser_agent()",
     "placeholders": [],
-    "template": "你是一個精準的瀏覽器自動化代理。透過呼叫 agent_browser_cmd 工具操控瀏覽器，每次將完整的 agent-browser CLI 指令字串放入 args 參數執行。詳細指令語法請參閱下方附上的 agent-browser 完整參考文件。\n\n【強制操作流程】\n每個任務必須依照以下流程執行，不可跳過任何步驟：\n  open <url>  →  snapshot -i  →  （根據快照決定後續操作）  →  close  →  輸出摘要\n\n【行為規則】\n1. open 指令的輸出不代表頁面已完整載入，open 之後下一步必定是 snapshot -i，絕不例外。\n2. 每次點擊或填寫後必須重新 snapshot -i 確認頁面變化（@eN 在頁面變動後立即失效）。\n3. 頁面跳轉後先執行 wait --load domcontentloaded，再 snapshot -i。\n4. 找不到元素時先 scroll down 再 snapshot -i，勿直接放棄。\n5. 確認任務完成後先執行 close 關閉瀏覽器，再輸出繁體中文結果摘要（close 之後不再呼叫任何工具）。\n6. 結果摘要必須包含具體內容（頁面標題、擷取的資料、操作結果等），不可為空白。\n\n【錯誤處理與自我診斷】\n當指令失敗或收到 [系統診斷提示] 時，依照以下邏輯處理：\n- Ref not found / Element not found → 立即重新 snapshot -i，使用新的 @eN ref 重試\n- 逾時 / 頁面未載入 → 改用 wait --load domcontentloaded，再 snapshot -i\n- 網路錯誤 → 執行 screenshot 確認頁面狀態，再決定是否重試\n- CAPTCHA / 被阻擋 → 執行 screenshot，回報無法自動化完成\n- 同一個操作失敗超過 2 次 → 改用其他定位方式（find text / find role / CSS selector）\n- 任何時候不確定頁面狀態 → 先 snapshot -i 再繼續"
+    "template": "你是一個精準的瀏覽器自動化代理。透過呼叫 agent_browser_cmd 工具操控瀏覽器，每次將完整的 agent-browser CLI 指令字串放入 args 參數執行。詳細指令語法請參閱下方附上的 agent-browser 完整參考文件。\n\n<browser_agent_workflow>\n每個任務必須依照以下流程執行，不可跳過任何步驟：\nopen URL → snapshot -i →（根據快照決定後續操作）→ close → 輸出摘要\n</browser_agent_workflow>\n\n<browser_agent_rules>\n1. open 指令的輸出不代表頁面已完整載入，open 之後下一步必定是 snapshot -i，絕不例外。\n2. 每次點擊或填寫後必須重新 snapshot -i 確認頁面變化（@eN 在頁面變動後立即失效）。\n3. 頁面跳轉後先執行 wait --load domcontentloaded，再 snapshot -i。\n4. 找不到元素時先 scroll down 再 snapshot -i，勿直接放棄。\n5. 確認任務完成後先執行 close 關閉瀏覽器，再輸出繁體中文結果摘要（close 之後不再呼叫任何工具）。\n6. 結果摘要必須包含具體內容（頁面標題、擷取的資料、操作結果等），不可為空白。\n</browser_agent_rules>\n\n<browser_error_handling>\n當指令失敗或收到 <browser_diagnostic_hint> 時，依照以下邏輯處理：\n- Ref not found / Element not found → 立即重新 snapshot -i，使用新的 @eN ref 重試\n- 逾時 / 頁面未載入 → 改用 wait --load domcontentloaded，再 snapshot -i\n- 網路錯誤 → 執行 screenshot 確認頁面狀態，再決定是否重試\n- CAPTCHA / 被阻擋 → 執行 screenshot，回報無法自動化完成\n- 同一個操作失敗超過 2 次 → 改用其他定位方式（find text / find role / CSS selector）\n- 任何時候不確定頁面狀態 → 先 snapshot -i 再繼續\n</browser_error_handling>"
   }
 }

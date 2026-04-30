@@ -65,6 +65,50 @@ def test_repeated_speaker_is_replaced_with_alternative():
     assert result.target_character_id == "char-b"
 
 
+def test_all_participants_spoke_is_soft_context_not_hard_stop():
+    router = _Router({"should_respond": True, "target_character_id": "char-a", "reason": "修正另一位角色的誤解"})
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "你們有辦法幫我嗎？"},
+            {"role": "assistant", "content": "請貼錯誤內容。", "character_id": "char-a"},
+            {"role": "assistant", "content": "我可以幫你整理。", "character_id": "char-b"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-b",
+        honor_mentions=False,
+    )
+
+    assert result.should_respond is True
+    assert result.target_character_id == "char-a"
+    assert router.called is True
+    prompt_messages = router.args[1]
+    prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
+    assert "<all_participants_spoke_after_latest_user>true</all_participants_spoke_after_latest_user>" in prompt_text
+    assert '<spoken_after_latest_user_json>["char-a", "char-b"]</spoken_after_latest_user_json>' in prompt_text
+
+
+def test_more_turns_request_can_continue_after_all_participants_spoke():
+    router = _Router({"should_respond": True, "target_character_id": "char-a", "reason": "使用者要求繼續"})
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "請你們輪流多講幾輪"},
+            {"role": "assistant", "content": "第一輪 A。", "character_id": "char-a"},
+            {"role": "assistant", "content": "第一輪 B。", "character_id": "char-b"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-b",
+        honor_mentions=False,
+    )
+
+    assert result.should_respond is True
+    assert result.target_character_id == "char-a"
+    assert router.called is True
+
+
 def test_router_participant_summary_prefers_character_summary():
     router = _Router({"should_respond": False, "target_character_id": None, "reason": "stop"})
     chars = [

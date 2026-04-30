@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from core.chat_orchestrator.persona_agent import run_persona_agent, _parse_persona_response
 from core.chat_orchestrator.dataclasses import ToolContext, PersonaResult
+from core.opening_penalty import OpeningPenaltyPlan
 
 
 @pytest.fixture
@@ -87,7 +88,7 @@ class TestRunPersonaAgent:
         assert any("讓我查一下" in m.get("content", "") for m in assistant_msgs)
 
     def test_tool_results_appended_after_user(self, mock_router, sample_api_messages, sample_chat_schema):
-        """工具結果應以 [系統通知...] 格式附加在 user message 之後"""
+        """工具結果應以 XML-like 格式附加在 user message 之後"""
         tool_ctx = ToolContext(
             tool_results=[{"tool_name": "tavily", "result": '{"answer": "95000"}'}],
             tool_results_formatted="【tavily 查詢結果】\n95000",
@@ -115,7 +116,9 @@ class TestRunPersonaAgent:
         assert generate_called[0], "router.generate should have been called"
         # 驗證 tool context 相關內容有被處理（tool_results_formatted 包含 tavily）
         all_content = " ".join(m.get("content", "") for m in captured_messages)
-        assert "tavily" in all_content or "系統通知" in all_content
+        assert "<external_tool_context" in all_content
+        assert "tavily" in all_content
+        assert "系統通知" not in all_content
 
     def test_error_returns_persona_result_with_error(self, sample_api_messages, sample_chat_schema):
         """router.generate 例外時應回傳包含錯誤文字的 PersonaResult"""
@@ -152,6 +155,80 @@ class TestRunPersonaAgent:
         )
 
         # 由於 MockRouter 無法直接驗證 schema 傳遞，此測試驗證函式呼叫不拋例外
+
+    def test_opening_penalty_instruction_and_logit_bias_passed(
+        self, mock_router, sample_api_messages, sample_chat_schema
+    ):
+        """開場抑制指令應附加到最後一則 user，logit_bias 應傳入 router。"""
+        captured = {}
+
+        def capture_generate(*args, **kwargs):
+            captured["messages"] = args[1]
+            captured["logit_bias"] = kwargs.get("logit_bias")
+            return '{"reply": "換個開頭回覆", "extracted_entities": [], "internal_thought": "思考"}'
+
+        mock_router.generate = capture_generate
+        plan = OpeningPenaltyPlan(
+            enabled=True,
+            key=("s1", "c1", "public"),
+            blocked_openings=("哼...",),
+            prompt_block="<opening_penalty_instruction>禁止哼...</opening_penalty_instruction>",
+            logit_bias={"1": -12},
+        )
+
+        raw, err = run_persona_agent(
+            user_prompt="你好",
+            api_messages=sample_api_messages,
+            tool_context=None,
+            chat_schema=sample_chat_schema,
+            router=mock_router,
+            opening_penalty_plan=plan,
+        )
+
+        assert err is None
+        assert "換個開頭" in raw
+        assert captured["messages"][-1]["role"] == "user"
+        assert "禁止哼" in captured["messages"][-1]["content"]
+        assert captured["logit_bias"] == {"1": -12}
+
+    def test_opening_penalty_retries_once_on_repeated_opening(
+        self, mock_router, sample_api_messages, sample_chat_schema
+    ):
+        """若 reply 仍以短期黑名單開頭，角色渲染會重試一次。"""
+        calls = []
+        responses = [
+            '{"reply": "哼...又重複了", "extracted_entities": [], "internal_thought": "思考"}',
+            '{"reply": "換個開頭，這次不重複。", "extracted_entities": [], "internal_thought": "思考"}',
+        ]
+
+        def capture_generate(*args, **kwargs):
+            calls.append({"messages": args[1], "logit_bias": kwargs.get("logit_bias")})
+            return responses[len(calls) - 1]
+
+        mock_router.generate = capture_generate
+        plan = OpeningPenaltyPlan(
+            enabled=True,
+            key=("s1", "c1", "public"),
+            blocked_openings=("哼...",),
+            prompt_block="<opening_penalty_instruction>禁止哼...</opening_penalty_instruction>",
+            logit_bias={"1": -12},
+        )
+
+        raw, err = run_persona_agent(
+            user_prompt="你好",
+            api_messages=sample_api_messages,
+            tool_context=None,
+            chat_schema=sample_chat_schema,
+            router=mock_router,
+            opening_penalty_plan=plan,
+        )
+
+        assert err is None
+        assert "換個開頭" in raw
+        assert len(calls) == 2
+        assert "opening_penalty_retry" in calls[1]["messages"][-1]["content"]
+        assert calls[0]["logit_bias"] == {"1": -12}
+        assert calls[1]["logit_bias"] == {"1": -12}
 
 
 class TestParsePersonaResponse:

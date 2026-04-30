@@ -21,8 +21,16 @@ class TestSanitizeMessageForLLM:
         text = "<environment_context>Current Time: 2026-04-30</environment_context>使用者好"
         assert sanitize_message_for_llm(text) == "使用者好"
 
+    def test_strips_environment_block_with_attrs(self):
+        text = '<environment_context source="system_control">Current Time: 2026-04-30</environment_context>使用者好'
+        assert sanitize_message_for_llm(text) == "使用者好"
+
     def test_strips_emotional_block(self):
         text = "<emotional_trajectory>[上一輪]「猶豫」</emotional_trajectory>嗨"
+        assert sanitize_message_for_llm(text) == "嗨"
+
+    def test_strips_emotional_block_with_attrs(self):
+        text = '<emotional_trajectory source="system_control" subject="current_ai">猶豫</emotional_trajectory>嗨'
         assert sanitize_message_for_llm(text) == "嗨"
 
     def test_followup_message_returns_empty(self):
@@ -151,6 +159,23 @@ class TestFormatHistoryForLLM:
         # 接力訊息整則被跳過
         assert len(out) == 2
         assert out[0]["content"] == "正常 user 訊息"
+
+    def test_skips_followup_control_message(self):
+        msgs = [
+            {"role": "user", "content": "正常 user 訊息"},
+            {
+                "role": "user",
+                "content": (
+                    "<group_followup_instruction source=\"system_control\">\n"
+                    "請接話\n"
+                    "</group_followup_instruction>"
+                ),
+            },
+            {"role": "assistant", "content": "回覆"},
+        ]
+        out = format_history_for_llm(msgs)
+        assert len(out) == 2
+        assert all("group_followup" not in m["content"] for m in out)
 
 
 class TestFormatDialogueForAnalysis:

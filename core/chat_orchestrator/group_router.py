@@ -36,6 +36,9 @@ def run_group_router(
     if mentioned_id:
         return GroupRouterResult(True, mentioned_id, "explicit mention")
 
+    latest_user_text = _latest_user_text(session_messages)
+    spoken_after_user = _spoken_participant_ids_after_latest_user(session_messages, participants)
+
     if len(participants) == 1:
         only_id = participants[0]["character_id"]
         if only_id == last_speaker_id:
@@ -47,6 +50,12 @@ def run_group_router(
         history_text=_format_history(session_messages[-12:]),
         last_speaker_id=last_speaker_id or "",
         mentioned_character_id=mentioned_id or "",
+        latest_user_text=latest_user_text,
+        spoken_after_latest_user_json=json.dumps(sorted(spoken_after_user), ensure_ascii=False),
+        all_participants_spoke_after_latest_user=str(
+            len(participants) > 1 and len(spoken_after_user) >= len(participants)
+        ).lower(),
+        latest_user_requests_more_turns=str(_latest_user_requests_more_turns(latest_user_text)).lower(),
     )
 
     try:
@@ -101,6 +110,43 @@ def _latest_user_text(messages: list[dict]) -> str:
         if msg.get("role") == "user":
             return str(msg.get("content", ""))
     return ""
+
+
+def _spoken_participant_ids_after_latest_user(messages: list[dict], participants: list[dict]) -> set[str]:
+    latest_user_index = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if messages[idx].get("role") == "user":
+            latest_user_index = idx
+            break
+    if latest_user_index is None:
+        return set()
+
+    valid_ids = {p["character_id"] for p in participants}
+    spoken: set[str] = set()
+    for msg in messages[latest_user_index + 1:]:
+        if msg.get("role") != "assistant":
+            continue
+        cid = str(msg.get("character_id") or "").strip()
+        if cid in valid_ids:
+            spoken.add(cid)
+    return spoken
+
+
+def _latest_user_requests_more_turns(text: str) -> bool:
+    if not text:
+        return False
+    markers = (
+        "繼續",
+        "接著",
+        "輪流",
+        "多輪",
+        "幾輪",
+        "多講",
+        "多聊",
+        "深入討論",
+        "辯論",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _detect_mention(text: str, participants: list[dict]) -> str | None:

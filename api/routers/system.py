@@ -47,6 +47,8 @@ async def get_config():
         dual_layer_enabled=prefs.get("dual_layer_enabled", False),
         group_chat_max_bot_turns=int(prefs.get("group_chat_max_bot_turns", 3)),
         group_chat_turn_delay_seconds=float(prefs.get("group_chat_turn_delay_seconds", 2.0)),
+        opening_penalty_enabled=prefs.get("opening_penalty_enabled", True),
+        opening_penalty_tokenizer_ref=prefs.get("opening_penalty_tokenizer_ref", ""),
         tts_enabled=prefs.get("tts_enabled", False),
         image_generation_enabled=prefs.get("image_generation_enabled", False),
         minimax_api_key=prefs.get("minimax_api_key", ""),

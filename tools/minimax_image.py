@@ -16,10 +16,12 @@ GENERATE_IMAGE_SCHEMA = {
     "function": {
         "name": "generate_image",
         "description": (
-            "【功能】依照使用者的文字描述生成圖片。\n"
-            "【觸發時機】當使用者明確要求畫圖、生成圖片、製作插圖、產生視覺素材、角色圖、場景圖時呼叫。\n"
-            "【禁止事項】若使用者要求生成目前 AI 角色本人、你的自畫像、你的外觀、你的形象，必須改用 generate_self_portrait。\n"
-            "【限制】此工具只支援文字生圖，不支援上傳或分析使用者圖片。"
+            "<tool_description>\n"
+            "<function>依照使用者的文字描述生成圖片。</function>\n"
+            "<trigger>當使用者明確要求畫圖、生成圖片、製作插圖、產生視覺素材、角色圖、場景圖時呼叫。</trigger>\n"
+            "<forbidden>若使用者要求生成目前 AI 角色本人、你的自畫像、你的外觀、你的形象，必須改用 generate_self_portrait。</forbidden>\n"
+            "<limitation>此工具只支援文字生圖，不支援上傳或分析使用者圖片。</limitation>\n"
+            "</tool_description>"
         ),
         "parameters": {
             "type": "object",
@@ -45,9 +47,11 @@ GENERATE_SELF_PORTRAIT_SCHEMA = {
     "function": {
         "name": "generate_self_portrait",
         "description": (
-            "【功能】生成目前 AI 角色本人的圖片。\n"
-            "【觸發時機】當使用者要求你的自畫像、你的外觀、你的形象、你本人、目前角色的圖片、角色自拍或立繪時呼叫。\n"
-            "【禁止事項】不可用於其他人物、物品、一般場景或使用者未指涉目前 AI 角色本人的圖片。"
+            "<tool_description>\n"
+            "<function>生成目前 AI 角色本人的圖片。</function>\n"
+            "<trigger>當使用者要求你的自畫像、你的外觀、你的形象、你本人、目前角色的圖片、角色自拍或立繪時呼叫。</trigger>\n"
+            "<forbidden>不可用於其他人物、物品、一般場景或使用者未指涉目前 AI 角色本人的圖片。</forbidden>\n"
+            "</tool_description>"
         ),
         "parameters": {
             "type": "object",

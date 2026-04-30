@@ -34,7 +34,7 @@ class TestRunMiddleware:
         ctx = run_middleware(router_result)
 
         assert ctx.tool_results == []
-        assert "系統自動查詢結果" in ctx.tool_results_formatted  # header 仍在
+        assert "<tool_results>" in ctx.tool_results_formatted  # wrapper 仍在
         assert ctx.thinking_speech_sent == ""
 
     def test_tool_status_callback_per_tool(self):

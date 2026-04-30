@@ -5,6 +5,7 @@
 """
 
 from core.prompt_manager import get_prompt_manager
+from core.xml_prompt import xml_attr
 
 
 SUMMARY_MAX_CHARS = 240
@@ -65,9 +66,13 @@ def build_group_participants_block(
         char = character_manager.get_character(cid) or {}
         name = char.get("name") or cid
         summary = character_summary_text(char, fallback_to_prompt=True) or "無角色簡介"
-        lines.append(f"- {name} ({cid}): {summary}")
+        lines.append(
+            f'<participant character_id="{xml_attr(cid)}" name="{xml_attr(name)}">\n'
+            f"<summary>{summary}</summary>\n"
+            "</participant>"
+        )
 
-    participants_text = "\n".join(lines) if lines else "- 目前沒有其他 AI 成員資料。"
+    participants_text = "\n".join(lines) if lines else "<no_other_participants />"
 
     group_name = ""
     if session_ctx:

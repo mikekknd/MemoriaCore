@@ -20,19 +20,19 @@ _IS_WINDOWS = _CURRENT_OS == "Windows"
 # ════════════════════════════════════════════════════════════
 if _IS_WINDOWS:
     _OS_HINT = (
-        "【⚠️ Windows 環境】生成命令時請直接使用 Windows 等價指令：\n"
+        "<os_hint platform=\"Windows\">生成命令時請直接使用 Windows 等價指令：\n"
         "  cat → type | ls → dir | grep → findstr | rm → del /f | mv → move | cp → copy\n"
         "  touch → type nul > | pwd → cd | find → dir /s /b | sort → sort /r\n"
         "  wc → findstr /n | head/tail → more +1 | diff → fc | ps → tasklist | df → wmic\n"
         "  free → systeminfo | uptime → net statistics workstation | env/set → set\n"
         "  sleep → timeout /t | uname → ver | mkdir/rmdir/curl/wget 等直接可用。\n"
-        "【禁止】不可使用 Unix 特有指令，否則會執行失敗。\n"
-        "【範例】讀取檔案：type filename（不是 cat filename）| 列出檔案：dir（不是 ls）"
+        "<forbidden>不可使用 Unix 特有指令，否則會執行失敗。</forbidden>\n"
+        "<examples>讀取檔案：type filename（不是 cat filename）| 列出檔案：dir（不是 ls）</examples></os_hint>"
     )
 else:
     _OS_HINT = (
-        "【⚠️ Unix/Linux/macOS 環境】生成命令時請直接使用原生 Unix 指令。\n"
-        "【範例】讀取檔案：cat filename | 列出檔案：ls -la"
+        "<os_hint platform=\"Unix/Linux/macOS\">生成命令時請直接使用原生 Unix 指令。\n"
+        "<examples>讀取檔案：cat filename | 列出檔案：ls -la</examples></os_hint>"
     )
 
 # 預設群組（供 UI 使用的參考分類，不影響執行邏輯）
@@ -54,10 +54,12 @@ BASH_TOOL_SCHEMA = {
     "function": {
         "name": "run_bash",
         "description": (
-            "【功能】在本機執行 shell 指令並回傳輸出。\n"
-            "【觸發時機】本機檔案操作（建立、讀取、修改、刪除）、執行腳本、查詢系統狀態、git 操作等。\n"
-            "【不適用】需要開啟瀏覽器或操作網頁的任務，請改用 browser_task。\n"
+            "<tool_description>\n"
+            "<function>在本機執行 shell 指令並回傳輸出。</function>\n"
+            "<trigger>本機檔案操作（建立、讀取、修改、刪除）、執行腳本、查詢系統狀態、git 操作等。</trigger>\n"
+            "<not_applicable>需要開啟瀏覽器或操作網頁的任務，請改用 browser_task。</not_applicable>\n"
             + _OS_HINT
+            + "\n</tool_description>"
         ),
         "parameters": {
             "type": "object",

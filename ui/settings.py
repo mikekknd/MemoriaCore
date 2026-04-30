@@ -87,6 +87,19 @@ def render_settings_page(api_base, user_prefs=None):
             step=0.5,
             help="每位 AI 回覆顯示後，等待多久才進入下一位 AI。0 代表無延遲。")
 
+        st.header("🧯 角色開場白抑制")
+        new_opening_penalty_enabled = st.checkbox(
+            "啟用動態開場白抑制",
+            value=user_prefs.get("opening_penalty_enabled", True),
+            help="記錄每個角色最近幾次 reply 開頭，下一輪要求改用不同開場。只保存在記憶體，重啟後清空。",
+        )
+        new_opening_penalty_tokenizer_ref = st.text_input(
+            "聊天模型 Tokenizer 路徑 / HF 名稱（可留空）",
+            value=user_prefs.get("opening_penalty_tokenizer_ref", ""),
+            help="留空時只使用 prompt 與一次重試。填入本機 tokenizer path 或已快取的 Hugging Face 名稱時，會額外產生 soft logit_bias。",
+            disabled=not new_opening_penalty_enabled,
+        )
+
         st.header("🧬 PersonaProbe 定時反思")
         new_persona_sync_enabled = st.checkbox("啟用定時人格反思", value=user_prefs.get("persona_sync_enabled", True),
                                                help="每 20 分鐘在系統閒置時檢查，累積足夠訊息後呼叫 PersonaProbe 進行深度分析。")
@@ -282,6 +295,8 @@ def render_settings_page(api_base, user_prefs=None):
             "dual_layer_enabled": new_dual_layer_enabled,
             "group_chat_max_bot_turns": new_group_chat_max_bot_turns,
             "group_chat_turn_delay_seconds": new_group_chat_turn_delay_seconds,
+            "opening_penalty_enabled": new_opening_penalty_enabled,
+            "opening_penalty_tokenizer_ref": new_opening_penalty_tokenizer_ref,
             # Bash Tool
             "bash_tool_enabled": bash_enabled,
             "bash_tool_allowed_commands": merged,

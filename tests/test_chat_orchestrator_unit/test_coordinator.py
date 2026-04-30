@@ -195,7 +195,7 @@ class TestDualLayerCoordinator:
     def test_group_followup_appended_when_history_ends_with_assistant(
         self, mock_deps, mock_router_with_tools, sample_user_prefs
     ):
-        """群組接力時，即使最近一則是其他 AI，也要追加暫時 system 指令。"""
+        """群組接力時只追加最後一則 user control，避免 system prompt 變動。"""
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         run_dual_layer_orchestration(
@@ -221,9 +221,231 @@ class TestDualLayerCoordinator:
         chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
         messages = chat_call["messages"]
         assert messages[0]["role"] == "system"
-        assert "<group_followup_instruction>" in messages[0]["content"]
+        assert "<group_followup_instruction" not in messages[0]["content"]
+        assert messages[-1]["role"] == "user"
+        assert '<group_followup_instruction source="system_control">' in messages[-1]["content"]
+        assert messages[-1]["content"].count("<group_followup_instruction") == 1
+        assert "<group_followup_control" not in messages[-1]["content"]
         assert "上一位發言者" not in messages[0]["content"]
         assert "早安呀" not in messages[0]["content"]
+        assert "早安呀" not in messages[-1]["content"]
+
+    def test_group_followup_turn_skips_tool_router(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """群組接力 turn 1+ 不應重新跑意圖路由，避免原始 user_prompt 被重複送入 router。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        prefs = {**sample_user_prefs, "tavily_api_key": "test-key"}
+        run_dual_layer_orchestration(
+            session_messages=[
+                {"role": "user", "content": "我在檢查 bug"},
+                {"role": "assistant", "content": "[可可|char-a]: 原來是在測試呀"},
+            ],
+            last_entities=[],
+            user_prompt="我在檢查 bug",
+            user_prefs=prefs,
+            session_ctx={
+                "session_mode": "group",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "default",
+                "followup_instruction": {
+                    "user_prompt_original": "我在檢查 bug",
+                    "last_character_name": "可可",
+                    "last_reply": "原來是在測試呀",
+                },
+            },
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        assert router_calls == []
+
+    def test_group_latest_user_message_is_marked_as_human(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """群組對話的最新 user 內容需明確標為真人，避免被誤解成另一位 AI。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        run_dual_layer_orchestration(
+            session_messages=[
+                {"role": "user", "content": "喵嗚!!"},
+                {
+                    "role": "assistant",
+                    "content": "白蓮姐姐下午好喵！",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                    "persona_state": {"internal_thought": "看到白蓮姐姐在測試聊天室裡"},
+                },
+                {
+                    "role": "assistant",
+                    "content": "哼，勉為其難地回應你吧。",
+                    "character_id": "default",
+                    "character_name": "白蓮",
+                },
+                {"role": "user", "content": "嗚嗚，可可都無視我拉!"},
+            ],
+            last_entities=[],
+            user_prompt="嗚嗚，可可都無視我拉!",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "session_id": "sid-group-human",
+                "session_mode": "group",
+                "group_name": "測試聊天",
+                "user_id": "user-1",
+                "user_name": "mikekknd",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "char-a",
+            },
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = chat_call["messages"][-1]
+        assert latest_user["role"] == "user"
+        assert '<latest_user_message speaker="human_user" user_name="mikekknd" user_id="user-1">' in latest_user["content"]
+        assert "嗚嗚，可可都無視我拉!" in latest_user["content"]
+
+    def test_single_layer_group_followup_turn_skips_tool_router(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排的群組接力 turn 1+ 也不應重新跑意圖路由。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        prefs = {**sample_user_prefs, "dual_layer_enabled": False, "tavily_api_key": "test-key"}
+        orchestration._run_chat_orchestration(
+            session_messages=[
+                {"role": "user", "content": "我在檢查 bug"},
+                {"role": "assistant", "content": "[可可|char-a]: 原來是在測試呀"},
+            ],
+            last_entities=[],
+            user_prompt="我在檢查 bug",
+            user_prefs=prefs,
+            session_ctx={
+                "session_mode": "group",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "default",
+                "followup_instruction": {
+                    "user_prompt_original": "我在檢查 bug",
+                    "last_character_name": "可可",
+                    "last_reply": "原來是在測試呀",
+                },
+            },
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        assert router_calls == []
+
+    def test_dual_layer_updates_opening_penalty_state_by_character(
+        self, mock_deps, sample_user_prefs
+    ):
+        """雙層編排成功解析 reply 後，短期開場狀態依 session/character 隔離更新。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+        from core.opening_penalty import get_opening_penalty_manager
+
+        mgr = get_opening_penalty_manager()
+        mgr.clear()
+
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "你好"}],
+            last_entities=[],
+            user_prompt="你好",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "session_id": "sid-opening",
+                "character_id": "default",
+                "persona_face": "public",
+            },
+        )
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "你好"}],
+            last_entities=[],
+            user_prompt="你好",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "session_id": "sid-opening",
+                "character_id": "char-coco",
+                "persona_face": "public",
+            },
+        )
+
+        assert mgr.get_blocked_openings(
+            session_id="sid-opening",
+            character_id="default",
+            persona_face="public",
+        ) == ("測試回應",)
+        assert mgr.get_blocked_openings(
+            session_id="sid-opening",
+            character_id="char-coco",
+            persona_face="public",
+        ) == ("測試回應",)
+        assert mgr.get_blocked_openings(
+            session_id="sid-other",
+            character_id="default",
+            persona_face="public",
+        ) == ()
+        mgr.clear()
+
+    def test_single_layer_updates_opening_penalty_state(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排也會在成功解析 reply 後更新開場狀態。"""
+        from api.routers.chat import orchestration
+        from core.opening_penalty import get_opening_penalty_manager
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        mgr = get_opening_penalty_manager()
+        mgr.clear()
+        prefs = {**sample_user_prefs, "dual_layer_enabled": False}
+        orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "你好"}],
+            last_entities=[],
+            user_prompt="你好",
+            user_prefs=prefs,
+            session_ctx={
+                "session_id": "sid-single-opening",
+                "character_id": "default",
+                "persona_face": "public",
+            },
+        )
+
+        assert mgr.get_blocked_openings(
+            session_id="sid-single-opening",
+            character_id="default",
+            persona_face="public",
+        ) == ("測試回應",)
+        mgr.clear()
 
 
 class TestSelectOrchestration:
