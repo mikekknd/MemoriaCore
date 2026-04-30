@@ -2,7 +2,8 @@
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from api.dependencies import (
-    get_current_user, get_memory_sys, get_storage, get_router, get_embed_model, db_write_lock,
+    get_current_user, require_admin_user, get_memory_sys, get_storage,
+    get_router, get_embed_model, db_write_lock,
 )
 from api.models.requests import SearchRequest, CoreSearchRequest, ExpandQueryRequest, BlockUpdateRequest
 from api.models.responses import (
@@ -55,6 +56,158 @@ def _block_to_dto(b: dict, include_vectors: bool = False) -> MemoryBlockDTO:
         dto.overview_vector = b.get("overview_vector")
         dto.sparse_vector = b.get("sparse_vector")
     return dto
+
+
+# ── Admin Inspect（read-only, scope-aware）──────────────────
+def _inspect_visibility_filter(visibility: str) -> list[str] | None:
+    normalized = (visibility or "all").strip().lower()
+    if normalized == "all":
+        return None
+    if normalized in ("public", "private"):
+        return [normalized]
+    raise HTTPException(422, detail="visibility must be one of: all, public, private")
+
+
+def _require_memory_db(ms):
+    if not ms.db_path:
+        raise HTTPException(503, detail="Database not initialized")
+
+
+def _runtime_scope_stats(scopes: dict) -> dict[str, dict]:
+    stats: dict[str, dict] = {}
+
+    def ensure(user_id: str) -> dict:
+        if user_id not in stats:
+            stats[user_id] = {
+                "memory_blocks": 0,
+                "core_memories": 0,
+                "profiles": 0,
+                "topics": 0,
+            }
+        return stats[user_id]
+
+    for row in scopes.get("counts", {}).get("memory_blocks", []):
+        ensure(str(row.get("user_id", "default")))["memory_blocks"] += int(row.get("count", 0))
+    for row in scopes.get("counts", {}).get("core_memories", []):
+        ensure(str(row.get("user_id", "default")))["core_memories"] += int(row.get("count", 0))
+    for row in scopes.get("counts", {}).get("user_profile", []):
+        ensure(str(row.get("user_id", "default")))["profiles"] += int(row.get("count", 0))
+    for row in scopes.get("counts", {}).get("topic_cache", []):
+        ensure(str(row.get("user_id", "default")))["topics"] += int(row.get("count", 0))
+    return stats
+
+
+@router.get("/inspect/scopes")
+async def inspect_scopes(current_user: dict = Depends(require_admin_user)):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    storage = get_storage()
+    scopes = await asyncio.to_thread(storage.inspect_memory_scopes, ms.db_path)
+    users = await asyncio.to_thread(storage.list_users_basic)
+    user_lookup = {str(u["id"]): u for u in users}
+    runtime_stats = _runtime_scope_stats(scopes)
+    scope_user_ids = set(scopes.get("user_ids", [])) | set(user_lookup.keys())
+    scopes["users"] = [
+        {
+            "user_id": user_id,
+            "username": (user_lookup.get(user_id) or {}).get("username", ""),
+            "nickname": (user_lookup.get(user_id) or {}).get("nickname", ""),
+            "role": (user_lookup.get(user_id) or {}).get("role", ""),
+            "stats": runtime_stats.get(user_id, {}),
+        }
+        for user_id in sorted(scope_user_ids, key=lambda x: (not x.isdigit(), x))
+    ]
+    return scopes
+
+
+@router.get("/inspect/blocks")
+async def inspect_blocks(
+    user_id: str = Query(...),
+    character_id: str = Query(...),
+    visibility: str = Query("all"),
+    limit: int = Query(200, ge=1, le=1000),
+    include_dialogues: bool = Query(False),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    storage = get_storage()
+    return await asyncio.to_thread(
+        storage.inspect_memory_blocks,
+        ms.db_path,
+        user_id,
+        character_id,
+        _inspect_visibility_filter(visibility),
+        limit,
+        include_dialogues,
+    )
+
+
+@router.get("/inspect/core")
+async def inspect_core(
+    user_id: str = Query(...),
+    character_id: str = Query(...),
+    visibility: str = Query("all"),
+    limit: int = Query(200, ge=1, le=1000),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    storage = get_storage()
+    return await asyncio.to_thread(
+        storage.inspect_core_memories,
+        ms.db_path,
+        user_id,
+        character_id,
+        _inspect_visibility_filter(visibility),
+        limit,
+    )
+
+
+@router.get("/inspect/profile")
+async def inspect_profile(
+    user_id: str = Query(...),
+    visibility: str = Query("all"),
+    include_tombstones: bool = Query(False),
+    limit: int = Query(200, ge=1, le=1000),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    storage = get_storage()
+    return await asyncio.to_thread(
+        storage.inspect_profiles,
+        ms.db_path,
+        user_id,
+        _inspect_visibility_filter(visibility),
+        include_tombstones,
+        limit,
+    )
+
+
+@router.get("/inspect/topics")
+async def inspect_topics(
+    user_id: str = Query(...),
+    character_id: str = Query(...),
+    visibility: str = Query("all"),
+    include_global: bool = Query(False),
+    only_unmentioned: bool = Query(False),
+    limit: int = Query(200, ge=1, le=1000),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    storage = get_storage()
+    return await asyncio.to_thread(
+        storage.inspect_topics,
+        ms.db_path,
+        user_id,
+        character_id,
+        _inspect_visibility_filter(visibility),
+        include_global,
+        only_unmentioned,
+        limit,
+    )
 
 
 # ── Memory Blocks ─────────────────────────────────────────

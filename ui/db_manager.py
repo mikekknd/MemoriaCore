@@ -1,8 +1,114 @@
 # 【環境假設】：Python 3.12, Streamlit 1.30+。記憶庫管理獨立視圖模組。
 # 已遷移為瘦客戶端：所有業務邏輯透過 FastAPI REST API 執行。
+import json
+
 import streamlit as st
 import pandas as pd
 from ui import api_client as requests
+
+
+def _api_get_json(api_base: str, path: str, params: dict | None = None, timeout: int = 15):
+    resp = requests.get(f"{api_base}{path}", params=params, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(resp.text)
+    return resp.json()
+
+
+def _load_inspect_meta(api_base: str) -> tuple[dict, dict[str, str]]:
+    scopes = _api_get_json(api_base, "/memory/inspect/scopes", timeout=20)
+    try:
+        chars = _api_get_json(api_base, "/character", timeout=10)
+    except Exception:
+        chars = []
+    char_names = {
+        str(c.get("character_id")): c.get("name") or str(c.get("character_id"))
+        for c in chars
+        if c.get("character_id")
+    }
+    return scopes, char_names
+
+
+def _user_label(user: dict) -> str:
+    user_id = str(user.get("user_id", ""))
+    name = user.get("username") or "(外部 user_id)"
+    nickname = user.get("nickname") or ""
+    stats = user.get("stats") or {}
+    stat_text = (
+        f"blocks {stats.get('memory_blocks', 0)} / core {stats.get('core_memories', 0)} / "
+        f"profile {stats.get('profiles', 0)} / topics {stats.get('topics', 0)}"
+    )
+    display_name = f"{name} / {nickname}" if nickname else name
+    return f"{display_name} / user_id={user_id} / {stat_text}"
+
+
+def _character_label(character_id: str, char_names: dict[str, str]) -> str:
+    name = char_names.get(character_id)
+    if name and name != character_id:
+        return f"{name} ({character_id})"
+    if character_id == "__global__":
+        return "__global__（背景蒐集 user-level topic）"
+    return character_id
+
+
+def _json_text(value) -> str:
+    if value in (None, "", []):
+        return ""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _render_inspect_table(table_key: str, rows: list[dict], scope_text: str) -> None:
+    if not rows:
+        st.info(f"此 scope 沒有資料：{scope_text}")
+        return
+
+    if table_key == "blocks":
+        df = pd.DataFrame([{
+            "user_id": r.get("user_id", ""),
+            "character_id": r.get("character_id", ""),
+            "visibility": r.get("visibility", ""),
+            "timestamp": r.get("timestamp", ""),
+            "encounter_count": r.get("encounter_count", 1.0),
+            "is_consolidated": r.get("is_consolidated", False),
+            "overview": r.get("overview", ""),
+            "potential_preferences": _json_text(r.get("potential_preferences", [])),
+            "raw_dialogues": _json_text(r.get("raw_dialogues", [])),
+        } for r in rows])
+    elif table_key == "core":
+        df = pd.DataFrame([{
+            "user_id": r.get("user_id", ""),
+            "character_id": r.get("character_id", ""),
+            "visibility": r.get("visibility", ""),
+            "timestamp": r.get("timestamp", ""),
+            "encounter_count": r.get("encounter_count", 1.0),
+            "insight": r.get("insight", ""),
+            "core_id": r.get("core_id", ""),
+        } for r in rows])
+    elif table_key == "profile":
+        df = pd.DataFrame([{
+            "user_id": r.get("user_id", ""),
+            "visibility": r.get("visibility", ""),
+            "status": "已撤回" if r.get("confidence", 1) < 0 else "有效",
+            "timestamp": r.get("timestamp", ""),
+            "category": r.get("category", ""),
+            "fact_key": r.get("fact_key", ""),
+            "fact_value": r.get("fact_value", ""),
+            "confidence": r.get("confidence", 1.0),
+            "source_context": r.get("source_context", ""),
+        } for r in rows])
+    else:
+        df = pd.DataFrame([{
+            "user_id": r.get("user_id", ""),
+            "character_id": r.get("character_id", ""),
+            "visibility": r.get("visibility", ""),
+            "created_at": r.get("created_at", ""),
+            "status": "已提及" if r.get("is_mentioned_to_user") else "未提及",
+            "interest_keyword": r.get("interest_keyword", ""),
+            "summary_content": r.get("summary_content", ""),
+            "topic_id": r.get("topic_id", ""),
+        } for r in rows])
+
+    st.dataframe(df, use_container_width=True)
+
 
 def render_db_manager_page(api_base, user_prefs):
     st.title("🧠 記憶庫管理")
@@ -68,65 +174,131 @@ def render_db_manager_page(api_base, user_prefs):
     # Tab 2: 底層資料庫
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab_raw_db:
-        if st.button("🔄 載入目前資料庫內容", key="load_raw_db"):
+        st.subheader("Admin Scope-Aware 記憶檢視")
+        st.caption("唯讀檢視 runtime memory DB；不載入向量，不修改資料。Profile 是 per-user，不綁定角色。")
+
+        meta_key = "db_inspect_meta"
+        if st.button("🔄 重新整理 scope 清單", key="reload_db_inspect_meta"):
+            st.session_state.pop(meta_key, None)
+
+        try:
+            if meta_key not in st.session_state:
+                st.session_state[meta_key] = _load_inspect_meta(api_base)
+            scopes, char_names = st.session_state[meta_key]
+        except Exception as e:
+            st.error(f"載入 scope 清單失敗: {e}")
+            scopes, char_names = {"users": [], "character_ids": [], "visibilities": []}, {}
+
+        users = scopes.get("users") or [{"user_id": uid} for uid in scopes.get("user_ids", [])]
+        character_ids = set(scopes.get("character_ids") or [])
+        character_ids.update(char_names.keys())
+        character_ids.update({"default", "__global__"})
+        character_options = sorted(character_ids, key=lambda cid: (cid != "default", cid != "__global__", cid))
+
+        table_options = {
+            "blocks": "情境記憶 Memory Blocks",
+            "core": "核心認知 Core Memories",
+            "profile": "使用者畫像 User Profile",
+            "topics": "主動話題 Topic Cache",
+        }
+
+        col_table, col_user = st.columns([1, 2])
+        with col_table:
+            table_key = st.selectbox(
+                "資料表",
+                list(table_options.keys()),
+                format_func=lambda k: table_options[k],
+                key="db_inspect_table",
+            )
+        with col_user:
+            if users:
+                selected_user = st.selectbox(
+                    "使用者",
+                    users,
+                    format_func=_user_label,
+                    key="db_inspect_user",
+                )
+                selected_user_id = str(selected_user.get("user_id", ""))
+            else:
+                selected_user_id = st.text_input("使用者 user_id", value="default", key="db_inspect_user_fallback")
+
+        col_char, col_vis, col_limit = st.columns([2, 1, 1])
+        with col_char:
+            selected_character_id = st.selectbox(
+                "角色 / Topic Scope",
+                character_options,
+                format_func=lambda cid: _character_label(cid, char_names),
+                disabled=(table_key == "profile"),
+                key="db_inspect_character",
+            )
+            if table_key == "profile":
+                st.caption("Profile 只依 user_id + visibility 查詢，不使用 character_id。")
+        with col_vis:
+            visibility = st.selectbox(
+                "Visibility",
+                ["all", "public", "private"],
+                format_func=lambda v: "全部" if v == "all" else v,
+                key="db_inspect_visibility",
+            )
+        with col_limit:
+            limit = st.number_input("Limit", min_value=1, max_value=1000, value=200, step=50, key="db_inspect_limit")
+
+        col_opts_a, col_opts_b, col_opts_c = st.columns(3)
+        with col_opts_a:
+            include_dialogues = st.checkbox(
+                "顯示 raw dialogues",
+                value=False,
+                disabled=(table_key != "blocks"),
+                key="db_inspect_include_dialogues",
+            )
+        with col_opts_b:
+            include_tombstones = st.checkbox(
+                "包含 tombstones",
+                value=True,
+                disabled=(table_key != "profile"),
+                key="db_inspect_include_tombstones",
+            )
+        with col_opts_c:
+            include_global = st.checkbox(
+                "包含 __global__ topic",
+                value=True,
+                disabled=(table_key != "topics"),
+                key="db_inspect_include_global",
+            )
+            only_unmentioned = st.checkbox(
+                "只看未提及 topic",
+                value=False,
+                disabled=(table_key != "topics"),
+                key="db_inspect_only_unmentioned",
+            )
+
+        scope_text = (
+            f"user_id={selected_user_id}, "
+            f"character_id={'(不適用)' if table_key == 'profile' else selected_character_id}, "
+            f"visibility={visibility}, table={table_options[table_key]}"
+        )
+
+        if st.button("🔎 載入此 scope 資料", key="load_raw_db", use_container_width=True):
             try:
-                # 情境記憶區塊
-                blocks_resp = requests.get(f"{api_base}/memory/blocks", timeout=10)
-                if blocks_resp.ok:
-                    blocks = blocks_resp.json()
-                    st.subheader("📖 情境記憶區塊 (Memory Blocks)")
-                    if blocks:
-                        df_blocks = pd.DataFrame([{
-                            "timestamp": b["timestamp"],
-                            "encounter_count": b["encounter_count"],
-                            "overview": b["overview"],
-                            "is_consolidated": b["is_consolidated"],
-                        } for b in blocks])
-                        st.dataframe(df_blocks, use_container_width=True)
-                    else:
-                        st.info("尚無情境記憶。")
-                else:
-                    st.error(f"載入記憶區塊失敗: {blocks_resp.text}")
+                params = {
+                    "user_id": selected_user_id,
+                    "visibility": visibility,
+                    "limit": int(limit),
+                }
+                if table_key in ("blocks", "core", "topics"):
+                    params["character_id"] = selected_character_id
+                if table_key == "blocks":
+                    params["include_dialogues"] = include_dialogues
+                elif table_key == "profile":
+                    params["include_tombstones"] = include_tombstones
+                elif table_key == "topics":
+                    params["include_global"] = include_global
+                    params["only_unmentioned"] = only_unmentioned
 
-                # 核心認知
-                core_resp = requests.get(f"{api_base}/memory/core", timeout=10)
-                if core_resp.ok:
-                    cores = core_resp.json()
-                    st.subheader("💎 長期核心認知 (Core Memories)")
-                    if cores:
-                        df_core = pd.DataFrame([{
-                            "timestamp": c["timestamp"],
-                            "encounter_count": c["encounter_count"],
-                            "insight": c["insight"],
-                        } for c in cores])
-                        st.dataframe(df_core, use_container_width=True)
-                    else:
-                        st.info("尚無核心認知。")
-                else:
-                    st.error(f"載入核心認知失敗: {core_resp.text}")
-
-                # 使用者畫像
-                profile_resp = requests.get(f"{api_base}/profile?include_tombstones=true", timeout=10)
-                if profile_resp.ok:
-                    profiles = profile_resp.json()
-                    st.subheader("📋 使用者畫像 (User Profile)")
-                    if profiles:
-                        df_profile = pd.DataFrame([{
-                            "fact_key": p["fact_key"],
-                            "fact_value": p["fact_value"],
-                            "category": p["category"],
-                            "status": "🪦 已撤回" if p.get("confidence", 1) < 0 else "✅ 有效",
-                            "confidence": p.get("confidence", 1),
-                            "timestamp": p.get("timestamp", ""),
-                            "source_context": p.get("source_context", ""),
-                        } for p in profiles])
-                        st.dataframe(df_profile, use_container_width=True)
-                    else:
-                        st.info("尚無使用者畫像資料。")
-                else:
-                    st.error(f"載入使用者畫像失敗: {profile_resp.text}")
-
-                st.success("資料載入完成！")
+                rows = _api_get_json(api_base, f"/memory/inspect/{table_key}", params=params, timeout=30)
+                st.subheader(table_options[table_key])
+                st.caption(scope_text)
+                _render_inspect_table(table_key, rows, scope_text)
             except Exception as e:
                 st.error(f"載入資料庫失敗: {e}")
 

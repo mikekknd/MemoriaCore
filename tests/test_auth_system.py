@@ -11,8 +11,30 @@ from fastapi.testclient import TestClient
 import api.dependencies as deps
 from api.auth_utils import create_jwt, decode_jwt, issue_token_payload
 from api.middleware.auth import AuthMiddleware
-from api.routers import admin_users, auth, character, personality_public, profile
+from api.routers import admin_users, auth, character, memory, personality_public, profile
 from core.storage_manager import StorageManager
+
+
+class _InspectMemorySystem:
+    def __init__(self, storage: StorageManager, db_path: str):
+        self.storage = storage
+        self.db_path = db_path
+
+    def _get_memory_blocks(self, user_id="default", character_id="default", visibility="public"):
+        return self.storage.load_db(
+            self.db_path,
+            user_id=user_id,
+            character_id=character_id,
+            visibility_filter=[visibility],
+        )
+
+    def _get_core_memories(self, user_id="default", character_id="default", visibility="public"):
+        return self.storage.load_core_db(
+            self.db_path,
+            user_id=user_id,
+            character_id=character_id,
+            visibility_filter=[visibility],
+        )
 
 
 @pytest.fixture
@@ -355,6 +377,140 @@ def test_admin_users_api_manages_and_deletes_test_user_data(auth_tmp_dir, monkey
         ).status_code == 401
     finally:
         deps.storage = None
+
+
+def test_memory_inspect_endpoints_are_admin_scope_aware(auth_tmp_dir, monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "inspect-test-secret")
+    storage = _storage(auth_tmp_dir)
+    memory_db = str(auth_tmp_dir / "memory_db_test.db")
+    storage._init_db(memory_db)
+    deps.storage = storage
+    deps.memory_sys = _InspectMemorySystem(storage, memory_db)
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(memory.router, prefix="/api/v1")
+    app.add_middleware(AuthMiddleware)
+    admin_client = TestClient(app)
+    user_client = TestClient(app)
+
+    try:
+        admin = admin_client.post(
+            "/api/v1/auth/register",
+            json={"username": "owner", "password": "abc123", "password_confirm": "abc123"},
+        )
+        assert admin.status_code == 200, admin.text
+
+        user = user_client.post(
+            "/api/v1/auth/register",
+            json={"username": "viewer", "password": "abc123", "password_confirm": "abc123"},
+        )
+        assert user.status_code == 200, user.text
+        user_id = str(user.json()["user"]["id"])
+        admin_id = str(admin.json()["user"]["id"])
+
+        block = {
+            "block_id": "block-char-a-public",
+            "timestamp": "2026-04-30T10:00:00",
+            "overview": "char-a public overview",
+            "overview_vector": [0.1, 0.2],
+            "sparse_vector": {},
+            "raw_dialogues": [{"role": "user", "content": "hello char-a"}],
+            "is_consolidated": False,
+            "encounter_count": 1.0,
+            "potential_preferences": [{"tag": "tea", "intensity": 0.8}],
+        }
+        storage.save_db(memory_db, [block], user_id=user_id, character_id="char-a", visibility="public")
+        private_block = {**block, "block_id": "block-char-b-private", "overview": "char-b private overview"}
+        storage.save_db(memory_db, [private_block], user_id=user_id, character_id="char-b", visibility="private")
+        legacy_block = {**block, "block_id": "admin-default-public", "overview": "admin default overview"}
+        storage.save_db(memory_db, [legacy_block], user_id=admin_id, character_id="default", visibility="public")
+
+        storage.save_core_memory(
+            memory_db, "core-a", "2026-04-30T11:00:00", "char-a public insight",
+            [0.3, 0.4], user_id=user_id, character_id="char-a", visibility="public",
+        )
+        storage.save_core_memory(
+            memory_db, "core-a-private", "2026-04-30T12:00:00", "char-a private insight",
+            [0.5, 0.6], user_id=user_id, character_id="char-a", visibility="private",
+        )
+        storage.upsert_profile(
+            memory_db, "drink", "tea", "preference", "test",
+            user_id=user_id, visibility="public",
+        )
+        storage.upsert_profile(
+            memory_db, "secret", "private-note", "critical_rule", "test",
+            confidence=-1.0, user_id=user_id, visibility="private",
+        )
+        storage.insert_topic_cache(
+            memory_db, "topic-char-a", "tea", "char topic",
+            user_id=user_id, character_id="char-a", visibility="private",
+        )
+        storage.insert_topic_cache(
+            memory_db, "topic-global", "news", "global topic",
+            user_id=user_id, character_id="__global__", visibility="private",
+        )
+
+        assert user_client.get("/api/v1/memory/inspect/scopes").status_code == 403
+
+        scopes = admin_client.get("/api/v1/memory/inspect/scopes")
+        assert scopes.status_code == 200, scopes.text
+        assert "char-b" in scopes.json()["character_ids"]
+
+        blocks = admin_client.get(
+            "/api/v1/memory/inspect/blocks",
+            params={
+                "user_id": user_id,
+                "character_id": "char-a",
+                "visibility": "all",
+                "include_dialogues": True,
+            },
+        )
+        assert blocks.status_code == 200, blocks.text
+        assert [b["block_id"] for b in blocks.json()] == ["block-char-a-public"]
+        assert blocks.json()[0]["raw_dialogues"][0]["content"] == "hello char-a"
+        assert blocks.json()[0]["visibility"] == "public"
+
+        private_blocks = admin_client.get(
+            "/api/v1/memory/inspect/blocks",
+            params={"user_id": user_id, "character_id": "char-b", "visibility": "private"},
+        )
+        assert private_blocks.status_code == 200, private_blocks.text
+        assert private_blocks.json()[0]["block_id"] == "block-char-b-private"
+
+        cores = admin_client.get(
+            "/api/v1/memory/inspect/core",
+            params={"user_id": user_id, "character_id": "char-a", "visibility": "all"},
+        )
+        assert cores.status_code == 200, cores.text
+        assert {c["visibility"] for c in cores.json()} == {"public", "private"}
+
+        profile_rows = admin_client.get(
+            "/api/v1/memory/inspect/profile",
+            params={"user_id": user_id, "visibility": "all", "include_tombstones": True},
+        )
+        assert profile_rows.status_code == 200, profile_rows.text
+        assert {p["fact_key"] for p in profile_rows.json()} == {"drink", "secret"}
+
+        topics = admin_client.get(
+            "/api/v1/memory/inspect/topics",
+            params={
+                "user_id": user_id,
+                "character_id": "char-a",
+                "visibility": "private",
+                "include_global": True,
+            },
+        )
+        assert topics.status_code == 200, topics.text
+        assert {t["topic_id"] for t in topics.json()} == {"topic-char-a", "topic-global"}
+
+        legacy = admin_client.get("/api/v1/memory/blocks")
+        assert legacy.status_code == 200, legacy.text
+        assert legacy.json()[0]["block_id"] == "admin-default-public"
+        assert "user_id" not in legacy.json()[0]
+    finally:
+        deps.storage = None
+        deps.memory_sys = None
 
 
 def test_profile_list_route_is_registered():
