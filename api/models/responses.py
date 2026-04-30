@@ -95,6 +95,7 @@ class LogEntryDTO(BaseModel):
     content: Optional[Any] = None      # 同上，防禦性設計
     messages: Optional[list[dict]] = None
     details: Optional[dict] = None
+    log_context: Optional[dict] = None
 
 
 # ── Public Character ─────────────────────────────────────
