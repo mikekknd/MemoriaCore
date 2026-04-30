@@ -18,6 +18,7 @@ _REF_TAG = re.compile(r'\s*\[Ref:\s*[^\]]+\]\s*')
 _ENV_BLOCK = re.compile(r'<environment_context>.*?</environment_context>\s*', re.DOTALL)
 _EMO_BLOCK = re.compile(r'<emotional_trajectory>.*?</emotional_trajectory>\s*', re.DOTALL)
 _FOLLOWUP_HEADER = '【群組接力指令】'
+_FOLLOWUP_XML = '<group_followup_instruction>'
 
 
 # ════════════════════════════════════════════════════════════
@@ -31,14 +32,15 @@ def sanitize_message_for_llm(content: str) -> str:
     - `[Ref: uid1, uid2]` 引用標記
     - `<environment_context>...</environment_context>` 環境上下文區塊
     - `<emotional_trajectory>...</emotional_trajectory>` 情緒軌跡區塊
-    - 整則【群組接力指令】訊息回傳空字串（呼叫端應跳過）
+    - 整則群組接力指令訊息回傳空字串（呼叫端應跳過）
 
     舊資料中 [Ref:] 仍可能存在於 DB；本函式即時清洗，不需資料遷移。
     """
     if not content:
         return ""
     # 接力指令訊息整則丟棄
-    if content.lstrip().startswith(_FOLLOWUP_HEADER):
+    stripped = content.lstrip()
+    if stripped.startswith(_FOLLOWUP_HEADER) or stripped.startswith(_FOLLOWUP_XML):
         return ""
     cleaned = _REF_TAG.sub(' ', content)
     cleaned = _ENV_BLOCK.sub('', cleaned)

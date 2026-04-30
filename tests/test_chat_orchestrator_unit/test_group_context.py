@@ -6,7 +6,7 @@ import core.chat_orchestrator.group_context as group_context
 class _PromptManager:
     def get(self, key: str) -> str:
         assert key == "group_participants_block"
-        return "群組={group_name}; current={current_character_id}\n{participants_text}"
+        return "{group_context_line}\n目前扮演={current_character_name}; id={current_character_id}; raw_group={group_name}\n{participants_text}"
 
 
 class _CharacterManager:
@@ -40,7 +40,8 @@ def test_group_participants_block_uses_summary_and_omits_current(monkeypatch):
 
     block = group_context.build_group_participants_block(ctx, _CharacterManager(), "char-a")
 
-    assert "群組=測試群組; current=char-a" in block
+    assert "你正在多 AI 群組「測試群組」中對話。" in block
+    assert "目前扮演=角色A; id=char-a; raw_group=測試群組" in block
     assert "角色A (char-a)" not in block
     assert "角色 A 簡介" not in block
     assert "角色B (char-b): 角色 B fallback 人格" in block
@@ -57,9 +58,25 @@ def test_group_participants_block_omits_current_when_it_is_only_participant(monk
 
     block = group_context.build_group_participants_block(ctx, _CharacterManager(), "char-a")
 
-    assert "群組=測試群組; current=char-a" in block
+    assert "你正在多 AI 群組「測試群組」中對話。" in block
+    assert "目前扮演=角色A; id=char-a; raw_group=測試群組" in block
     assert "角色A (char-a)" not in block
     assert "目前沒有其他 AI 成員資料" in block
+
+
+def test_group_participants_block_omits_blank_group_name_from_prompt(monkeypatch):
+    monkeypatch.setattr(group_context, "get_prompt_manager", lambda: _PromptManager())
+    ctx = {
+        "session_mode": "group",
+        "group_name": "",
+        "active_character_ids": ["char-a", "char-b"],
+    }
+
+    block = group_context.build_group_participants_block(ctx, _CharacterManager(), "char-a")
+
+    assert "你正在多 AI 群組對話中。" in block
+    assert "未命名群組" not in block
+    assert "raw_group=\n" in block
 
 
 def test_llm_log_context_lists_user_current_ai_and_participants():

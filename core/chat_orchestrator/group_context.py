@@ -57,6 +57,8 @@ def build_group_participants_block(
 
     lines = []
     current_id = str(current_character_id or "").strip()
+    current_char = character_manager.get_character(current_id) or {}
+    current_name = current_char.get("name") or current_id or "目前角色"
     for cid in _participant_ids(session_ctx, current_character_id):
         if current_id and cid == current_id:
             continue
@@ -70,10 +72,17 @@ def build_group_participants_block(
     group_name = ""
     if session_ctx:
         group_name = str(session_ctx.get("group_name") or "").strip()
+    group_context_line = (
+        f"你正在多 AI 群組「{group_name}」中對話。"
+        if group_name
+        else "你正在多 AI 群組對話中。"
+    )
 
     return get_prompt_manager().get("group_participants_block").format(
-        group_name=group_name or "未命名群組",
+        group_context_line=group_context_line,
+        group_name=group_name,
         current_character_id=current_character_id,
+        current_character_name=current_name,
         participants_text=participants_text,
     )
 

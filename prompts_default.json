@@ -105,25 +105,23 @@
   },
   "group_followup_user": {
     "label": "群組接力指令 (Group Follow-up User Instruction)",
-    "description": "Bot-to-bot 接力時暫時附加在 LLM 上下文末尾，不寫入對話資料庫。",
+    "description": "Bot-to-bot 接力時暫時附加在 chat system prompt，不寫入對話資料庫。",
     "used_by": "api/routers/chat/group_loop.py",
-    "placeholders": [
-      "{user_prompt}",
-      "{last_character_name}",
-      "{last_reply}"
-    ],
-    "template": "【群組接力指令】\n使用者原始話題：{user_prompt}\n上一位發言者：{last_character_name}\n上一位發言內容：{last_reply}\n\n請以你自己的角色身份接話。只有在你能提供新的觀點、補充、反駁或自然追問時才回應；避免重複上一位的內容。"
+    "placeholders": [],
+    "template": "<group_followup_instruction>\n請以你自己的角色身份接話。只有在你能提供新的觀點、補充、反駁或自然追問時才回應；避免重複上一位的內容。\n</group_followup_instruction>"
   },
   "group_participants_block": {
     "label": "群組成員資訊 (Group Participants Block)",
     "description": "多 AI 群組對話中注入最終 chat system prompt 的成員名冊，協助各角色知道彼此存在。",
     "used_by": "api/routers/chat/orchestration.py, core/chat_orchestrator/coordinator.py",
     "placeholders": [
+      "{group_context_line}",
       "{group_name}",
       "{current_character_id}",
+      "{current_character_name}",
       "{participants_text}"
     ],
-    "template": "【群組成員資訊】\n你正在多 AI 群組「{group_name}」中對話。目前你只能代表 character_id={current_character_id} 的角色發言；你自己的角色設定以上方角色 prompt 為準，下方只列其他 AI 成員供你辨識互動對象。你可以自然稱呼其他 AI，但不可代替其他 AI 說話或揭露其內部思考。\n【群組輸出硬性規則】\n- `reply` 只能包含你目前扮演角色自己的台詞。\n- 禁止輸出 `[角色名|character_id]:` speaker tag。\n- 禁止替其他 AI 續寫、補完、模仿或複製台詞；若要提到其他 AI，只能以第三人稱自然稱呼。\n【其他 AI 成員】\n{participants_text}\n"
+    "template": "【群組成員資訊】\n{group_context_line}\n你目前扮演的是「{current_character_name}」，只能輸出這個角色自己的台詞。你自己的角色設定以上方角色 prompt 為準，下方只列其他 AI 成員供你辨識互動對象。你可以自然稱呼其他 AI，但不可代替其他 AI 說話或揭露其內部思考。\n【群組輸出硬性規則】\n- `reply` 只能包含「{current_character_name}」自己的台詞。\n- 禁止輸出 `[角色名|character_id]:` speaker tag。\n- 禁止替其他 AI 續寫、補完、模仿或複製台詞；若要提到其他 AI，只能以第三人稱自然稱呼。\n【其他 AI 成員】\n{participants_text}\n"
   },
   "chat_system_suffix": {
     "label": "對話系統後綴指令 (Chat System Suffix)",

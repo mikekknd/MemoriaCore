@@ -380,8 +380,7 @@ def _run_chat_orchestration(
                         "message": "搜尋完成，正在整理回覆...",
                     })
 
-            # 群組接力指令（若有）：附加到最後一則 user 訊息；若最近一則是其他 AI，
-            # 則追加一則暫時 user 指令，僅供本次 LLM 使用。
+            # 群組接力指令（若有）：附加到 system prompt，僅供本次 LLM 使用。
             # 不寫進 generation_messages / session_messages，故不影響 expand/pipeline/profile。
             followup = (session_ctx or {}).get("followup_instruction")
             if followup and api_messages:
@@ -390,13 +389,13 @@ def _run_chat_orchestration(
                     last_character_name=followup.get("last_character_name", ""),
                     last_reply=followup.get("last_reply", ""),
                 )
-                if api_messages[-1]["role"] == "user":
-                    api_messages[-1] = {
-                        **api_messages[-1],
-                        "content": api_messages[-1]["content"] + "\n\n" + followup_text,
+                if api_messages[0].get("role") == "system":
+                    api_messages[0] = {
+                        **api_messages[0],
+                        "content": api_messages[0]["content"] + "\n\n" + followup_text,
                     }
                 else:
-                    api_messages.append({"role": "user", "content": followup_text})
+                    api_messages.insert(0, {"role": "system", "content": followup_text})
 
             # ── 第二輪：完整人格上下文 + schema 強制格式化 ────
             # 無論是否使用工具，都用完整 api_messages 生成最終回應。

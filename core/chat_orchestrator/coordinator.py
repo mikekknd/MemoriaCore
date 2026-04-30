@@ -457,13 +457,13 @@ def run_dual_layer_orchestration(
             last_character_name=followup.get("last_character_name", ""),
             last_reply=followup.get("last_reply", ""),
         )
-        if api_messages[-1]["role"] == "user":
-            api_messages[-1] = {
-                **api_messages[-1],
-                "content": api_messages[-1]["content"] + "\n\n" + followup_text,
+        if api_messages[0].get("role") == "system":
+            api_messages[0] = {
+                **api_messages[0],
+                "content": api_messages[0]["content"] + "\n\n" + followup_text,
             }
         else:
-            api_messages.append({"role": "user", "content": followup_text})
+            api_messages.insert(0, {"role": "system", "content": followup_text})
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Module C — 角色渲染（等兩條分支都完成後才執行）

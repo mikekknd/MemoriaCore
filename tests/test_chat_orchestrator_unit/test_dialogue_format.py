@@ -29,6 +29,10 @@ class TestSanitizeMessageForLLM:
         text = "【群組接力指令】\n使用者原始話題：xx\n上一位..."
         assert sanitize_message_for_llm(text) == ""
 
+    def test_xml_followup_message_returns_empty(self):
+        text = "<group_followup_instruction>\n請以你自己的角色身份接話。\n</group_followup_instruction>"
+        assert sanitize_message_for_llm(text) == ""
+
     def test_empty_input(self):
         assert sanitize_message_for_llm("") == ""
         assert sanitize_message_for_llm(None) == ""

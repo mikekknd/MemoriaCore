@@ -195,7 +195,7 @@ class TestDualLayerCoordinator:
     def test_group_followup_appended_when_history_ends_with_assistant(
         self, mock_deps, mock_router_with_tools, sample_user_prefs
     ):
-        """群組接力時，即使最近一則是其他 AI，也要追加暫時 user 指令。"""
+        """群組接力時，即使最近一則是其他 AI，也要追加暫時 system 指令。"""
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         run_dual_layer_orchestration(
@@ -220,9 +220,10 @@ class TestDualLayerCoordinator:
 
         chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
         messages = chat_call["messages"]
-        assert messages[-1]["role"] == "user"
-        assert "【群組接力指令】" in messages[-1]["content"]
-        assert "上一位發言者：可可" in messages[-1]["content"]
+        assert messages[0]["role"] == "system"
+        assert "<group_followup_instruction>" in messages[0]["content"]
+        assert "上一位發言者" not in messages[0]["content"]
+        assert "早安呀" not in messages[0]["content"]
 
 
 class TestSelectOrchestration:
