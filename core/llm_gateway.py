@@ -595,7 +595,7 @@ class LLMRouter:
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
-        SystemLogger.log_llm_prompt(task_key, route["model"], messages, log_context=log_context)
+        llm_call_id = SystemLogger.log_llm_prompt(task_key, route["model"], messages, log_context=log_context)
         max_tokens = self._structured_chat_max_tokens(task_key, response_format, log_context)
         response_text, _ = self._generate_chat_with_optional_limit(
             route["provider"],
@@ -718,7 +718,7 @@ class LLMRouter:
                 logit_bias=logit_bias,
             )
 
-        SystemLogger.log_llm_response(task_key, route["model"], response_text)
+        SystemLogger.log_llm_response(task_key, route["model"], response_text, llm_call_id=llm_call_id)
         return response_text
 
     def generate_with_tools(
@@ -736,7 +736,7 @@ class LLMRouter:
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
-        SystemLogger.log_llm_prompt(task_key, route["model"], messages, tools, log_context=log_context)
+        llm_call_id = SystemLogger.log_llm_prompt(task_key, route["model"], messages, tools, log_context=log_context)
         response_text, tool_calls = self._generate_chat_with_optional_limit(
             route["provider"],
             messages,
@@ -748,7 +748,7 @@ class LLMRouter:
             logit_bias=logit_bias,
         )
         log_content = f"Content: {response_text}, Tools: {tool_calls}"
-        SystemLogger.log_llm_response(task_key, route["model"], log_content)
+        SystemLogger.log_llm_response(task_key, route["model"], log_content, llm_call_id=llm_call_id)
 
         return response_text, tool_calls
 

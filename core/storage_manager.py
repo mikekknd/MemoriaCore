@@ -2284,6 +2284,11 @@ class StorageManager:
             "SELECT id, character_id, 'public', version, timestamp, summary, evolved_prompt "
             "FROM _persona_snapshots_v2"
         )
+
+        # SQLite 會在 RENAME parent table 時同步改寫既有 FK。
+        # 因此 persona_dimensions 的 FK 可能暫時指向 _persona_snapshots_v2，
+        # 必須重建回 persona_snapshots，否則 drop 暫存表後寫入會失敗。
+        self._repair_persona_dimensions_fk_if_needed(cur)
         cur.execute("DROP TABLE _persona_snapshots_v2")
 
         # persona_traits：加欄位 + 更換 unique index
@@ -2309,6 +2314,55 @@ class StorageManager:
             "CREATE INDEX IF NOT EXISTS idx_trait_char_active "
             "ON persona_traits(character_id, persona_face, is_active, last_active_version DESC)"
         )
+
+    def _create_persona_dimensions_table(self, cur):
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS persona_dimensions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                confidence_label TEXT,
+                description TEXT NOT NULL,
+                parent_name TEXT,
+                is_active INTEGER DEFAULT 1,
+                FOREIGN KEY (snapshot_id) REFERENCES persona_snapshots(id) ON DELETE CASCADE
+            )
+        ''')
+
+    def _repair_persona_dimensions_fk_if_needed(self, cur):
+        """修復 v3 DB 中 persona_dimensions 指向舊暫存表的 FK。
+
+        v2 → v3 migration 會 rename persona_snapshots；SQLite 可能把 child table
+        FK 也改成指向暫存表 _persona_snapshots_v2。由於 SQLite 不支援 ALTER FK，
+        只能重建 persona_dimensions 並搬回既有資料。
+        """
+        cur.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'persona_dimensions'"
+        )
+        if cur.fetchone() is None:
+            self._create_persona_dimensions_table(cur)
+            return
+
+        cur.execute("PRAGMA foreign_key_list(persona_dimensions)")
+        fk_rows = cur.fetchall()
+        if any(row[2] == "persona_snapshots" for row in fk_rows):
+            return
+
+        cur.execute("DROP TABLE IF EXISTS _persona_dimensions_rebuild")
+        cur.execute("ALTER TABLE persona_dimensions RENAME TO _persona_dimensions_rebuild")
+        self._create_persona_dimensions_table(cur)
+        cur.execute(
+            "INSERT INTO persona_dimensions "
+            "(id, snapshot_id, dimension_key, name, confidence, confidence_label, "
+            " description, parent_name, is_active) "
+            "SELECT id, snapshot_id, dimension_key, name, confidence, confidence_label, "
+            "       description, parent_name, is_active "
+            "FROM _persona_dimensions_rebuild"
+        )
+        cur.execute("DROP TABLE _persona_dimensions_rebuild")
 
     def _create_persona_v3_schema(self, cur):
         """Path D v3 schema：含 persona_face 的雙 face 架構。
@@ -2342,20 +2396,8 @@ class StorageManager:
                 FOREIGN KEY (parent_key) REFERENCES persona_traits(trait_key) ON DELETE SET NULL
             )
         ''')
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS persona_dimensions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                snapshot_id INTEGER NOT NULL,
-                dimension_key TEXT NOT NULL,
-                name TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                confidence_label TEXT,
-                description TEXT NOT NULL,
-                parent_name TEXT,
-                is_active INTEGER DEFAULT 1,
-                FOREIGN KEY (snapshot_id) REFERENCES persona_snapshots(id) ON DELETE CASCADE
-            )
-        ''')
+        self._create_persona_dimensions_table(cur)
+        self._repair_persona_dimensions_fk_if_needed(cur)
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_persona_dim_snapshot "
             "ON persona_dimensions(snapshot_id)"

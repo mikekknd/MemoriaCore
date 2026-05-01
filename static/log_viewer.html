@@ -35,7 +35,17 @@
   .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .filter-btn.active.event-btn { background: var(--purple); border-color: var(--purple); }
   .filter-btn.active.error-btn { background: var(--error); border-color: var(--error); }
-  .cat-select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; color: var(--text); font-size: 13px; outline: none; cursor: pointer; }
+  .cat-filter { position: relative; }
+  .cat-filter-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 28px 5px 10px; color: var(--text); font-size: 13px; outline: none; cursor: pointer; min-width: 150px; max-width: 240px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+  .cat-filter-btn:hover, .cat-filter.open .cat-filter-btn { border-color: var(--text2); }
+  .cat-filter-btn::after { content: '▾'; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: var(--text2); font-size: 11px; }
+  .cat-menu { display: none; position: absolute; top: calc(100% + 6px); left: 0; min-width: 240px; max-width: 320px; max-height: 360px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px; box-shadow: 0 12px 28px rgba(0,0,0,.35); z-index: 120; }
+  .cat-filter.open .cat-menu { display: block; }
+  .cat-option { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; color: var(--text); font-size: 13px; cursor: pointer; user-select: none; }
+  .cat-option:hover { background: var(--surface2); }
+  .cat-option input { cursor: pointer; }
+  .cat-option.all { color: var(--accent); border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; margin-bottom: 4px; }
+  .cat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .toolbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
   .expand-all-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; color: var(--text2); font-size: 12px; cursor: pointer; }
   .expand-all-btn:hover { border-color: var(--text2); }
@@ -130,9 +140,10 @@
     <button class="filter-btn active event-btn" data-filter="event" onclick="toggleFilter(this)">Event</button>
     <button class="filter-btn active error-btn" data-filter="error" onclick="toggleFilter(this)">Error</button>
   </div>
-  <select class="cat-select" id="catSelect" onchange="applyFilters()">
-    <option value="">所有任務類別</option>
-  </select>
+  <div class="cat-filter" id="catFilter">
+    <button class="cat-filter-btn" id="catFilterBtn" type="button" onclick="toggleCategoryMenu()">所有任務類別</button>
+    <div class="cat-menu" id="catMenu"></div>
+  </div>
   <div class="toolbar-right">
     <button class="expand-all-btn" id="reloadBtn" onclick="reloadFile()" title="重新讀取同一檔案">🔄 重新載入</button>
     <button class="expand-all-btn" id="clearBtn" onclick="clearLogs()" title="清空所有 log" style="color:var(--error);border-color:var(--error);">🗑️ 清空 Log</button>
@@ -163,6 +174,7 @@ let currentFileHandle = null;   // FileSystemFileHandle（支援重新讀取磁�
 let currentFileName = '';
 let newestFirst = true;
 let apiMode = false;
+let selectedCategories = new Set();
 
 // ===== API Mode（被 iframe 嵌入時透過 ?api=true 自動拉取）=====
 (function initApiMode() {
@@ -185,7 +197,8 @@ async function clearLogs() {
     allEntries = [];
     document.getElementById('logContainer').innerHTML = '';
     document.getElementById('stats').innerHTML = '<span>0 筆紀錄</span>';
-    document.getElementById('catSelect').innerHTML = '<option value="">所有任務類別</option>';
+    selectedCategories.clear();
+    populateCategoryFilter();
   } catch (e) {
     alert('清空失敗：' + e.message);
   }
@@ -207,16 +220,7 @@ async function fetchLogsFromApi() {
     document.getElementById('toolbar').style.display = 'flex';
     document.getElementById('logContainer').style.display = 'block';
 
-    // 重建分類下拉
-    const cats = new Set();
-    allEntries.forEach(e => { if (e.category) cats.add(e.category); });
-    const sel = document.getElementById('catSelect');
-    sel.innerHTML = '<option value="">所有任務類別</option>';
-    [...cats].sort().forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c; opt.textContent = c;
-      sel.appendChild(opt);
-    });
+    populateCategoryFilter();
 
     // 統計
     const prompts = allEntries.filter(e => e.type === 'llm_call' && e.direction === 'prompt').length;
@@ -291,6 +295,11 @@ document.addEventListener('keydown', ev => {
   }
 });
 
+document.addEventListener('click', ev => {
+  const catFilter = document.getElementById('catFilter');
+  if (catFilter && !catFilter.contains(ev.target)) catFilter.classList.remove('open');
+});
+
 // ===== File Loading =====
 // 透過 <input type="file"> 選擇時，嘗試用 showOpenFilePicker 取得 handle
 async function handleFileInput(inputEl) {
@@ -363,16 +372,7 @@ function parseAndRender(text, filename) {
   document.getElementById('toolbar').style.display = 'flex';
   document.getElementById('logContainer').style.display = 'block';
 
-  // Populate category dropdown
-  const cats = new Set();
-  allEntries.forEach(e => { if (e.category) cats.add(e.category); });
-  const sel = document.getElementById('catSelect');
-  sel.innerHTML = '<option value="">所有任務類別</option>';
-  [...cats].sort().forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c; opt.textContent = c;
-    sel.appendChild(opt);
-  });
+  populateCategoryFilter();
 
   // Stats
   const prompts = allEntries.filter(e => e.type === 'llm_call' && e.direction === 'prompt').length;
@@ -436,6 +436,10 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function escapeAttr(s) {
+  return escapeHtml(String(s)).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function shortLogId(logId) {
   return logId ? String(logId).substring(0, 10) : '';
 }
@@ -479,12 +483,39 @@ function renderEntries() {
   const container = document.getElementById('logContainer');
   // Build a map for prompt-response pairing
   const pairMap = new Map();
+  const callGroups = new Map();
+  for (let i = 0; i < allEntries.length; i++) {
+    const callId = allEntries[i].llm_call_id;
+    if (!callId) continue;
+    if (!callGroups.has(callId)) callGroups.set(callId, []);
+    callGroups.get(callId).push(i);
+  }
+  callGroups.forEach(indices => {
+    const prompts = indices.filter(i => allEntries[i].type === 'llm_call' && allEntries[i].direction === 'prompt');
+    const responses = indices.filter(i => allEntries[i].type === 'llm_call' && allEntries[i].direction === 'response');
+    prompts.forEach((promptIdx, order) => {
+      const responseIdx = responses[order] ?? responses[0];
+      if (responseIdx !== undefined) {
+        pairMap.set(promptIdx, responseIdx);
+        pairMap.set(responseIdx, promptIdx);
+      }
+    });
+  });
+
+  // 舊版 log 沒有 llm_call_id 時，才用 category/model fallback 猜配對。
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
+    if (pairMap.has(i)) continue;
     if (e.type === 'llm_call' && e.direction === 'prompt') {
       for (let j = i + 1; j < allEntries.length; j++) {
         const r = allEntries[j];
-        if (r.type === 'llm_call' && r.direction === 'response' && r.category === e.category && r.model === e.model) {
+        if (
+          !pairMap.has(j)
+          && r.type === 'llm_call'
+          && r.direction === 'response'
+          && r.category === e.category
+          && r.model === e.model
+        ) {
           pairMap.set(i, j);
           pairMap.set(j, i);
           break;
@@ -495,6 +526,7 @@ function renderEntries() {
 
   // Build display order
   const indices = allEntries.map((_, i) => i);
+  indices.sort((a, b) => compareEntryOrder(allEntries[a], a, allEntries[b], b));
   if (newestFirst) indices.reverse();
 
   let html = '';
@@ -524,6 +556,19 @@ function renderEntries() {
   container.innerHTML = html;
 }
 
+function compareEntryOrder(a, aIdx, b, bIdx) {
+  const aSeq = Number.isInteger(a.trace_seq) ? a.trace_seq : null;
+  const bSeq = Number.isInteger(b.trace_seq) ? b.trace_seq : null;
+  if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
+  if (aSeq !== null && bSeq === null) return -1;
+  if (aSeq === null && bSeq !== null) return 1;
+
+  const aTime = Date.parse(a.logged_at || a.timestamp || '');
+  const bTime = Date.parse(b.logged_at || b.timestamp || '');
+  if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) return aTime - bTime;
+  return aIdx - bIdx;
+}
+
 function renderBody(idx) {
   const entry = allEntries[idx];
   const body = document.getElementById(`body-${idx}`);
@@ -534,6 +579,16 @@ function renderBody(idx) {
   let html = '';
   if (entry.log_id) {
     html += `<div class="detail-grid"><span class="detail-key">log_id</span><span class="detail-val">${highlightText(entry.log_id, searchTerm)}</span></div>`;
+  }
+  if (entry.llm_call_id || entry.trace_seq) {
+    html += '<div class="detail-grid">';
+    if (entry.llm_call_id) {
+      html += `<span class="detail-key">llm_call_id</span><span class="detail-val">${highlightText(entry.llm_call_id, searchTerm)}</span>`;
+    }
+    if (entry.trace_seq) {
+      html += `<span class="detail-key">trace_seq</span><span class="detail-val">${highlightText(String(entry.trace_seq), searchTerm)}</span>`;
+    }
+    html += '</div>';
   }
 
   if (type === 'prompt' && entry.messages) {
@@ -619,6 +674,65 @@ function copyText(text) {
 }
 
 // ===== Filtering =====
+function toggleCategoryMenu() {
+  document.getElementById('catFilter').classList.toggle('open');
+}
+
+function populateCategoryFilter() {
+  const cats = new Set();
+  allEntries.forEach(e => { if (e.category) cats.add(e.category); });
+  const available = [...cats].sort();
+
+  selectedCategories = new Set([...selectedCategories].filter(c => cats.has(c)));
+
+  const menu = document.getElementById('catMenu');
+  if (!menu) return;
+
+  let html = `<label class="cat-option all">
+    <input type="checkbox" data-cat-all="1" ${selectedCategories.size === 0 ? 'checked' : ''}>
+    <span class="cat-name">所有任務類別</span>
+  </label>`;
+
+  available.forEach(cat => {
+    html += `<label class="cat-option" title="${escapeAttr(cat)}">
+      <input type="checkbox" data-cat="${escapeAttr(cat)}" ${selectedCategories.has(cat) ? 'checked' : ''}>
+      <span class="cat-name">${escapeHtml(cat)}</span>
+    </label>`;
+  });
+
+  menu.innerHTML = html;
+  menu.querySelectorAll('input[type="checkbox"]').forEach(input => {
+    input.addEventListener('change', () => handleCategoryChange(input));
+  });
+  updateCategoryButton();
+}
+
+function handleCategoryChange(input) {
+  if (input.dataset.catAll) {
+    selectedCategories.clear();
+  } else {
+    const cat = input.dataset.cat || '';
+    if (input.checked) selectedCategories.add(cat);
+    else selectedCategories.delete(cat);
+  }
+
+  populateCategoryFilter();
+  applyFilters();
+}
+
+function updateCategoryButton() {
+  const btn = document.getElementById('catFilterBtn');
+  if (!btn) return;
+  if (selectedCategories.size === 0) {
+    btn.textContent = '所有任務類別';
+    btn.title = '所有任務類別';
+    return;
+  }
+  const selected = [...selectedCategories].sort();
+  btn.textContent = selected.length === 1 ? selected[0] : `已選 ${selected.length} 個任務類別`;
+  btn.title = selected.join('\n');
+}
+
 function toggleFilter(btn) {
   const filter = btn.dataset.filter;
   if (filter === 'all') {
@@ -637,7 +751,6 @@ function toggleFilter(btn) {
 function applyFilters() {
   const activeTypes = new Set();
   document.querySelectorAll('.filter-btn.active:not([data-filter="all"])').forEach(b => activeTypes.add(b.dataset.filter));
-  const catFilter = document.getElementById('catSelect').value;
 
   document.querySelectorAll('.log-entry').forEach(el => {
     const type = el.dataset.type;
@@ -646,7 +759,7 @@ function applyFilters() {
     const entry = allEntries[idx];
 
     let visible = activeTypes.has(type);
-    if (catFilter && cat !== catFilter) visible = false;
+    if (selectedCategories.size && !selectedCategories.has(cat)) visible = false;
 
     if (visible && searchTerm) {
       const text = JSON.stringify(entry).toLowerCase();

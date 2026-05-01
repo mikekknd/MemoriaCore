@@ -38,6 +38,8 @@ def run_group_router(
 
     latest_user_text = _latest_user_text(session_messages)
     spoken_after_user = _spoken_participant_ids_after_latest_user(session_messages, participants)
+    all_participants_spoke = len(participants) > 1 and len(spoken_after_user) >= len(participants)
+    user_requested_multi_turn = _latest_user_requests_more_turns(latest_user_text)
 
     if len(participants) == 1:
         only_id = participants[0]["character_id"]
@@ -48,14 +50,19 @@ def run_group_router(
     prompt = get_prompt_manager().get("group_router_system").format(
         participants_json=json.dumps(participants, ensure_ascii=False, indent=2),
         history_text=_format_history(session_messages[-12:]),
-        last_speaker_id=last_speaker_id or "",
-        mentioned_character_id=mentioned_id or "",
-        latest_user_text=latest_user_text,
-        spoken_after_latest_user_json=json.dumps(sorted(spoken_after_user), ensure_ascii=False),
-        all_participants_spoke_after_latest_user=str(
-            len(participants) > 1 and len(spoken_after_user) >= len(participants)
-        ).lower(),
-        latest_user_requests_more_turns=str(_latest_user_requests_more_turns(latest_user_text)).lower(),
+        turn_state_json=json.dumps(
+            {
+                "latest_user_text": latest_user_text,
+                "last_speaker": _participant_ref(last_speaker_id, participants),
+                "participants_who_already_spoke_after_latest_user": [
+                    _participant_ref(cid, participants) for cid in sorted(spoken_after_user)
+                ],
+                "all_participants_already_spoke_after_latest_user": all_participants_spoke,
+                "user_explicitly_requested_multi_turn_discussion": user_requested_multi_turn,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
     )
 
     try:
@@ -103,6 +110,19 @@ def _normalize_characters(active_characters: list[dict]) -> list[dict]:
 
 def _summarize_character(char: dict) -> str:
     return character_summary_text(char, fallback_to_prompt=True)
+
+
+def _participant_ref(character_id: str | None, participants: list[dict]) -> dict | None:
+    cid = str(character_id or "").strip()
+    if not cid:
+        return None
+    for participant in participants:
+        if participant["character_id"] == cid:
+            return {
+                "character_id": cid,
+                "name": participant.get("name") or cid,
+            }
+    return None
 
 
 def _latest_user_text(messages: list[dict]) -> str:

@@ -28,6 +28,16 @@ def _get_log_path() -> str:
         return os.path.join(project_root, "llm_trace.jsonl")
 
 
+def _entry_sort_key(entry: dict, fallback_index: int) -> tuple[int, int | str]:
+    seq = entry.get("trace_seq")
+    if isinstance(seq, int):
+        return (0, seq)
+    timestamp = entry.get("logged_at") or entry.get("timestamp")
+    if timestamp:
+        return (1, str(timestamp))
+    return (2, fallback_index)
+
+
 @router.get("", response_model=list[LogEntryDTO])
 async def list_logs(
     limit: int = Query(100, ge=1, le=1000),
@@ -41,7 +51,9 @@ async def list_logs(
 
     entries = []
     with open(log_path, "r", encoding="utf-8") as f:
+        line_index = 0
         for line in f:
+            line_index += 1
             line = line.strip()
             if not line:
                 continue
@@ -54,11 +66,11 @@ async def list_logs(
                 continue
             if category and entry.get("category") != category:
                 continue
-            entries.append(entry)
+            entries.append((line_index, entry))
 
     # 反序排列（最新在前）
-    entries.reverse()
-    sliced = entries[offset:offset + limit]
+    entries.sort(key=lambda item: _entry_sort_key(item[1], item[0]), reverse=True)
+    sliced = [entry for _, entry in entries[offset:offset + limit]]
 
     # 單筆容錯：驗證失敗的條目跳過，不讓整批請求崩潰
     result = []

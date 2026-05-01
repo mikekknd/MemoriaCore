@@ -1,4 +1,7 @@
 """Group Router 單元測試。"""
+import json
+import re
+
 from core.chat_orchestrator.group_router import run_group_router
 
 
@@ -85,8 +88,16 @@ def test_all_participants_spoke_is_soft_context_not_hard_stop():
     assert router.called is True
     prompt_messages = router.args[1]
     prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
-    assert "<all_participants_spoke_after_latest_user>true</all_participants_spoke_after_latest_user>" in prompt_text
-    assert '<spoken_after_latest_user_json>["char-a", "char-b"]</spoken_after_latest_user_json>' in prompt_text
+    turn_state = _extract_turn_state(prompt_text)
+    assert turn_state["all_participants_already_spoke_after_latest_user"] is True
+    assert turn_state["last_speaker"] == {"character_id": "char-b", "name": "角色B"}
+    assert turn_state["participants_who_already_spoke_after_latest_user"] == [
+        {"character_id": "char-a", "name": "角色A"},
+        {"character_id": "char-b", "name": "角色B"},
+    ]
+    assert "<spoken_after_latest_user_json>" not in prompt_text
+    assert "<latest_user_requests_more_turns>" not in prompt_text
+    assert "<mentioned_character_id>" not in prompt_text
 
 
 def test_more_turns_request_can_continue_after_all_participants_spoke():
@@ -107,6 +118,11 @@ def test_more_turns_request_can_continue_after_all_participants_spoke():
     assert result.should_respond is True
     assert result.target_character_id == "char-a"
     assert router.called is True
+    prompt_messages = router.args[1]
+    prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
+    turn_state = _extract_turn_state(prompt_text)
+    assert turn_state["user_explicitly_requested_multi_turn_discussion"] is True
+    assert "可放寬停止門檻，但仍不可重述既有內容" in prompt_text
 
 
 def test_router_participant_summary_prefers_character_summary():
@@ -138,3 +154,9 @@ def test_router_participant_summary_prefers_character_summary():
     assert "短版簡介 A" in prompt_text
     assert "很長的完整人設 A" not in prompt_text
     assert "fallback 人設 B" in prompt_text
+
+
+def _extract_turn_state(prompt_text: str) -> dict:
+    match = re.search(r"<turn_state_json>\s*(.*?)\s*</turn_state_json>", prompt_text, re.S)
+    assert match, prompt_text
+    return json.loads(match.group(1))

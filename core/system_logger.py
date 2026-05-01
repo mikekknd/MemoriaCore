@@ -2,12 +2,16 @@
 # 同時輸出至終端機與結構化 JSON Lines 日誌檔。
 import json
 import os
+import threading
 import uuid
 from datetime import datetime
 
 # 日誌檔路徑 (專案根目錄)
 _LOG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOG_FILE = os.path.join(_LOG_DIR, "llm_trace.jsonl")
+_LOG_LOCK = threading.Lock()
+_LOG_SEQ = 0
+_LOG_SEQ_INITIALIZED = False
 
 
 class SystemLogger:
@@ -26,12 +30,60 @@ class SystemLogger:
     @staticmethod
     def _write_entry(entry: dict):
         """將一筆結構化紀錄以 JSON Lines 格式追加寫入日誌檔。"""
+        global _LOG_SEQ, _LOG_SEQ_INITIALIZED
         try:
-            entry.setdefault("log_id", uuid.uuid4().hex)
-            with open(_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with _LOG_LOCK:
+                if not _LOG_SEQ_INITIALIZED:
+                    _LOG_SEQ = max(_LOG_SEQ, SystemLogger._load_max_trace_seq())
+                    _LOG_SEQ_INITIALIZED = True
+                _LOG_SEQ += 1
+                entry.setdefault("log_id", uuid.uuid4().hex)
+                entry.setdefault("trace_seq", _LOG_SEQ)
+                entry.setdefault("logged_at", SystemLogger._get_iso_time())
+                with open(_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             print(f"[Logger] 寫入日誌檔失敗: {e}")
+
+    @staticmethod
+    def _load_max_trace_seq() -> int:
+        """服務重啟後延續既有 log 的 trace_seq，避免同一檔內序號重複。
+        從檔尾反向掃描以避免大檔啟動阻塞；trace_seq 單調遞增，最後一筆即最大值。"""
+        if not os.path.exists(_LOG_FILE):
+            return 0
+        try:
+            file_size = os.path.getsize(_LOG_FILE)
+            if file_size == 0:
+                return 0
+            read_size = min(file_size, 65536)
+            with open(_LOG_FILE, "rb") as f:
+                f.seek(file_size - read_size)
+                tail = f.read(read_size)
+            lines = tail.split(b"\n")
+            if read_size < file_size:
+                # 切點落在某行中間，丟棄第一段殘缺資料
+                lines = lines[1:]
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    seq = json.loads(line.decode("utf-8")).get("trace_seq")
+                except Exception:
+                    continue
+                if isinstance(seq, int):
+                    return seq
+            return 0
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _reset_for_tests() -> None:
+        """測試專用：重置 trace_seq 與初始化旗標，避免跨測試污染。"""
+        global _LOG_SEQ, _LOG_SEQ_INITIALIZED
+        with _LOG_LOCK:
+            _LOG_SEQ = 0
+            _LOG_SEQ_INITIALIZED = False
 
     # ------------------------------------------------------------------
     # 公開 API — 每個方法同時印出終端訊息 + 寫入檔案
@@ -139,8 +191,10 @@ class SystemLogger:
         api_messages,
         tools: list | None = None,
         log_context: dict | None = None,
-    ):
+        llm_call_id: str | None = None,
+    ) -> str:
         """紀錄發送給 LLM 的完整 Prompt"""
+        llm_call_id = llm_call_id or uuid.uuid4().hex
         ts = SystemLogger._get_time()
         print(f"\n[{ts}] >>> 發送至 LLM [任務: {task_key} | 模型: {model_name}]")
         print(f"{'-'*60}")
@@ -181,15 +235,17 @@ class SystemLogger:
             "category": task_key,
             "model": model_name,
             "messages": api_messages,
+            "llm_call_id": llm_call_id,
         }
         if tools:
             entry["tools"] = tools
         if log_context:
             entry["log_context"] = log_context
         SystemLogger._write_entry(entry)
+        return llm_call_id
 
     @staticmethod
-    def log_llm_response(task_key, model_name, response_text):
+    def log_llm_response(task_key, model_name, response_text, llm_call_id: str | None = None):
         """紀錄 LLM 回傳的完整 Response"""
         ts = SystemLogger._get_time()
         print(f"\n[{ts}] <<< 接收自 LLM [任務: {task_key} | 模型: {model_name}]")
@@ -206,6 +262,7 @@ class SystemLogger:
             "category": task_key,
             "model": model_name,
             "content": response_text,
+            **({"llm_call_id": llm_call_id} if llm_call_id else {}),
         })
 
     @staticmethod

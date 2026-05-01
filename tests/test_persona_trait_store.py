@@ -7,6 +7,7 @@
   reactivate / 同版剛建立 trait 不被掃 / updates 夾雜 name/description 被忽略。
 """
 import os
+import sqlite3
 import sys
 
 import pytest
@@ -81,7 +82,6 @@ class TestMigration:
     def test_fresh_db_upgrades_to_v3(self, storage):
         # 觸發 _init_persona_snapshot_db（v3 雙 face schema）
         storage.get_active_traits(CHAR)
-        import sqlite3
         conn = sqlite3.connect(storage.persona_snapshot_db_path)
         cur = conn.cursor()
         cur.execute("PRAGMA user_version")
@@ -92,6 +92,107 @@ class TestMigration:
         cur.execute("PRAGMA table_info(persona_traits)")
         cols = [r[1] for r in cur.fetchall()]
         assert "persona_face" in cols
+        conn.close()
+
+    def test_v2_migration_rebuilds_dimensions_fk(self, tmp_path):
+        db_path = tmp_path / "persona-v2.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute('''
+            CREATE TABLE persona_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                summary TEXT,
+                evolved_prompt TEXT,
+                UNIQUE(character_id, version)
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE persona_traits (
+                trait_key TEXT PRIMARY KEY,
+                character_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_version INTEGER NOT NULL,
+                last_active_version INTEGER NOT NULL,
+                parent_key TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (parent_key) REFERENCES persona_traits(trait_key) ON DELETE SET NULL
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE persona_dimensions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                confidence_label TEXT,
+                description TEXT NOT NULL,
+                parent_name TEXT,
+                is_active INTEGER DEFAULT 1,
+                FOREIGN KEY (snapshot_id) REFERENCES persona_snapshots(id) ON DELETE CASCADE
+            )
+        ''')
+        cur.execute(
+            "INSERT INTO persona_snapshots "
+            "(character_id, version, timestamp, summary, evolved_prompt) "
+            "VALUES (?, 1, ?, ?, ?)",
+            (CHAR, "2026-01-01T00:00:00", "v1", "# Persona v1"),
+        )
+        sid = cur.lastrowid
+        cur.execute(
+            "INSERT INTO persona_traits "
+            "(trait_key, character_id, name, created_version, last_active_version, "
+            " parent_key, is_active, created_at) "
+            "VALUES (?, ?, ?, 1, 1, NULL, 1, ?)",
+            ("old-trait", CHAR, "舊特質", "2026-01-01T00:00:00"),
+        )
+        cur.execute(
+            "INSERT INTO persona_dimensions "
+            "(snapshot_id, dimension_key, name, confidence, confidence_label, "
+            " description, parent_name, is_active) "
+            "VALUES (?, ?, ?, 8.0, ?, ?, NULL, 1)",
+            (sid, "old-trait", "舊特質", "high", "舊版描述"),
+        )
+        cur.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+
+        migrated = StorageManager(
+            prefs_file=str(tmp_path / "prefs.json"),
+            history_file=str(tmp_path / "history.json"),
+            persona_snapshot_db_path=str(db_path),
+        )
+        migrated.save_trait_snapshot(
+            character_id=CHAR,
+            timestamp="2026-01-02T00:00:00",
+            summary="v2",
+            evolved_prompt="# Persona v2",
+            updates=[],
+            new_traits=[{
+                "trait_key": "new-trait",
+                "name": "新特質",
+                "description": "升級後仍可寫入明細",
+                "confidence": 7.0,
+                "confidence_label": "medium",
+                "parent_key": None,
+                "parent_name": None,
+            }],
+        )
+
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA user_version")
+        assert cur.fetchone()[0] == 3
+        cur.execute("PRAGMA foreign_key_list(persona_dimensions)")
+        fk_rows = cur.fetchall()
+        assert fk_rows and fk_rows[0][2] == "persona_snapshots"
+        cur.execute("SELECT COUNT(*) FROM persona_dimensions")
+        assert cur.fetchone()[0] == 2
         conn.close()
 
 

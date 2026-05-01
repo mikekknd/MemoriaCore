@@ -88,6 +88,9 @@ class SessionDTO(BaseModel):
 # ── Log ───────────────────────────────────────────────────
 class LogEntryDTO(BaseModel):
     log_id: Optional[str] = None
+    trace_seq: Optional[int] = None
+    logged_at: Optional[str] = None
+    llm_call_id: Optional[str] = None
     timestamp: str
     type: str
     category: Optional[str] = None
