@@ -14,56 +14,100 @@ h2 { font-size:15px; margin-bottom:12px; }
 .meta { color:var(--text2); font-size:13px; }
 .grid { display:grid; grid-template-columns:160px 1fr; gap:10px 14px; align-items:center; }
 label { color:var(--text2); font-size:13px; }
-input { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:8px 10px; color:var(--text); outline:none; }
-input:focus { border-color:var(--accent); }
+input, select { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:8px 10px; color:var(--text); outline:none; }
+input:focus, select:focus { border-color:var(--accent); }
+input:disabled, select:disabled { opacity:.6; cursor:not-allowed; }
+.hint { color:var(--text2); font-size:12px; line-height:1.5; margin-top:10px; }
 .actions { margin-top:14px; display:flex; gap:8px; justify-content:flex-end; }
 button { background:var(--accent); border:none; border-radius:6px; padding:8px 16px; color:#fff; cursor:pointer; }
+button:disabled { opacity:.6; cursor:not-allowed; }
 @media (max-width:640px) { .grid { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
 <div class="page">
-  <h1>個人設定</h1>
+  <h1 data-i18n="profile.title">個人設定</h1>
   <div class="meta" id="accountMeta"></div>
 
   <section class="section">
-    <h2>基本資料</h2>
+    <h2 data-i18n="profile.basic">基本資料</h2>
     <div class="grid">
-      <label for="nickname">暱稱</label>
+      <label for="nickname" data-i18n="profile.nickname">暱稱</label>
       <input id="nickname">
       <label for="telegramUid">Telegram UID</label>
       <input id="telegramUid">
       <label for="discordUid">Discord UID</label>
       <input id="discordUid">
     </div>
-    <div class="actions"><button onclick="saveProfile()">儲存</button></div>
+    <div class="actions"><button onclick="saveProfile()" data-i18n="profile.save">儲存</button></div>
   </section>
 
   <section class="section">
-    <h2>修改密碼</h2>
+    <h2 data-i18n="profile.locale_section">Interface Language</h2>
     <div class="grid">
-      <label for="oldPassword">舊密碼</label>
+      <label for="uiLocale" data-i18n="profile.ui_locale">Language</label>
+      <select id="uiLocale">
+        <option value="zh-TW" data-i18n="profile.ui_locale.zh-TW">繁體中文</option>
+        <option value="en-US" data-i18n="profile.ui_locale.en-US">English</option>
+      </select>
+    </div>
+    <div class="hint" id="localeHint" data-i18n="profile.ui_locale_hint_admin">This currently changes the system-wide UI language.</div>
+    <div class="actions"><button id="saveLocaleBtn" onclick="saveLocale()" data-i18n="profile.save_locale">Save language</button></div>
+  </section>
+
+  <section class="section">
+    <h2 data-i18n="profile.password_section">修改密碼</h2>
+    <div class="grid">
+      <label for="oldPassword" data-i18n="profile.old_password">舊密碼</label>
       <input id="oldPassword" type="password" autocomplete="current-password">
-      <label for="newPassword">新密碼</label>
+      <label for="newPassword" data-i18n="profile.new_password">新密碼</label>
       <input id="newPassword" type="password" autocomplete="new-password">
     </div>
-    <div class="actions"><button onclick="changePassword()">更新密碼</button></div>
+    <div class="actions"><button onclick="changePassword()" data-i18n="profile.update_password">更新密碼</button></div>
   </section>
 </div>
 <div class="toast-container" id="toastContainer"></div>
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js?v=i18n-ready-ui"></script>
 <script>
-document.addEventListener('DOMContentLoaded', loadMe);
+let currentUser = null;
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await MCI18N.init();
+  MCI18N.apply();
+  await loadMe();
+  await loadLocalePreference();
+});
 
 async function loadMe() {
   const r = await fetch(`${API}/auth/me`);
   if (!r.ok) return;
   const me = await r.json();
+  currentUser = me;
   storeCsrf(me.csrf_token);
   document.getElementById('accountMeta').textContent = `${me.username} / ${me.role}`;
   document.getElementById('nickname').value = me.nickname || '';
   document.getElementById('telegramUid').value = me.telegram_uid || '';
   document.getElementById('discordUid').value = me.discord_uid || '';
+  applyLocaleAccess();
+}
+
+function applyLocaleAccess() {
+  const canEditSystemLocale = currentUser?.role === 'admin';
+  document.getElementById('uiLocale').disabled = !canEditSystemLocale;
+  document.getElementById('saveLocaleBtn').disabled = !canEditSystemLocale;
+  document.getElementById('localeHint').textContent = MCI18N.t(
+    canEditSystemLocale ? 'profile.ui_locale_hint_admin' : 'profile.ui_locale_hint_user'
+  );
+}
+
+async function loadLocalePreference() {
+  try {
+    const r = await fetch(`${API}/system/ui-locale`);
+    if (!r.ok) return;
+    const data = await r.json();
+    document.getElementById('uiLocale').value = data.ui_locale || MCI18N.locale;
+  } catch {}
 }
 
 async function saveProfile() {
@@ -79,12 +123,12 @@ async function saveProfile() {
     });
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
-      throw new Error(apiErrorMessage(data, '儲存失敗'));
+      throw new Error(apiErrorMessage(data, MCI18N.t('profile.save_failed')));
     }
-    toast('已儲存', 'success');
+    toast(MCI18N.t('profile.saved'), 'success');
     loadMe();
   } catch (err) {
-    toast(err.message || '儲存失敗', 'error');
+    toast(err.message || MCI18N.t('profile.save_failed'), 'error');
   }
 }
 
@@ -100,13 +144,42 @@ async function changePassword() {
     });
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
-      throw new Error(apiErrorMessage(data, '修改失敗'));
+      throw new Error(apiErrorMessage(data, MCI18N.t('profile.change_failed')));
     }
     clearCsrf();
-    toast('密碼已更新，請重新登入', 'success');
+    toast(MCI18N.t('profile.password_updated'), 'success');
     setTimeout(() => window.top.location.href = '/static/login.html', 800);
   } catch (err) {
-    toast(err.message || '修改失敗', 'error');
+    toast(err.message || MCI18N.t('profile.change_failed'), 'error');
+  }
+}
+
+async function saveLocale() {
+  if (currentUser?.role !== 'admin') {
+    toast(MCI18N.t('profile.locale_admin_only'), 'error');
+    return;
+  }
+  const nextLocale = document.getElementById('uiLocale').value;
+  try {
+    const r = await fetch(`${API}/system/config`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ ui_locale: nextLocale }),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(apiErrorMessage(data, MCI18N.t('profile.locale_save_failed')));
+    }
+    toast(MCI18N.t('profile.locale_saved'), 'success');
+    setTimeout(() => {
+      if (window.top && window.top !== window) {
+        window.top.location.reload();
+      } else {
+        window.location.reload();
+      }
+    }, 500);
+  } catch (err) {
+    toast(err.message || MCI18N.t('profile.locale_save_failed'), 'error');
   }
 }
 </script>

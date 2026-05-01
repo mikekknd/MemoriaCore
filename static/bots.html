@@ -41,24 +41,24 @@ input[type="checkbox"] { width:auto; }
 <body>
 <div class="page">
   <div class="toolbar">
-    <h2>Bot 管理</h2>
+    <h2 data-i18n="bots.title">Bot 管理</h2>
     <span style="flex:1"></span>
-    <button onclick="loadAll()">reload</button>
+    <button onclick="loadAll()" data-i18n="bots.reload">reload</button>
   </div>
   <div class="content">
     <section class="section">
-      <h3>Bot 列表</h3>
+      <h3 data-i18n="bots.list">Bot 列表</h3>
       <div class="bot-list" id="botList"></div>
     </section>
     <section class="section">
-      <h3 id="formTitle">新增 Bot</h3>
+      <h3 id="formTitle" data-i18n="bots.new">新增 Bot</h3>
       <form class="form" onsubmit="saveBot(event)">
         <div>
           <label for="botId">Bot ID</label>
           <input id="botId" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_-]{3,64}">
         </div>
         <div>
-          <label for="platform">平台</label>
+          <label for="platform" data-i18n="bots.platform">平台</label>
           <select id="platform" onchange="updatePlatformHint()">
             <option value="telegram">telegram</option>
             <option value="discord">discord</option>
@@ -67,24 +67,24 @@ input[type="checkbox"] { width:auto; }
           <div class="meta" id="platformHint"></div>
         </div>
         <div>
-          <label for="displayName">顯示名稱</label>
+          <label for="displayName" data-i18n="bots.display_name">顯示名稱</label>
           <input id="displayName">
         </div>
         <div>
-          <label for="characterId">綁定角色</label>
+          <label for="characterId" data-i18n="bots.character">綁定角色</label>
           <select id="characterId"></select>
         </div>
         <div>
           <label for="token">Token</label>
           <div class="token-row">
             <input id="token" type="password">
-            <button class="field-button" id="toggleToken" type="button" onclick="toggleTokenVisible()">顯示</button>
+            <button class="field-button" id="toggleToken" type="button" onclick="toggleTokenVisible()" data-i18n="bots.show">顯示</button>
           </div>
         </div>
-        <label><input id="enabled" type="checkbox"> 啟用</label>
+        <label><input id="enabled" type="checkbox"> <span data-i18n="bots.enabled">啟用</span></label>
         <div class="form-actions">
-          <button type="button" onclick="newBot()">清空 / 新增模式</button>
-          <button class="primary" type="submit">save</button>
+          <button type="button" onclick="newBot()" data-i18n="bots.clear_new">清空 / 新增模式</button>
+          <button class="primary" type="submit" data-i18n="bots.save">save</button>
         </div>
         <div class="error-text" id="formError"></div>
       </form>
@@ -94,13 +94,18 @@ input[type="checkbox"] { width:auto; }
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js"></script>
 <script>
 let bots = [];
 let characters = [];
 let editingId = null;
 let tokenVisible = false;
 
-document.addEventListener('DOMContentLoaded', loadAll);
+document.addEventListener('DOMContentLoaded', async () => {
+  await MCI18N.init();
+  MCI18N.apply();
+  loadAll();
+});
 
 async function loadAll() {
   try {
@@ -110,7 +115,7 @@ async function loadAll() {
     renderCharacterOptions();
     renderBots();
   } catch {
-    toast('load failed', 'error');
+    toast(MCI18N.t('bots.load_failed'), 'error');
   }
 }
 
@@ -130,7 +135,7 @@ function labelForChar(id) {
 function renderBots() {
   const list = document.getElementById('botList');
   if (!bots.length) {
-    list.innerHTML = '<div class="meta">尚未建立任何 Bot。</div>';
+    list.innerHTML = `<div class="meta">${escapeHtml(MCI18N.t('bots.empty'))}</div>`;
     return;
   }
   list.innerHTML = bots.map(bot => {
@@ -146,10 +151,10 @@ function renderBots() {
       <div class="meta">id=${escapeHtml(bot.bot_id)}<br>character=${escapeHtml(bot.character_id)}<br>enabled=${bot.enabled}</div>
       ${st.last_error ? `<div class="error-text">${escapeHtml(st.last_error)}</div>` : ''}
       <div class="bot-actions">
-        <button class="${bot.enabled ? 'toggle-on' : 'toggle-off'}" onclick="toggleBotEnabled('${escapeHtml(bot.bot_id)}', ${bot.enabled ? 'false' : 'true'})">${bot.enabled ? 'disable' : 'enable'}</button>
-        <button onclick="editBot('${escapeHtml(bot.bot_id)}')">edit</button>
-        <button onclick="reloadBot('${escapeHtml(bot.bot_id)}')">reload</button>
-        <button onclick="deleteBot('${escapeHtml(bot.bot_id)}')">delete</button>
+        <button class="${bot.enabled ? 'toggle-on' : 'toggle-off'}" onclick="toggleBotEnabled('${escapeHtml(bot.bot_id)}', ${bot.enabled ? 'false' : 'true'})">${escapeHtml(MCI18N.t(bot.enabled ? 'bots.disable' : 'bots.enable'))}</button>
+        <button onclick="editBot('${escapeHtml(bot.bot_id)}')">${escapeHtml(MCI18N.t('bots.edit_action'))}</button>
+        <button onclick="reloadBot('${escapeHtml(bot.bot_id)}')">${escapeHtml(MCI18N.t('bots.reload_action'))}</button>
+        <button onclick="deleteBot('${escapeHtml(bot.bot_id)}')">${escapeHtml(MCI18N.t('bots.delete_action'))}</button>
       </div>
     </div>`;
   }).join('');
@@ -157,7 +162,7 @@ function renderBots() {
 
 function newBot() {
   editingId = null;
-  document.getElementById('formTitle').textContent = '新增 Bot';
+  document.getElementById('formTitle').textContent = MCI18N.t('bots.new');
   document.getElementById('botId').disabled = false;
   document.getElementById('botId').value = '';
   document.getElementById('platform').value = 'telegram';
@@ -174,7 +179,7 @@ function editBot(id) {
   const bot = bots.find(b => b.bot_id === id);
   if (!bot) return;
   editingId = id;
-  document.getElementById('formTitle').textContent = '編輯 Bot';
+  document.getElementById('formTitle').textContent = MCI18N.t('bots.edit');
   document.getElementById('botId').disabled = true;
   document.getElementById('botId').value = bot.bot_id || '';
   document.getElementById('platform').value = bot.platform || 'telegram';
@@ -190,7 +195,7 @@ function editBot(id) {
 function setTokenVisible(visible) {
   tokenVisible = visible;
   document.getElementById('token').type = visible ? 'text' : 'password';
-  document.getElementById('toggleToken').textContent = visible ? '隱藏' : '顯示';
+  document.getElementById('toggleToken').textContent = MCI18N.t(visible ? 'bots.hide' : 'bots.show');
 }
 
 function toggleTokenVisible() {
@@ -201,7 +206,7 @@ function updatePlatformHint() {
   const platform = document.getElementById('platform').value;
   const hint = document.getElementById('platformHint');
   hint.textContent = platform === 'discord'
-    ? 'Discord 需在 Developer Portal 開啟 Message Content Intent；伺服器內只回應提及或回覆。'
+    ? MCI18N.t('bots.discord_hint')
     : '';
 }
 
@@ -220,24 +225,24 @@ async function saveBot(event) {
   const r = await fetch(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
   if (!r.ok) {
     const data = await r.json().catch(() => null);
-    document.getElementById('formError').textContent = apiErrorMessage(data, 'save failed');
+    document.getElementById('formError').textContent = apiErrorMessage(data, MCI18N.t('bots.save_failed'));
     return;
   }
-  toast('saved', 'success');
+  toast(MCI18N.t('bots.saved'), 'success');
   newBot();
   await loadAll();
 }
 
 async function reloadBot(id) {
   const r = await fetch(`${API}/bots/${encodeURIComponent(id)}/reload`, {method:'POST'});
-  if (!r.ok) return toast('reload failed', 'error');
+  if (!r.ok) return toast(MCI18N.t('bots.reload_failed'), 'error');
   await loadAll();
-  toast('reloaded', 'success');
+  toast(MCI18N.t('bots.reloaded'), 'success');
 }
 
 async function toggleBotEnabled(id, enabled) {
   const bot = bots.find(b => b.bot_id === id);
-  if (!bot) return toast('bot not found', 'error');
+  if (!bot) return toast(MCI18N.t('bots.not_found'), 'error');
   const payload = {
     platform: bot.platform || 'telegram',
     display_name: bot.display_name || '',
@@ -252,23 +257,23 @@ async function toggleBotEnabled(id, enabled) {
   });
   if (!r.ok) {
     const data = await r.json().catch(() => null);
-    return toast(apiErrorMessage(data, enabled ? 'enable failed' : 'disable failed'), 'error');
+    return toast(apiErrorMessage(data, MCI18N.t(enabled ? 'bots.enable_failed' : 'bots.disable_failed')), 'error');
   }
   if (editingId === id) document.getElementById('enabled').checked = enabled;
   await loadAll();
-  toast(enabled ? 'enabled' : 'disabled', 'success');
+  toast(MCI18N.t(enabled ? 'bots.enabled_toast' : 'bots.disabled_toast'), 'success');
 }
 
 async function deleteBot(id) {
-  if (!confirm(`Delete bot ${id}?`)) return;
+  if (!confirm(MCI18N.t('bots.delete_confirm', {id}))) return;
   const r = await fetch(`${API}/bots/${encodeURIComponent(id)}`, {method:'DELETE'});
   if (!r.ok) {
     const data = await r.json().catch(() => null);
-    return toast(apiErrorMessage(data, 'delete failed'), 'error');
+    return toast(apiErrorMessage(data, MCI18N.t('bots.delete_failed')), 'error');
   }
   if (editingId === id) newBot();
   await loadAll();
-  toast('deleted', 'success');
+  toast(MCI18N.t('bots.deleted'), 'success');
 }
 </script>
 </body>

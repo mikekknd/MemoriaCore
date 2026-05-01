@@ -69,7 +69,7 @@ body { height:100vh; overflow:hidden; }
       <button class="tab-btn" data-tab="routing" onclick="switchTab(this)" data-i18n="dashboard.tab.routing">routing</button>
       <button class="tab-btn" data-tab="prompts" onclick="switchTab(this)" data-i18n="dashboard.tab.prompts">Prompts</button>
       <button class="tab-btn" data-tab="bots" onclick="switchTab(this)" data-i18n="dashboard.tab.bots">Bots</button>
-      <button class="tab-btn" data-tab="persona" onclick="switchTab(this)" data-i18n="dashboard.tab.persona">人格演化</button>
+      <button class="tab-btn" data-tab="persona" onclick="switchTab(this)" data-i18n="dashboard.tab.persona">Persona</button>
       <button class="tab-btn" data-tab="users" onclick="switchTab(this)" data-i18n="dashboard.tab.users">Users</button>
     </div>
     <div class="tab-content">
@@ -83,7 +83,7 @@ body { height:100vh; overflow:hidden; }
         </div>
         <div class="viewer-frames" id="viewerFrames">
           <iframe id="logFrame" src="/static/log_viewer.html?api=true" title="Log Viewer" data-i18n-title="dashboard.iframe.log"></iframe>
-          <iframe id="dbFrame" src="/static/db_viewer.html" title="DB Viewer" data-i18n-title="dashboard.iframe.db"></iframe>
+          <iframe id="dbFrame" src="/static/db_viewer.html?v=i18n-ready-ui" title="DB Viewer" data-i18n-title="dashboard.iframe.db"></iframe>
         </div>
       </div>
 
@@ -92,7 +92,7 @@ body { height:100vh; overflow:hidden; }
       </div>
 
       <div class="tab-pane" data-pane="prompts">
-        <iframe src="/static/prompts.html" title="Prompt Management" data-i18n-title="dashboard.iframe.prompts"></iframe>
+        <iframe src="/static/prompts.html?v=i18n-ready-ui" title="Prompt Management" data-i18n-title="dashboard.iframe.prompts"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="bots">
@@ -100,7 +100,7 @@ body { height:100vh; overflow:hidden; }
       </div>
 
       <div class="tab-pane" data-pane="persona">
-        <iframe id="personaTreeFrame" src="/static/persona_tree.html" title="Persona Evolution" data-i18n-title="dashboard.iframe.persona"></iframe>
+        <iframe id="personaTreeFrame" src="/static/persona_tree.html?v=i18n-ready-ui" title="Persona Evolution" data-i18n-title="dashboard.iframe.persona"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="users">
@@ -108,14 +108,14 @@ body { height:100vh; overflow:hidden; }
       </div>
 
       <div class="tab-pane" data-pane="profile">
-        <iframe id="profileFrame" src="/static/user_profile.html" title="User Profile" data-i18n-title="dashboard.iframe.profile"></iframe>
+        <iframe id="profileFrame" src="/static/user_profile.html?v=i18n-ready-ui" title="User Profile" data-i18n-title="dashboard.iframe.profile"></iframe>
       </div>
     </div>
   </div>
 </div>
 
 <script src="/static/shared/common.js"></script>
-<script src="/static/shared/i18n.js"></script>
+<script src="/static/shared/i18n.js?v=i18n-ready-ui"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   initDashboard();

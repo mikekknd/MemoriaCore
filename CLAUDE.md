@@ -10,36 +10,15 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
 子專案 **PersonaProbe**（`PersonaProbe/`）— 人格採集與分析工具，Streamlit UI (port 8502) + FastAPI API server (port 8089)。
 
 ## Architecture
-- `core/` — 記憶、LLM 路由、人格、儲存引擎
-  - `core/persona_evolution/` — 人格演化系統（Path D 增量 trait 架構）；詳見 `docs/persona-tree-architecture.md`
-  - `core/chat_orchestrator/` — 雙層 Agent 對話編排（package）
-    - `dataclasses.py` — `RouterResult` / `ToolContext` / `PersonaResult`
-    - `router_agent.py` — Module A：意圖路由（含 `DIRECT_CHAT_SCHEMA` dummy tool）
-    - `middleware.py`   — Module B：工具並行執行 + 過渡語音推播
-    - `persona_agent.py`— Module C：角色渲染（結構化 JSON 回覆）
-    - `coordinator.py`  — `run_dual_layer_orchestration` 頂層協調（兩條分支平行）
-    - `__init__.py`     — package 識別檔，docstring 內有直接 import 範例
-  - `core/deployment_config.py` — 三維度隔離入口（`resolve_context`）；新增 channel 需在此登記
-  - `core/storage_manager.py` — 單檔但有 SECTION 標記分區（檔案 I/O / 模型 DB / Memory Blocks / Core Memory / Profile / Topic Cache / Conversation / 訊息統計）
-  - `core/core_memory.py` — 同上（Embedding 工具 / 查詢擴展 / Memory Block 寫入 / 叢集融合 / 三軌檢索 / Profile）
-- `api/` — FastAPI routers，singleton DI 由 `api/dependencies.py` 管理
-  - `api/routers/chat/` — WebSocket / REST 共用實作（package）
-    - `timer.py`         — `StepTimer` 計時工具
-    - `ws_manager.py`    — `ConnectionManager` WebSocket 連線池 + `ws_manager` singleton
-    - `pipeline.py`      — 記憶管線同步/背景執行
-    - `orchestration.py` — `_run_chat_orchestration` 單層編排與雙層編排選擇器
-  - `api/routers/chat_ws.py`  — WebSocket 端點（slim，re-export 內部相容）
-  - `api/routers/chat_rest.py`— REST `/chat/sync` 與 SSE `/chat/stream-sync` 端點
+頂層目錄（內部 package 切分、SECTION 分區、檔案職責請查 `docs/codebase-structure.md`；高層架構與請求流程查 `docs/架構說明.md`）：
+
+- `core/` — 記憶、LLM 路由（`llm_gateway.py`）、人格、儲存引擎；singleton DI 由 `api/dependencies.py` 管理
+- `api/` — FastAPI routers；Pydantic models 統一放 `api/models/`
 - `tools/` — LLM tool 實作
 - `ui/` — Streamlit 頁面；透過 API 與後端溝通，不直接 import core
+- `static/` — Dashboard HTML / 前端 JS / i18n locales
 - `tests/` — Pytest 測試套件
-- `PersonaProbe/` — 獨立子專案，詳見 `PersonaProbe/CLAUDE.md`
-  - `probe_engine.py` — 純 Python 核心（禁止 import streamlit）
-  - `app.py` — Streamlit UI；`server.py` — FastAPI (port 8089)
-  - `llm_client.py` — 自有 LLM 抽象層（`LLMClient(config).chat()`，與主專案 `llm_gateway.py` 各自獨立）
-
-LLM routing (`core/llm_gateway.py`) 分派 9 種 task type 到可設定 provider（Ollama/OpenAI/OpenRouter/llama.cpp），設定存於 `user_prefs.json`。
-若任務帶 `response_format` 但模型回傳純文字（無 `{`），`LLMRouter.generate()` 會自動以警告 prompt + 降溫重試一次（針對 cloud-proxied 模型忽略 schema 的問題）。
+- `PersonaProbe/` — 獨立子專案（人格採集與分析工具），詳見 `PersonaProbe/CLAUDE.md`
 
 ## Constraints
 - Python 3.12，NumPy < 2.0.0
@@ -87,10 +66,7 @@ _recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
 ```
 
 **模組拆分 + SECTION 標記原則**
-為了降低修檔時的 context 消耗，採以下策略：
-- 高頻修改的大檔 → 拆成 package（如 `chat/`、`chat_orchestrator/`），並在 `__init__.py` re-export 維持向後相容。
-- 穩定但仍大的 class 介面檔（如 `storage_manager.py`、`core_memory.py`）→ 不拆檔，但用 `# ════…` 加 `# SECTION: …` 分區，方便 Grep 定位。
-新增方法時請放在語意對應的 SECTION 內；新增 SECTION 請維持與現有相同的視覺樣式。
+高頻修改的大檔拆成 package，穩定大檔用 `# SECTION: …` 分區。詳細策略與各檔 SECTION 對照表查 `docs/codebase-structure.md`。
 
 **記憶隔離三維度（高頻踩坑）**
 任何涉及多使用者、公私可見性、雙 face 人格演化問題，應先查 `docs/memory-isolation-architecture.md`。
@@ -117,8 +93,9 @@ _recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
 - Routing config 的任務清單（`static/shared/routing_config.js` 的 `TASK_KEYS` 與 `static/locales/*.json` 的 `routing.tasks.*` 必須同步）
 - `RetrievalContextDTO` 新增欄位
 
-**i18n-ready 參考文件**
-若要修改或延伸多語系 / i18n 相關工程，先查 `docs/i18n-ready-backlog.md`。該文件是後續 i18n backlog、已接線範圍、維護提醒的單一參考來源；`CLAUDE.md` 不重複維護詳細清單，避免兩份內容漂移。
+**i18n / UI 文字維護**
+凡是任務會修改任何 UI 可見文字、文字來源、placeholder、title、toast、confirm、badge、table column、API metadata label/description、Streamlit 文案或 dashboard iframe 文案，先查 `docs/i18n-maintenance-guide.md`。
+若要接續多語系 / i18n 工程進度與待辦，再查 `docs/i18n-ready-backlog.md`。`CLAUDE.md` 不重複維護詳細清單，避免內容漂移。
 
 **Tests**
 使用 `tmp_path` 隔離 SQLite DB，禁止讀寫根目錄 `.db` 檔；不 mock `StorageManager` async lock。

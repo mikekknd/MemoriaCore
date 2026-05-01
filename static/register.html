@@ -20,22 +20,28 @@ button { width:100%; margin-top:18px; background:var(--accent); border:none; bor
 </head>
 <body>
 <main class="auth-panel">
-  <h1>建立帳號</h1>
-  <div class="hint">帳號需為 3-32 字元，只能包含英數、底線與連字號；密碼至少 6 字元。</div>
+  <h1 data-i18n="register.title">建立帳號</h1>
+  <div class="hint" data-i18n="register.hint">帳號需為 3-32 字元，只能包含英數、底線與連字號；密碼至少 6 字元。</div>
   <form onsubmit="register(event)">
-    <label for="username">帳號</label>
+    <label for="username" data-i18n="auth.username">帳號</label>
     <input id="username" autocomplete="username" required>
-    <label for="password">密碼</label>
+    <label for="password" data-i18n="auth.password">密碼</label>
     <input id="password" type="password" autocomplete="new-password" required>
-    <label for="passwordConfirm">確認密碼</label>
+    <label for="passwordConfirm" data-i18n="register.confirm_password">確認密碼</label>
     <input id="passwordConfirm" type="password" autocomplete="new-password" required>
-    <button type="submit" id="submitBtn">註冊</button>
+    <button type="submit" id="submitBtn" data-i18n="auth.register">註冊</button>
   </form>
-  <div class="link-row">已有帳號？<a href="/static/login.html">登入</a></div>
+  <div class="link-row" data-i18n-html="register.has_account_html">已有帳號？<a href="/static/login.html">登入</a></div>
 </main>
 <div class="toast-container" id="toastContainer"></div>
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js"></script>
 <script>
+document.addEventListener('DOMContentLoaded', async () => {
+  await MCI18N.init();
+  MCI18N.apply();
+});
+
 async function register(e) {
   e.preventDefault();
   const btn = document.getElementById('submitBtn');
@@ -51,11 +57,11 @@ async function register(e) {
       }),
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(apiErrorMessage(data, '註冊失敗'));
+    if (!r.ok) throw new Error(apiErrorMessage(data, MCI18N.t('auth.register_failed')));
     storeCsrf(data.csrf_token);
     window.location.href = '/static/app.html';
   } catch (err) {
-    toast(err.message || '註冊失敗', 'error');
+    toast(err.message || MCI18N.t('auth.register_failed'), 'error');
   } finally {
     btn.disabled = false;
   }

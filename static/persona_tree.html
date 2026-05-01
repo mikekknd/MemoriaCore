@@ -76,28 +76,28 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
 <body>
 
 <div class="header">
-  <label>角色：</label>
+  <label data-i18n="persona_tree.character">角色：</label>
   <select id="charSelect" onchange="onCharacterChange()"></select>
   <div class="divider admin-control"></div>
-  <label class="admin-control">手動：</label>
-  <input id="charManual" class="admin-control" type="text" placeholder="例：catgirl-fragment" spellcheck="false">
-  <button class="admin-control" onclick="loadManualCharacter()" title="載入指定 character_id">載入</button>
+  <label class="admin-control" data-i18n="persona_tree.manual">手動：</label>
+  <input id="charManual" class="admin-control" type="text" placeholder="例：catgirl-fragment" data-i18n-placeholder="persona_tree.manual_placeholder" spellcheck="false">
+  <button class="admin-control" onclick="loadManualCharacter()" title="載入指定 character_id" data-i18n="persona_tree.load" data-i18n-title="persona_tree.load_title">載入</button>
   <div class="divider face-control"></div>
-  <label class="face-control">Face：</label>
+  <label class="face-control" data-i18n="persona_tree.face">Face:</label>
   <select id="personaFace" class="face-control" onchange="onPersonaFaceChange()">
-    <option value="public">public</option>
-    <option value="private">private</option>
+    <option value="public" data-i18n="persona_tree.face_public">public</option>
+    <option value="private" data-i18n="persona_tree.face_private">private</option>
   </select>
-  <button onclick="refreshNow()" title="立即重新整理">⟳</button>
+  <button onclick="refreshNow()" title="立即重新整理" data-i18n-title="persona_tree.refresh_title">⟳</button>
   <div class="divider"></div>
-  <label>版本：</label>
-  <input id="versionSlider" type="range" min="1" max="1" value="1" step="1" disabled title="拖拉切換版本">
+  <label data-i18n="persona_tree.version">版本：</label>
+  <input id="versionSlider" type="range" min="1" max="1" value="1" step="1" disabled title="拖拉切換版本" data-i18n-title="persona_tree.version_slider_title">
   <span id="versionLabel" class="version-label">v-/-</span>
-  <button onclick="jumpLatest()" title="跳到最新版">⇥</button>
+  <button onclick="jumpLatest()" title="跳到最新版" data-i18n-title="persona_tree.latest_title">⇥</button>
   <div class="divider"></div>
-  <button id="playBtn" onclick="togglePlay()" title="自動播放版本">▶</button>
-  <button id="loopBtn" onclick="toggleLoop()" title="循環播放">↺</button>
-  <select id="playSpeed" title="每版停留時間">
+  <button id="playBtn" onclick="togglePlay()" title="自動播放版本" data-i18n-title="persona_tree.play_title">▶</button>
+  <button id="loopBtn" onclick="toggleLoop()" title="循環播放" data-i18n-title="persona_tree.loop_title">↺</button>
+  <select id="playSpeed" title="每版停留時間" data-i18n-title="persona_tree.speed_title">
     <option value="500">0.5s</option>
     <option value="1000" selected>1s</option>
     <option value="2000">2s</option>
@@ -113,22 +113,24 @@ body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var
     <svg id="forceSvg"></svg>
   </div>
   <div class="detail-panel">
-    <h3>版本摘要</h3>
-    <div id="summary" class="summary empty">尚未載入資料</div>
-    <h3>節點詳情</h3>
-    <div id="nodeDetail" class="node-detail"><span class="empty">點擊任一節點查看</span></div>
+    <h3 data-i18n="persona_tree.summary_title">版本摘要</h3>
+    <div id="summary" class="summary empty" data-i18n="persona_tree.summary_empty">尚未載入資料</div>
+    <h3 data-i18n="persona_tree.node_title">節點詳情</h3>
+    <div id="nodeDetail" class="node-detail"><span class="empty" data-i18n="persona_tree.node_empty">點擊任一節點查看</span></div>
   </div>
 </div>
 
+<script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js?v=i18n-ready-ui"></script>
 <script>
 // =====================================================================
 //  Constants
 // =====================================================================
-const API = '/api/v1';
+const API_BASE = '/api/v1';
 const params = new URLSearchParams(location.search);
 const PUBLIC_MODE = params.get('public') === 'true';
-const CHARACTER_API = PUBLIC_MODE ? `${API}/personality-public/characters` : `${API}/character`;
-const PERSONALITY_API = PUBLIC_MODE ? `${API}/personality-public` : `${API}/system/personality`;
+const CHARACTER_API = PUBLIC_MODE ? `${API_BASE}/personality-public/characters` : `${API_BASE}/character`;
+const PERSONALITY_API = PUBLIC_MODE ? `${API_BASE}/personality-public` : `${API_BASE}/system/personality`;
 const CHARACTER_STORAGE_KEY = PUBLIC_MODE ? 'persona_tree_public_character' : 'persona_tree_character';
 const FACE_STORAGE_KEY = 'persona_tree_face';
 const POLL_INTERVAL_MS = 5 * 60 * 1000;  // 5 分鐘
@@ -246,7 +248,9 @@ const linkIndex = new Map();  // "src-tgt" -> link object
 // =====================================================================
 //  Entry
 // =====================================================================
-document.addEventListener('DOMContentLoaded', async () => {
+async function initPersonaTreePage() {
+  await MCI18N.init();
+  MCI18N.apply();
   resizeSvg();
   window.addEventListener('resize', resizeSvg);
   if (PUBLIC_MODE) {
@@ -275,7 +279,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     await Promise.all([loadVersionList(), fetchAndUpdate()]);
     pollTimer = setInterval(onPollTick, POLL_INTERVAL_MS);
   }
-});
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initPersonaTreePage);
+} else {
+  initPersonaTreePage();
+}
 
 async function onPollTick() {
   if (!currentCharacterId) return;
@@ -309,8 +318,8 @@ async function loadCharacterList() {
     const sel = document.getElementById('charSelect');
     sel.innerHTML = '';
     if (!chars.length) {
-      sel.innerHTML = '<option value="">（尚無角色）</option>';
-      setStatus('請先建立角色', 'warn');
+      sel.innerHTML = `<option value="">${escapeHtml(MCI18N.t('persona_tree.no_characters'))}</option>`;
+      setStatus(MCI18N.t('persona_tree.create_character_first'), 'warn');
       return;
     }
     chars.forEach(c => {
@@ -325,7 +334,7 @@ async function loadCharacterList() {
     sel.value = currentCharacterId;
   } catch (e) {
     console.error('Failed to load character list:', e);
-    setStatus('無法載入角色清單', 'error');
+    setStatus(MCI18N.t('persona_tree.load_characters_failed'), 'error');
   }
 }
 
@@ -337,7 +346,7 @@ async function onCharacterChange() {
 async function loadManualCharacter() {
   const val = document.getElementById('charManual').value.trim();
   if (!val) {
-    setStatus('請輸入 character_id', 'warn');
+    setStatus(MCI18N.t('persona_tree.enter_character_id'), 'warn');
     return;
   }
   const sel = document.getElementById('charSelect');
@@ -352,7 +361,7 @@ async function loadManualCharacter() {
       sel.appendChild(custom);
     }
     custom.value = val;
-    custom.textContent = `（自訂）${val}`;
+    custom.textContent = MCI18N.t('persona_tree.custom_option', {id: val});
     sel.value = val;
   }
   await switchCharacter(val);
@@ -375,7 +384,7 @@ function toggleLoop() {
 }
 
 function startPlayback() {
-  if (!allVersions.length) { setStatus('尚無版本可播放', 'warn'); return; }
+  if (!allVersions.length) { setStatus(MCI18N.t('persona_tree.no_versions'), 'warn'); return; }
   isPlaying = true;
   viewMode = 'pinned';
   document.getElementById('playBtn').textContent = '⏸';
@@ -422,7 +431,7 @@ async function switchCharacter(id) {
   nodeIndex.clear();
   linkIndex.clear();
   render();
-  document.getElementById('nodeDetail').innerHTML = '<span class="empty">點擊任一節點查看</span>';
+  document.getElementById('nodeDetail').innerHTML = `<span class="empty">${escapeHtml(MCI18N.t('persona_tree.node_empty'))}</span>`;
   if (currentCharacterId) await Promise.all([loadVersionList(), fetchAndUpdate()]);
 }
 
@@ -442,7 +451,7 @@ async function onPersonaFaceChange() {
   nodeIndex.clear();
   linkIndex.clear();
   render();
-  document.getElementById('nodeDetail').innerHTML = '<span class="empty">點擊任一節點查看</span>';
+  document.getElementById('nodeDetail').innerHTML = `<span class="empty">${escapeHtml(MCI18N.t('persona_tree.node_empty'))}</span>`;
   if (currentCharacterId) await Promise.all([loadVersionList(), fetchAndUpdate()]);
 }
 
@@ -460,8 +469,8 @@ async function fetchAndUpdate() {
   try {
     const r = await fetch(`${PERSONALITY_API}/snapshots/latest/tree?${personaQuery()}`);
     if (r.status === 404) {
-      setStatus(`此角色尚無 ${currentPersonaFace} snapshot`, 'warn');
-      document.getElementById('summary').textContent = '（尚無演化資料）';
+      setStatus(MCI18N.t('persona_tree.no_snapshot', {face: currentPersonaFace}), 'warn');
+      document.getElementById('summary').textContent = MCI18N.t('persona_tree.no_evolution');
       nodeIndex.clear();
       linkIndex.clear();
       render();
@@ -470,14 +479,14 @@ async function fetchAndUpdate() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const tree = await r.json();
     if (tree.version === currentVersion) {
-      setStatus(`已是最新版 v${tree.version}`, 'ok');
+      setStatus(MCI18N.t('persona_tree.latest', {version: tree.version}), 'ok');
       return;
     }
     applyTree(tree);
-    setStatus(`已更新至 v${tree.version}`, 'ok');
+    setStatus(MCI18N.t('persona_tree.updated', {version: tree.version}), 'ok');
   } catch (e) {
     console.error('Failed to fetch tree:', e);
-    setStatus('連線失敗', 'error');
+    setStatus(MCI18N.t('persona_tree.connection_failed'), 'error');
   }
 }
 
@@ -485,7 +494,7 @@ async function fetchAndUpdate() {
 function applyTree(tree) {
   currentVersion = tree.version;
   document.getElementById('versionInfo').textContent = `v${tree.version} · ${tree.timestamp}`;
-  document.getElementById('summary').textContent = tree.summary || '（無摘要）';
+  document.getElementById('summary').textContent = tree.summary || MCI18N.t('persona_tree.no_summary');
   document.getElementById('summary').classList.remove('empty');
 
   const newIds = new Set(tree.nodes.map(n => n.id));
@@ -697,10 +706,12 @@ function selectNode(d) {
     .style('fill', n => depthColor(n))
     .attr('filter', n => n.is_active !== false ? `url(#glow-${n.confidence_label || 'none'})` : null);
   const detail = document.getElementById('nodeDetail');
-  const stateTag = d.is_active === false ? ' · <span style="color:var(--warn)">休眠中</span>' : '';
+  const stateTag = d.is_active === false
+    ? ` · <span style="color:var(--warn)">${escapeHtml(MCI18N.t('persona_tree.inactive'))}</span>`
+    : '';
   detail.innerHTML = `
     <div class="name">${escapeHtml(d.name)}</div>
-    <div class="meta">key: ${escapeHtml((d.dimension_key || '').slice(0, 8))}… · confidence: ${d.confidence.toFixed(1)} (${escapeHtml(d.confidence_label || '-')})${d.parent_name ? ' · parent: ' + escapeHtml(d.parent_name) : ''}${stateTag}</div>
+    <div class="meta">${escapeHtml(MCI18N.t('persona_tree.meta_key'))}: ${escapeHtml((d.dimension_key || '').slice(0, 8))}… · ${escapeHtml(MCI18N.t('persona_tree.meta_confidence'))}: ${d.confidence.toFixed(1)} (${escapeHtml(d.confidence_label || '-')})${d.parent_name ? ` · ${escapeHtml(MCI18N.t('persona_tree.meta_parent'))}: ` + escapeHtml(d.parent_name) : ''}${stateTag}</div>
     <div class="desc">${escapeHtml(d.description || '')}</div>
   `;
 }
@@ -757,14 +768,14 @@ async function fetchSpecificVersion(v) {
   if (!currentCharacterId) return;
   try {
     const r = await fetch(`${PERSONALITY_API}/snapshots/${v}/tree?${personaQuery()}`);
-    if (!r.ok) { setStatus(`v${v} 讀取失敗`, 'error'); return; }
+    if (!r.ok) { setStatus(MCI18N.t('persona_tree.read_version_failed', {version: v}), 'error'); return; }
     const tree = await r.json();
     applyTree(tree);
-    const tag = viewMode === 'pinned' ? '（固定檢視）' : '';
-    setStatus(`已切換至 v${tree.version}${tag}`, 'ok');
+    const tag = viewMode === 'pinned' ? MCI18N.t('persona_tree.pinned_tag') : '';
+    setStatus(MCI18N.t('persona_tree.switched_version', {version: tree.version, tag}), 'ok');
   } catch (e) {
     console.error('fetchSpecificVersion:', e);
-    setStatus('讀取失敗', 'error');
+    setStatus(MCI18N.t('persona_tree.read_failed'), 'error');
   }
 }
 </script>

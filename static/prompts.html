@@ -49,10 +49,10 @@ body { height:100vh; overflow:hidden; }
 <div class="page">
   <div class="prompts-container">
     <div class="prompts-top-bar">
-      <h2>Prompt Management</h2>
+      <h2 data-i18n="prompts.title">Prompt Management</h2>
       <span class="count" id="promptCount"></span>
       <span style="flex:1"></span>
-      <button class="reset-all" onclick="resetAllPrompts()">reset all</button>
+      <button class="reset-all" onclick="resetAllPrompts()" data-i18n="prompts.reset_all">reset all</button>
     </div>
     <div id="promptList"></div>
   </div>
@@ -61,7 +61,7 @@ body { height:100vh; overflow:hidden; }
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
     <div class="modal-header">
-      <h3 id="modalTitle">Default Value</h3>
+      <h3 id="modalTitle" data-i18n="prompts.default_value">Default Value</h3>
       <button class="modal-close" onclick="closeModal()">&times;</button>
     </div>
     <div class="modal-body" id="modalBody"></div>
@@ -70,12 +70,28 @@ body { height:100vh; overflow:hidden; }
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js?v=i18n-ready-ui"></script>
 <script>
 let allPrompts = [];
 
-document.addEventListener('DOMContentLoaded', () => {
+async function initPage() {
+  await MCI18N.init();
+  MCI18N.apply();
   loadPrompts();
-});
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initPage);
+} else {
+  initPage();
+}
+
+function promptLabel(prompt) {
+  return MCI18N.t(`prompts.meta.${prompt.key}.label`, {}, prompt.label || prompt.key);
+}
+
+function promptDescription(prompt) {
+  return MCI18N.t(`prompts.meta.${prompt.key}.description`, {}, prompt.description || '');
+}
 
 async function loadPrompts() {
   try {
@@ -83,36 +99,36 @@ async function loadPrompts() {
     allPrompts = await r.json();
     renderPrompts();
   } catch {
-    toast('Failed to load prompts', 'error');
+    toast(MCI18N.t('prompts.load_failed'), 'error');
   }
 }
 
 function renderPrompts() {
-  document.getElementById('promptCount').textContent = `${allPrompts.length} prompts`;
+  document.getElementById('promptCount').textContent = MCI18N.t('prompts.count', {count: allPrompts.length});
   const container = document.getElementById('promptList');
   let html = '';
   allPrompts.forEach(p => {
     const statusCls = p.has_user_override ? 'custom' : 'default';
-    const statusText = p.has_user_override ? 'custom' : 'default';
+    const statusText = MCI18N.t(p.has_user_override ? 'prompts.custom' : 'prompts.default');
     const phTags = (p.placeholders || []).map(ph => `<span class="prompt-ph">${escapeHtml(ph)}</span>`).join(' ');
 
     html += `<div class="prompt-card" data-key="${escapeHtml(p.key)}">
       <div class="prompt-header" onclick="this.parentElement.classList.toggle('expanded')">
         <span class="prompt-chevron">&#9654;</span>
-        <span class="prompt-label">${escapeHtml(p.label || p.key)}</span>
+        <span class="prompt-label">${escapeHtml(promptLabel(p))}</span>
         <span class="prompt-status ${statusCls}">${statusText}</span>
       </div>
       <div class="prompt-body">
         <div class="prompt-meta">
-          ${p.description ? `<div>${escapeHtml(p.description)}</div>` : ''}
-          ${p.used_by ? `<div><strong>used by:</strong> ${escapeHtml(p.used_by)}</div>` : ''}
-          ${phTags ? `<div><strong>placeholders:</strong> ${phTags}</div>` : ''}
+          ${promptDescription(p) ? `<div>${escapeHtml(promptDescription(p))}</div>` : ''}
+          ${p.used_by ? `<div><strong>${escapeHtml(MCI18N.t('prompts.used_by'))}</strong> ${escapeHtml(p.used_by)}</div>` : ''}
+          ${phTags ? `<div><strong>${escapeHtml(MCI18N.t('prompts.placeholders'))}</strong> ${phTags}</div>` : ''}
         </div>
         <textarea class="prompt-textarea" data-prompt-key="${escapeHtml(p.key)}" rows="8">${escapeHtml(p.current_template || '')}</textarea>
         <div class="prompt-actions">
-          <button class="btn-save" onclick="savePrompt('${escapeHtml(p.key)}')">save</button>
-          <button class="btn-reset" onclick="resetPrompt('${escapeHtml(p.key)}')">reset</button>
-          ${p.has_user_override ? `<button class="btn-default" onclick="showDefault('${escapeHtml(p.key)}')">view default</button>` : ''}
+          <button class="btn-save" onclick="savePrompt('${escapeHtml(p.key)}')">${escapeHtml(MCI18N.t('prompts.save'))}</button>
+          <button class="btn-reset" onclick="resetPrompt('${escapeHtml(p.key)}')">${escapeHtml(MCI18N.t('prompts.reset'))}</button>
+          ${p.has_user_override ? `<button class="btn-default" onclick="showDefault('${escapeHtml(p.key)}')">${escapeHtml(MCI18N.t('prompts.view_default'))}</button>` : ''}
         </div>
       </div>
     </div>`;
@@ -127,7 +143,7 @@ async function savePrompt(key) {
   const meta = allPrompts.find(p => p.key === key);
   if (meta && meta.placeholders) {
     const missing = meta.placeholders.filter(ph => !template.includes(ph));
-    if (missing.length && !confirm(`Warning: missing placeholders: ${missing.join(', ')}\nSave anyway?`)) return;
+    if (missing.length && !confirm(MCI18N.t('prompts.missing_confirm', {placeholders: missing.join(', ')}))) return;
   }
 
   try {
@@ -137,41 +153,41 @@ async function savePrompt(key) {
       body: JSON.stringify({template}),
     });
     if (!r.ok) throw 0;
-    toast(`Prompt "${key}" saved`, 'success');
+    toast(MCI18N.t('prompts.saved', {key}), 'success');
     loadPrompts();
   } catch {
-    toast('Failed to save prompt', 'error');
+    toast(MCI18N.t('prompts.save_failed'), 'error');
   }
 }
 
 async function resetPrompt(key) {
-  if (!confirm(`Reset "${key}" to default?`)) return;
+  if (!confirm(MCI18N.t('prompts.reset_confirm', {key}))) return;
   try {
     const r = await fetch(`${API}/prompts/${key}/reset`, {method:'POST'});
     if (!r.ok) throw 0;
-    toast(`Prompt "${key}" reset`, 'info');
+    toast(MCI18N.t('prompts.reset_done', {key}), 'info');
     loadPrompts();
   } catch {
-    toast('Failed to reset prompt', 'error');
+    toast(MCI18N.t('prompts.reset_failed'), 'error');
   }
 }
 
 async function resetAllPrompts() {
-  if (!confirm('Reset ALL prompts to defaults? This cannot be undone.')) return;
+  if (!confirm(MCI18N.t('prompts.reset_all_confirm'))) return;
   try {
     const r = await fetch(`${API}/prompts/reset-all`, {method:'POST'});
     if (!r.ok) throw 0;
-    toast('All prompts reset', 'info');
+    toast(MCI18N.t('prompts.reset_all_done'), 'info');
     loadPrompts();
   } catch {
-    toast('Failed to reset all prompts', 'error');
+    toast(MCI18N.t('prompts.reset_all_failed'), 'error');
   }
 }
 
 function showDefault(key) {
   const meta = allPrompts.find(p => p.key === key);
   if (!meta) return;
-  document.getElementById('modalTitle').textContent = `Default: ${meta.label || key}`;
+  document.getElementById('modalTitle').textContent = MCI18N.t('prompts.default_title', {label: promptLabel(meta)});
   document.getElementById('modalBody').innerHTML = `<pre>${escapeHtml(meta.default_template || '')}</pre>`;
   document.getElementById('modalOverlay').classList.add('open');
 }

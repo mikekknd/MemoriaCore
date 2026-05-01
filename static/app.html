@@ -35,7 +35,7 @@ body { height:100vh; overflow:hidden; }
     <div class="brand">MemoriaCore</div>
     <div class="nav">
       <button class="active" data-pane="chat" onclick="switchPane(this)" data-i18n="app.nav.chat">Chat</button>
-      <button data-pane="persona" onclick="switchPane(this)" data-i18n="app.nav.persona">人格演化</button>
+      <button data-pane="persona" onclick="switchPane(this)" data-i18n="app.nav.persona">Persona</button>
       <button data-pane="profile" onclick="switchPane(this)" data-i18n="app.nav.profile">Profile</button>
     </div>
     <div class="actions">
@@ -52,7 +52,7 @@ body { height:100vh; overflow:hidden; }
       <iframe src="/static/persona_tree.html?public=true" title="Public Persona Evolution" data-i18n-title="app.iframe.persona_public"></iframe>
     </section>
     <section class="pane" data-pane="profile">
-      <iframe src="/static/user_profile.html" title="User Profile" data-i18n-title="app.iframe.profile"></iframe>
+      <iframe src="/static/user_profile.html?v=i18n-ready-ui" title="User Profile" data-i18n-title="app.iframe.profile"></iframe>
     </section>
   </main>
 </div>

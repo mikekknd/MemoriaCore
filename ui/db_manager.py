@@ -4,7 +4,15 @@ import json
 
 import streamlit as st
 import pandas as pd
+from core.i18n import DEFAULT_LOCALE, normalize_locale, t
 from ui import api_client as requests
+
+
+def _locale(user_prefs: dict | None = None) -> str:
+    try:
+        return normalize_locale((user_prefs or {}).get("ui_locale"))
+    except ValueError:
+        return DEFAULT_LOCALE
 
 
 def _api_get_json(api_base: str, path: str, params: dict | None = None, timeout: int = 15):
@@ -56,9 +64,9 @@ def _json_text(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _render_inspect_table(table_key: str, rows: list[dict], scope_text: str) -> None:
+def _render_inspect_table(table_key: str, rows: list[dict], scope_text: str, locale: str) -> None:
     if not rows:
-        st.info(f"此 scope 沒有資料：{scope_text}")
+        st.info(t("db_manager.streamlit.scope_empty", locale, scope=scope_text))
         return
 
     if table_key == "blocks":
@@ -87,7 +95,7 @@ def _render_inspect_table(table_key: str, rows: list[dict], scope_text: str) -> 
         df = pd.DataFrame([{
             "user_id": r.get("user_id", ""),
             "visibility": r.get("visibility", ""),
-            "status": "已撤回" if r.get("confidence", 1) < 0 else "有效",
+            "status": t("db_manager.streamlit.revoked", locale) if r.get("confidence", 1) < 0 else t("db_manager.streamlit.valid", locale),
             "timestamp": r.get("timestamp", ""),
             "category": r.get("category", ""),
             "fact_key": r.get("fact_key", ""),
@@ -101,7 +109,7 @@ def _render_inspect_table(table_key: str, rows: list[dict], scope_text: str) -> 
             "character_id": r.get("character_id", ""),
             "visibility": r.get("visibility", ""),
             "created_at": r.get("created_at", ""),
-            "status": "已提及" if r.get("is_mentioned_to_user") else "未提及",
+            "status": t("db_manager.streamlit.mentioned", locale) if r.get("is_mentioned_to_user") else t("db_manager.streamlit.unmentioned", locale),
             "interest_keyword": r.get("interest_keyword", ""),
             "summary_content": r.get("summary_content", ""),
             "topic_id": r.get("topic_id", ""),
@@ -111,10 +119,13 @@ def _render_inspect_table(table_key: str, rows: list[dict], scope_text: str) -> 
 
 
 def render_db_manager_page(api_base, user_prefs):
-    st.title("🧠 記憶庫管理")
+    locale = _locale(user_prefs)
+    st.title(t("db_manager.streamlit.title", locale))
 
     tab_memory, tab_raw_db, tab_dev = st.tabs([
-        "🌌 記憶操作", "🗄️ 底層資料庫", "🧪 開發者工具",
+        t("db_manager.streamlit.tab_memory", locale),
+        t("db_manager.streamlit.tab_raw", locale),
+        t("db_manager.streamlit.tab_dev", locale),
     ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -123,11 +134,11 @@ def render_db_manager_page(api_base, user_prefs):
     with tab_memory:
         current_cluster_threshold = user_prefs.get("cluster_threshold", 0.75)
 
-        st.subheader("核心認知收束 (大腦反芻)")
-        st.info(f"當前收束敏感度：{current_cluster_threshold:.2f} (數值越低越容易觸發跨領域聯想)")
+        st.subheader(t("db_manager.streamlit.consolidate_title", locale))
+        st.info(t("db_manager.streamlit.threshold_info", locale, value=f"{current_cluster_threshold:.2f}"))
 
-        if st.button("✨ 執行大腦反芻 (提煉為重要記憶)", use_container_width=True, type="primary"):
-            with st.spinner("系統正在進入睡眠模式，進行深度記憶融合..."):
+        if st.button(t("db_manager.streamlit.consolidate_button", locale), use_container_width=True, type="primary"):
+            with st.spinner(t("db_manager.streamlit.consolidating", locale)):
                 try:
                     resp = requests.post(
                         f"{api_base}/system/consolidate",
@@ -137,20 +148,20 @@ def render_db_manager_page(api_base, user_prefs):
                     if resp.ok:
                         result = resp.json()
                         if result.get("status") == "no_clusters":
-                            st.info("💤 目前沒有需要深度提煉的重複話題。")
+                            st.info(t("db_manager.streamlit.no_clusters", locale))
                         else:
-                            st.success(f"大腦反芻已啟動！發現 {result.get('cluster_count', 0)} 個話題群組正在背景處理。")
+                            st.success(t("db_manager.streamlit.consolidate_started", locale, count=result.get("cluster_count", 0)))
                     else:
-                        st.error(f"反芻失敗: {resp.text}")
+                        st.error(t("db_manager.streamlit.consolidate_failed", locale, message=resp.text))
                 except Exception as e:
-                    st.error(f"反芻失敗: {e}")
+                    st.error(t("db_manager.streamlit.consolidate_failed", locale, message=e))
 
         st.divider()
 
-        st.subheader("偏好聚合分析")
-        st.info("從記憶區塊中的潛在偏好標籤進行純數學聚合，將高頻收斂的抽象偏好升格為長期使用者畫像。")
-        agg_threshold = st.slider("升格積分閾值", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key="pref_agg_threshold")
-        if st.button("🔍 執行偏好聚合掃描", use_container_width=True):
+        st.subheader(t("db_manager.streamlit.preference_title", locale))
+        st.info(t("db_manager.streamlit.preference_info", locale))
+        agg_threshold = st.slider(t("db_manager.streamlit.preference_threshold", locale), min_value=1.0, max_value=10.0, value=3.0, step=0.5, key="pref_agg_threshold")
+        if st.button(t("db_manager.streamlit.preference_button", locale), use_container_width=True):
             try:
                 resp = requests.post(
                     f"{api_base}/system/preference-aggregate",
@@ -162,23 +173,23 @@ def render_db_manager_page(api_base, user_prefs):
                     promoted = result.get("promoted_count", 0)
                     written = result.get("written", 0)
                     if promoted > 0:
-                        st.success(f"發現 {promoted} 個達標偏好，已升格 {written} 個至使用者畫像！")
+                        st.success(t("db_manager.streamlit.preference_promoted", locale, promoted=promoted, written=written))
                     else:
-                        st.info("目前沒有達到閾值的偏好標籤。")
+                        st.info(t("db_manager.streamlit.preference_none", locale))
                 else:
-                    st.error(f"聚合失敗: {resp.text}")
+                    st.error(t("db_manager.streamlit.preference_failed", locale, message=resp.text))
             except Exception as e:
-                st.error(f"聚合失敗: {e}")
+                st.error(t("db_manager.streamlit.preference_failed", locale, message=e))
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Tab 2: 底層資料庫
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab_raw_db:
-        st.subheader("Admin Scope-Aware 記憶檢視")
-        st.caption("唯讀檢視 runtime memory DB；不載入向量，不修改資料。Profile 是 per-user，不綁定角色。")
+        st.subheader(t("db_manager.streamlit.inspect_title", locale))
+        st.caption(t("db_manager.streamlit.inspect_caption", locale))
 
         meta_key = "db_inspect_meta"
-        if st.button("🔄 重新整理 scope 清單", key="reload_db_inspect_meta"):
+        if st.button(t("db_manager.streamlit.reload_scopes", locale), key="reload_db_inspect_meta"):
             st.session_state.pop(meta_key, None)
 
         try:
@@ -186,7 +197,7 @@ def render_db_manager_page(api_base, user_prefs):
                 st.session_state[meta_key] = _load_inspect_meta(api_base)
             scopes, char_names = st.session_state[meta_key]
         except Exception as e:
-            st.error(f"載入 scope 清單失敗: {e}")
+            st.error(t("db_manager.streamlit.load_scopes_failed", locale, message=e))
             scopes, char_names = {"users": [], "character_ids": [], "visibilities": []}, {}
 
         users = scopes.get("users") or [{"user_id": uid} for uid in scopes.get("user_ids", [])]
@@ -196,16 +207,16 @@ def render_db_manager_page(api_base, user_prefs):
         character_options = sorted(character_ids, key=lambda cid: (cid != "default", cid != "__global__", cid))
 
         table_options = {
-            "blocks": "情境記憶 Memory Blocks",
-            "core": "核心認知 Core Memories",
-            "profile": "使用者畫像 User Profile",
-            "topics": "主動話題 Topic Cache",
+            "blocks": t("db_manager.streamlit.table_blocks", locale),
+            "core": t("db_manager.streamlit.table_core", locale),
+            "profile": t("db_manager.streamlit.table_profile", locale),
+            "topics": t("db_manager.streamlit.table_topics", locale),
         }
 
         col_table, col_user = st.columns([1, 2])
         with col_table:
             table_key = st.selectbox(
-                "資料表",
+                t("db_manager.streamlit.table", locale),
                 list(table_options.keys()),
                 format_func=lambda k: table_options[k],
                 key="db_inspect_table",
@@ -213,31 +224,31 @@ def render_db_manager_page(api_base, user_prefs):
         with col_user:
             if users:
                 selected_user = st.selectbox(
-                    "使用者",
+                    t("db_manager.streamlit.user", locale),
                     users,
                     format_func=_user_label,
                     key="db_inspect_user",
                 )
                 selected_user_id = str(selected_user.get("user_id", ""))
             else:
-                selected_user_id = st.text_input("使用者 user_id", value="default", key="db_inspect_user_fallback")
+                selected_user_id = st.text_input(t("db_manager.streamlit.user_id", locale), value="default", key="db_inspect_user_fallback")
 
         col_char, col_vis, col_limit = st.columns([2, 1, 1])
         with col_char:
             selected_character_id = st.selectbox(
-                "角色 / Topic Scope",
+                t("db_manager.streamlit.character_scope", locale),
                 character_options,
                 format_func=lambda cid: _character_label(cid, char_names),
                 disabled=(table_key == "profile"),
                 key="db_inspect_character",
             )
             if table_key == "profile":
-                st.caption("Profile 只依 user_id + visibility 查詢，不使用 character_id。")
+                st.caption(t("db_manager.streamlit.profile_scope_note", locale))
         with col_vis:
             visibility = st.selectbox(
                 "Visibility",
                 ["all", "public", "private"],
-                format_func=lambda v: "全部" if v == "all" else v,
+                format_func=lambda v: t("db_manager.streamlit.all", locale) if v == "all" else v,
                 key="db_inspect_visibility",
             )
         with col_limit:
@@ -246,27 +257,27 @@ def render_db_manager_page(api_base, user_prefs):
         col_opts_a, col_opts_b, col_opts_c = st.columns(3)
         with col_opts_a:
             include_dialogues = st.checkbox(
-                "顯示 raw dialogues",
+                t("db_manager.streamlit.show_raw_dialogues", locale),
                 value=False,
                 disabled=(table_key != "blocks"),
                 key="db_inspect_include_dialogues",
             )
         with col_opts_b:
             include_tombstones = st.checkbox(
-                "包含 tombstones",
+                t("db_manager.streamlit.include_tombstones", locale),
                 value=True,
                 disabled=(table_key != "profile"),
                 key="db_inspect_include_tombstones",
             )
         with col_opts_c:
             include_global = st.checkbox(
-                "包含 __global__ topic",
+                t("db_manager.streamlit.include_global", locale),
                 value=True,
                 disabled=(table_key != "topics"),
                 key="db_inspect_include_global",
             )
             only_unmentioned = st.checkbox(
-                "只看未提及 topic",
+                t("db_manager.streamlit.only_unmentioned", locale),
                 value=False,
                 disabled=(table_key != "topics"),
                 key="db_inspect_only_unmentioned",
@@ -274,11 +285,11 @@ def render_db_manager_page(api_base, user_prefs):
 
         scope_text = (
             f"user_id={selected_user_id}, "
-            f"character_id={'(不適用)' if table_key == 'profile' else selected_character_id}, "
+            f"character_id={t('db_manager.streamlit.not_applicable', locale) if table_key == 'profile' else selected_character_id}, "
             f"visibility={visibility}, table={table_options[table_key]}"
         )
 
-        if st.button("🔎 載入此 scope 資料", key="load_raw_db", use_container_width=True):
+        if st.button(t("db_manager.streamlit.load_scope", locale), key="load_raw_db", use_container_width=True):
             try:
                 params = {
                     "user_id": selected_user_id,
@@ -298,9 +309,9 @@ def render_db_manager_page(api_base, user_prefs):
                 rows = _api_get_json(api_base, f"/memory/inspect/{table_key}", params=params, timeout=30)
                 st.subheader(table_options[table_key])
                 st.caption(scope_text)
-                _render_inspect_table(table_key, rows, scope_text)
+                _render_inspect_table(table_key, rows, scope_text, locale)
             except Exception as e:
-                st.error(f"載入資料庫失敗: {e}")
+                st.error(t("db_manager.streamlit.load_db_failed", locale, message=e))
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Tab 4: 開發者工具

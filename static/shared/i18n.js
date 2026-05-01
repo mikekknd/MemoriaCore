@@ -36,17 +36,18 @@
     if (readyPromise) return readyPromise;
     readyPromise = (async () => {
       let configuredLocale = options.locale;
-      if (!configuredLocale && options.fetchConfig !== false) {
+      const apiBase = global.API || '/api/v1';
+      if (!configuredLocale) {
         try {
-          const response = await fetch(`${API}/system/config`);
+          const response = await fetch(`${apiBase}/system/ui-locale`);
           if (response.ok) {
             const config = await response.json();
             configuredLocale = config.ui_locale;
           }
         } catch {}
-        if (!configuredLocale) {
+        if (!configuredLocale && options.fetchConfig === true) {
           try {
-            const response = await fetch(`${API}/system/ui-locale`);
+            const response = await fetch(`${apiBase}/system/config`);
             if (response.ok) {
               const config = await response.json();
               configuredLocale = config.ui_locale;
@@ -87,6 +88,9 @@
     });
     root.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
       el.placeholder = t(el.dataset.i18nPlaceholder);
+    });
+    root.querySelectorAll('[data-i18n-html]').forEach(el => {
+      el.innerHTML = t(el.dataset.i18nHtml);
     });
   }
 

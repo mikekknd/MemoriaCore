@@ -21,17 +21,23 @@ button { width:100%; margin-top:18px; background:var(--accent); border:none; bor
 <main class="auth-panel">
   <h1>MemoriaCore</h1>
   <form onsubmit="login(event)">
-    <label for="username">帳號</label>
+    <label for="username" data-i18n="auth.username">帳號</label>
     <input id="username" autocomplete="username" required>
-    <label for="password">密碼</label>
+    <label for="password" data-i18n="auth.password">密碼</label>
     <input id="password" type="password" autocomplete="current-password" required>
-    <button type="submit" id="submitBtn">登入</button>
+    <button type="submit" id="submitBtn" data-i18n="auth.login">登入</button>
   </form>
-  <div class="link-row">沒有帳號？<a href="/static/register.html">註冊</a></div>
+  <div class="link-row" data-i18n-html="login.no_account_html">沒有帳號？<a href="/static/register.html">註冊</a></div>
 </main>
 <div class="toast-container" id="toastContainer"></div>
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js"></script>
 <script>
+document.addEventListener('DOMContentLoaded', async () => {
+  await MCI18N.init();
+  MCI18N.apply();
+});
+
 async function login(e) {
   e.preventDefault();
   const btn = document.getElementById('submitBtn');
@@ -46,11 +52,11 @@ async function login(e) {
       }),
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(apiErrorMessage(data, '登入失敗'));
+    if (!r.ok) throw new Error(apiErrorMessage(data, MCI18N.t('auth.login_failed')));
     storeCsrf(data.csrf_token);
     window.location.href = '/static/app.html';
   } catch (err) {
-    toast(err.message || '登入失敗', 'error');
+    toast(err.message || MCI18N.t('auth.login_failed'), 'error');
   } finally {
     btn.disabled = false;
   }

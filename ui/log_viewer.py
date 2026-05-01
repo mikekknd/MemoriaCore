@@ -5,6 +5,14 @@ Log 檢視器頁面 — 透過 FastAPI REST API 載入 Log 資料。
 import streamlit as st
 from ui import api_client as requests
 from datetime import datetime
+from core.i18n import DEFAULT_LOCALE, normalize_locale, t
+
+
+def _locale(user_prefs: dict | None = None) -> str:
+    try:
+        return normalize_locale((user_prefs or {}).get("ui_locale"))
+    except ValueError:
+        return DEFAULT_LOCALE
 
 CATEGORY_META = {
     "chat":          {"label": "💬 對話生成",    "color": "#4A9EFF"},
@@ -139,7 +147,7 @@ def _fmt_messages(messages: list) -> tuple[str, int, int]:
 # 渲染單一 block
 # ──────────────────────────────────────────
 
-def _render_llm_pair(block: dict, idx: int):
+def _render_llm_pair(block: dict, idx: int, locale: str):
     cat = block["category"]
     meta = CATEGORY_META.get(cat, {"label": cat, "color": "#9CA3AF"})
     ts = _fmt_ts(block["timestamp"])
@@ -156,24 +164,24 @@ def _render_llm_pair(block: dict, idx: int):
             prompt_text, total_chars, msg_count = _fmt_messages(messages)
             st.markdown(
                 f"**📥 Prompt** — `{msg_count}` 則訊息　|　"
-                f"合計 `{total_chars:,}` 字元　|　"
-                f"約 `{total_chars // 4:,}` tokens（粗估）"
+                f"{t('log_viewer.streamlit.total_chars', locale, count=f'{total_chars:,}')}　|　"
+                f"{t('log_viewer.streamlit.approx_tokens', locale, count=f'{total_chars // 4:,}')}"
             )
             st.code(prompt_text, language=None)
         else:
             st.markdown("**📥 Prompt**")
-            st.caption("（無 Prompt 紀錄）")
+            st.caption(t("log_viewer.streamlit.no_prompt", locale))
 
         if has_resp:
             response_text = block["response"].get("content", "")
             resp_chars = len(response_text)
             st.markdown(
-                f"**📤 Response** — `{resp_chars:,}` 字元　|　約 `{resp_chars // 4:,}` tokens（粗估）"
+                f"**📤 Response** — {t('log_viewer.streamlit.total_chars', locale, count=f'{resp_chars:,}')}　|　{t('log_viewer.streamlit.approx_tokens', locale, count=f'{resp_chars // 4:,}')}"
             )
             st.code(response_text, language=None)
         else:
             st.markdown("**📤 Response**")
-            st.warning("尚無 Response 紀錄")
+            st.warning(t("log_viewer.streamlit.no_response", locale))
 
 
 def _render_system_event(block: dict):
@@ -203,14 +211,15 @@ def _render_error(block: dict):
 # 主頁面入口
 # ──────────────────────────────────────────
 
-def render_log_viewer_page(api_base):
-    st.title("📋 LLM Log 檢視器")
+def render_log_viewer_page(api_base, user_prefs: dict | None = None):
+    locale = _locale(user_prefs)
+    st.title(t("log_viewer.streamlit.title", locale))
 
     col_info, col_reload = st.columns([5, 1])
     with col_info:
-        st.caption(f"資料來源: {api_base}/logs")
+        st.caption(t("log_viewer.streamlit.source", locale, source=f"{api_base}/logs"))
     with col_reload:
-        if st.button("🔄 重新載入", use_container_width=True):
+        if st.button(t("log_viewer.reload", locale), use_container_width=True):
             _load_entries_from_api.clear()
             st.rerun()
 
@@ -218,7 +227,7 @@ def render_log_viewer_page(api_base):
     raw = _load_entries_from_api(api_base)
 
     if not raw:
-        st.info("尚無 Log 資料。請先執行對話或合成資料，再回來查看。")
+        st.info(t("log_viewer.streamlit.no_data", locale))
         return
 
     # API 回傳最新在前，需要反轉以正確配對 prompt/response
@@ -226,7 +235,7 @@ def render_log_viewer_page(api_base):
     blocks = _group_into_blocks(raw_chronological)
 
     if not blocks:
-        st.info("Log 資料為空。")
+        st.info(t("log_viewer.streamlit.empty", locale))
         return
 
     # 統計列
@@ -235,10 +244,10 @@ def render_log_viewer_page(api_base):
     errors = [b for b in blocks if b["type"] == "error"]
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("LLM 呼叫", len(llm_pairs))
-    m2.metric("系統事件", len(sys_events))
-    m3.metric("錯誤", len(errors))
-    m4.metric("總計", len(blocks))
+    m1.metric(t("log_viewer.streamlit.metric_llm", locale), len(llm_pairs))
+    m2.metric(t("log_viewer.streamlit.metric_events", locale), len(sys_events))
+    m3.metric(t("log_viewer.streamlit.metric_errors", locale), len(errors))
+    m4.metric(t("log_viewer.streamlit.metric_total", locale), len(blocks))
 
     st.divider()
 
@@ -250,14 +259,14 @@ def render_log_viewer_page(api_base):
         fc1, fc2, fc3 = st.columns([3, 2, 1])
         with fc1:
             selected_llm_cats = st.multiselect(
-                "LLM 類別篩選", options=llm_cats, default=llm_cats,
+                t("log_viewer.streamlit.llm_filter", locale), options=llm_cats, default=llm_cats,
                 format_func=lambda c: CATEGORY_META.get(c, {}).get("label", c),
             )
         with fc2:
-            selected_sys_cats = st.multiselect("系統事件篩選", options=sys_cats, default=sys_cats)
+            selected_sys_cats = st.multiselect(t("log_viewer.streamlit.event_filter", locale), options=sys_cats, default=sys_cats)
         with fc3:
-            show_errors = st.checkbox("顯示錯誤", value=True)
-            newest_first = st.checkbox("最新在上", value=True)
+            show_errors = st.checkbox(t("log_viewer.streamlit.show_errors", locale), value=True)
+            newest_first = st.checkbox(t("log_viewer.newest_first", locale), value=True)
 
     st.divider()
 
@@ -271,7 +280,7 @@ def render_log_viewer_page(api_base):
         if btype == "llm_pair":
             if bcat not in selected_llm_cats:
                 continue
-            _render_llm_pair(block, idx)
+            _render_llm_pair(block, idx, locale)
             rendered += 1
         elif btype == "system_event":
             if bcat not in selected_sys_cats:
@@ -285,4 +294,4 @@ def render_log_viewer_page(api_base):
             rendered += 1
 
     if rendered == 0:
-        st.info("目前的篩選條件下沒有符合的紀錄。")
+        st.info(t("log_viewer.streamlit.no_matches", locale))

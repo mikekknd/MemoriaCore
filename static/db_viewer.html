@@ -415,23 +415,23 @@ body {
 <body>
 
 <div class="header">
-  <h1>🗄️ Memory DB Viewer</h1>
-  <span class="file-info" id="fileInfo">拖入 .db 檔案以開始</span>
-  <button id="reloadBtn" onclick="reloadDB()" style="display:none; margin-left:auto; background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:5px 12px; color:var(--accent); font-size:13px; cursor:pointer;" title="重新載入資料庫">🔄 重新載入</button>
+  <h1 data-i18n="db_viewer.title">🗄️ Memory DB Viewer</h1>
+  <span class="file-info" id="fileInfo" data-i18n="db_viewer.file_hint">拖入 .db 檔案以開始</span>
+  <button id="reloadBtn" onclick="reloadDB()" style="display:none; margin-left:auto; background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:5px 12px; color:var(--accent); font-size:13px; cursor:pointer;" title="重新載入資料庫" data-i18n-title="db_viewer.reload_title" data-i18n="db_viewer.reload">🔄 重新載入</button>
 </div>
 
 <!-- Drop Zone -->
 <div class="drop-zone" id="dropZone">
   <div class="icon">🗃️</div>
-  <p>拖放 SQLite .db 檔案到此處</p>
-  <small>或點擊選擇檔案</small>
+  <p data-i18n="db_viewer.drop_title">拖放 SQLite .db 檔案到此處</p>
+  <small data-i18n="db_viewer.drop_sub">或點擊選擇檔案</small>
   <input type="file" id="fileInput" accept=".db,.sqlite,.sqlite3" style="display:none">
 </div>
 
 <!-- Loading -->
 <div class="loading" id="loading">
   <div class="spinner"></div>
-  <p>正在載入資料庫...</p>
+  <p data-i18n="db_viewer.loading">正在載入資料庫...</p>
 </div>
 
 <!-- Main View (hidden until loaded) -->
@@ -444,20 +444,20 @@ body {
 
   <!-- SQL Panel -->
   <div class="sql-panel" id="sqlPanel">
-    <textarea class="sql-input" id="sqlInput" placeholder="輸入自訂 SQL 查詢... (例如 SELECT * FROM memory_blocks WHERE encounter_count > 2)"></textarea>
+    <textarea class="sql-input" id="sqlInput" placeholder="輸入自訂 SQL 查詢... (例如 SELECT * FROM memory_blocks WHERE encounter_count > 2)" data-i18n-placeholder="db_viewer.sql_placeholder"></textarea>
     <div class="sql-actions">
-      <button class="btn" onclick="executeCustomSQL()">▶ 執行</button>
-      <button class="btn" onclick="toggleSQL()">✕ 關閉</button>
+      <button class="btn" onclick="executeCustomSQL()" data-i18n="db_viewer.execute">▶ 執行</button>
+      <button class="btn" onclick="toggleSQL()" data-i18n="db_viewer.close">✕ 關閉</button>
       <span class="sql-error" id="sqlError"></span>
     </div>
   </div>
 
   <!-- Toolbar -->
   <div class="toolbar" id="toolbar">
-    <input class="search-box" id="searchBox" type="text" placeholder="🔍 搜尋... (Ctrl+F)">
+    <input class="search-box" id="searchBox" type="text" placeholder="🔍 搜尋... (Ctrl+F)" data-i18n-placeholder="db_viewer.search_placeholder">
     <select class="filter-select" id="filterSelect" style="display:none"></select>
-    <button class="btn" onclick="toggleSQL()">📝 SQL 查詢</button>
-    <button class="btn" onclick="exportCSV()">📥 匯出 CSV</button>
+    <button class="btn" onclick="toggleSQL()" data-i18n="db_viewer.sql_query">📝 SQL 查詢</button>
+    <button class="btn" onclick="exportCSV()" data-i18n="db_viewer.export_csv">📥 匯出 CSV</button>
     <div style="flex:1"></div>
     <button class="btn" id="prevPage" onclick="changePage(-1)">◀</button>
     <span class="page-info" id="pageInfo"></span>
@@ -479,14 +479,29 @@ body {
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
     <div class="modal-title">
-      <span id="modalTitle">詳細資料</span>
+      <span id="modalTitle" data-i18n="db_viewer.detail">詳細資料</span>
       <button class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div id="modalContent"></div>
   </div>
 </div>
 
+<script src="/static/shared/i18n.js?v=i18n-ready-ui"></script>
 <script>
+function tr(key, params) {
+  return window.MCI18N ? MCI18N.t(key, params) : key;
+}
+
+async function initI18n() {
+  await MCI18N.init();
+  MCI18N.apply();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initI18n);
+} else {
+  initI18n();
+}
+
 // ===== Global State =====
 let db = null;
 let currentTable = '';
@@ -502,7 +517,7 @@ let jsonToggleId = 0;
 // ===== Known Schema Info =====
 const TABLE_META = {
   memory_blocks: {
-    icon: '🧠', label: '記憶區塊',
+    icon: '🧠', labelKey: 'db_viewer.table.memory_blocks', label: '記憶區塊',
     idCol: 'block_id',
     blobCols: ['overview_vector'],
     jsonCols: ['sparse_vector', 'raw_dialogues', 'potential_preferences'],
@@ -510,7 +525,7 @@ const TABLE_META = {
     numCols: ['encounter_count'],
   },
   core_memories: {
-    icon: '💡', label: '核心認知',
+    icon: '💡', labelKey: 'db_viewer.table.core_memories', label: '核心認知',
     idCol: 'core_id',
     blobCols: ['insight_vector'],
     jsonCols: [],
@@ -518,7 +533,7 @@ const TABLE_META = {
     numCols: ['encounter_count'],
   },
   user_profile: {
-    icon: '👤', label: '使用者畫像',
+    icon: '👤', labelKey: 'db_viewer.table.user_profile', label: '使用者畫像',
     idCol: 'fact_key',
     blobCols: [],
     jsonCols: [],
@@ -526,7 +541,7 @@ const TABLE_META = {
     numCols: ['confidence'],
   },
   user_profile_vectors: {
-    icon: '📐', label: '畫像向量',
+    icon: '📐', labelKey: 'db_viewer.table.user_profile_vectors', label: '畫像向量',
     idCol: 'fact_key',
     blobCols: ['fact_vector'],
     jsonCols: [],
@@ -605,7 +620,7 @@ async function reloadDB() {
       console.warn('FileHandle reload failed:', e);
     }
   }
-  alert('瀏覽器不支援自動重新讀取，請重新拖入檔案。');
+  alert(tr('db_viewer.reload_unsupported'));
 }
 
 async function loadFile(file) {
@@ -618,7 +633,7 @@ async function loadFile(file) {
   try {
     db = new SQL.Database(new Uint8Array(buf));
   } catch (err) {
-    alert('無法開啟資料庫: ' + err.message);
+    alert(tr('db_viewer.open_failed', {message: err.message}));
     dropZone.style.display = '';
     document.getElementById('loading').classList.remove('active');
     return;
@@ -657,10 +672,10 @@ function buildStats() {
     const cnt = db.exec(`SELECT COUNT(*) FROM "${t}"`);
     const count = cnt.length ? cnt[0].values[0][0] : 0;
     const meta = TABLE_META[t];
-    const label = meta ? `${meta.icon} ${meta.label}` : t;
+    const label = meta ? `${meta.icon} ${tr(meta.labelKey)}` : t;
     return `<div class="stat-item">
       <span class="dot" style="background:${colors[i % colors.length]}"></span>
-      ${label}: <span class="count">${count}</span> 筆
+      ${label}: <span class="count">${count}</span> ${tr('db_viewer.records_unit')}
     </div>`;
   }).join('');
 }
@@ -670,7 +685,7 @@ function buildTabs() {
   const bar = document.getElementById('tabBar');
   bar.innerHTML = allTables.map(t => {
     const meta = TABLE_META[t];
-    const label = meta ? `${meta.icon} ${meta.label}` : t;
+    const label = meta ? `${meta.icon} ${tr(meta.labelKey)}` : t;
     const cnt = db.exec(`SELECT COUNT(*) FROM "${t}"`);
     const count = cnt.length ? cnt[0].values[0][0] : 0;
     return `<div class="tab" data-table="${t}" onclick="switchTable('${t}')">
@@ -696,7 +711,7 @@ function switchTable(name) {
     filterSelect.style.display = '';
     const cats = db.exec("SELECT DISTINCT category FROM user_profile WHERE category IS NOT NULL");
     const categories = cats.length ? cats[0].values.map(r => r[0]) : [];
-    filterSelect.innerHTML = '<option value="">所有類別</option>' +
+    filterSelect.innerHTML = `<option value="">${tr('db_viewer.all_categories')}</option>` +
       categories.map(c => `<option value="${c}">${c}</option>`).join('');
     filterSelect.onchange = () => { currentPage = 0; queryTable(); };
   } else {
@@ -790,7 +805,7 @@ function renderTable() {
   body.innerHTML = pageRows.map((row, ri) => {
     const cells = cols.map((col, ci) => renderCell(col, row[ci], meta));
     return `<tr>${cells.join('')}<td>
-      <span style="cursor:pointer;font-size:16px" title="詳細" onclick='showDetail(${start + ri})'>🔍</span>
+      <span style="cursor:pointer;font-size:16px" title="${tr('db_viewer.detail')}" onclick='showDetail(${start + ri})'>🔍</span>
     </td></tr>`;
   }).join('');
 }
@@ -838,7 +853,7 @@ function renderCell(col, val, meta) {
   // is_consolidated
   if (col === 'is_consolidated') {
     const yes = parseInt(val) === 1;
-    return `<td><span class="${yes ? 'consolidated-yes' : 'consolidated-no'}">${yes ? '✔ 已整合' : '✖ 未整合'}</span></td>`;
+    return `<td><span class="${yes ? 'consolidated-yes' : 'consolidated-no'}">${yes ? tr('db_viewer.consolidated_yes') : tr('db_viewer.consolidated_no')}</span></td>`;
   }
 
   // Category
@@ -868,7 +883,7 @@ function renderJsonCell(val, col) {
 
   let preview = '';
   if (col === 'raw_dialogues' && Array.isArray(parsed)) {
-    preview = `${parsed.length} 則對話`;
+    preview = tr('db_viewer.dialogues_count', {count: parsed.length});
   } else if (col === 'potential_preferences' && Array.isArray(parsed)) {
     if (parsed.length === 0) return `<td><span class="cell-null">[]</span></td>`;
     preview = parsed.map(p => {
@@ -979,13 +994,13 @@ function renderDetailValue(col, val, meta) {
   if (col === 'confidence') {
     const num = parseFloat(val);
     const cls = num < 0 ? 'confidence-negative' : 'confidence-positive';
-    const label = num < 0 ? ' (🪦 墓碑)' : '';
+    const label = num < 0 ? tr('db_viewer.tombstone') : '';
     return `<span class="${cls}">${num.toFixed(2)}${label}</span>`;
   }
 
   // is_consolidated
   if (col === 'is_consolidated') {
-    return parseInt(val) === 1 ? '<span class="consolidated-yes">✔ 已整合</span>' : '<span class="consolidated-no">✖ 未整合</span>';
+    return parseInt(val) === 1 ? `<span class="consolidated-yes">${tr('db_viewer.consolidated_yes')}</span>` : `<span class="consolidated-no">${tr('db_viewer.consolidated_no')}</span>`;
   }
 
   // category
@@ -1019,7 +1034,7 @@ function executeCustomSQL() {
   try {
     const res = db.exec(sql);
     if (!res.length) {
-      errEl.textContent = '查詢完成，無回傳結果';
+      errEl.textContent = tr('db_viewer.query_no_result');
       return;
     }
 
@@ -1060,7 +1075,7 @@ function exportCSV() {
   const rows = filteredRows.map(r =>
     r.map(v => {
       if (v === null) return '';
-      if (v instanceof Uint8Array) return '[BLOB]';
+      if (v instanceof Uint8Array) return tr('db_viewer.blob');
       const s = String(v);
       if (s.includes(',') || s.includes('"') || s.includes('\n'))
         return '"' + s.replace(/"/g, '""') + '"';
@@ -1093,7 +1108,7 @@ function formatTimestamp(ts) {
   try {
     const d = new Date(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return d.toLocaleString(MCI18N.locale || 'zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch { return ts; }
 }
 
