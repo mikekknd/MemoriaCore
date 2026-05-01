@@ -4,12 +4,13 @@ import uuid
 from typing import Dict, Any, List
 from core.prompt_manager import get_prompt_manager
 from core.system_logger import SystemLogger
+from core.runtime_paths import runtime_file
 
 class CharacterManager:
     """管理動態角色設定，包含存取 characters.json 及透過 LLM 生成設定"""
     
-    def __init__(self, characters_file="characters.json"):
-        self.characters_file = characters_file
+    def __init__(self, characters_file=None):
+        self.characters_file = characters_file or runtime_file("characters.json")
         self._ensure_file_exists()
 
     def _ensure_file_exists(self):

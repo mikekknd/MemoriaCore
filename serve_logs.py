@@ -1,7 +1,7 @@
 """
 Log Viewer 快速啟動伺服器
 執行方式：python serve_logs.py
-會自動開啟瀏覽器並載入 llm_trace.jsonl
+會自動開啟瀏覽器並載入 runtime/llm_trace.jsonl
 """
 import http.server
 import socketserver

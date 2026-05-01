@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.persona_evolution.extractor import CONFIDENCE_MAP
 from core.storage_manager import StorageManager
+from core.runtime_paths import persona_probe_result_dir, runtime_path
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -55,8 +56,8 @@ from core.storage_manager import StorageManager
 # ──────────────────────────────────────────────────────────────────────
 
 CHARACTER_ID = "catgirl-traits-proto"
-FRAGMENT_ROOT = Path(__file__).parent.parent / "PersonaProbe" / "result"
-PERSONA_DB = Path(__file__).parent.parent / "persona_snapshots.db"
+FRAGMENT_ROOT = persona_probe_result_dir()
+PERSONA_DB = runtime_path("persona_snapshots.db")
 
 
 # ──────────────────────────────────────────────────────────────────────

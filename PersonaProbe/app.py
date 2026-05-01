@@ -18,6 +18,11 @@ from probe_engine import (
 )
 from llm_client import LLMConfig, LLMClient
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_RUNTIME_DIR = _PROJECT_ROOT / "runtime"
+_DEFAULT_OUTPUT_DIR = _RUNTIME_DIR / "PersonaProbe" / "result"
+_DEFAULT_CONVERSATION_DB = _RUNTIME_DIR / "conversation.db"
+
 # ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -41,7 +46,7 @@ def _init_ss():
         "seed_only": False,
         "fast_persona": False,
         "fast_persona_result": None,  # filled when fast persona mode completes
-        "output_dir": str(Path(__file__).parent),
+        "output_dir": str(_DEFAULT_OUTPUT_DIR),
         "or_models_cache": {},  # api_key -> list of models
         # ── 片段分析模式 ──
         "fa_report": None,     # 完整心智模型報告（Markdown str）
@@ -330,7 +335,7 @@ if mode == "片段分析":
     else:
         db_path = st.text_input(
             "conversation.db 路徑",
-            value=r"G:\ClaudeProject\MemoriaCore\conversation.db",
+            value=str(_DEFAULT_CONVERSATION_DB),
             key="fa_db_path",
         )
         sessions: list[dict] = []

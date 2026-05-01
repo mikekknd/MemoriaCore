@@ -18,9 +18,11 @@ import sys
 from datetime import datetime, date
 
 from core.system_logger import SystemLogger
+from core.runtime_paths import persona_probe_result_dir, runtime_file
 
 # ── PersonaProbe 路徑注入（只做一次）────────────────────────
-_PROBE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "PersonaProbe")
+_DEFAULT_PROBE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "PersonaProbe")
+_PROBE_DIR = _DEFAULT_PROBE_DIR
 if _PROBE_DIR not in sys.path:
     sys.path.insert(0, _PROBE_DIR)
 
@@ -31,7 +33,18 @@ _PROVIDER_MAP = {
     "llama.cpp (本地)": "ollama",
 }
 
-STATE_FILE = "persona_sync_state.json"
+STATE_FILE = runtime_file("persona_sync_state.json")
+
+
+def _probe_output_root():
+    """正式環境寫 runtime；測試若 patch _PROBE_DIR，沿用該隔離目錄。"""
+    from pathlib import Path
+
+    if Path(_PROBE_DIR).resolve() != Path(_DEFAULT_PROBE_DIR).resolve():
+        path = Path(_PROBE_DIR) / "result"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return persona_probe_result_dir()
 
 
 def _run_probe_sync(db_path: str, existing_persona: str, llm_provider: str,
@@ -120,7 +133,7 @@ def _run_probe_sync(db_path: str, existing_persona: str, llm_provider: str,
     persona_content = client.chat(persona_msgs)
 
     # 7. 寫入 PersonaProbe result 目錄（留存備份）
-    output_root = Path(_PROBE_DIR) / "result"
+    output_root = _probe_output_root()
     timestamp = _dt.now().strftime("%Y%m%d-%H%M%S")
     safe_char = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in character_id)
     out_dir = output_root / f"fragment-{safe_char}-{persona_face}-{timestamp}"
@@ -278,7 +291,7 @@ class PersonaSyncManager:
             return False
 
         # 確認 conversation.db 存在
-        db_path = os.path.abspath("conversation.db")
+        db_path = runtime_file("conversation.db")
         if not os.path.exists(db_path):
             SystemLogger.log_error("persona_sync", f"conversation.db not found: {db_path}")
             return False

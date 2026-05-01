@@ -237,7 +237,7 @@ async function fetchLogsFromApi() {
     renderEntries();
     applyFilters();
     if (!allEntries.length) {
-      renderEmptyState('<strong>目前沒有可顯示的 Log。</strong><br>Log Viewer 已自動讀取專案根目錄的 llm_trace.jsonl，但檔案目前為空或沒有符合格式的紀錄。');
+      renderEmptyState('<strong>目前沒有可顯示的 Log。</strong><br>Log Viewer 已自動讀取 runtime/llm_trace.jsonl，但檔案目前為空或沒有符合格式的紀錄。');
     }
 
     const sb = document.getElementById('searchBox');

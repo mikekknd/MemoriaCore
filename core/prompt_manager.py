@@ -5,10 +5,11 @@ PromptManager — 集中式 Prompt 管理器
 """
 import json, os, shutil
 from core.system_logger import SystemLogger
+from core.runtime_paths import runtime_file
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_PATH = os.path.join(_BASE_DIR, "prompts_default.json")
-_USER_PATH = os.path.join(_BASE_DIR, "prompts.json")
+_USER_PATH = runtime_file("prompts.json")
 
 
 class PromptManager:

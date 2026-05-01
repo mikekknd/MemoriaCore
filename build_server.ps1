@@ -122,20 +122,18 @@ if ($onnxFiles) {
     Write-Warn "找不到 $onnxSrc，請確認模型檔案存在。"
 }
 
-# --- user_prefs.json（模型路由設定）---
-if (Test-Path "user_prefs.json") {
-    Copy-Item "user_prefs.json" "dist\LLMServer\" -Force
-    Write-OK "user_prefs.json 已複製（包含模型路由設定）"
+# --- runtime 設定檔（模型路由）---
+$runtimeDest = "dist\LLMServer\runtime"
+New-Item -ItemType Directory -Force -Path $runtimeDest | Out-Null
+
+if (Test-Path "runtime\user_prefs.json") {
+    Copy-Item "runtime\user_prefs.json" $runtimeDest -Force
+    Write-OK "runtime\user_prefs.json 已複製（包含模型路由設定）"
+} elseif (Test-Path "user_prefs.json") {
+    Copy-Item "user_prefs.json" $runtimeDest -Force
+    Write-OK "user_prefs.json 已複製到 runtime\（legacy 位置）"
 } else {
     Write-Warn "user_prefs.json 不存在，略過。exe 首次啟動將使用內建預設值。"
-}
-
-# --- system_prompt.txt（系統提示詞）---
-if (Test-Path "system_prompt.txt") {
-    Copy-Item "system_prompt.txt" "dist\LLMServer\" -Force
-    Write-OK "system_prompt.txt 已複製"
-} else {
-    Write-Warn "system_prompt.txt 不存在，略過。"
 }
 
 # ──────────────────────────────────────────
@@ -148,8 +146,8 @@ Write-Host "產出位置：dist\LLMServer\"
 Write-Host ""
 Write-Host "  dist\LLMServer\"
 Write-Host "  ├── LLMServer.exe"
-Write-Host "  ├── user_prefs.json         (模型路由設定)"
-Write-Host "  ├── system_prompt.txt       (系統提示詞)"
+Write-Host "  ├── runtime\"
+Write-Host "  │   └── user_prefs.json     (模型路由設定)"
 Write-Host "  ├── StreamingAssets\"
 Write-Host "  │   └── Models\"
 Write-Host "  │       └── *.onnx          (BGE-M3 向量模型)"

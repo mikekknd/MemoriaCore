@@ -1,7 +1,7 @@
 """系統設定、大腦反芻、偏好聚合、合成資料端點"""
 import asyncio
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from api.dependencies import (
     get_memory_sys, get_storage, get_router,
     get_persona_sync_manager, reload_router, reload_tts,
@@ -87,9 +87,10 @@ async def update_config(body: ConfigUpdateRequest):
 # ── System Prompt ─────────────────────────────────────────
 @router.get("/prompt")
 async def get_prompt():
-    sto = get_storage()
-    text = sto.load_system_prompt()
-    return {"prompt": text}
+    raise HTTPException(
+        status_code=410,
+        detail="system_prompt.txt 已棄用；請改用 /character 管理各角色的 system_prompt。",
+    )
 
 @router.post("/gather_now")
 async def trigger_gather_now():
@@ -133,9 +134,10 @@ async def refresh_weather_cache(city: Optional[str] = Query(None)):
 
 @router.put("/prompt")
 async def update_prompt(body: dict):
-    sto = get_storage()
-    sto.save_system_prompt(body.get("prompt", ""))
-    return {"status": "saved"}
+    raise HTTPException(
+        status_code=410,
+        detail="system_prompt.txt 已棄用；請改用 /character 管理各角色的 system_prompt。",
+    )
 
 
 # ── 大腦反芻 ──────────────────────────────────────────────

@@ -22,11 +22,12 @@ import os
 import requests
 from datetime import datetime, timedelta
 from core.system_logger import SystemLogger
+from core.runtime_paths import runtime_file
 
 
 class WeatherCache:
-    def __init__(self, cache_file="weather_cache.json"):
-        self._cache_file = cache_file
+    def __init__(self, cache_file=None):
+        self._cache_file = cache_file or runtime_file("weather_cache.json")
 
     # ── 公開方法 ──────────────────────────────────────────
 

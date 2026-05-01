@@ -5,10 +5,10 @@ import os
 import threading
 import uuid
 from datetime import datetime
+from core.runtime_paths import runtime_file
 
-# 日誌檔路徑 (專案根目錄)
-_LOG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_LOG_FILE = os.path.join(_LOG_DIR, "llm_trace.jsonl")
+# 日誌檔路徑（runtime/）
+_LOG_FILE = runtime_file("llm_trace.jsonl")
 _LOG_LOCK = threading.Lock()
 _LOG_SEQ = 0
 _LOG_SEQ_INITIALIZED = False

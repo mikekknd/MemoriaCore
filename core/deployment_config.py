@@ -7,6 +7,7 @@
 任何新增的 channel 都應在此模組登記，而非分散在各 router。
 """
 import os
+from core.runtime_paths import runtime_file
 
 # 公開頻道：即使 SU 自己留言也視為 public face
 PUBLIC_CHANNELS: frozenset[str] = frozenset({'livestream', 'discord_public'})
@@ -26,7 +27,7 @@ _cached_su_id: str | None = None  # 模組層級 cache，避免每次 I/O
 def _load_su_user_id_from_prefs() -> str:
     """從 user_prefs.json 讀取 su_user_id（供 runtime fallback 使用）。"""
     try:
-        prefs_path = os.path.join(os.path.dirname(__file__), "..", "user_prefs.json")
+        prefs_path = runtime_file("user_prefs.json")
         if os.path.exists(prefs_path):
             import json
             with open(prefs_path, "r", encoding="utf-8") as f:

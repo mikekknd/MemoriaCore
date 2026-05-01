@@ -4,6 +4,7 @@ import os
 import sys
 from fastapi import APIRouter, Query
 from api.models.responses import LogEntryDTO
+from core.runtime_paths import runtime_file
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
@@ -11,21 +12,8 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 def _get_log_path() -> str:
     """
     與 system_logger.py 的寫入路徑保持一致。
-
-    兩種執行環境：
-    - 開發模式：__file__ = .../LLMTest_New/api/routers/logs.py
-                dirname×3 → LLMTest_New/  （專案根目錄）
-    - PyInstaller 打包：system_logger.__file__ 解析到 _internal/，
-                       因此 logs 寫在 _internal/llm_trace.jsonl。
-                       此處同樣用 sys._MEIPASS 指向 _internal/ 讀取。
     """
-    if getattr(sys, 'frozen', False):
-        # 打包模式：system_logger 寫到 _internal/，從這裡讀
-        return os.path.join(sys._MEIPASS, "llm_trace.jsonl")
-    else:
-        # 開發模式：專案根目錄
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        return os.path.join(project_root, "llm_trace.jsonl")
+    return runtime_file("llm_trace.jsonl")
 
 
 def _entry_sort_key(entry: dict, fallback_index: int) -> tuple[int, int | str]:

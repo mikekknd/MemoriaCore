@@ -24,6 +24,7 @@ AGENTS.md
 *.swo
 
 # Databases & App State
+runtime/
 *.db
 *.sqlite3
 chat_history.json

@@ -14,9 +14,8 @@ import uvicorn
 signal.signal(signal.SIGINT, _original_sigint)  # 還原，讓 uvicorn 自行管理
 
 # ── PyInstaller 路徑修正 ──────────────────────────────────
-# 打包後 __file__ 指向 _internal/ 內部，相對路徑（user_prefs.json、
-# memory_db_*.db、system_prompt.txt）會找不到正確位置。
-# 強制將 CWD 切換到 exe 所在目錄，確保所有資料檔案都在 exe 旁邊。
+# 打包後 __file__ 指向 _internal/ 內部。強制將 CWD 切換到 exe 所在目錄，
+# 讓 runtime/、StreamingAssets/ 等資料目錄都能以 exe 旁邊為根解析。
 if getattr(sys, 'frozen', False):
     _exe_dir = os.path.dirname(sys.executable)
     os.chdir(_exe_dir)

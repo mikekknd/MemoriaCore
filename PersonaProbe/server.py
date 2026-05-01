@@ -36,8 +36,8 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# ── 預設輸出根目錄（相對於 server.py 所在位置）─────────────────────────────────
-_DEFAULT_OUTPUT_ROOT = Path(__file__).parent / "result"
+# ── 預設輸出根目錄（集中於專案 runtime/）──────────────────────────────────────
+_DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent.parent / "runtime" / "PersonaProbe" / "result"
 
 
 # ── Request / Response Models ─────────────────────────────────────────────────

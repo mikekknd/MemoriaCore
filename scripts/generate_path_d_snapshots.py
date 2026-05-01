@@ -26,6 +26,7 @@ sys.path.insert(0, str(_PROBE_DIR))
 # ── 引用核心模組 ────────────────────────────────────────────────────────────
 
 from core.storage_manager import StorageManager
+from core.runtime_paths import persona_probe_result_dir, runtime_file
 from core.persona_evolution.snapshot_store import PersonaSnapshotStore
 from core.persona_evolution.extractor import (
     TRAIT_V1_SCHEMA,
@@ -99,7 +100,7 @@ def main() -> None:
 
     # ── Storage + Store 初始化 ────────────────────────────────────────
     storage = StorageManager(
-        persona_snapshot_db_path=str(_ROOT / "persona_snapshots.db"),
+        persona_snapshot_db_path=runtime_file("persona_snapshots.db"),
     )
     store = PersonaSnapshotStore(storage)
 
@@ -114,7 +115,7 @@ def main() -> None:
     )
 
     # ── 探索 fragment 目錄（按時間排序） ─────────────────────────────
-    FRAGMENT_ROOT = _PROBE_DIR / "result"
+    FRAGMENT_ROOT = persona_probe_result_dir()
     DIR_RE = re.compile(r"fragment-(\d{8})-(\d{6})")
 
     fragment_dirs = sorted(

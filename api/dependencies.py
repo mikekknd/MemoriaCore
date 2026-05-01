@@ -15,6 +15,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from core.storage_manager import StorageManager
+from core.runtime_paths import migrate_legacy_runtime_data
 from core.llm_gateway import OllamaProvider, OpenAICompatibleProvider, LlamaCppProvider, LLMRouter
 from core.core_memory import MemorySystem
 from core.memory_analyzer import MemoryAnalyzer
@@ -76,6 +77,10 @@ def init_all():
     global memory_sys, storage, analyzer, global_router, character_mgr, bot_registry, telegram_bot_mgr, discord_bot_mgr, persona_sync_mgr, persona_snapshot_store, tts_client, embed_model, _startup_time
     import time
     _startup_time = time.time()
+
+    migrated = migrate_legacy_runtime_data()
+    if migrated:
+        print(f"[Startup] 已遷移 runtime 資料到 runtime/: {', '.join(migrated)}")
 
     storage = StorageManager()
     memory_sys = MemorySystem()

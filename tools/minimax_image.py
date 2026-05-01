@@ -9,6 +9,7 @@ from pathlib import Path
 import requests
 
 from core.system_logger import SystemLogger
+from core.runtime_paths import generated_images_dir
 
 
 GENERATE_IMAGE_SCHEMA = {
@@ -73,8 +74,7 @@ GENERATE_SELF_PORTRAIT_SCHEMA = {
 
 
 _ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4"}
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_GENERATED_ROOT = _PROJECT_ROOT / "generated_images"
+_GENERATED_ROOT = generated_images_dir()
 
 
 def _get_minimax_key() -> str:

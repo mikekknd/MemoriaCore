@@ -10,6 +10,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from core.runtime_paths import runtime_path
 
 try:
     from argon2 import PasswordHasher
@@ -23,7 +24,7 @@ AUTH_COOKIE_NAME = "mc_auth"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 ACCESS_TOKEN_DAYS = 7
 JWT_ALGORITHM = "HS256"
-_SECRET_FILE = Path(".memoriacore_jwt_secret")
+_SECRET_FILE = runtime_path(".memoriacore_jwt_secret")
 
 _password_hasher = PasswordHasher() if PasswordHasher else None
 

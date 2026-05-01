@@ -5,22 +5,24 @@ import re
 import sqlite3
 import numpy as np
 from datetime import datetime, timedelta
+from core.runtime_paths import runtime_file
 
 GLOBAL_TOPIC_CHARACTER_ID = "__global__"
+DEFAULT_SYSTEM_PROMPT = "你是一個具備情境記憶與核心認知的 AI 助理。"
 
 class StorageManager:
     def __init__(
         self,
-        prefs_file="user_prefs.json",
-        history_file="chat_history.json",
-        persona_snapshot_db_path="persona_snapshots.db",
+        prefs_file=None,
+        history_file=None,
+        persona_snapshot_db_path=None,
     ):
-        self.prefs_file = prefs_file
-        self.history_file = history_file
-        self.persona_snapshot_db_path = persona_snapshot_db_path
+        self.prefs_file = prefs_file or runtime_file("user_prefs.json")
+        self.history_file = history_file or runtime_file("chat_history.json")
+        self.persona_snapshot_db_path = persona_snapshot_db_path or runtime_file("persona_snapshots.db")
 
     # ════════════════════════════════════════════════════════════
-    # SECTION: 檔案 I/O — 偏好 / 對話歷史 / System Prompt
+    # SECTION: 檔案 I/O — 偏好 / 對話歷史
     # ════════════════════════════════════════════════════════════
 
     def load_prefs(self):
@@ -49,15 +51,13 @@ class StorageManager:
         with open(self.history_file, "w", encoding="utf-8") as f:
             json.dump(messages, f, ensure_ascii=False, indent=2)
 
-    def load_system_prompt(self, prompt_file="system_prompt.txt"):
-        if os.path.exists(prompt_file):
-            with open(prompt_file, "r", encoding="utf-8") as f:
-                return f.read()
-        return "你是一個具備情境記憶與核心認知的 AI 助理。"
+    def load_system_prompt(self, prompt_file=None):
+        """Legacy fallback：system_prompt.txt 已棄用，不再讀取磁碟。"""
+        return DEFAULT_SYSTEM_PROMPT
 
-    def save_system_prompt(self, prompt_text, prompt_file="system_prompt.txt"):
-        with open(prompt_file, "w", encoding="utf-8") as f:
-            f.write(prompt_text)
+    def save_system_prompt(self, prompt_text, prompt_file=None):
+        """Legacy no-op：system_prompt.txt 已棄用，不再寫入磁碟。"""
+        return None
 
     # ════════════════════════════════════════════════════════════
     # SECTION: 模型 DB — 路徑解析 / Schema 初始化（含 Schema Evolution）
@@ -65,7 +65,7 @@ class StorageManager:
 
     def get_db_path(self, model_name):
         safe_model_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', model_name)
-        return f"memory_db_{safe_model_name}.db"
+        return runtime_file(f"memory_db_{safe_model_name}.db")
 
     def _init_db(self, db_path):
         conn = sqlite3.connect(db_path, timeout=15.0)
@@ -1161,7 +1161,7 @@ class StorageManager:
     # SECTION: Users DB — 登入帳號 / 權限 / Auth Rate Limit
     # ════════════════════════════════════════════════════════════
 
-    _USERS_DB = "users.db"
+    _USERS_DB = runtime_file("users.db")
 
     def _init_users_db(self):
         conn = sqlite3.connect(self._USERS_DB, timeout=15.0)
@@ -1628,7 +1628,7 @@ class StorageManager:
     # SECTION: 對話 conversation.db — Schema / Sessions / Messages / Bridge Point
     # ════════════════════════════════════════════════════════════
 
-    _CONV_DB = "conversation.db"
+    _CONV_DB = runtime_file("conversation.db")
 
     def _init_conversation_db(self):
         conn = sqlite3.connect(self._CONV_DB, timeout=15.0)

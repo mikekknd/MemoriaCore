@@ -6,6 +6,7 @@ import os
 import re
 from copy import deepcopy
 from typing import Any
+from core.runtime_paths import runtime_file
 
 
 BOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
@@ -19,8 +20,8 @@ class BotRegistryError(ValueError):
 class BotRegistry:
     """讀寫 bot_configs.json，並處理舊 telegram_bot_token 遷移。"""
 
-    def __init__(self, configs_file: str = "bot_configs.json"):
-        self.configs_file = configs_file
+    def __init__(self, configs_file: str | None = None):
+        self.configs_file = configs_file or runtime_file("bot_configs.json")
 
     def load_configs(self, prefs: dict | None = None) -> list[dict[str, Any]]:
         """讀取所有 bot 設定；首次載入時可由舊 telegram_bot_token 建立 legacy 設定。"""

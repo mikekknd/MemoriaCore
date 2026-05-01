@@ -10,6 +10,7 @@ from api.dependencies import (
     get_embed_model, get_character_manager,
 )
 from core.prompt_manager import get_prompt_manager
+from core.storage_manager import DEFAULT_SYSTEM_PROMPT
 from core.prompt_utils import build_user_prefix, format_latest_user_message_for_llm
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.dialogue_format import (
@@ -210,7 +211,7 @@ def _run_chat_orchestration(
     reply_rules = active_char.get("reply_rules", "Traditional Chinese. NO EMOJIS.")
     tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
-    char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or storage.load_system_prompt()
+    char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or DEFAULT_SYSTEM_PROMPT
     group_participants_block = build_group_participants_block(ctx, char_mgr, character_id)
     log_context = build_llm_log_context(ctx, char_mgr, character_id)
     opening_penalty_mgr = get_opening_penalty_manager()

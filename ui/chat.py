@@ -129,24 +129,6 @@ def render_chat_page(api_base, user_prefs):
 
     st.title(f"💬 對話大廳 - 🎭 {active_char_name}")
 
-    @st.cache_data(ttl=15, show_spinner=False)
-    def _load_system_prompt(_api_base):
-        try:
-            return requests.get(f"{_api_base}/system/prompt", timeout=5).json().get("prompt", "")
-        except Exception:
-            return ""
-
-    with st.expander("⚙️ 全域預設設定 (Global System Prompt)", expanded=False):
-        st.caption("⚠️ 注意：若您已指派特定的**對話角色**，此處的全域設定將會被該角色的**專屬提示詞徹底覆蓋**。此設定僅在沒有角色或角色無提示詞時生效。")
-        current_prompt = _load_system_prompt(api_base)
-        system_prompt_input = st.text_area("System Prompt：", value=current_prompt, height=150)
-        if st.button("💾 儲存提示詞"):
-            try:
-                requests.put(f"{api_base}/system/prompt", json={"prompt": system_prompt_input}, timeout=5)
-                st.success("系統設定已儲存！")
-            except Exception as e:
-                st.error(f"儲存失敗: {e}")
-
     # ── Session 選擇器（側邊欄）──
     with st.sidebar:
         st.subheader("📋 對話紀錄")

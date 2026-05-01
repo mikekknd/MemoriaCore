@@ -511,19 +511,13 @@ curl -X PUT http://localhost:8088/api/v1/system/config \
   -d '{"temperature": 0.5, "memory_hard_base": 0.6}'
 ```
 
-### `GET /system/prompt` — 取得系統 Prompt
+### `GET /system/prompt` — 已棄用
 
-```bash
-curl http://localhost:8088/api/v1/system/prompt
-```
+`system_prompt.txt` 已棄用。此端點回傳 `410 Gone`，請改用 `/character` 管理各角色的 `system_prompt`。
 
-### `PUT /system/prompt` — 更新系統 Prompt
+### `PUT /system/prompt` — 已棄用
 
-```bash
-curl -X PUT http://localhost:8088/api/v1/system/prompt \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "你是一位友善的 AI 助手..."}'
-```
+`system_prompt.txt` 已棄用。此端點回傳 `410 Gone`，請改用 `/character` 管理各角色的 `system_prompt`。
 
 ### `POST /system/consolidate` — 執行記憶合併
 
