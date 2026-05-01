@@ -6,6 +6,7 @@
 import asyncio
 import sys
 import os
+import threading
 from fastapi import HTTPException, Request
 
 # 確保專案根目錄在 Python path 上（api/ 是子目錄）
@@ -21,6 +22,7 @@ from core.character_engine import CharacterManager
 from core.bot_registry import BotRegistry
 from core.persona_sync import PersonaSyncManager
 from core.persona_evolution.snapshot_store import PersonaSnapshotStore
+from core.persona_evolution.initial_seed import ensure_initial_persona_snapshots
 from core.tts_client import MinimaxTTSClient
 from api.telegram_bot import TelegramBotManager
 from api.discord_bot import DiscordBotManager
@@ -46,6 +48,29 @@ db_write_lock = asyncio.Lock()
 _startup_time: float = 0.0
 
 
+# 全部 LLM 任務 key 的單一來源（init_all + reload_router 共用）
+ALL_TASK_KEYS = (
+    "chat", "pipeline", "expand", "compress", "distill",
+    "ep_fuse", "profile", "router", "group_router", "translate",
+    "browser", "character_gen", "persona_sync", "persona_seed",
+)
+# 沒有獨立設定時，預設跟隨 chat 的 provider/model
+TASKS_FALLBACK_TO_CHAT = ("router", "group_router", "translate", "character_gen", "persona_seed")
+
+
+def _build_router(routing_config: dict, providers_map: dict, local_provider) -> "LLMRouter":
+    """根據 routing_config 建立 LLMRouter；單一來源避免兩處任務清單漂移。"""
+    router = LLMRouter()
+    for task_key in ALL_TASK_KEYS:
+        fallback = routing_config.get("chat", {}) if task_key in TASKS_FALLBACK_TO_CHAT else {}
+        cfg = routing_config.get(task_key, fallback)
+        p_name = cfg.get("provider", "Ollama (本地)")
+        m_name = cfg.get("model", "qwen3.5")
+        active_prov = providers_map.get(p_name, local_provider)
+        router.register_route(task_key, active_prov, m_name)
+    return router
+
+
 def init_all():
     """在 FastAPI lifespan startup 時呼叫一次，初始化全部核心物件。"""
     global memory_sys, storage, analyzer, global_router, character_mgr, bot_registry, telegram_bot_mgr, discord_bot_mgr, persona_sync_mgr, persona_snapshot_store, tts_client, embed_model, _startup_time
@@ -61,7 +86,6 @@ def init_all():
     discord_bot_mgr = DiscordBotManager(bot_registry)
     persona_sync_mgr = PersonaSyncManager()
     persona_snapshot_store = PersonaSnapshotStore(storage)
-
     user_prefs = storage.load_prefs()
     tts_client = MinimaxTTSClient.from_prefs(user_prefs)  # None 若未啟用
     embed_model = user_prefs.get("embed_model", "bge-m3:latest")
@@ -85,16 +109,7 @@ def init_all():
 
     # 路由註冊
     routing_config = user_prefs.get("routing_config", {})
-    global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "group_router", "translate", "browser", "character_gen"]
-    for task_key in tasks:
-        # router / group_router / translate / character_gen 預設跟隨 chat 的 provider/model 設定
-        fallback = routing_config.get("chat", {}) if task_key in ("router", "group_router", "translate", "character_gen") else {}
-        cfg = routing_config.get(task_key, fallback)
-        p_name = cfg.get("provider", "Ollama (本地)")
-        m_name = cfg.get("model", "qwen3.5")
-        active_prov = providers_map.get(p_name, local_provider)
-        global_router.register_route(task_key, active_prov, m_name)
+    global_router = _build_router(routing_config, providers_map, local_provider)
 
     # 向量引擎初始化（觸發 ONNX 載入）
     memory_sys.switch_embedding_model(local_provider, embed_model)
@@ -110,9 +125,35 @@ def init_all():
     except Exception as e:
         print(f"[Startup] Embedding warmup 失敗（不影響後續運作）: {e}")
 
+    # 初始 persona snapshot seeding：移到背景 thread，避免雲端 LLM 拖慢啟動
+    # （warmup 之後執行，確保萬一 V1 路徑未來需要 embedder fallback 時 ONNX 已就緒）
+    threading.Thread(
+        target=_seed_initial_snapshots_background,
+        args=(persona_snapshot_store, character_mgr, global_router),
+        daemon=True,
+        name="persona-initial-seed",
+    ).start()
+
     # 注入 storage 給 session_manager（持久化對話紀錄）
     from api.session_manager import session_manager
     session_manager.set_storage(storage)
+
+
+def _seed_initial_snapshots_background(store, char_mgr, router) -> None:
+    """背景執行初始 persona snapshot seeding；任何錯誤都吞下避免炸 thread。"""
+    try:
+        seeded = ensure_initial_persona_snapshots(
+            store,
+            char_mgr.load_characters(),
+            router=router,
+        )
+        if seeded:
+            from core.system_logger import SystemLogger
+            SystemLogger.log_system_event("persona_initial_snapshot_seeded", seeded)
+            print(f"[Startup] 已補上初始 persona snapshot：{seeded}")
+    except Exception as exc:
+        from core.system_logger import SystemLogger
+        SystemLogger.log_error("persona_initial_snapshot_thread", f"background seed failed: {exc}")
 
 
 def reload_tts(prefs: dict | None = None) -> None:
@@ -148,15 +189,7 @@ def reload_router():
     }
 
     routing_config = user_prefs.get("routing_config", {})
-    global_router = LLMRouter()
-    tasks = ["chat", "pipeline", "expand", "compress", "distill", "ep_fuse", "profile", "router", "group_router", "translate", "browser", "character_gen"]
-    for task_key in tasks:
-        fallback = routing_config.get("chat", {}) if task_key in ("router", "group_router", "translate", "character_gen") else {}
-        cfg = routing_config.get(task_key, fallback)
-        p_name = cfg.get("provider", "Ollama (本地)")
-        m_name = cfg.get("model", "qwen3.5")
-        active_prov = providers_map.get(p_name, local_provider)
-        global_router.register_route(task_key, active_prov, m_name)
+    global_router = _build_router(routing_config, providers_map, local_provider)
 
     # 切換向量引擎（可能 embed_model 有變化）
     memory_sys.switch_embedding_model(local_provider, embed_model)

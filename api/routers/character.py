@@ -1,11 +1,35 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-from api.dependencies import get_bot_registry, get_character_manager, get_router, get_storage
+from api.dependencies import (
+    get_bot_registry,
+    get_character_manager,
+    get_persona_snapshot_store,
+    get_router,
+    get_storage,
+)
+from core.persona_evolution.initial_seed import ensure_initial_persona_snapshots
 from core.system_logger import SystemLogger
 from probe_engine import FAST_PERSONA_BEHAVIORAL_TEMPLATE
 import asyncio
 import json
+
+
+def _seed_initial_snapshot_for_character(character: dict) -> None:
+    """背景任務：替剛建立的角色補初始 persona snapshot。錯誤已在內部 log。"""
+    try:
+        seeded = ensure_initial_persona_snapshots(
+            get_persona_snapshot_store(),
+            [character],
+            router=get_router(),
+        )
+        if seeded:
+            SystemLogger.log_system_event("persona_initial_snapshot_seeded", seeded)
+    except Exception as exc:
+        SystemLogger.log_error(
+            "persona_initial_snapshot_upsert",
+            f"background seed failed: character_id={character.get('character_id')}, error={exc}",
+        )
 
 router = APIRouter(prefix="/character", tags=["character"])
 
@@ -42,10 +66,24 @@ async def get_character(character_id: str) -> Dict[str, Any]:
     return char
 
 @router.post("")
-async def upsert_character(profile: CharacterProfileDTO):
+async def upsert_character(profile: CharacterProfileDTO, background_tasks: BackgroundTasks):
     mgr = get_character_manager()
+    existing_id = profile.character_id
+    existed = bool(existing_id and mgr.get_character(existing_id))
     char_id = mgr.upsert_character(profile.model_dump(exclude_none=True))
-    return {"status": "success", "character_id": char_id}
+    seeding_pending = False
+    if not existed:
+        char = mgr.get_character(char_id)
+        if char:
+            # 初始 snapshot seeding 會呼叫 LLM；丟到背景避免阻塞 HTTP response。
+            # 前端可輪詢 /system/personality/snapshots/latest/tree 確認完成。
+            background_tasks.add_task(_seed_initial_snapshot_for_character, char)
+            seeding_pending = True
+    return {
+        "status": "success",
+        "character_id": char_id,
+        "initial_snapshots_pending": seeding_pending,
+    }
 
 @router.delete("/{character_id}")
 async def delete_character(character_id: str):

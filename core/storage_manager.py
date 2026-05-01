@@ -2248,8 +2248,30 @@ class StorageManager:
                 cur.execute("PRAGMA foreign_keys=ON")
                 raise
         elif user_version == 3:
-            self._create_persona_v3_schema(cur)
-            conn.commit()
+            # 健康 v3 DB 啟動不應該動寫鎖。僅當偵測到 persona_dimensions 缺失或
+            # 舊版 v2→v3 migration 留下指向 _persona_snapshots_v2 的壞 FK 時，
+            # 才進入修補流程（重建 child table 必須先關 FK）。
+            cur.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='persona_dimensions'"
+            )
+            needs_repair = cur.fetchone() is None
+            if not needs_repair:
+                cur.execute("PRAGMA foreign_key_list(persona_dimensions)")
+                fk_rows = cur.fetchall()
+                needs_repair = not any(row[2] == "persona_snapshots" for row in fk_rows)
+            if needs_repair:
+                try:
+                    cur.execute("PRAGMA foreign_keys=OFF")
+                    cur.execute("BEGIN IMMEDIATE")
+                    self._create_persona_v3_schema(cur)
+                    conn.commit()
+                    cur.execute("PRAGMA foreign_keys=ON")
+                    print("[StorageManager] persona_snapshots.db: 偵測到壞 FK，已重建 v3 schema。")
+                except Exception:
+                    conn.rollback()
+                    cur.execute("PRAGMA foreign_keys=ON")
+                    raise
         else:
             raise RuntimeError(
                 f"persona_snapshots.db 發現無法識別的 user_version={user_version}"

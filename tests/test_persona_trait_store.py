@@ -75,7 +75,7 @@ def _upd(trait_key, confidence):
 
 
 # ──────────────────────────────────────────────
-# Migration — 新 tmp_path DB 啟動後 PRAGMA user_version 應升到 2
+# Migration — 新 tmp_path DB 啟動後 PRAGMA user_version 應升到 3
 # ──────────────────────────────────────────────
 
 class TestMigration:
@@ -93,6 +93,103 @@ class TestMigration:
         cols = [r[1] for r in cur.fetchall()]
         assert "persona_face" in cols
         conn.close()
+
+    def test_broken_v3_dimension_fk_is_repaired(self, tmp_path):
+        db_path = tmp_path / "broken_v3.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys=OFF")
+        cur.execute("""
+            CREATE TABLE persona_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                persona_face TEXT NOT NULL DEFAULT 'public',
+                version INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                summary TEXT,
+                evolved_prompt TEXT,
+                UNIQUE(character_id, persona_face, version)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE persona_traits (
+                trait_key TEXT PRIMARY KEY,
+                character_id TEXT NOT NULL,
+                persona_face TEXT NOT NULL DEFAULT 'public',
+                name TEXT NOT NULL,
+                created_version INTEGER NOT NULL,
+                last_active_version INTEGER NOT NULL,
+                parent_key TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (parent_key) REFERENCES persona_traits(trait_key) ON DELETE SET NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE persona_dimensions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                confidence_label TEXT,
+                description TEXT NOT NULL,
+                parent_name TEXT,
+                is_active INTEGER DEFAULT 1,
+                FOREIGN KEY (snapshot_id) REFERENCES _persona_snapshots_v2(id) ON DELETE CASCADE
+            )
+        """)
+        cur.execute("PRAGMA user_version = 3")
+        conn.commit()
+        conn.close()
+
+        storage = StorageManager(
+            prefs_file=str(tmp_path / "prefs.json"),
+            history_file=str(tmp_path / "history.json"),
+            persona_snapshot_db_path=str(db_path),
+        )
+        store = PersonaSnapshotStore(storage, embedder=fake_embedder)
+        store.save_snapshot(CHAR, TraitDiff(new_traits=[_new("依戀錨定", "描述")]), "v1", "p")
+
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_key_list(persona_dimensions)")
+        assert cur.fetchall()[0][2] == "persona_snapshots"
+        cur.execute("SELECT COUNT(*) FROM persona_dimensions")
+        assert cur.fetchone()[0] == 1
+        conn.close()
+
+    def test_healthy_v3_startup_does_not_rebuild_schema(self, tmp_path, monkeypatch):
+        """健康 v3 DB 啟動時不應走 schema 重建路徑（避免每次啟動動寫鎖）。"""
+        db_path = tmp_path / "healthy_v3.db"
+        # 第一次啟動：建立健康 v3 schema
+        storage = StorageManager(
+            prefs_file=str(tmp_path / "prefs.json"),
+            history_file=str(tmp_path / "history.json"),
+            persona_snapshot_db_path=str(db_path),
+        )
+        store = PersonaSnapshotStore(storage, embedder=fake_embedder)
+        store.save_snapshot(CHAR, TraitDiff(new_traits=[_new("自律韌性", "描述")]), "v1", "p")
+
+        # 攔截 _create_persona_v3_schema：第二次啟動不應觸發
+        call_count = {"n": 0}
+        original = StorageManager._create_persona_v3_schema
+
+        def wrapped(self, cur):
+            call_count["n"] += 1
+            return original(self, cur)
+
+        monkeypatch.setattr(StorageManager, "_create_persona_v3_schema", wrapped)
+
+        storage2 = StorageManager(
+            prefs_file=str(tmp_path / "prefs.json"),
+            history_file=str(tmp_path / "history.json"),
+            persona_snapshot_db_path=str(db_path),
+        )
+        # 觸發 _init_persona_snapshot_db
+        storage2.get_active_traits(CHAR)
+
+        assert call_count["n"] == 0, "健康 v3 不應重建 schema"
 
     def test_v2_migration_rebuilds_dimensions_fk(self, tmp_path):
         db_path = tmp_path / "persona-v2.db"

@@ -30,6 +30,7 @@ def render_routing_page(api_base, user_prefs=None):
         "group_router": {"desc": "群組發話路由", "help": "多 AI 群組對話中決定下一位應發話的角色。預設跟隨 chat 設定，可指定較輕量的路由模型。"},
         "translate": {"desc": "TTS 語音翻譯", "help": "將角色回覆翻譯為 TTS 目標語言（如日文），獨立於主對話 LLM 執行。預設跟隨 chat 設定，可指定較輕量的翻譯專用模型。"},
         "persona_sync": {"desc": "PersonaProbe 人格反思", "help": "定時呼叫 PersonaProbe 進行深度 6 維度人格分析（每次約 8 次 LLM 呼叫）。建議使用能力較強的模型以確保分析品質。"},
+        "persona_seed": {"desc": "人格初始種子萃取", "help": "新角色建立時從初始設定萃取 3-5 個 root traits 寫入 public/private snapshot。一次性、輕量；預設跟隨 chat 設定。"},
     }
 
     new_routing_config = {}

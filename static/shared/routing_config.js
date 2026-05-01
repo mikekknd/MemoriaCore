@@ -9,6 +9,7 @@ const TASK_INFOS = {
   ep_fuse:           { desc:'情境概覽縫合',              help:'將多段相關的情境記憶合併為一個高密度的綜合概覽。' },
   profile:           { desc:'使用者畫像更新',            help:'從對話中萃取使用者的個人特徵與偏好。' },
   persona_sync:      { desc:'PersonaProbe 人格反思',     help:'定時批次分析對話片段並更新 AI 人格演化。建議使用能力較強的模型以確保分析品質。' },
+  persona_seed:      { desc:'人格初始種子萃取',          help:'新角色建立時從初始設定萃取 3-5 個 root traits 寫入 public/private snapshot。一次性、輕量；預設跟隨 chat 設定。' },
   background_gather: { desc:'背景話題摘要',              help:'在背景將 Tavily 搜尋下來的資料摘要成主動話題。建議不需太強的模型。' },
   character_gen:     { desc:'角色設定生成',              help:'根據簡短描述利用 AI 擴充出完整的角色系統提示詞與心理指標。' },
   router:            { desc:'意圖路由預處理',            help:'工具意圖偵測：判斷是否需要呼叫外部工具並產生過渡語音。建議使用輕量快速模型以降低延遲。' },
