@@ -1,10 +1,9 @@
 # 【環境假設】：Python 3.12, Streamlit 1.30+
 # 已遷移為瘦客戶端：透過 FastAPI REST API 讀寫設定。
 import streamlit as st
+from core.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, normalize_locale, t
 from ui import api_client as requests
 def render_settings_page(api_base, user_prefs=None):
-    st.title("⚙️ 系統設定")
-
     if not user_prefs:
         try:
             resp = requests.get(f"{api_base}/system/config", timeout=5)
@@ -12,6 +11,24 @@ def render_settings_page(api_base, user_prefs=None):
         except Exception:
             user_prefs = {}
             st.error("無法從 API 載入設定。")
+
+    try:
+        current_locale = normalize_locale(user_prefs.get("ui_locale"))
+    except ValueError:
+        current_locale = DEFAULT_LOCALE
+
+    st.title(t("settings.title", current_locale))
+
+    st.divider()
+    st.header(t("settings.general", current_locale))
+    locale_options = list(SUPPORTED_LOCALES)
+    new_ui_locale = st.selectbox(
+        t("settings.ui_locale", current_locale),
+        options=locale_options,
+        index=locale_options.index(current_locale),
+        format_func=lambda loc: t(f"settings.ui_locale.{loc}", current_locale),
+        help=t("settings.ui_locale.help", current_locale),
+    )
 
     # ── ⚠️ SU 身份設定 ───────────────────────────────────────
     st.divider()
@@ -272,6 +289,7 @@ def render_settings_page(api_base, user_prefs=None):
 
     if st.button("💾 儲存系統設定", use_container_width=True, type="primary"):
         update_payload = {
+            "ui_locale": new_ui_locale,
             "openai_key": new_openai_key,
             "or_key": new_or_key,
             "tavily_api_key": new_tavily_key,

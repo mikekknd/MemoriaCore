@@ -236,6 +236,7 @@ class AdminUserDeleteResultDTO(BaseModel):
 
 # ── 系統設定 ──────────────────────────────────────────────
 class SystemConfigDTO(BaseModel):
+    ui_locale: str = "zh-TW"
     routing_config: dict = {}
     temperature: float = 0.7
     ui_alpha: float = 0.6

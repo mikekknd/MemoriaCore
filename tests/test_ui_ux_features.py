@@ -16,7 +16,7 @@ from core.storage_manager import StorageManager
 
 
 def _tmp_dir() -> Path:
-    base = Path("tests") / ".ui_ux_tmp" / uuid.uuid4().hex
+    base = Path(".pyTestTemp") / "ui_ux_tmp" / uuid.uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
     return base
 
@@ -93,17 +93,31 @@ def test_system_config_roundtrips_admin_bypass(monkeypatch):
         assert config.status_code == 200, config.text
         assert config.json()["admin_bypass_enabled"] is False
         assert config.json()["group_chat_turn_delay_seconds"] == 2.0
+        assert config.json()["ui_locale"] == "zh-TW"
+        public_locale = client.get("/api/v1/system/ui-locale")
+        assert public_locale.status_code == 200, public_locale.text
+        assert public_locale.json()["ui_locale"] == "zh-TW"
 
         updated = client.put(
             "/api/v1/system/config",
             headers={"X-CSRF-Token": csrf},
-            json={"admin_bypass_enabled": True, "group_chat_turn_delay_seconds": 0.5},
+            json={"admin_bypass_enabled": True, "group_chat_turn_delay_seconds": 0.5, "ui_locale": "en"},
         )
         assert updated.status_code == 200, updated.text
         assert updated.json()["admin_bypass_enabled"] is True
         assert updated.json()["group_chat_turn_delay_seconds"] == 0.5
+        assert updated.json()["ui_locale"] == "en-US"
         assert storage.load_prefs()["admin_bypass_enabled"] is True
         assert storage.load_prefs()["group_chat_turn_delay_seconds"] == 0.5
+        assert storage.load_prefs()["ui_locale"] == "en-US"
+        assert client.get("/api/v1/system/ui-locale").json()["ui_locale"] == "en-US"
+
+        invalid = client.put(
+            "/api/v1/system/config",
+            headers={"X-CSRF-Token": csrf},
+            json={"ui_locale": "fr-FR"},
+        )
+        assert invalid.status_code in (400, 422), invalid.text
     finally:
         deps.storage = None
         shutil.rmtree(base, ignore_errors=True)

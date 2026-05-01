@@ -34,30 +34,31 @@ body { height:100vh; overflow:hidden; }
   <div class="topbar">
     <div class="brand">MemoriaCore</div>
     <div class="nav">
-      <button class="active" data-pane="chat" onclick="switchPane(this)">Chat</button>
-      <button data-pane="persona" onclick="switchPane(this)">人格演化</button>
-      <button data-pane="profile" onclick="switchPane(this)">Profile</button>
+      <button class="active" data-pane="chat" onclick="switchPane(this)" data-i18n="app.nav.chat">Chat</button>
+      <button data-pane="persona" onclick="switchPane(this)" data-i18n="app.nav.persona">人格演化</button>
+      <button data-pane="profile" onclick="switchPane(this)" data-i18n="app.nav.profile">Profile</button>
     </div>
     <div class="actions">
       <span class="user-text" id="userText"></span>
-      <button class="admin-only" id="dashboardBtn" onclick="location.href='/static/dashboard.html'">Dashboard</button>
-      <button onclick="logout()">Logout</button>
+      <button class="admin-only" id="dashboardBtn" onclick="location.href='/static/dashboard.html'" data-i18n="app.actions.dashboard">Dashboard</button>
+      <button onclick="logout()" data-i18n="app.actions.logout">Logout</button>
     </div>
   </div>
   <main class="content">
     <section class="pane active" data-pane="chat">
-      <iframe src="/static/chat.html" title="MemoriaCore Chat"></iframe>
+      <iframe src="/static/chat.html" title="MemoriaCore Chat" data-i18n-title="app.iframe.chat"></iframe>
     </section>
     <section class="pane" data-pane="persona">
-      <iframe src="/static/persona_tree.html?public=true" title="Public Persona Evolution"></iframe>
+      <iframe src="/static/persona_tree.html?public=true" title="Public Persona Evolution" data-i18n-title="app.iframe.persona_public"></iframe>
     </section>
     <section class="pane" data-pane="profile">
-      <iframe src="/static/user_profile.html" title="User Profile"></iframe>
+      <iframe src="/static/user_profile.html" title="User Profile" data-i18n-title="app.iframe.profile"></iframe>
     </section>
   </main>
 </div>
 
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', initApp);
 
@@ -67,6 +68,8 @@ async function initApp() {
     if (!r.ok) throw 0;
     const me = await r.json();
     storeCsrf(me.csrf_token);
+    await MCI18N.init();
+    MCI18N.apply();
     document.getElementById('userText').textContent = `${me.username} (${me.role})`;
     if (me.role === 'admin') {
       document.getElementById('dashboardBtn').style.display = 'inline-block';

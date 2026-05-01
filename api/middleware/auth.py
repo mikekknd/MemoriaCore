@@ -11,6 +11,7 @@ from api.dependencies import get_storage
 
 PUBLIC_ROUTES = {
     ("GET", "/api/v1/health"),
+    ("GET", "/api/v1/system/ui-locale"),
     ("POST", "/api/v1/auth/bypass"),
     ("POST", "/api/v1/auth/login"),
     ("POST", "/api/v1/auth/register"),

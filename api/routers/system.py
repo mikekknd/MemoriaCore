@@ -11,16 +11,31 @@ from api.models.requests import (
     PreferenceAggregateRequest, SyntheticRequest,
 )
 from api.models.responses import SystemConfigDTO
+from core.i18n import DEFAULT_LOCALE, normalize_locale
 
 router = APIRouter(prefix="/system", tags=["system"])
 
 
 # ── 系統設定 ──────────────────────────────────────────────
+def _resolve_ui_locale(prefs: dict) -> str:
+    try:
+        return normalize_locale(prefs.get("ui_locale"))
+    except ValueError:
+        return DEFAULT_LOCALE
+
+
+@router.get("/ui-locale")
+async def get_ui_locale():
+    return {"ui_locale": _resolve_ui_locale(get_storage().load_prefs())}
+
+
 @router.get("/config", response_model=SystemConfigDTO)
 async def get_config():
     sto = get_storage()
     prefs = sto.load_prefs()
+    ui_locale = _resolve_ui_locale(prefs)
     return SystemConfigDTO(
+        ui_locale=ui_locale,
         routing_config=prefs.get("routing_config", {}),
         temperature=prefs.get("temperature", 0.7),
         ui_alpha=prefs.get("ui_alpha", 0.6),

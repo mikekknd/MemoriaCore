@@ -114,8 +114,11 @@ _recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
 ⚠️ DEPRECATED: `ui/chat.py` 與 `ui/history.py` 已移除，請勿參考。
 
 凡涉及以下項目的改動，Broader UI 都要同步更新：
-- Routing config 的任務清單（`TASK_INFOS` 在 dashboard.html 是硬編碼）
+- Routing config 的任務清單（`static/shared/routing_config.js` 的 `TASK_KEYS` 與 `static/locales/*.json` 的 `routing.tasks.*` 必須同步）
 - `RetrievalContextDTO` 新增欄位
+
+**i18n-ready 參考文件**
+若要修改或延伸多語系 / i18n 相關工程，先查 `docs/i18n-ready-backlog.md`。該文件是後續 i18n backlog、已接線範圍、維護提醒的單一參考來源；`CLAUDE.md` 不重複維護詳細清單，避免兩份內容漂移。
 
 **Tests**
 使用 `tmp_path` 隔離 SQLite DB，禁止讀寫根目錄 `.db` 檔；不 mock `StorageManager` async lock。

@@ -32,21 +32,24 @@ body { height:100vh; overflow:hidden; }
 <body>
 <div class="page">
   <div class="routing-container">
-    <h2>Task Routing</h2>
+    <h2 data-i18n="routing.title">Task Routing</h2>
     <div id="routeList"></div>
   </div>
   <div class="save-bar">
-    <button onclick="saveRouting()">save routing</button>
+    <button onclick="saveRouting()" data-i18n="routing.save">save routing</button>
   </div>
 </div>
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js"></script>
 <script src="/static/shared/routing_config.js"></script>
 <script>
 let routingConfig = {};
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await MCI18N.init();
+  MCI18N.apply();
   loadRouting();
 });
 
@@ -57,19 +60,19 @@ async function loadRouting() {
     routingConfig = cfg.routing_config || {};
     renderRouting();
   } catch {
-    toast('Failed to load routing config', 'error');
+    toast(MCI18N.t('routing.toast.load_failed'), 'error');
   }
 }
 
 function renderRouting() {
   const container = document.getElementById('routeList');
   let html = '';
-  for (const [key, info] of Object.entries(TASK_INFOS)) {
+  for (const [key, info] of Object.entries(taskInfos())) {
     const saved = routingConfig[key] || {};
     const prov = saved.provider || 'Ollama (本地)';
     const model = saved.model || 'qwen3.5';
     const provShort = {'Ollama (本地)':'Ollama','llama.cpp (本地)':'llama.cpp','OpenAI (雲端)':'OpenAI','OpenRouter (雲端)':'OpenRouter'}[prov] || prov;
-    const provOptions = PROVIDERS.map(p => `<option value="${escapeHtml(p)}" ${p===prov?'selected':''}>${escapeHtml(p)}</option>`).join('');
+    const provOptions = PROVIDERS.map(p => `<option value="${escapeHtml(p)}" ${p===prov?'selected':''}>${escapeHtml(providerLabel(p))}</option>`).join('');
 
     html += `<div class="route-card" data-key="${key}">
       <div class="route-header" onclick="this.parentElement.classList.toggle('expanded')">
@@ -80,11 +83,11 @@ function renderRouting() {
       </div>
       <div class="route-body">
         <div class="route-field">
-          <label>Provider</label>
+          <label>${escapeHtml(MCI18N.t('routing.provider'))}</label>
           <select data-route="${key}" data-field="provider">${provOptions}</select>
         </div>
         <div class="route-field">
-          <label>Model</label>
+          <label>${escapeHtml(MCI18N.t('routing.model'))}</label>
           <input type="text" data-route="${key}" data-field="model" value="${escapeHtml(model)}">
         </div>
         <div class="route-help">${escapeHtml(info.help)}</div>
@@ -96,7 +99,7 @@ function renderRouting() {
 
 async function saveRouting() {
   const newConfig = {};
-  for (const key of Object.keys(TASK_INFOS)) {
+  for (const key of TASK_KEYS) {
     const provEl = document.querySelector(`select[data-route="${key}"][data-field="provider"]`);
     const modelEl = document.querySelector(`input[data-route="${key}"][data-field="model"]`);
     newConfig[key] = {
@@ -113,9 +116,9 @@ async function saveRouting() {
     if (!r.ok) throw 0;
     routingConfig = newConfig;
     renderRouting();
-    toast('Routing saved', 'success');
+    toast(MCI18N.t('routing.toast.saved'), 'success');
   } catch {
-    toast('Failed to save routing', 'error');
+    toast(MCI18N.t('routing.toast.save_failed'), 'error');
   }
 }
 </script>

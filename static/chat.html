@@ -82,34 +82,35 @@ body { height:100vh; overflow:hidden; }
 <div class="chat-shell">
   <div class="chat-header">
     <select id="sessionSelect" class="session-select" onchange="switchSession(this.value)">
-      <option value="">-- select session --</option>
+      <option value="" data-i18n="chat.session.placeholder">-- select session --</option>
     </select>
     <div id="groupPicker" class="group-picker">
-      <button type="button" class="group-picker-btn" onclick="toggleGroupPicker(event)" title="最多 6 個 AI 同時參與對話">
-        <span id="groupPickerLabel">select AIs</span>
+      <button type="button" class="group-picker-btn" onclick="toggleGroupPicker(event)" title="最多 6 個 AI 同時參與對話" data-i18n-title="chat.group.title">
+        <span id="groupPickerLabel" data-i18n="chat.group.select">select AIs</span>
         <span>▾</span>
       </button>
       <div class="group-picker-panel">
         <div class="group-picker-hint">
-          <span>最多 6 個 AI 同時參與對話</span>
+          <span id="groupPickerHint"></span>
           <span class="hint-count" id="groupPickerCount">0/6</span>
         </div>
         <div id="groupCharacterList"></div>
       </div>
     </div>
     <span class="session-chip" id="statusSession"></span>
-    <button onclick="createNewSession()">+ new</button>
-    <button onclick="deleteCurrentSession()" title="delete current session">x</button>
+    <button onclick="createNewSession()" data-i18n="chat.button.new">+ new</button>
+    <button onclick="deleteCurrentSession()" title="delete current session" data-i18n-title="chat.button.delete_title">x</button>
   </div>
   <div class="messages" id="messages"></div>
   <div class="chat-input">
-    <textarea id="chatInput" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" rows="1" onkeydown="handleInputKey(event)" oninput="autoResize(this)"></textarea>
-    <button class="send-btn" id="sendBtn" onclick="sendMessage()">send</button>
+    <textarea id="chatInput" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" data-i18n-placeholder="chat.input.placeholder" rows="1" onkeydown="handleInputKey(event)" oninput="autoResize(this)"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()" data-i18n="chat.send">send</button>
   </div>
 </div>
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js"></script>
 <script>
 let currentSessionId = null;
 let currentCharacterId = null;
@@ -132,7 +133,13 @@ marked.setOptions({
   breaks: true,
 });
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await MCI18N.init();
+  MCI18N.apply();
+  const pickerBtn = document.querySelector('.group-picker-btn');
+  if (pickerBtn) pickerBtn.title = MCI18N.t('chat.group.title', {count: MAX_SESSION_CHARACTERS});
+  const groupHint = document.getElementById('groupPickerHint');
+  if (groupHint) groupHint.textContent = MCI18N.t('chat.group.hint', {count: MAX_SESSION_CHARACTERS});
   loadCharacters()
     .finally(() => loadSessionList())
     .then(() => autoRestoreOrCreate());
@@ -167,13 +174,13 @@ async function loadCharacters() {
     }
     syncCharacterSelect();
   } catch {
-    toast('Failed to load AI list', 'error');
+    toast(MCI18N.t('chat.toast.load_ai_failed'), 'error');
   }
 }
 
 function characterNameForId(characterId) {
   const char = charactersById.get(characterId);
-  return char ? (char.name || characterId) : (characterId || 'AI');
+  return char ? (char.name || characterId) : (characterId || MCI18N.t('chat.character.fallback'));
 }
 
 function syncCharacterSelect() {
@@ -208,11 +215,11 @@ function syncGroupPickerLabel() {
   if (!label) return;
   const ids = selectedGroupCharacterIds();
   if (!ids.length) {
-    label.textContent = 'select at least one AI';
+    label.textContent = MCI18N.t('chat.group.select_one');
   } else if (ids.length <= 2) {
     label.textContent = ids.map(characterNameForId).join(', ');
   } else {
-    label.textContent = `${ids.length}/${MAX_SESSION_CHARACTERS} AIs selected`;
+    label.textContent = MCI18N.t('chat.group.selected', {count: ids.length, max: MAX_SESSION_CHARACTERS});
   }
   currentCharacterIds = ids;
   currentCharacterId = ids[0] || currentCharacterId;
@@ -256,9 +263,9 @@ function sessionCharacterLabel(session) {
   const ids = session.character_ids && session.character_ids.length ? session.character_ids : [session.character_id];
   const names = ids.map(characterNameForId);
   if ((session.session_mode || 'single') === 'group' || ids.length > 1) {
-    return `${session.group_name || 'Group'}: ${names.join(', ')}`;
+    return `${session.group_name || MCI18N.t('chat.group.default_name')}: ${names.join(', ')}`;
   }
-  return names[0] || 'AI';
+  return names[0] || MCI18N.t('chat.character.fallback');
 }
 
 async function loadSessionList() {
@@ -266,14 +273,14 @@ async function loadSessionList() {
     const r = await fetch(`${API}/session/history?limit=30`);
     const sessions = await r.json();
     const sel = document.getElementById('sessionSelect');
-    sel.innerHTML = '<option value="">-- select session --</option>';
+    sel.innerHTML = `<option value="">${escapeHtml(MCI18N.t('chat.session.placeholder'))}</option>`;
     sessions.forEach(s => {
       const opt = document.createElement('option');
       opt.value = s.session_id;
-      const dt = new Date(s.created_at).toLocaleString('zh-TW', {hour12:false});
+      const dt = new Date(s.created_at).toLocaleString(MCI18N.locale, {hour12:false});
       const ch = s.channel || '';
       const ai = sessionCharacterLabel(s);
-      opt.textContent = `${dt} [${ch}] ${ai} (${s.message_count} msgs)`;
+      opt.textContent = MCI18N.t('chat.session.option', {datetime: dt, channel: ch, ai, count: s.message_count});
       if (s.session_id === currentSessionId) opt.selected = true;
       sel.appendChild(opt);
     });
@@ -294,7 +301,7 @@ async function createNewSession(characterIds = selectedGroupCharacterIds()) {
   try {
     const ids = [...new Set((characterIds || []).filter(Boolean))];
     if (!ids.length) {
-      toast('Select at least one AI', 'info');
+      toast(MCI18N.t('chat.group.select_one'), 'info');
       return false;
     }
     const body = {channel: 'dashboard', character_ids: ids};
@@ -314,10 +321,10 @@ async function createNewSession(characterIds = selectedGroupCharacterIds()) {
     document.getElementById('messages').innerHTML = '';
     await loadSessionList();
     document.getElementById('sessionSelect').value = currentSessionId;
-    toast('New session created', 'success');
+    toast(MCI18N.t('chat.toast.new_session_created'), 'success');
     return true;
   } catch {
-    toast('Failed to create session', 'error');
+    toast(MCI18N.t('chat.toast.create_session_failed'), 'error');
     return false;
   }
 }
@@ -345,21 +352,21 @@ async function switchSession(sessionId) {
     });
     scrollToBottom();
   } catch {
-    toast('Failed to load session', 'error');
+    toast(MCI18N.t('chat.toast.load_session_failed'), 'error');
   }
 }
 
 async function deleteCurrentSession() {
   if (!currentSessionId) return;
-  if (!confirm('Delete current session?')) return;
+  if (!confirm(MCI18N.t('chat.confirm.delete_session'))) return;
   try {
     await fetch(`${API}/session/history/${currentSessionId}`, {method:'DELETE'});
     currentSessionId = null;
     document.getElementById('messages').innerHTML = '';
     updateSessionDisplay();
     await loadSessionList();
-    toast('Session deleted', 'info');
-  } catch { toast('Failed to delete session', 'error'); }
+    toast(MCI18N.t('chat.toast.session_deleted'), 'info');
+  } catch { toast(MCI18N.t('chat.toast.delete_session_failed'), 'error'); }
 }
 
 function updateSessionDisplay() {
@@ -429,7 +436,7 @@ function _showTtsPlayButton(dataUrl) {
     border-radius:20px; cursor:pointer; font-size:14px;
     box-shadow:0 2px 8px rgba(0,0,0,0.3); user-select:none;
   `;
-  btn.innerHTML = '🔊 點擊播放語音';
+  btn.textContent = MCI18N.t('chat.tts.manual_play');
   btn.onclick = () => {
     _ttsAudio = new Audio(dataUrl);
     _ttsAudio.addEventListener('ended', playNextTtsAudio, {once:true});
@@ -454,11 +461,11 @@ async function sendMessage() {
   if (!content || isSending) return;
   const rosterIds = selectedGroupCharacterIds();
   if (!rosterIds.length) {
-    toast('Select at least one AI', 'info');
+    toast(MCI18N.t('chat.group.select_one'), 'info');
     return;
   }
   if (rosterIds.length > MAX_SESSION_CHARACTERS) {
-    toast(`最多 ${MAX_SESSION_CHARACTERS} 個 AI 同時參與對話`, 'error');
+    toast(MCI18N.t('chat.group.limit_error', {count: MAX_SESSION_CHARACTERS}), 'error');
     return;
   }
 
@@ -526,10 +533,10 @@ async function sendMessage() {
           if (event.action === 'calling') {
             toolStatusEl = document.createElement('div');
             toolStatusEl.className = 'msg system-info tool-status';
-            toolStatusEl.innerHTML = `<span class="spinner"></span>${escapeHtml(event.message || event.tool_name || 'calling tool...')}`;
+            toolStatusEl.innerHTML = `<span class="spinner"></span>${escapeHtml(event.message || event.tool_name || MCI18N.t('chat.tool.calling'))}`;
             document.getElementById('messages').insertBefore(toolStatusEl, firstMsgEl);
           } else if (event.action === 'complete' && toolStatusEl) {
-            toolStatusEl.innerHTML = `&#10003; ${escapeHtml(event.message || 'tool complete')}`;
+            toolStatusEl.innerHTML = `&#10003; ${escapeHtml(event.message || MCI18N.t('chat.tool.complete'))}`;
             toolStatusEl.style.color = 'var(--accent2)';
             toolStatusEl = null;
           }
@@ -542,7 +549,7 @@ async function sendMessage() {
           currentCharacterIds = event.active_character_ids || currentCharacterIds;
           currentCharacterId = currentCharacterIds[0] || currentCharacterId;
           currentSessionMode = event.session_mode || (currentCharacterIds.length > 1 ? 'group' : 'single');
-          appendSystemEvent(event.content || 'AI roster changed', firstMsgEl);
+          appendSystemEvent(event.content || MCI18N.t('chat.roster.changed'), firstMsgEl);
         } else if (event.type === 'error') {
           if (receivedAnyResult) {
             clearTypingPlaceholders(resultEls);
@@ -589,7 +596,7 @@ async function sendMessage() {
           if ((event.turn_count || 0) === 0) {
             const targetEl = resultEls.get(0) || firstMsgEl;
             targetEl.classList.remove('typing');
-            targetEl.querySelector('.md-content').textContent = '（無回應）';
+            targetEl.querySelector('.md-content').textContent = MCI18N.t('chat.empty_reply');
           }
         } else if (event.type === 'tts_audio') {
           console.log('[TTS] SSE 收到 tts_audio 事件，format:', event.format, 'data len:', (event.data||'').length);
@@ -605,7 +612,7 @@ async function sendMessage() {
     } else {
       const targetEl = resultEls.get(0) || firstMsgEl;
       targetEl.classList.remove('typing');
-      targetEl.querySelector('.md-content').innerHTML = `<span style="color:var(--error)">Connection error: ${escapeHtml(String(e))}</span>`;
+      targetEl.querySelector('.md-content').innerHTML = `<span style="color:var(--error)">${escapeHtml(MCI18N.t('chat.error.connection', {message: String(e)}))}</span>`;
     }
   }
 
@@ -672,11 +679,11 @@ function addMessageIdBadge(msgEl, messageId) {
   const badge = document.createElement('span');
   badge.className = 'msg-id';
   badge.textContent = `#${messageId}`;
-  badge.title = 'Click to copy message_id';
+  badge.title = MCI18N.t('chat.message_id.copy_title');
   badge.onclick = (event) => {
     event.stopPropagation();
     navigator.clipboard?.writeText(String(messageId));
-    toast(`Copied message_id #${messageId}`, 'info');
+    toast(MCI18N.t('chat.toast.message_id_copied', {id: messageId}), 'info');
   };
   msgEl.insertBefore(badge, msgEl.firstChild);
 }
@@ -745,7 +752,7 @@ function buildDebugPanel(data) {
   const wrapper = document.createElement('div');
   const toggle = document.createElement('div');
   toggle.className = 'debug-toggle';
-  toggle.textContent = '[ debug info ]';
+  toggle.textContent = MCI18N.t('chat.debug.toggle');
   const panel = document.createElement('div');
   panel.className = 'debug-panel';
   toggle.onclick = () => panel.classList.toggle('open');
@@ -754,7 +761,7 @@ function buildDebugPanel(data) {
   let html = '';
   if (ctx.perf_timing && ctx.perf_timing.steps) {
     const maxMs = Math.max(...ctx.perf_timing.steps.map(s => s.ms), 1);
-    html += `<div class="debug-section"><div class="debug-section-title">Performance (${ctx.perf_timing.total_ms?.toFixed(0) || '?'}ms)</div>`;
+    html += `<div class="debug-section"><div class="debug-section-title">${escapeHtml(MCI18N.t('chat.debug.performance', {ms: ctx.perf_timing.total_ms?.toFixed(0) || '?'}))}</div>`;
     ctx.perf_timing.steps.forEach(s => {
       const pct = (s.ms / maxMs * 100).toFixed(0);
       html += `<div class="perf-bar-row">
@@ -767,7 +774,7 @@ function buildDebugPanel(data) {
   }
 
   if (ctx.block_details && ctx.block_details.length) {
-    html += `<div class="debug-section"><div class="debug-section-title">Memory Blocks (${ctx.block_count || ctx.block_details.length}, threshold: ${ctx.threshold}, hard: ${ctx.hard_base})</div>`;
+    html += `<div class="debug-section"><div class="debug-section-title">${escapeHtml(MCI18N.t('chat.debug.memory_blocks', {count: ctx.block_count || ctx.block_details.length, threshold: ctx.threshold, hard_base: ctx.hard_base}))}</div>`;
     ctx.block_details.forEach(b => {
       html += `<div class="block-detail">
         <strong>#${b.id}</strong> ${escapeHtml(b.overview || '')}
@@ -782,13 +789,13 @@ function buildDebugPanel(data) {
   }
 
   if (ctx.core_debug_text) {
-    html += `<div class="debug-section"><div class="debug-section-title">Core Cognition</div><pre>${escapeHtml(ctx.core_debug_text)}</pre></div>`;
+    html += `<div class="debug-section"><div class="debug-section-title">${escapeHtml(MCI18N.t('chat.debug.core_cognition'))}</div><pre>${escapeHtml(ctx.core_debug_text)}</pre></div>`;
   }
   if (ctx.profile_debug_text) {
-    html += `<div class="debug-section"><div class="debug-section-title">User Profile</div><pre>${escapeHtml(ctx.profile_debug_text)}</pre></div>`;
+    html += `<div class="debug-section"><div class="debug-section-title">${escapeHtml(MCI18N.t('chat.debug.user_profile'))}</div><pre>${escapeHtml(ctx.profile_debug_text)}</pre></div>`;
   }
   if (ctx.expanded_keywords || ctx.inherited_tags) {
-    html += `<div class="debug-section"><div class="debug-section-title">Retrieval Context</div><pre>`;
+    html += `<div class="debug-section"><div class="debug-section-title">${escapeHtml(MCI18N.t('chat.debug.retrieval_context'))}</div><pre>`;
     html += `query: ${escapeHtml(ctx.original_query || '')}\n`;
     html += `expanded: ${escapeHtml(ctx.expanded_keywords || '')}\n`;
     html += `inherited: ${escapeHtml(JSON.stringify(ctx.inherited_tags || []))}`;
@@ -798,7 +805,7 @@ function buildDebugPanel(data) {
     html += `</pre></div>`;
   }
   if (data.extracted_entities && data.extracted_entities.length) {
-    html += `<div class="debug-section"><div class="debug-section-title">Extracted Entities</div><div>`;
+    html += `<div class="debug-section"><div class="debug-section-title">${escapeHtml(MCI18N.t('chat.debug.extracted_entities'))}</div><div>`;
     data.extracted_entities.forEach(e => {
       html += `<span style="display:inline-block;background:var(--surface2);padding:2px 8px;border-radius:4px;margin:2px;font-size:11px;">${escapeHtml(e)}</span>`;
     });
@@ -807,7 +814,7 @@ function buildDebugPanel(data) {
   if (ctx.dynamic_prompt) {
     html += `<div class="debug-section">
       <div class="debug-section-title" style="cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-        Dynamic Prompt (click to toggle)
+        ${escapeHtml(MCI18N.t('chat.debug.dynamic_prompt'))}
       </div>
       <pre style="display:none;max-height:300px;overflow-y:auto;">${escapeHtml(ctx.dynamic_prompt)}</pre>
     </div>`;

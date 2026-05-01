@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional
 
 from api.auth_utils import WEAK_PASSWORDS
+from core.i18n import normalize_locale
 
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
@@ -54,6 +55,7 @@ class SyntheticRequest(BaseModel):
 
 class ConfigUpdateRequest(BaseModel):
     """部分更新：僅提供需要修改的欄位"""
+    ui_locale: Optional[str] = None
     routing_config: Optional[dict] = None
     temperature: Optional[float] = None
     ui_alpha: Optional[float] = None
@@ -101,6 +103,13 @@ class ConfigUpdateRequest(BaseModel):
     #   1. 確認 /system/config API 已透過防火牆或 API Key 做存取控制
     #   2. 確認 server 只暴露於信任的網路區段（勿對外網開放）
     su_user_id: Optional[str] = None
+
+    @field_validator("ui_locale")
+    @classmethod
+    def validate_ui_locale(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return normalize_locale(value)
 
 
 class ExpandQueryRequest(BaseModel):

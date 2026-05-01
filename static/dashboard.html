@@ -48,73 +48,74 @@ body { height:100vh; overflow:hidden; }
 <body>
 <div class="status-bar">
   <div class="status-dot" id="statusDot"></div>
-  <span class="status-text" id="statusText">connecting...</span>
+  <span class="status-text" id="statusText" data-i18n="dashboard.status.connecting">connecting...</span>
   <div class="status-actions">
     <span class="status-text" id="userText"></span>
-    <button onclick="openProfile()">profile</button>
-    <button onclick="logout()">logout</button>
+    <button onclick="openProfile()" data-i18n="dashboard.action.profile">profile</button>
+    <button onclick="logout()" data-i18n="dashboard.action.logout">logout</button>
   </div>
 </div>
 
 <div class="dashboard">
   <div class="panel-left" id="panelLeft">
-    <iframe id="chatFrame" src="/static/chat.html" title="MemoriaCore Chat"></iframe>
+    <iframe id="chatFrame" src="/static/chat.html" title="MemoriaCore Chat" data-i18n-title="dashboard.iframe.chat"></iframe>
   </div>
 
   <div class="resize-handle" id="resizer"></div>
 
   <div class="panel-right">
     <div class="tab-bar">
-      <button class="tab-btn active" data-tab="viewer" onclick="switchTab(this)">Log / DB</button>
-      <button class="tab-btn" data-tab="routing" onclick="switchTab(this)">routing</button>
-      <button class="tab-btn" data-tab="prompts" onclick="switchTab(this)">Prompts</button>
-      <button class="tab-btn" data-tab="bots" onclick="switchTab(this)">Bots</button>
-      <button class="tab-btn" data-tab="persona" onclick="switchTab(this)">人格演化</button>
-      <button class="tab-btn" data-tab="users" onclick="switchTab(this)">Users</button>
+      <button class="tab-btn active" data-tab="viewer" onclick="switchTab(this)" data-i18n="dashboard.tab.viewer">Log / DB</button>
+      <button class="tab-btn" data-tab="routing" onclick="switchTab(this)" data-i18n="dashboard.tab.routing">routing</button>
+      <button class="tab-btn" data-tab="prompts" onclick="switchTab(this)" data-i18n="dashboard.tab.prompts">Prompts</button>
+      <button class="tab-btn" data-tab="bots" onclick="switchTab(this)" data-i18n="dashboard.tab.bots">Bots</button>
+      <button class="tab-btn" data-tab="persona" onclick="switchTab(this)" data-i18n="dashboard.tab.persona">人格演化</button>
+      <button class="tab-btn" data-tab="users" onclick="switchTab(this)" data-i18n="dashboard.tab.users">Users</button>
     </div>
     <div class="tab-content">
       <div class="tab-pane active" data-pane="viewer">
         <div class="viewer-toolbar">
-          <button class="active" onclick="setViewerMode('both',this)">side by side</button>
-          <button onclick="setViewerMode('log',this)">Log only</button>
-          <button onclick="setViewerMode('db',this)">DB only</button>
+          <button class="active" onclick="setViewerMode('both',this)" data-i18n="dashboard.viewer.both">side by side</button>
+          <button onclick="setViewerMode('log',this)" data-i18n="dashboard.viewer.log_only">Log only</button>
+          <button onclick="setViewerMode('db',this)" data-i18n="dashboard.viewer.db_only">DB only</button>
           <span style="margin-left:auto"></span>
-          <button onclick="reloadLogViewer()">reload Log</button>
+          <button onclick="reloadLogViewer()" data-i18n="dashboard.viewer.reload_log">reload Log</button>
         </div>
         <div class="viewer-frames" id="viewerFrames">
-          <iframe id="logFrame" src="/static/log_viewer.html?api=true" title="Log Viewer"></iframe>
-          <iframe id="dbFrame" src="/static/db_viewer.html" title="DB Viewer"></iframe>
+          <iframe id="logFrame" src="/static/log_viewer.html?api=true" title="Log Viewer" data-i18n-title="dashboard.iframe.log"></iframe>
+          <iframe id="dbFrame" src="/static/db_viewer.html" title="DB Viewer" data-i18n-title="dashboard.iframe.db"></iframe>
         </div>
       </div>
 
       <div class="tab-pane" data-pane="routing">
-        <iframe src="/static/routing.html" title="Task Routing"></iframe>
+        <iframe src="/static/routing.html" title="Task Routing" data-i18n-title="dashboard.iframe.routing"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="prompts">
-        <iframe src="/static/prompts.html" title="Prompt Management"></iframe>
+        <iframe src="/static/prompts.html" title="Prompt Management" data-i18n-title="dashboard.iframe.prompts"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="bots">
-        <iframe src="/static/bots.html" title="Bot Management"></iframe>
+        <iframe src="/static/bots.html" title="Bot Management" data-i18n-title="dashboard.iframe.bots"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="persona">
-        <iframe id="personaTreeFrame" src="/static/persona_tree.html" title="Persona Evolution"></iframe>
+        <iframe id="personaTreeFrame" src="/static/persona_tree.html" title="Persona Evolution" data-i18n-title="dashboard.iframe.persona"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="users">
-        <iframe src="/static/users.html" title="User Management"></iframe>
+        <iframe src="/static/users.html" title="User Management" data-i18n-title="dashboard.iframe.users"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="profile">
-        <iframe id="profileFrame" src="/static/user_profile.html" title="User Profile"></iframe>
+        <iframe id="profileFrame" src="/static/user_profile.html" title="User Profile" data-i18n-title="dashboard.iframe.profile"></iframe>
       </div>
     </div>
   </div>
 </div>
 
 <script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   initDashboard();
@@ -123,6 +124,8 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initDashboard() {
   const ok = await requireLogin();
   if (!ok) return;
+  await MCI18N.init();
+  MCI18N.apply();
   checkHealth();
   setInterval(checkHealth, 15000);
   initResizer();
@@ -151,13 +154,13 @@ async function checkHealth() {
     const r = await fetch(`${API}/health`, {signal: AbortSignal.timeout(3000)});
     if (r.ok) {
       document.getElementById('statusDot').classList.add('ok');
-      document.getElementById('statusText').textContent = 'connected';
+      document.getElementById('statusText').textContent = MCI18N.t('dashboard.status.connected');
     } else {
       throw 0;
     }
   } catch {
     document.getElementById('statusDot').classList.remove('ok');
-    document.getElementById('statusText').textContent = 'disconnected';
+    document.getElementById('statusText').textContent = MCI18N.t('dashboard.status.disconnected');
   }
 }
 
