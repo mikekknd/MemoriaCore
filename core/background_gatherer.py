@@ -127,6 +127,10 @@ async def start_background_gather_loop(
         try:
             now = datetime.now()
             if _next_gather_time and now >= _next_gather_time:
+                from api.dependencies import is_db_maintenance_mode
+                if is_db_maintenance_mode():
+                    await asyncio.sleep(10)
+                    continue
                 SystemLogger.log_system_event("BackgroundGather","觸發背景話題蒐集任務...")
                 scope = _resolve_background_gather_scope(storage)
                 if scope is None:

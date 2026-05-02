@@ -32,6 +32,9 @@ async def list_logs(
     offset: int = Query(0, ge=0),
     type: str | None = Query(None),
     category: str | None = Query(None),
+    log_id: str | None = Query(None),
+    trace_seq: int | None = Query(None),
+    llm_call_id: str | None = Query(None),
 ):
     log_path = _get_log_path()
     if not os.path.exists(log_path):
@@ -53,6 +56,12 @@ async def list_logs(
             if type and entry.get("type") != type:
                 continue
             if category and entry.get("category") != category:
+                continue
+            if log_id and entry.get("log_id") != log_id:
+                continue
+            if trace_seq is not None and entry.get("trace_seq") != trace_seq:
+                continue
+            if llm_call_id and entry.get("llm_call_id") != llm_call_id:
                 continue
             entries.append((line_index, entry))
 

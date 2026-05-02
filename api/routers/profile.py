@@ -1,7 +1,10 @@
 """使用者畫像 CRUD + 語意搜尋端點"""
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
-from api.dependencies import get_current_user, get_memory_sys, get_storage, get_embed_model, db_write_lock
+from api.dependencies import (
+    get_current_user, get_memory_sys, get_storage, get_embed_model, db_write_lock,
+    require_db_writes_enabled,
+)
 from api.models.requests import ProfileUpsertRequest, ProfileSearchRequest
 from api.models.responses import ProfileFactDTO, ProfileSearchResultDTO
 
@@ -60,6 +63,7 @@ async def upsert_profile(
     body: ProfileUpsertRequest,
     current_user: dict = Depends(get_current_user),
 ):
+    require_db_writes_enabled()
     ms = get_memory_sys()
     sto = get_storage()
     if not ms.db_path:
@@ -85,6 +89,7 @@ async def upsert_profile(
 
 @router.delete("/{fact_key}")
 async def delete_profile(fact_key: str, current_user: dict = Depends(get_current_user)):
+    require_db_writes_enabled()
     ms = get_memory_sys()
     sto = get_storage()
     if not ms.db_path:

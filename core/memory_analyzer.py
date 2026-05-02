@@ -10,6 +10,48 @@ class MemoryAnalyzer:
     def __init__(self, memory_sys):
         self.memory_sys = memory_sys
 
+    @staticmethod
+    def _normalize_profile_evidence(text: str) -> str:
+        """標準化短證據字串，供 profile 後處理做寬鬆比對。"""
+        return re.sub(r"[\s，,。！？!?「」『』（）()、：:；;的]+", "", str(text or "").lower())
+
+    def _user_evidence_lines(self, messages: list[dict]) -> list[str]:
+        lines = []
+        for msg in messages:
+            if msg.get("role") != "user":
+                continue
+            content = str(msg.get("content") or "").strip()
+            if not content:
+                continue
+            lines.append(content)
+        return lines
+
+    def _evidence_quote_is_from_user(self, evidence_quote: str, user_lines: list[str]) -> bool:
+        if not evidence_quote:
+            return False
+        normalized_quote = self._normalize_profile_evidence(evidence_quote)
+        if not normalized_quote:
+            return False
+        return any(normalized_quote in self._normalize_profile_evidence(line) for line in user_lines)
+
+    def _is_valid_profile_fact(self, fact: dict, user_lines: list[str]) -> bool:
+        fact_key = str(fact.get("fact_key") or "").strip().lower()
+        fact_value = str(fact.get("fact_value") or "").strip()
+        action = fact.get("action")
+        category = fact.get("category")
+        evidence_quote = str(fact.get("evidence_quote") or "").strip()
+        is_long_term_profile = fact.get("is_long_term_profile")
+
+        if not fact_key or action not in ("INSERT", "UPDATE", "DELETE"):
+            return False
+        if category not in {"basic_info", "relationship", "critical_rule", "explicit_preference"}:
+            return False
+        if action != "DELETE" and not fact_value:
+            return False
+        if is_long_term_profile is not True:
+            return False
+        return self._evidence_quote_is_from_user(evidence_quote, user_lines)
+
     def detect_topic_shift(self, messages, embed_model, threshold=0.55, min_history_len=5, max_history_len=20):
         if len(messages) >= max_history_len:
             SystemLogger.log_shift_trigger(-1.0, threshold, "(強制脈絡深度切斷)")
@@ -222,9 +264,11 @@ class MemoryAnalyzer:
                             "fact_key": {"type": "string"},
                             "fact_value": {"type": "string"},
                             "category": {"type": "string", "enum": ["basic_info", "relationship", "critical_rule", "explicit_preference"]},
-                            "justification": {"type": "string"}
+                            "justification": {"type": "string"},
+                            "evidence_quote": {"type": "string"},
+                            "is_long_term_profile": {"type": "boolean"}
                         },
-                        "required": ["action", "fact_key", "fact_value", "category", "justification"]
+                        "required": ["action", "fact_key", "fact_value", "category", "justification", "evidence_quote", "is_long_term_profile"]
                     }
                 }
             },
@@ -240,15 +284,19 @@ class MemoryAnalyzer:
             parsed = router.generate_json(task_key, api_messages, schema=PROFILE_FACTS_SCHEMA, temperature=0.1)
             facts = parsed.get("facts", [])
 
-            # 【強化驗證】：category 白名單 + fact_value 非空檢查
-            VALID_CATEGORIES = {"basic_info", "relationship", "critical_rule", "explicit_preference"}
+            # 【強化驗證】：schema + 使用者原文證據檢查。
+            # 具體抽取邊界由 prompt 維護；程式端只確認模型引用的是 user 原文，
+            # 避免把規則清單硬寫進流程。
+            user_lines = self._user_evidence_lines(messages)
             valid_facts = []
             for f in facts:
-                if (f.get("fact_key")
-                    and f.get("action") in ("INSERT", "UPDATE", "DELETE")
-                    and f.get("category") in VALID_CATEGORIES
-                    and (f.get("action") == "DELETE" or f.get("fact_value"))):
+                if self._is_valid_profile_fact(f, user_lines):
                     valid_facts.append(f)
+                else:
+                    SystemLogger.log_system_event(
+                        "使用者畫像-過濾",
+                        f"跳過低可信事實: {f.get('fact_key')}={f.get('fact_value')} ({f.get('category')})",
+                    )
 
             return valid_facts
 

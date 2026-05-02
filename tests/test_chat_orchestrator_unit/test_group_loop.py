@@ -32,8 +32,8 @@ async def test_group_loop_passes_target_character_id(monkeypatch):
             }
 
     route_results = [
-        GroupRouterResult(True, "char-a", "first"),
-        GroupRouterResult(True, "char-b", "second"),
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(True, "char-b", "second", "new_speaker_reply_to_ai", "group_discussion"),
         GroupRouterResult(False, None, "done"),
     ]
 
@@ -332,8 +332,8 @@ async def test_group_loop_shares_tool_state_across_turns(monkeypatch):
             }
 
     route_results = [
-        GroupRouterResult(True, "char-a", "first"),
-        GroupRouterResult(True, "char-b", "second"),
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(True, "char-b", "second", "new_speaker_reply_to_ai", "group_discussion"),
         GroupRouterResult(False, None, "done"),
     ]
 
@@ -390,6 +390,9 @@ async def test_group_loop_shares_tool_state_across_turns(monkeypatch):
     assert captured_followups[1] is not None
     assert captured_followups[1]["last_character_name"] == "char-a"
     assert "user_prompt_original" in captured_followups[1]
+    assert captured_followups[1]["conversation_intent"] == "group_discussion"
+    assert captured_followups[1]["routing_action"] == "new_speaker_reply_to_ai"
+    assert "routing_reason" not in captured_followups[1]
 
 
 @pytest.mark.asyncio
@@ -469,3 +472,247 @@ async def test_group_loop_does_not_inject_followup_into_messages(monkeypatch):
     # user_prompt 永遠是原 user 訊息，不被替換成 followup 字串
     for prompt in captured_user_prompt_per_turn:
         assert prompt == "原始問題"
+
+
+@pytest.mark.asyncio
+async def test_group_loop_first_turn_stop_fallback_avoids_previous_speaker(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-stop-fallback",
+        messages=[
+            {"role": "user", "content": "上一輪"},
+            {"role": "assistant", "content": "上一輪 A 回覆", "character_id": "char-a"},
+            {"role": "user", "content": "新一輪"},
+        ],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions["sid-stop-fallback"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    def fake_group_router(*args, **kwargs):
+        assert kwargs["last_speaker_id"] == "char-a"
+        return GroupRouterResult(False, None, "stop", "stop_no_new_value")
+
+    captured_character_ids = []
+
+    def fake_orchestration(*args, **kwargs):
+        captured_character_ids.append(kwargs["session_ctx"]["character_id"])
+        return (
+            "回覆",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="新一輪",
+            user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_character_ids == ["char-b"]
+    assert [t["character_id"] for t in turns] == ["char-b"]
+
+
+@pytest.mark.asyncio
+async def test_group_loop_first_turn_stop_still_produces_one_turn(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-first-stop-one-turn",
+        messages=[{"role": "user", "content": "有人在嗎？"}],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions["sid-first-stop-one-turn"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    def fake_group_router(*args, **kwargs):
+        return GroupRouterResult(False, None, "stop", "stop_no_new_value")
+
+    def fake_orchestration(*args, **kwargs):
+        return (
+            f"回覆 {kwargs['session_ctx']['character_id']}",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="有人在嗎？",
+            user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert [t["character_id"] for t in turns] == ["char-a"]
+
+
+@pytest.mark.asyncio
+async def test_group_loop_second_turn_stop_no_new_value_stops(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-second-stop",
+        messages=[{"role": "user", "content": "短句收尾"}],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions["sid-second-stop"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_ack"),
+        GroupRouterResult(False, None, "無新增價值", "stop_no_new_value"),
+    ]
+
+    def fake_group_router(*args, **kwargs):
+        return route_results.pop(0)
+
+    def fake_orchestration(*args, **kwargs):
+        return (
+            f"回覆 {kwargs['session_ctx']['character_id']}",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="短句收尾",
+            user_prefs={"group_chat_max_bot_turns": 3, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert [t["character_id"] for t in turns] == ["char-a"]
+    assert route_results == []
+
+
+@pytest.mark.asyncio
+async def test_group_loop_allows_repeat_action_in_three_character_flow(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-repeat-three",
+        messages=[{"role": "user", "content": "你們討論一下"}],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b", "char-c"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions["sid-repeat-three"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add"),
+        GroupRouterResult(True, "char-b", "second", "new_speaker_reply_to_ai"),
+        GroupRouterResult(True, "char-a", "reply", "repeat_speaker_reply_to_ai"),
+    ]
+
+    def fake_group_router(*args, **kwargs):
+        return route_results.pop(0)
+
+    def fake_orchestration(*args, **kwargs):
+        return (
+            f"回覆 {kwargs['session_ctx']['character_id']}",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="你們討論一下",
+            user_prefs={"group_chat_max_bot_turns": 3, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert [t["character_id"] for t in turns] == ["char-a", "char-b", "char-a"]
+
+
+def test_group_turn_limit_allows_deeper_testing_and_clamps_at_hard_limit():
+    from api.routers.chat import group_loop
+
+    assert group_loop._group_turn_limit({"group_chat_max_bot_turns": 12}) == 12
+    assert group_loop._group_turn_limit({"group_chat_max_bot_turns": 99}) == 12

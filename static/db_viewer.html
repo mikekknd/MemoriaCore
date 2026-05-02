@@ -171,6 +171,43 @@ body {
 
 .page-info { font-size: 12px; color: var(--text2); }
 
+.column-panel {
+  display: none;
+  margin: 0 24px 12px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.column-panel.open { display: block; }
+.column-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--text2);
+  font-size: 12px;
+}
+.column-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.column-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.column-option input { cursor: pointer; }
+.column-option.hidden { color: var(--text2); opacity: 0.7; }
+
 /* ===== Content Area ===== */
 .content { padding: 0 24px 24px; }
 
@@ -457,11 +494,21 @@ body {
     <input class="search-box" id="searchBox" type="text" placeholder="🔍 搜尋... (Ctrl+F)" data-i18n-placeholder="db_viewer.search_placeholder">
     <select class="filter-select" id="filterSelect" style="display:none"></select>
     <button class="btn" onclick="toggleSQL()" data-i18n="db_viewer.sql_query">📝 SQL 查詢</button>
+    <button class="btn" id="columnBtn" onclick="toggleColumnPanel()" data-i18n="db_viewer.columns">欄位</button>
     <button class="btn" onclick="exportCSV()" data-i18n="db_viewer.export_csv">📥 匯出 CSV</button>
     <div style="flex:1"></div>
     <button class="btn" id="prevPage" onclick="changePage(-1)">◀</button>
     <span class="page-info" id="pageInfo"></span>
     <button class="btn" id="nextPage" onclick="changePage(1)">▶</button>
+  </div>
+
+  <div class="column-panel" id="columnPanel">
+    <div class="column-panel-header">
+      <span id="columnSummary"></span>
+      <button class="btn" onclick="showAllColumns()" data-i18n="db_viewer.columns_show_all">全部顯示</button>
+      <button class="btn" onclick="resetColumnDefaults()" data-i18n="db_viewer.columns_reset">重設預設</button>
+    </div>
+    <div class="column-list" id="columnList"></div>
   </div>
 
   <!-- Data Table -->
@@ -513,6 +560,8 @@ let sortAsc = true;
 let currentPage = 0;
 const PAGE_SIZE = 50;
 let jsonToggleId = 0;
+const COLUMN_VISIBILITY_KEY = 'memoriacore.db_viewer.hidden_columns.v1';
+let hiddenColumnsByTable = loadColumnVisibility();
 
 // ===== Known Schema Info =====
 const TABLE_META = {
@@ -752,6 +801,7 @@ function queryTable() {
 
   tableData.columns = res[0].columns;
   tableData.rows = res[0].values;
+  ensureColumnVisibility();
 
   // Client-side text search
   if (search) {
@@ -786,9 +836,13 @@ function renderTable() {
   const body = document.getElementById('tableBody');
   const cols = tableData.columns;
   const meta = TABLE_META[currentTable] || {};
+  ensureColumnVisibility();
+  renderColumnPanel();
+  const visibleIndexes = getVisibleColumnIndexes();
 
   // Header
-  head.innerHTML = '<tr>' + cols.map((c, i) => {
+  head.innerHTML = '<tr>' + visibleIndexes.map(i => {
+    const c = cols[i];
     const arrow = sortCol === i ? (sortAsc ? '▲' : '▼') : '';
     return `<th onclick="sortByCol(${i})">${c} <span class="sort-arrow">${arrow}</span></th>`;
   }).join('') + '<th style="width:40px"></th></tr>';
@@ -803,11 +857,98 @@ function renderTable() {
 
   // Rows
   body.innerHTML = pageRows.map((row, ri) => {
-    const cells = cols.map((col, ci) => renderCell(col, row[ci], meta));
+    const cells = visibleIndexes.map(ci => renderCell(cols[ci], row[ci], meta));
     return `<tr>${cells.join('')}<td>
       <span style="cursor:pointer;font-size:16px" title="${tr('db_viewer.detail')}" onclick='showDetail(${start + ri})'>🔍</span>
     </td></tr>`;
   }).join('');
+}
+
+function loadColumnVisibility() {
+  try {
+    const raw = localStorage.getItem(COLUMN_VISIBILITY_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveColumnVisibility() {
+  try {
+    localStorage.setItem(COLUMN_VISIBILITY_KEY, JSON.stringify(hiddenColumnsByTable));
+  } catch {}
+}
+
+function shouldHideColumnByDefault(col) {
+  const normalized = String(col || '').toLowerCase();
+  if (normalized.includes('vector') || normalized.includes('embedding')) return true;
+  const meta = TABLE_META[currentTable] || {};
+  return (meta.blobCols || []).includes(col);
+}
+
+function ensureColumnVisibility(reset = false) {
+  if (!currentTable || !tableData.columns.length) return;
+  if (reset || !hiddenColumnsByTable[currentTable]) hiddenColumnsByTable[currentTable] = {};
+  const hidden = hiddenColumnsByTable[currentTable];
+  tableData.columns.forEach(col => {
+    if (reset || hidden[col] === undefined) hidden[col] = shouldHideColumnByDefault(col);
+  });
+  Object.keys(hidden).forEach(col => {
+    if (!tableData.columns.includes(col)) delete hidden[col];
+  });
+  saveColumnVisibility();
+}
+
+function getVisibleColumnIndexes() {
+  const hidden = hiddenColumnsByTable[currentTable] || {};
+  const indexes = tableData.columns
+    .map((col, i) => hidden[col] ? -1 : i)
+    .filter(i => i >= 0);
+  return indexes.length ? indexes : tableData.columns.map((_, i) => i);
+}
+
+function toggleColumnPanel() {
+  document.getElementById('columnPanel').classList.toggle('open');
+  renderColumnPanel();
+}
+
+function renderColumnPanel() {
+  const list = document.getElementById('columnList');
+  const summary = document.getElementById('columnSummary');
+  const btn = document.getElementById('columnBtn');
+  if (!list || !summary || !btn) return;
+  ensureColumnVisibility();
+  const hidden = hiddenColumnsByTable[currentTable] || {};
+  const hiddenCount = tableData.columns.filter(col => hidden[col]).length;
+  const visibleCount = tableData.columns.length - hiddenCount;
+  btn.textContent = `${tr('db_viewer.columns')} (${visibleCount}/${tableData.columns.length})`;
+  summary.textContent = tr('db_viewer.columns_summary', {visible: visibleCount, total: tableData.columns.length, hidden: hiddenCount});
+  list.innerHTML = tableData.columns.map(col => {
+    const checked = !hidden[col];
+    return `<label class="column-option ${checked ? '' : 'hidden'}">
+      <input type="checkbox" ${checked ? 'checked' : ''} onchange="setColumnVisible(${escJsAttr(col)}, this.checked)">
+      <span>${escHtml(col)}</span>
+    </label>`;
+  }).join('');
+}
+
+function setColumnVisible(col, visible) {
+  ensureColumnVisibility();
+  hiddenColumnsByTable[currentTable][col] = !visible;
+  saveColumnVisibility();
+  renderTable();
+}
+
+function showAllColumns() {
+  ensureColumnVisibility();
+  tableData.columns.forEach(col => { hiddenColumnsByTable[currentTable][col] = false; });
+  saveColumnVisibility();
+  renderTable();
+}
+
+function resetColumnDefaults() {
+  ensureColumnVisibility(true);
+  renderTable();
 }
 
 function renderCell(col, val, meta) {
@@ -924,11 +1065,13 @@ function showDetail(idx) {
   const row = filteredRows[idx];
   const cols = tableData.columns;
   const meta = TABLE_META[currentTable] || {};
+  const visibleIndexes = getVisibleColumnIndexes();
   const title = meta.idCol ? `${meta.icon || ''} ${row[cols.indexOf(meta.idCol)] || ''}` : `Row ${idx + 1}`;
   document.getElementById('modalTitle').textContent = title;
 
   const content = document.getElementById('modalContent');
-  content.innerHTML = cols.map((col, ci) => {
+  content.innerHTML = visibleIndexes.map(ci => {
+    const col = cols[ci];
     const val = row[ci];
     return `<div class="modal-field">
       <div class="modal-field-label">${col}</div>
@@ -1044,6 +1187,7 @@ function executeCustomSQL() {
 
     tableData.columns = res[0].columns;
     tableData.rows = res[0].values;
+    ensureColumnVisibility();
     filteredRows = [...tableData.rows];
     sortCol = -1;
     currentPage = 0;
@@ -1072,8 +1216,11 @@ document.getElementById('searchBox').addEventListener('input', () => {
 function exportCSV() {
   if (!tableData.columns.length) return;
   const cols = tableData.columns;
+  const visibleIndexes = getVisibleColumnIndexes();
+  const visibleCols = visibleIndexes.map(i => cols[i]);
   const rows = filteredRows.map(r =>
-    r.map(v => {
+    visibleIndexes.map(i => {
+      const v = r[i];
       if (v === null) return '';
       if (v instanceof Uint8Array) return tr('db_viewer.blob');
       const s = String(v);
@@ -1082,7 +1229,7 @@ function exportCSV() {
       return s;
     }).join(',')
   );
-  const csv = [cols.join(','), ...rows].join('\n');
+  const csv = [visibleCols.join(','), ...rows].join('\n');
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1097,6 +1244,13 @@ function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function escJsAttr(s) {
+  return JSON.stringify(String(s))
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;');
 }
 
 function truncate(s, max) {

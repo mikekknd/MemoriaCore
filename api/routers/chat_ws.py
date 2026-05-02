@@ -10,7 +10,7 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.auth_utils import AUTH_COOKIE_NAME, decode_jwt
-from api.dependencies import get_storage, get_tts_client
+from api.dependencies import get_storage, get_tts_client, is_db_maintenance_mode
 from api.session_manager import session_manager
 from api.routers.chat.ws_manager import ws_manager
 from api.routers.chat.orchestration import (
@@ -44,6 +44,10 @@ def _get_session_character(character_id: str) -> dict:
         SystemLogger.log_error("character_missing", f"missing_character_id={character_id}; fallback=default")
         char = char_mgr.get_active_character("default")
     return char or {}
+
+
+def _can_expose_llm_trace(current_user: dict) -> bool:
+    return current_user.get("role") == "admin"
 
 
 async def _authenticate_ws(ws: WebSocket) -> dict | None:
@@ -160,6 +164,14 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 await ws.send_json({"type": "error", "code": "UNKNOWN_FRAME", "message": f"Unknown frame type: {frame_type}"})
                 continue
 
+            if is_db_maintenance_mode():
+                await ws.send_json({
+                    "type": "error",
+                    "code": "DB_MAINTENANCE_MODE",
+                    "message": "DB maintenance mode is enabled; write operations are temporarily disabled.",
+                })
+                continue
+
             content = frame.get("content", "").strip()
             if not content:
                 await ws.send_json({"type": "error", "code": "EMPTY_MESSAGE", "message": "Empty message"})
@@ -201,6 +213,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                 "active_character_ids": list(s.active_character_ids or [s.character_id]),
                 "session_mode": s.session_mode,
                 "group_name": s.group_name,
+                "expose_llm_trace": _can_expose_llm_trace(current_user),
             }
 
             # 建立即時事件推送 callback（從工作執行緒安全呼叫 async WS send）
@@ -241,6 +254,7 @@ async def chat_stream(ws: WebSocket, session_id: str | None = None):
                     on_event=_ws_event_cb,
                     on_turn=_send_group_turn,
                     user_name=user_name,
+                    expose_llm_trace=_can_expose_llm_trace(current_user),
                 ))
                 ws_manager.set_active_task(sid, task)
                 try:

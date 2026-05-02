@@ -20,6 +20,8 @@ class GroupRouterResult:
     should_respond: bool
     target_character_id: str | None = None
     reason: str = ""
+    action: str = ""
+    conversation_intent: str = ""
 
 
 # ════════════════════════════════════════════════════════════

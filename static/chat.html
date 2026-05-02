@@ -55,8 +55,10 @@ body { height:100vh; overflow:hidden; }
 @keyframes spin { to{transform:rotate(360deg)} }
 .debug-toggle { font-size:11px; color:var(--text2); cursor:pointer; margin-top:6px; user-select:none; }
 .debug-toggle:hover { color:var(--accent); }
-.msg-id { display:block; margin-bottom:4px; color:var(--text2); font-size:10px; font-family:'Cascadia Code','Fira Code',monospace; opacity:.7; cursor:pointer; user-select:text; }
-.msg-id:hover { color:var(--accent); opacity:1; }
+.msg-meta { display:flex; align-items:center; gap:6px; margin-bottom:4px; flex-wrap:wrap; }
+.msg-id, .msg-trace { color:var(--text2); font-size:10px; font-family:'Cascadia Code','Fira Code',monospace; opacity:.7; cursor:pointer; user-select:text; }
+.msg-trace { border:1px solid var(--border); border-radius:4px; padding:0 5px; background:var(--surface2); user-select:none; }
+.msg-id:hover, .msg-trace:hover { color:var(--accent); opacity:1; border-color:var(--accent); }
 .debug-panel { display:none; margin-top:8px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:12px; line-height:1.6; max-height:400px; overflow-y:auto; }
 .debug-panel.open { display:block; }
 .debug-section { margin-bottom:8px; }
@@ -123,6 +125,8 @@ let _ttsQueue = [];
 let _ttsPlaying = false;
 let characters = [];
 let charactersById = new Map();
+let currentUser = null;
+let canOpenLlmTrace = false;
 const MAX_SESSION_CHARACTERS = 6;
 
 marked.setOptions({
@@ -136,6 +140,7 @@ marked.setOptions({
 document.addEventListener('DOMContentLoaded', async () => {
   await MCI18N.init();
   MCI18N.apply();
+  await loadCurrentUser();
   const pickerBtn = document.querySelector('.group-picker-btn');
   if (pickerBtn) pickerBtn.title = MCI18N.t('chat.group.title', {count: MAX_SESSION_CHARACTERS});
   const groupHint = document.getElementById('groupPickerHint');
@@ -144,6 +149,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     .finally(() => loadSessionList())
     .then(() => autoRestoreOrCreate());
 });
+
+async function loadCurrentUser() {
+  try {
+    const r = await fetch(`${API}/auth/me`);
+    if (!r.ok) throw new Error('load user failed');
+    currentUser = await r.json();
+    canOpenLlmTrace = currentUser?.role === 'admin';
+  } catch {
+    currentUser = null;
+    canOpenLlmTrace = false;
+  }
+}
 
 async function loadCharacters() {
   try {
@@ -347,7 +364,7 @@ async function switchSession(sessionId) {
       if (m.role === 'system_event') {
         appendSystemEvent(m.content, null, false, m.message_id);
       } else {
-        appendMessage(m.role, m.content, null, false, m.character_name, m.character_id, m.message_id);
+        appendMessage(m.role, m.content, m.debug_info, false, m.character_name, m.character_id, m.message_id);
       }
     });
     scrollToBottom();
@@ -579,6 +596,7 @@ async function sendMessage() {
           const mdDiv = targetEl.querySelector('.md-content');
           targetEl.classList.remove('typing');
           setMessageId(targetEl, event.message_id);
+          setMessageTraceLink(targetEl, event.retrieval_context);
           mdDiv.innerHTML = marked.parse(event.reply || '');
           enhanceRenderedMarkdown(mdDiv);
           setMessageAuthor(targetEl, event.character_name);
@@ -648,6 +666,7 @@ function appendMessage(role, content, debugData, scroll=true, characterName=null
   div.className = `msg ${role}`;
   if (characterId) div.dataset.characterId = characterId;
   if (messageId !== null && messageId !== undefined) addMessageIdBadge(div, messageId);
+  if (debugData) setMessageTraceLink(div, debugData);
 
   if (role === 'user') {
     const text = document.createElement('span');
@@ -667,6 +686,9 @@ function appendMessage(role, content, debugData, scroll=true, characterName=null
       enhanceRenderedMarkdown(mdDiv);
     }
     div.appendChild(mdDiv);
+    if (debugData) {
+      div.appendChild(buildDebugPanel({retrieval_context: debugData, extracted_entities: debugData.extracted_entities || []}));
+    }
   }
 
   container.appendChild(div);
@@ -676,6 +698,7 @@ function appendMessage(role, content, debugData, scroll=true, characterName=null
 
 function addMessageIdBadge(msgEl, messageId) {
   msgEl.dataset.messageId = String(messageId);
+  const meta = ensureMessageMeta(msgEl);
   const badge = document.createElement('span');
   badge.className = 'msg-id';
   badge.textContent = `#${messageId}`;
@@ -685,15 +708,58 @@ function addMessageIdBadge(msgEl, messageId) {
     navigator.clipboard?.writeText(String(messageId));
     toast(MCI18N.t('chat.toast.message_id_copied', {id: messageId}), 'info');
   };
-  msgEl.insertBefore(badge, msgEl.firstChild);
+  meta.appendChild(badge);
+}
+
+function ensureMessageMeta(msgEl) {
+  let meta = msgEl.querySelector(':scope > .msg-meta');
+  if (!meta) {
+    meta = document.createElement('div');
+    meta.className = 'msg-meta';
+    msgEl.insertBefore(meta, msgEl.firstChild);
+  }
+  return meta;
 }
 
 function setMessageId(msgEl, messageId) {
   if (!msgEl || messageId === null || messageId === undefined) return;
   if (msgEl.dataset.messageId === String(messageId)) return;
-  const existing = msgEl.querySelector(':scope > .msg-id');
+  const existing = msgEl.querySelector(':scope > .msg-meta .msg-id');
   if (existing) existing.remove();
   addMessageIdBadge(msgEl, messageId);
+}
+
+function getLlmCallId(debugData) {
+  const trace = debugData?.llm_trace || {};
+  return trace.llm_call_id || trace.chat_llm_call_id || '';
+}
+
+function setMessageTraceLink(msgEl, debugData) {
+  if (!canOpenLlmTrace) return;
+  const callId = getLlmCallId(debugData);
+  if (!msgEl || !callId) return;
+  msgEl.dataset.llmCallId = callId;
+  if (msgEl.querySelector(':scope > .msg-meta .msg-trace')) return;
+  const meta = ensureMessageMeta(msgEl);
+  const btn = document.createElement('span');
+  btn.className = 'msg-trace';
+  btn.textContent = MCI18N.t('chat.llm_trace.open');
+  btn.title = MCI18N.t('chat.llm_trace.open_title');
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    openLogTrace(callId);
+  };
+  meta.appendChild(btn);
+}
+
+function openLogTrace(llmCallId) {
+  if (!canOpenLlmTrace) return;
+  const payload = {type: 'open-log-trace', llm_call_id: llmCallId};
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(payload, '*');
+  } else {
+    window.open(`/static/log_viewer.html?api=true&llm_call_id=${encodeURIComponent(llmCallId)}`, '_blank', 'noopener');
+  }
 }
 
 function setMessageAuthor(msgEl, characterName) {
@@ -702,7 +768,9 @@ function setMessageAuthor(msgEl, characterName) {
   if (!author) {
     author = document.createElement('div');
     author.className = 'msg-author';
-    msgEl.insertBefore(author, msgEl.firstChild);
+    const meta = msgEl.querySelector(':scope > .msg-meta');
+    if (meta) meta.insertAdjacentElement('afterend', author);
+    else msgEl.insertBefore(author, msgEl.firstChild);
   }
   author.textContent = characterName;
 }

@@ -12,21 +12,35 @@ from api.dependencies import get_character_manager, get_current_user, get_storag
 router = APIRouter(prefix="/session", tags=["session"])
 
 
-def _message_to_dto(m: dict) -> SessionMessageDTO:
+def _can_expose_llm_trace(current_user: dict) -> bool:
+    return current_user.get("role") == "admin"
+
+
+def _visible_debug_info(m: dict, current_user: dict) -> dict | None:
+    debug_info = m.get("debug_info")
+    if not isinstance(debug_info, dict):
+        return debug_info
+    visible = dict(debug_info)
+    if not _can_expose_llm_trace(current_user):
+        visible.pop("llm_trace", None)
+    return visible or None
+
+
+def _message_to_dto(m: dict, current_user: dict) -> SessionMessageDTO:
     return SessionMessageDTO(
         message_id=m.get("message_id"),
         role=m["role"],
         content=m["content"],
-        debug_info=m.get("debug_info"),
+        debug_info=_visible_debug_info(m, current_user),
         character_id=m.get("character_id"),
         character_name=m.get("character_name"),
     )
 
 
-def _state_to_dto(s: SessionState) -> SessionDTO:
+def _state_to_dto(s: SessionState, current_user: dict) -> SessionDTO:
     return SessionDTO(
         session_id=s.session_id,
-        messages=[_message_to_dto(m) for m in s.messages],
+        messages=[_message_to_dto(m, current_user) for m in s.messages],
         last_entities=s.last_entities,
         character_id=s.character_id,
         character_ids=s.active_character_ids or [s.character_id],
@@ -68,7 +82,7 @@ async def create_session(
         channel_class=channel_class,
         persona_face=persona_face,
     )
-    return _state_to_dto(s)
+    return _state_to_dto(s, current_user)
 
 
 @router.get("/history", response_model=list[ConversationSessionDTO])
@@ -96,7 +110,7 @@ async def get_conversation_history(session_id: str, current_user: dict = Depends
     messages = storage.load_conversation_messages(session_id)
     return ConversationHistoryDTO(
         session=ConversationSessionDTO(**session_info),
-        messages=[_message_to_dto(m) for m in messages],
+        messages=[_message_to_dto(m, current_user) for m in messages],
     )
 
 
@@ -107,7 +121,7 @@ async def get_session(session_id: str, current_user: dict = Depends(get_current_
         raise HTTPException(404, detail=f"Session {session_id} not found")
     if s.user_id != str(current_user["id"]):
         raise HTTPException(403, detail="Session owner mismatch")
-    return _state_to_dto(s)
+    return _state_to_dto(s, current_user)
 
 
 @router.delete("/{session_id}")
@@ -141,7 +155,7 @@ async def restore_session(session_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(403, detail="Session owner mismatch")
     if not s:
         raise HTTPException(404, detail=f"Session {session_id} not found in DB")
-    return _state_to_dto(s)
+    return _state_to_dto(s, current_user)
 
 
 @router.delete("/history/cleanup/{days}")

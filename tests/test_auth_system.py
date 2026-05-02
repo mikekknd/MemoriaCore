@@ -19,6 +19,9 @@ class _InspectMemorySystem:
     def __init__(self, storage: StorageManager, db_path: str):
         self.storage = storage
         self.db_path = db_path
+        self._memory_blocks_cache = {}
+        self._core_memories_cache = {}
+        self._user_profiles_cache = {}
 
     def _get_memory_blocks(self, user_id="default", character_id="default", visibility="public"):
         return self.storage.load_db(
@@ -400,6 +403,7 @@ def test_memory_inspect_endpoints_are_admin_scope_aware(auth_tmp_dir, monkeypatc
             json={"username": "owner", "password": "abc123", "password_confirm": "abc123"},
         )
         assert admin.status_code == 200, admin.text
+        admin_csrf = admin.json()["csrf_token"]
 
         user = user_client.post(
             "/api/v1/auth/register",
@@ -508,7 +512,92 @@ def test_memory_inspect_endpoints_are_admin_scope_aware(auth_tmp_dir, monkeypatc
         assert legacy.status_code == 200, legacy.text
         assert legacy.json()[0]["block_id"] == "admin-default-public"
         assert "user_id" not in legacy.json()[0]
+
+        status = admin_client.get("/api/v1/memory/maintenance")
+        assert status.status_code == 200, status.text
+        assert status.json()["enabled"] is False
+
+        enable = admin_client.post(
+            "/api/v1/memory/maintenance",
+            headers={"X-CSRF-Token": admin_csrf},
+            json={"enabled": True},
+        )
+        assert enable.status_code == 200, enable.text
+        assert enable.json()["enabled"] is True
+
+        blocked = admin_client.delete(
+            "/api/v1/memory/blocks/admin-default-public",
+            headers={"X-CSRF-Token": admin_csrf},
+        )
+        assert blocked.status_code == 503
+
+        delete_block = admin_client.delete(
+            "/api/v1/memory/maintenance/blocks/block-char-a-public",
+            headers={"X-CSRF-Token": admin_csrf},
+            params={"user_id": user_id, "character_id": "char-a", "visibility": "public"},
+        )
+        assert delete_block.status_code == 200, delete_block.text
+        assert delete_block.json()["deleted"] == 1
+        assert storage.inspect_memory_blocks(memory_db, user_id, "char-a", ["public"]) == []
+
+        delete_core = admin_client.delete(
+            "/api/v1/memory/maintenance/core/core-a",
+            headers={"X-CSRF-Token": admin_csrf},
+            params={"user_id": user_id, "character_id": "char-a", "visibility": "public"},
+        )
+        assert delete_core.status_code == 200, delete_core.text
+        assert delete_core.json()["deleted"] == 1
+
+        delete_profile = admin_client.delete(
+            "/api/v1/memory/maintenance/profile",
+            headers={"X-CSRF-Token": admin_csrf},
+            params={"user_id": user_id, "fact_key": "drink", "fact_value": "tea", "visibility": "public"},
+        )
+        assert delete_profile.status_code == 200, delete_profile.text
+        assert delete_profile.json()["deleted"] == 1
+        assert storage.get_profile_by_key(memory_db, "drink", "tea", user_id=user_id) is None
+
+        delete_topic = admin_client.delete(
+            "/api/v1/memory/maintenance/topics/topic-global",
+            headers={"X-CSRF-Token": admin_csrf},
+            params={"user_id": user_id, "character_id": "__global__", "visibility": "private"},
+        )
+        assert delete_topic.status_code == 200, delete_topic.text
+        assert delete_topic.json()["deleted"] == 1
+
+        import sqlite3
+        conn = sqlite3.connect(memory_db)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE ai_personality_observations (obs_id TEXT PRIMARY KEY, user_id TEXT)")
+        cur.execute("INSERT INTO ai_personality_observations VALUES (?, ?)", ("obs-1", user_id))
+        conn.commit()
+        conn.close()
+
+        tables = admin_client.get("/api/v1/memory/maintenance")
+        assert tables.status_code == 200, tables.text
+        legacy_table = next(t for t in tables.json()["droppable_tables"] if t["table_name"] == "ai_personality_observations")
+        assert legacy_table["exists"] is True
+        assert legacy_table["count"] == 1
+
+        drop = admin_client.post(
+            "/api/v1/memory/maintenance/drop-table",
+            headers={"X-CSRF-Token": admin_csrf},
+            json={
+                "table_name": "ai_personality_observations",
+                "confirm_table_name": "ai_personality_observations",
+            },
+        )
+        assert drop.status_code == 200, drop.text
+        assert drop.json()["dropped"] is True
+
+        refresh = admin_client.post(
+            "/api/v1/memory/maintenance/refresh-cache",
+            headers={"X-CSRF-Token": admin_csrf},
+        )
+        assert refresh.status_code == 200, refresh.text
+        assert refresh.json()["status"] == "refreshed"
     finally:
+        deps.set_db_maintenance_mode(False)
         deps.storage = None
         deps.memory_sys = None
 

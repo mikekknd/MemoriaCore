@@ -5,6 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from api.dependencies import (
     get_memory_sys, get_storage, get_router,
     get_persona_sync_manager, reload_router, reload_tts,
+    require_db_writes_enabled,
 )
 from api.models.requests import (
     ConfigUpdateRequest, ConsolidateRequest,
@@ -110,6 +111,7 @@ async def get_prompt():
 @router.post("/gather_now")
 async def trigger_gather_now():
     """手動觸發背景話題搜尋，並重設後續的排程時間"""
+    require_db_writes_enabled()
     from core.background_gatherer import force_gather_now
     
     # 調用剛才寫好的中斷重設函式
@@ -170,6 +172,7 @@ def _run_consolidation(cluster_threshold: float, min_group_size: int):
 
 @router.post("/consolidate")
 async def consolidate(body: ConsolidateRequest, bg: BackgroundTasks):
+    require_db_writes_enabled()
     ms = get_memory_sys()
     clusters = ms.find_pending_clusters(body.cluster_threshold, body.min_group_size)
     if not clusters:
@@ -195,6 +198,7 @@ def _run_preference_aggregation(score_threshold: float):
 
 @router.post("/preference-aggregate")
 async def preference_aggregate(body: PreferenceAggregateRequest):
+    require_db_writes_enabled()
     result = await asyncio.to_thread(_run_preference_aggregation, body.score_threshold)
     return result
 
@@ -220,6 +224,7 @@ async def trigger_persona_sync_now(
     跳過所有自動觸發條件（閒置時間、訊息累積數、每日上限），
     僅保留 persona_sync_enabled 全局開關。
     """
+    require_db_writes_enabled()
     psm = get_persona_sync_manager()
     sto = get_storage()
     prefs = sto.load_prefs()
@@ -239,6 +244,7 @@ async def trigger_persona_sync_now(
 # ── 合成測試資料 ──────────────────────────────────────────
 @router.post("/synthetic")
 async def synthetic_data(body: SyntheticRequest):
+    require_db_writes_enabled()
     import sys, os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from tools_synthetic import generate_synthetic_data

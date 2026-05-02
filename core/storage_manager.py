@@ -9,6 +9,9 @@ from core.runtime_paths import runtime_file
 
 GLOBAL_TOPIC_CHARACTER_ID = "__global__"
 DEFAULT_SYSTEM_PROMPT = "你是一個具備情境記憶與核心認知的 AI 助理。"
+MAINTENANCE_DROP_TABLE_ALLOWLIST = {
+    "ai_personality_observations",
+}
 
 class StorageManager:
     def __init__(
@@ -248,35 +251,6 @@ class StorageManager:
                 "ALTER TABLE user_profile ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'"
             )
 
-        # ── ai_personality_observations（含三維度隔離欄位）──
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ai_personality_observations (
-                obs_id TEXT PRIMARY KEY,
-                timestamp TEXT,
-                category TEXT,
-                raw_statement TEXT,
-                extracted_trait TEXT,
-                trait_vector BLOB,
-                source_context TEXT,
-                is_reflected INTEGER DEFAULT 0,
-                encounter_count REAL DEFAULT 1.0,
-                user_id TEXT NOT NULL DEFAULT 'default',
-                character_id TEXT NOT NULL DEFAULT 'default',
-                visibility TEXT NOT NULL DEFAULT 'public'
-            )
-        ''')
-        cursor.execute("PRAGMA table_info(ai_personality_observations)")
-        ao_cols = [info[1] for info in cursor.fetchall()]
-        for col, typedef in [
-            ('user_id', "TEXT NOT NULL DEFAULT 'default'"),
-            ('character_id', "TEXT NOT NULL DEFAULT 'default'"),
-            ('visibility', "TEXT NOT NULL DEFAULT 'public'"),
-        ]:
-            if col not in ao_cols:
-                cursor.execute(
-                    f"ALTER TABLE ai_personality_observations ADD COLUMN {col} {typedef}"
-                )
-
         # ── topic_cache（含三維度隔離欄位）──
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS topic_cache (
@@ -417,6 +391,27 @@ class StorageManager:
         finally:
             conn.close()
 
+    def delete_memory_block(
+        self,
+        db_path,
+        user_id: str,
+        character_id: str,
+        visibility: str,
+        block_id: str,
+    ) -> int:
+        """精準刪除單一情境記憶，限定完整隔離 scope。"""
+        conn = self._init_db(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM memory_blocks "
+            "WHERE block_id = ? AND user_id = ? AND character_id = ? AND visibility = ?",
+            (block_id, user_id, character_id, visibility),
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return int(deleted if deleted is not None else 0)
+
     # ════════════════════════════════════════════════════════════
     # SECTION: 核心認知 Core Memory — 載入 / Upsert / 刪除
     # ════════════════════════════════════════════════════════════
@@ -493,17 +488,21 @@ class StorageManager:
         user_id: str,
         character_id: str,
         core_id: str,
+        visibility: str | None = None,
     ):
         """刪除指定 core memory（含 user_id / character_id 範圍驗證）。"""
         conn = self._init_db(db_path)
         cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM core_memories "
-            "WHERE core_id = ? AND user_id = ? AND character_id = ?",
-            (core_id, user_id, character_id)
-        )
+        params: list = [core_id, user_id, character_id]
+        where = "core_id = ? AND user_id = ? AND character_id = ?"
+        if visibility is not None:
+            where += " AND visibility = ?"
+            params.append(visibility)
+        cursor.execute(f"DELETE FROM core_memories WHERE {where}", params)
+        deleted = cursor.rowcount
         conn.commit()
         conn.close()
+        return int(deleted if deleted is not None else 0)
 
     # ════════════════════════════════════════════════════════════
     # SECTION: 使用者偏好 Profile Facts — Upsert / 刪除 / 查詢 / 向量
@@ -559,6 +558,7 @@ class StorageManager:
         fact_key,
         fact_value=None,
         user_id: str = "default",
+        visibility: str | None = None,
     ):
         """刪除使用者事實（同時清除向量）。
 
@@ -567,28 +567,32 @@ class StorageManager:
         """
         conn = self._init_db(db_path)
         cursor = conn.cursor()
+        profile_where = "user_id = ? AND fact_key = ?"
+        profile_params: list = [user_id, fact_key]
         if fact_value is not None:
+            profile_where += " AND fact_value = ?"
+            profile_params.append(fact_value)
+        if visibility is not None:
+            profile_where += " AND visibility = ?"
+            profile_params.append(visibility)
+
+        cursor.execute(
+            f"SELECT fact_value FROM user_profile WHERE {profile_where}",
+            profile_params,
+        )
+        deleted_values = [row[0] for row in cursor.fetchall()]
+        cursor.execute(f"DELETE FROM user_profile WHERE {profile_where}", profile_params)
+        deleted = cursor.rowcount
+
+        for value in deleted_values:
             cursor.execute(
                 "DELETE FROM user_profile_vectors "
                 "WHERE user_id = ? AND fact_key = ? AND fact_value = ?",
-                (user_id, fact_key, fact_value)
-            )
-            cursor.execute(
-                "DELETE FROM user_profile "
-                "WHERE user_id = ? AND fact_key = ? AND fact_value = ?",
-                (user_id, fact_key, fact_value)
-            )
-        else:
-            cursor.execute(
-                "DELETE FROM user_profile_vectors WHERE user_id = ? AND fact_key = ?",
-                (user_id, fact_key)
-            )
-            cursor.execute(
-                "DELETE FROM user_profile WHERE user_id = ? AND fact_key = ?",
-                (user_id, fact_key)
+                (user_id, fact_key, value),
             )
         conn.commit()
         conn.close()
+        return int(deleted if deleted is not None else 0)
 
     def load_all_profiles(
         self,
@@ -1156,6 +1160,70 @@ class StorageManager:
             }
             for r in rows
         ]
+
+    def delete_topic_cache(
+        self,
+        db_path,
+        user_id: str,
+        character_id: str,
+        visibility: str,
+        topic_id: str,
+    ) -> int:
+        """精準刪除單一主動話題快取，限定完整隔離 scope。"""
+        conn = self._init_db(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM topic_cache "
+            "WHERE topic_id = ? AND user_id = ? AND character_id = ? AND visibility = ?",
+            (topic_id, user_id, character_id, visibility),
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return int(deleted if deleted is not None else 0)
+
+    def inspect_maintenance_tables(self, db_path) -> list[dict]:
+        """列出允許由維護模式 drop 的舊表與目前筆數。"""
+        conn = self._connect_existing_memory_db(db_path)
+        if conn is None:
+            return []
+        cursor = conn.cursor()
+        rows: list[dict] = []
+        for table_name in sorted(MAINTENANCE_DROP_TABLE_ALLOWLIST):
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+                (table_name,),
+            )
+            exists = cursor.fetchone() is not None
+            count = 0
+            if exists:
+                try:
+                    cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+                    count = int(cursor.fetchone()[0])
+                except sqlite3.Error:
+                    count = 0
+            rows.append({"table_name": table_name, "exists": exists, "count": count})
+        conn.close()
+        return rows
+
+    def drop_maintenance_table(self, db_path, table_name: str) -> bool:
+        """Drop allowlist 中的舊表。不可用於任意 SQL 或核心資料表。"""
+        if table_name not in MAINTENANCE_DROP_TABLE_ALLOWLIST:
+            raise ValueError(f"table not allowed: {table_name}")
+        conn = self._connect_existing_memory_db(db_path)
+        if conn is None:
+            return False
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+            (table_name,),
+        )
+        exists = cursor.fetchone() is not None
+        if exists:
+            cursor.execute(f'DROP TABLE "{table_name}"')
+            conn.commit()
+        conn.close()
+        return exists
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Users DB — 登入帳號 / 權限 / Auth Rate Limit

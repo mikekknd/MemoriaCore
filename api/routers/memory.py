@@ -4,8 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.dependencies import (
     get_current_user, require_admin_user, get_memory_sys, get_storage,
     get_router, get_embed_model, db_write_lock,
+    is_db_maintenance_mode, set_db_maintenance_mode,
+    require_db_writes_enabled,
 )
-from api.models.requests import SearchRequest, CoreSearchRequest, ExpandQueryRequest, BlockUpdateRequest
+from api.models.requests import (
+    SearchRequest, CoreSearchRequest, ExpandQueryRequest, BlockUpdateRequest,
+    MaintenanceModeRequest, DropMaintenanceTableRequest,
+)
 from api.models.responses import (
     MemoryBlockDTO, SearchResultDTO, CoreMemoryDTO,
     GraphDTO, GraphNodeDTO, GraphEdgeDTO,
@@ -71,6 +76,34 @@ def _inspect_visibility_filter(visibility: str) -> list[str] | None:
 def _require_memory_db(ms):
     if not ms.db_path:
         raise HTTPException(503, detail="Database not initialized")
+
+
+def _require_visibility_value(visibility: str) -> str:
+    normalized = (visibility or "").strip().lower()
+    if normalized not in ("public", "private"):
+        raise HTTPException(422, detail="visibility must be one of: public, private")
+    return normalized
+
+
+def _refresh_memory_runtime_cache(ms) -> dict:
+    ms._memory_blocks_cache.clear()
+    ms._core_memories_cache.clear()
+    ms._user_profiles_cache.clear()
+    if ms.db_path:
+        ms._memory_blocks_cache[("default", "default", "public")] = ms.storage.load_db(
+            ms.db_path,
+            visibility_filter=["public"],
+        )
+        ms._core_memories_cache[("default", "default", "public")] = ms.storage.load_core_db(
+            ms.db_path,
+            visibility_filter=["public"],
+        )
+        ms._user_profiles_cache["default"] = ms.storage.load_all_profiles(ms.db_path)
+    return {
+        "memory_blocks_cache": len(ms._memory_blocks_cache),
+        "core_memories_cache": len(ms._core_memories_cache),
+        "user_profiles_cache": len(ms._user_profiles_cache),
+    }
 
 
 def _runtime_scope_stats(scopes: dict) -> dict[str, dict]:
@@ -210,6 +243,167 @@ async def inspect_topics(
     )
 
 
+# ── Admin Maintenance（DB 編輯模式）────────────────────────
+@router.get("/maintenance")
+async def get_maintenance_status(current_user: dict = Depends(require_admin_user)):
+    ms = get_memory_sys()
+    tables = []
+    if ms.db_path:
+        tables = await asyncio.to_thread(get_storage().inspect_maintenance_tables, ms.db_path)
+    return {
+        "enabled": is_db_maintenance_mode(),
+        "db_path": ms.db_path,
+        "droppable_tables": tables,
+    }
+
+
+@router.post("/maintenance")
+async def update_maintenance_status(
+    body: MaintenanceModeRequest,
+    current_user: dict = Depends(require_admin_user),
+):
+    enabled = set_db_maintenance_mode(body.enabled)
+    return {"enabled": enabled}
+
+
+@router.post("/maintenance/refresh-cache")
+async def refresh_maintenance_cache(current_user: dict = Depends(require_admin_user)):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    async with db_write_lock:
+        caches = await asyncio.to_thread(_refresh_memory_runtime_cache, ms)
+    return {"status": "refreshed", "enabled": is_db_maintenance_mode(), "caches": caches}
+
+
+@router.delete("/maintenance/blocks/{block_id}")
+async def maintenance_delete_block(
+    block_id: str,
+    user_id: str = Query(...),
+    character_id: str = Query(...),
+    visibility: str = Query(...),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    visibility = _require_visibility_value(visibility)
+    async with db_write_lock:
+        deleted = await asyncio.to_thread(
+            ms.storage.delete_memory_block,
+            ms.db_path,
+            user_id,
+            character_id,
+            visibility,
+            block_id,
+        )
+        caches = await asyncio.to_thread(_refresh_memory_runtime_cache, ms)
+    if deleted < 1:
+        raise HTTPException(404, detail=f"Block {block_id} not found in requested scope")
+    return {"status": "deleted", "table": "memory_blocks", "id": block_id, "deleted": deleted, "caches": caches}
+
+
+@router.delete("/maintenance/core/{core_id}")
+async def maintenance_delete_core(
+    core_id: str,
+    user_id: str = Query(...),
+    character_id: str = Query(...),
+    visibility: str = Query(...),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    visibility = _require_visibility_value(visibility)
+    async with db_write_lock:
+        deleted = await asyncio.to_thread(
+            ms.storage.delete_core_memory,
+            ms.db_path,
+            user_id,
+            character_id,
+            core_id,
+            visibility,
+        )
+        caches = await asyncio.to_thread(_refresh_memory_runtime_cache, ms)
+    if deleted < 1:
+        raise HTTPException(404, detail=f"Core memory {core_id} not found in requested scope")
+    return {"status": "deleted", "table": "core_memories", "id": core_id, "deleted": deleted, "caches": caches}
+
+
+@router.delete("/maintenance/profile")
+async def maintenance_delete_profile(
+    user_id: str = Query(...),
+    fact_key: str = Query(...),
+    fact_value: str = Query(...),
+    visibility: str = Query(...),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    visibility = _require_visibility_value(visibility)
+    async with db_write_lock:
+        deleted = await asyncio.to_thread(
+            ms.storage.delete_profile,
+            ms.db_path,
+            fact_key,
+            fact_value,
+            user_id,
+            visibility,
+        )
+        caches = await asyncio.to_thread(_refresh_memory_runtime_cache, ms)
+    if deleted < 1:
+        raise HTTPException(404, detail=f"Profile fact {fact_key}={fact_value} not found in requested scope")
+    return {"status": "deleted", "table": "user_profile", "id": fact_key, "deleted": deleted, "caches": caches}
+
+
+@router.delete("/maintenance/topics/{topic_id}")
+async def maintenance_delete_topic(
+    topic_id: str,
+    user_id: str = Query(...),
+    character_id: str = Query(...),
+    visibility: str = Query(...),
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    visibility = _require_visibility_value(visibility)
+    async with db_write_lock:
+        deleted = await asyncio.to_thread(
+            ms.storage.delete_topic_cache,
+            ms.db_path,
+            user_id,
+            character_id,
+            visibility,
+            topic_id,
+        )
+        caches = await asyncio.to_thread(_refresh_memory_runtime_cache, ms)
+    if deleted < 1:
+        raise HTTPException(404, detail=f"Topic {topic_id} not found in requested scope")
+    return {"status": "deleted", "table": "topic_cache", "id": topic_id, "deleted": deleted, "caches": caches}
+
+
+@router.post("/maintenance/drop-table")
+async def maintenance_drop_table(
+    body: DropMaintenanceTableRequest,
+    current_user: dict = Depends(require_admin_user),
+):
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    async with db_write_lock:
+        try:
+            dropped = await asyncio.to_thread(
+                ms.storage.drop_maintenance_table,
+                ms.db_path,
+                body.table_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc))
+        caches = await asyncio.to_thread(_refresh_memory_runtime_cache, ms)
+    return {
+        "status": "dropped" if dropped else "not_found",
+        "table": body.table_name,
+        "dropped": dropped,
+        "caches": caches,
+    }
+
+
 # ── Memory Blocks ─────────────────────────────────────────
 # 以下端點透過 back-compat property，僅操作 (user_id='default', visibility='public') 範圍。
 # 非 default 使用者的資料不可見。如需跨 user/visibility 管理，需擴充為接受 query params。
@@ -234,6 +428,7 @@ async def get_block(
 
 @router.put("/blocks/{block_id}", response_model=MemoryBlockDTO)
 async def update_block(block_id: str, body: BlockUpdateRequest, current_user: dict = Depends(get_current_user)):
+    require_db_writes_enabled()
     ms = get_memory_sys()
     async with db_write_lock:
         ok = False
@@ -258,6 +453,7 @@ async def update_block(block_id: str, body: BlockUpdateRequest, current_user: di
 
 @router.delete("/blocks/{block_id}")
 async def delete_block(block_id: str, current_user: dict = Depends(get_current_user)):
+    require_db_writes_enabled()
     ms = get_memory_sys()
     async with db_write_lock:
         found = False
@@ -343,6 +539,7 @@ async def delete_core(
     character_id: str = Query("default"),
     current_user: dict = Depends(get_current_user),
 ):
+    require_db_writes_enabled()
     ms = get_memory_sys()
     async with db_write_lock:
         # 從所有已快取的 visibility slot 移除

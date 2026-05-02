@@ -2,7 +2,7 @@
 import re
 
 from core.prompt_manager import get_prompt_manager
-from core.prompt_utils import build_user_prefix, format_latest_user_message_for_llm
+from core.prompt_utils import build_user_prefix
 from core.xml_prompt import xml_block
 
 _FOLLOWUP_INSTRUCTION_RE = re.compile(
@@ -11,12 +11,49 @@ _FOLLOWUP_INSTRUCTION_RE = re.compile(
 )
 
 
-def build_group_followup_instruction(followup: dict, user_prompt: str) -> str:
+def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | None = None) -> str:
+    """建立接力回合的焦點上下文。
+
+    接力 turn 的真人原句是本輪約束，不是主要回應對象；主要目標永遠是上一位 AI 的最後一句。
+    """
+    ctx = session_ctx or {}
+    original_user_prompt = followup.get("user_prompt_original") or user_prompt
+    last_character_name = followup.get("last_character_name", "")
+    last_reply = followup.get("last_reply", "")
+    return "\n\n".join([
+        xml_block(
+            "original_user_request",
+            original_user_prompt,
+            attrs={
+                "role": "background_constraint",
+                "speaker": "human_user",
+                "user_name": ctx.get("user_name") or "",
+            },
+        ),
+        xml_block(
+            "primary_reply_target",
+            last_reply,
+            attrs={
+                "role": "primary_response_target",
+                "speaker": last_character_name,
+            },
+        ),
+    ])
+
+
+def build_group_followup_instruction(
+    followup: dict,
+    user_prompt: str,
+    session_ctx: dict | None = None,
+) -> str:
     """依目前 prompt template 組出群組接力指令。"""
     return get_prompt_manager().get("group_followup_user").format(
         user_prompt=followup.get("user_prompt_original", user_prompt),
         last_character_name=followup.get("last_character_name", ""),
         last_reply=followup.get("last_reply", ""),
+        turn_context=_build_turn_context(followup, user_prompt, session_ctx),
+        conversation_intent=followup.get("conversation_intent", ""),
+        routing_action=followup.get("routing_action", ""),
     )
 
 
@@ -39,20 +76,17 @@ def inject_group_followup_instruction(
     """將群組接力指令注入最終 LLM messages。
 
     追加最後一則 user control message，避免接力回合以 assistant message 結尾。
-    這則 control 同時帶入本輪真人訊息與環境/使用者名稱前綴，避免後續 AI 只看見
-    接力規則而失去「這一輪使用者實際說了什麼」的明確標記。
+    這則 control 將真人原句降權為背景約束，並把上一位 AI 的最後一句標成主要回應對象。
     """
     if not followup or not api_messages:
         return
 
-    followup_text = build_group_followup_instruction(followup, user_prompt)
-    original_user_prompt = followup.get("user_prompt_original") or user_prompt
+    followup_text = build_group_followup_instruction(followup, user_prompt, session_ctx)
     prefix = build_user_prefix(
         session_messages or [],
         user_prefs=user_prefs or {},
         session_ctx=session_ctx or {},
     )
-    latest_user = format_latest_user_message_for_llm(original_user_prompt, session_ctx or {})
     followup_control = xml_block(
         "group_followup_instruction",
         _followup_instruction_body(followup_text),
@@ -60,5 +94,5 @@ def inject_group_followup_instruction(
     )
     api_messages.append({
         "role": "user",
-        "content": prefix + latest_user + "\n\n" + followup_control,
+        "content": prefix + followup_control,
     })
