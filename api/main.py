@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from api.dependencies import (
     init_all, get_storage, get_router, get_memory_sys,
     get_persona_sync_manager, get_telegram_bot_manager, get_discord_bot_manager,
+    is_db_maintenance_mode,
 )
 from api.session_manager import session_manager
 from core.background_gatherer import start_background_gather_loop
@@ -86,6 +87,8 @@ async def lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(1200)  # 20 分鐘
             try:
+                if is_db_maintenance_mode():
+                    continue
                 psm = get_persona_sync_manager()
                 sto = get_storage()
                 prefs = sto.load_prefs()

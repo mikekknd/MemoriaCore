@@ -7,14 +7,52 @@ from core.prompt_manager import get_prompt_manager
 from core.system_logger import SystemLogger
 
 
+GROUP_ROUTER_ACTIONS = (
+    "stop_all_spoken",
+    "stop_no_new_value",
+    "new_speaker_ack",
+    "new_speaker_add",
+    "new_speaker_reply_to_ai",
+    "repeat_speaker_reply_to_ai",
+    "repeat_speaker_correction",
+    "explicit_user_request",
+)
+
+GROUP_ROUTER_INTENTS = (
+    "single_response",
+    "group_discussion",
+    "continue_group_discussion",
+    "directed_character",
+    "low_information_ack",
+)
+
+NEW_SPEAKER_ACTIONS = {
+    "new_speaker_ack",
+    "new_speaker_add",
+    "new_speaker_reply_to_ai",
+}
+
+REPEAT_SPEAKER_ACTIONS = {
+    "repeat_speaker_reply_to_ai",
+    "repeat_speaker_correction",
+}
+
 GROUP_ROUTER_SCHEMA = {
     "type": "object",
     "properties": {
-        "should_respond": {"type": "boolean"},
+        "action": {
+            "type": "string",
+            "enum": list(GROUP_ROUTER_ACTIONS),
+        },
+        "conversation_intent": {
+            "type": "string",
+            "enum": list(GROUP_ROUTER_INTENTS),
+        },
         "target_character_id": {"type": ["string", "null"]},
         "reason": {"type": "string"},
     },
-    "required": ["should_respond", "target_character_id", "reason"],
+    "required": ["conversation_intent", "action", "target_character_id", "reason"],
+    "additionalProperties": False,
 }
 
 
@@ -26,39 +64,51 @@ def run_group_router(
     temperature: float = 0.0,
     last_speaker_id: str | None = None,
     honor_mentions: bool = True,
+    bot_turn_index: int = 0,
+    max_bot_turns: int | None = None,
 ) -> GroupRouterResult:
     """根據近期群組上下文選出下一位 AI；無需接話時回傳 should_respond=False。"""
     participants = _normalize_characters(active_characters)
     if not participants:
-        return GroupRouterResult(False, None, "no participants")
+        return GroupRouterResult(False, None, "no participants", "stop_no_new_value")
 
     mentioned_id = _detect_mention(_latest_user_text(session_messages), participants) if honor_mentions else None
     if mentioned_id:
-        return GroupRouterResult(True, mentioned_id, "explicit mention")
+        return GroupRouterResult(True, mentioned_id, "explicit mention", "explicit_user_request")
 
     latest_user_text = _latest_user_text(session_messages)
     spoken_after_user = _spoken_participant_ids_after_latest_user(session_messages, participants)
-    all_participants_spoke = len(participants) > 1 and len(spoken_after_user) >= len(participants)
-    user_requested_multi_turn = _latest_user_requests_more_turns(latest_user_text)
+    already_spoken_refs = _participant_refs(spoken_after_user, participants)
+    not_yet_spoken_ids = _not_yet_spoken_participant_ids(spoken_after_user, participants)
+    not_yet_spoken_refs = _participant_refs(not_yet_spoken_ids, participants)
+    all_participants_spoke = len(participants) > 1 and not not_yet_spoken_ids
+    remaining_bot_turns = _remaining_bot_turns(bot_turn_index, max_bot_turns)
 
     if len(participants) == 1:
         only_id = participants[0]["character_id"]
         if only_id == last_speaker_id:
-            return GroupRouterResult(False, None, "single participant already spoke")
-        return GroupRouterResult(True, only_id, "single participant")
+            return GroupRouterResult(False, None, "single participant already spoke", "stop_no_new_value")
+        return GroupRouterResult(True, only_id, "single participant", "new_speaker_ack")
 
     prompt = get_prompt_manager().get("group_router_system").format(
         participants_json=json.dumps(participants, ensure_ascii=False, indent=2),
         history_text=_format_history(session_messages[-12:]),
         turn_state_json=json.dumps(
             {
+                "original_user_request": latest_user_text,
                 "latest_user_text": latest_user_text,
                 "last_speaker": _participant_ref(last_speaker_id, participants),
-                "participants_who_already_spoke_after_latest_user": [
-                    _participant_ref(cid, participants) for cid in sorted(spoken_after_user)
-                ],
-                "all_participants_already_spoke_after_latest_user": all_participants_spoke,
-                "user_explicitly_requested_multi_turn_discussion": user_requested_multi_turn,
+                "already_spoken_this_turn": already_spoken_refs,
+                "not_yet_spoken_this_turn": not_yet_spoken_refs,
+                "all_participants_already_spoke_this_turn": all_participants_spoke,
+                "recent_assistant_exchange_this_turn": _recent_assistant_exchange_after_latest_user(
+                    session_messages,
+                    participants,
+                    limit=4,
+                ),
+                "bot_turn_index": max(0, int(bot_turn_index or 0)),
+                "max_bot_turns": max_bot_turns,
+                "remaining_bot_turns_including_next": remaining_bot_turns,
             },
             ensure_ascii=False,
             indent=2,
@@ -74,22 +124,26 @@ def run_group_router(
         )
     except Exception as exc:
         SystemLogger.log_error("GroupRouter", f"{type(exc).__name__}: {exc}")
-        return _fallback(participants, last_speaker_id)
+        return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
 
     if not isinstance(parsed, dict):
-        return _fallback(participants, last_speaker_id)
+        return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
 
-    should_respond = bool(parsed.get("should_respond"))
+    parsed = _coerce_legacy_router_result(parsed, spoken_after_user, not_yet_spoken_ids)
+    conversation_intent = str(parsed.get("conversation_intent") or "")
+    action = str(parsed.get("action") or "")
     target = parsed.get("target_character_id")
-    valid_ids = {p["character_id"] for p in participants}
-    if not should_respond:
-        return GroupRouterResult(False, None, str(parsed.get("reason", "")))
-    if target not in valid_ids:
-        return _fallback(participants, last_speaker_id)
-    if target == last_speaker_id and len(participants) > 1:
-        alternatives = [p["character_id"] for p in participants if p["character_id"] != last_speaker_id]
-        return GroupRouterResult(True, alternatives[0], "avoid repeated speaker")
-    return GroupRouterResult(True, target, str(parsed.get("reason", "")))
+    reason = str(parsed.get("reason", ""))
+    return _validate_action_result(
+        conversation_intent=conversation_intent,
+        action=action,
+        target=target,
+        reason=reason,
+        participants=participants,
+        already_spoken_ids=spoken_after_user,
+        not_yet_spoken_ids=not_yet_spoken_ids,
+        last_speaker_id=last_speaker_id,
+    )
 
 
 def _normalize_characters(active_characters: list[dict]) -> list[dict]:
@@ -125,6 +179,19 @@ def _participant_ref(character_id: str | None, participants: list[dict]) -> dict
     return None
 
 
+def _participant_refs(character_ids: set[str] | list[str], participants: list[dict]) -> list[dict]:
+    wanted = set(character_ids)
+    refs = []
+    for participant in participants:
+        cid = participant["character_id"]
+        if cid in wanted:
+            refs.append({
+                "character_id": cid,
+                "name": participant.get("name") or cid,
+            })
+    return refs
+
+
 def _latest_user_text(messages: list[dict]) -> str:
     for msg in reversed(messages):
         if msg.get("role") == "user":
@@ -152,21 +219,50 @@ def _spoken_participant_ids_after_latest_user(messages: list[dict], participants
     return spoken
 
 
-def _latest_user_requests_more_turns(text: str) -> bool:
-    if not text:
-        return False
-    markers = (
-        "繼續",
-        "接著",
-        "輪流",
-        "多輪",
-        "幾輪",
-        "多講",
-        "多聊",
-        "深入討論",
-        "辯論",
-    )
-    return any(marker in text for marker in markers)
+def _not_yet_spoken_participant_ids(spoken_ids: set[str], participants: list[dict]) -> list[str]:
+    return [p["character_id"] for p in participants if p["character_id"] not in spoken_ids]
+
+
+def _recent_assistant_exchange_after_latest_user(
+    messages: list[dict],
+    participants: list[dict],
+    *,
+    limit: int,
+) -> list[dict]:
+    latest_user_index = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if messages[idx].get("role") == "user":
+            latest_user_index = idx
+            break
+    if latest_user_index is None:
+        return []
+
+    valid_ids = {p["character_id"] for p in participants}
+    names = {p["character_id"]: p.get("name") or p["character_id"] for p in participants}
+    exchange = []
+    for msg in messages[latest_user_index + 1:]:
+        if msg.get("role") != "assistant":
+            continue
+        cid = str(msg.get("character_id") or "").strip()
+        if cid not in valid_ids:
+            continue
+        exchange.append({
+            "character_id": cid,
+            "name": msg.get("character_name") or names.get(cid) or cid,
+            "content": str(msg.get("content", ""))[:800],
+        })
+    return exchange[-max(1, int(limit or 1)):]
+
+
+def _remaining_bot_turns(bot_turn_index: int, max_bot_turns: int | None) -> int | None:
+    if max_bot_turns is None:
+        return None
+    try:
+        limit = int(max_bot_turns)
+        index = int(bot_turn_index or 0)
+    except (TypeError, ValueError):
+        return None
+    return max(0, limit - max(0, index))
 
 
 def _detect_mention(text: str, participants: list[dict]) -> str | None:
@@ -208,9 +304,104 @@ def _format_history(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _coerce_legacy_router_result(
+    parsed: dict,
+    already_spoken_ids: set[str],
+    not_yet_spoken_ids: list[str],
+) -> dict:
+    """兼容舊版 should_respond schema；正式 prompt/schema 已改用 action。"""
+    if parsed.get("action") in GROUP_ROUTER_ACTIONS:
+        return parsed
+    if "should_respond" not in parsed:
+        return parsed
+
+    target = parsed.get("target_character_id")
+    if not bool(parsed.get("should_respond")):
+        action = "stop_all_spoken" if not not_yet_spoken_ids else "stop_no_new_value"
+    elif target in not_yet_spoken_ids:
+        action = "new_speaker_add"
+    elif target in already_spoken_ids:
+        action = "repeat_speaker_reply_to_ai"
+    else:
+        action = "new_speaker_add"
+    return {
+        "conversation_intent": _legacy_intent_for_action(action),
+        "action": action,
+        "target_character_id": target,
+        "reason": parsed.get("reason", ""),
+    }
+
+
+def _legacy_intent_for_action(action: str) -> str:
+    if action == "explicit_user_request":
+        return "directed_character"
+    if action in REPEAT_SPEAKER_ACTIONS:
+        return "continue_group_discussion"
+    if action in NEW_SPEAKER_ACTIONS:
+        return "group_discussion"
+    return "single_response"
+
+
+def _validate_action_result(
+    *,
+    conversation_intent: str,
+    action: str,
+    target,
+    reason: str,
+    participants: list[dict],
+    already_spoken_ids: set[str],
+    not_yet_spoken_ids: list[str],
+    last_speaker_id: str | None,
+) -> GroupRouterResult:
+    valid_ids = {p["character_id"] for p in participants}
+
+    if action not in GROUP_ROUTER_ACTIONS:
+        return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+
+    if action == "stop_all_spoken":
+        if target is not None or not_yet_spoken_ids:
+            return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+        return GroupRouterResult(False, None, reason, action, conversation_intent)
+
+    if action == "stop_no_new_value":
+        if target is not None:
+            return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+        return GroupRouterResult(False, None, reason, action, conversation_intent)
+
+    if action in NEW_SPEAKER_ACTIONS:
+        if target in not_yet_spoken_ids:
+            return GroupRouterResult(True, target, reason, action, conversation_intent)
+        return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+
+    if action in REPEAT_SPEAKER_ACTIONS:
+        if target in already_spoken_ids:
+            return GroupRouterResult(True, target, reason, action, conversation_intent)
+        return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+
+    if action == "explicit_user_request":
+        if target in valid_ids:
+            return GroupRouterResult(True, target, reason, action, conversation_intent)
+        return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+
+    return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+
+
+def _fallback_with_unspoken(
+    participants: list[dict],
+    not_yet_spoken_ids: list[str],
+    last_speaker_id: str | None,
+) -> GroupRouterResult:
+    for cid in not_yet_spoken_ids:
+        if cid != last_speaker_id:
+            return GroupRouterResult(True, cid, "fallback unspoken participant", "new_speaker_add")
+    if not_yet_spoken_ids:
+        return GroupRouterResult(True, not_yet_spoken_ids[0], "fallback unspoken participant", "new_speaker_add")
+    return _fallback(participants, last_speaker_id)
+
+
 def _fallback(participants: list[dict], last_speaker_id: str | None) -> GroupRouterResult:
     for participant in participants:
         cid = participant["character_id"]
         if cid != last_speaker_id:
-            return GroupRouterResult(True, cid, "fallback")
-    return GroupRouterResult(False, None, "fallback no alternative")
+            return GroupRouterResult(True, cid, "fallback", "new_speaker_add")
+    return GroupRouterResult(False, None, "fallback no alternative", "stop_no_new_value")

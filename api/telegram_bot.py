@@ -482,12 +482,16 @@ class TelegramBotManager:
             if identity is None:
                 return
 
-            from api.dependencies import get_storage
+            from api.dependencies import get_storage, is_db_maintenance_mode
             from api.session_manager import session_manager
             from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 
             if _is_telegram_id_query(user_text):
                 await message.answer(f"你的 Telegram ID 是：{identity.telegram_id}")
+                return
+
+            if is_db_maintenance_mode():
+                await message.answer("DB 編輯模式啟用中，暫停處理新對話。")
                 return
 
             sid = await self._session_map.get_or_create_session(

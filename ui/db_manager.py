@@ -22,6 +22,20 @@ def _api_get_json(api_base: str, path: str, params: dict | None = None, timeout:
     return resp.json()
 
 
+def _api_post_json(api_base: str, path: str, json_body: dict | None = None, timeout: int = 15):
+    resp = requests.post(f"{api_base}{path}", json=json_body or {}, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(resp.text)
+    return resp.json()
+
+
+def _api_delete_json(api_base: str, path: str, params: dict | None = None, timeout: int = 15):
+    resp = requests.delete(f"{api_base}{path}", params=params, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(resp.text)
+    return resp.json()
+
+
 def _load_inspect_meta(api_base: str) -> tuple[dict, dict[str, str]]:
     scopes = _api_get_json(api_base, "/memory/inspect/scopes", timeout=20)
     try:
@@ -62,6 +76,181 @@ def _json_text(value) -> str:
     if value in (None, "", []):
         return ""
     return json.dumps(value, ensure_ascii=False)
+
+
+def _short_text(value, limit: int = 80) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    return text if len(text) <= limit else text[:max(0, limit - 3)] + "..."
+
+
+def _row_delete_label(table_key: str, row: dict) -> str:
+    if table_key == "blocks":
+        return f"{row.get('block_id', '')} - {_short_text(row.get('overview'))}"
+    if table_key == "core":
+        return f"{row.get('core_id', '')} - {_short_text(row.get('insight'))}"
+    if table_key == "profile":
+        return f"{row.get('fact_key', '')}={_short_text(row.get('fact_value'))}"
+    return f"{row.get('topic_id', '')} - {_short_text(row.get('summary_content'))}"
+
+
+def _render_maintenance_controls(api_base: str, locale: str) -> None:
+    try:
+        status = _api_get_json(api_base, "/memory/maintenance", timeout=10)
+    except Exception as e:
+        st.error(t("db_manager.streamlit.maintenance_load_failed", locale, message=e))
+        return
+
+    current_enabled = bool(status.get("enabled"))
+    desired_enabled = st.toggle(
+        t("db_manager.streamlit.maintenance_toggle", locale),
+        value=current_enabled,
+        help=t("db_manager.streamlit.maintenance_help", locale),
+        key="db_maintenance_mode_toggle",
+    )
+    if desired_enabled != current_enabled:
+        try:
+            updated = _api_post_json(
+                api_base,
+                "/memory/maintenance",
+                {"enabled": desired_enabled},
+                timeout=10,
+            )
+            st.success(
+                t(
+                    "db_manager.streamlit.maintenance_enabled"
+                    if updated.get("enabled")
+                    else "db_manager.streamlit.maintenance_disabled",
+                    locale,
+                )
+            )
+            st.rerun()
+        except Exception as e:
+            st.error(t("db_manager.streamlit.maintenance_update_failed", locale, message=e))
+
+    if current_enabled:
+        st.warning(t("db_manager.streamlit.maintenance_active_warning", locale))
+
+    if st.button(t("db_manager.streamlit.refresh_cache", locale), use_container_width=True):
+        try:
+            _api_post_json(api_base, "/memory/maintenance/refresh-cache", {}, timeout=30)
+            st.session_state.pop("db_inspect_meta", None)
+            st.success(t("db_manager.streamlit.refresh_cache_done", locale))
+        except Exception as e:
+            st.error(t("db_manager.streamlit.refresh_cache_failed", locale, message=e))
+
+    droppable = [r for r in status.get("droppable_tables", []) if r.get("exists")]
+    if droppable:
+        st.divider()
+        st.subheader(t("db_manager.streamlit.drop_legacy_title", locale))
+        st.caption(t("db_manager.streamlit.drop_legacy_caption", locale))
+        selected = st.selectbox(
+            t("db_manager.streamlit.drop_legacy_table", locale),
+            droppable,
+            format_func=lambda r: f"{r.get('table_name')} ({r.get('count', 0)} rows)",
+            key="db_drop_legacy_table",
+        )
+        table_name = selected.get("table_name", "")
+        confirm = st.text_input(
+            t("db_manager.streamlit.drop_legacy_confirm", locale, table=table_name),
+            key="db_drop_legacy_confirm",
+        )
+        if st.button(
+            t("db_manager.streamlit.drop_legacy_button", locale),
+            disabled=(confirm != table_name),
+            use_container_width=True,
+        ):
+            try:
+                result = _api_post_json(
+                    api_base,
+                    "/memory/maintenance/drop-table",
+                    {"table_name": table_name, "confirm_table_name": confirm},
+                    timeout=30,
+                )
+                st.success(t("db_manager.streamlit.drop_legacy_done", locale, table=result.get("table", table_name)))
+                st.session_state.pop("db_inspect_meta", None)
+                st.rerun()
+            except Exception as e:
+                st.error(t("db_manager.streamlit.drop_legacy_failed", locale, message=e))
+
+
+def _delete_row(api_base: str, table_key: str, row: dict):
+    if table_key == "blocks":
+        return _api_delete_json(
+            api_base,
+            f"/memory/maintenance/blocks/{row.get('block_id')}",
+            {
+                "user_id": row.get("user_id", ""),
+                "character_id": row.get("character_id", ""),
+                "visibility": row.get("visibility", ""),
+            },
+            timeout=30,
+        )
+    if table_key == "core":
+        return _api_delete_json(
+            api_base,
+            f"/memory/maintenance/core/{row.get('core_id')}",
+            {
+                "user_id": row.get("user_id", ""),
+                "character_id": row.get("character_id", ""),
+                "visibility": row.get("visibility", ""),
+            },
+            timeout=30,
+        )
+    if table_key == "profile":
+        return _api_delete_json(
+            api_base,
+            "/memory/maintenance/profile",
+            {
+                "user_id": row.get("user_id", ""),
+                "fact_key": row.get("fact_key", ""),
+                "fact_value": row.get("fact_value", ""),
+                "visibility": row.get("visibility", ""),
+            },
+            timeout=30,
+        )
+    return _api_delete_json(
+        api_base,
+        f"/memory/maintenance/topics/{row.get('topic_id')}",
+        {
+            "user_id": row.get("user_id", ""),
+            "character_id": row.get("character_id", ""),
+            "visibility": row.get("visibility", ""),
+        },
+        timeout=30,
+    )
+
+
+def _render_delete_controls(api_base: str, table_key: str, rows: list[dict], locale: str) -> None:
+    if not rows:
+        return
+    st.divider()
+    st.subheader(t("db_manager.streamlit.delete_title", locale))
+    st.warning(t("db_manager.streamlit.delete_warning", locale))
+    selected_row = st.selectbox(
+        t("db_manager.streamlit.delete_target", locale),
+        rows,
+        format_func=lambda r: _row_delete_label(table_key, r),
+        key=f"db_delete_target_{table_key}",
+    )
+    st.json(selected_row, expanded=False)
+    confirm = st.text_input(
+        t("db_manager.streamlit.delete_confirm", locale),
+        key=f"db_delete_confirm_{table_key}",
+    )
+    if st.button(
+        t("db_manager.streamlit.delete_button", locale),
+        disabled=(confirm != "DELETE"),
+        type="primary",
+        use_container_width=True,
+    ):
+        try:
+            result = _delete_row(api_base, table_key, selected_row)
+            st.success(t("db_manager.streamlit.delete_done", locale, deleted=result.get("deleted", 0)))
+            st.session_state.pop("db_inspect_meta", None)
+            st.session_state.pop("db_inspect_rows", None)
+            st.rerun()
+        except Exception as e:
+            st.error(t("db_manager.streamlit.delete_failed", locale, message=e))
 
 
 def _render_inspect_table(table_key: str, rows: list[dict], scope_text: str, locale: str) -> None:
@@ -188,9 +377,13 @@ def render_db_manager_page(api_base, user_prefs):
         st.subheader(t("db_manager.streamlit.inspect_title", locale))
         st.caption(t("db_manager.streamlit.inspect_caption", locale))
 
+        with st.expander(t("db_manager.streamlit.maintenance_panel", locale), expanded=False):
+            _render_maintenance_controls(api_base, locale)
+
         meta_key = "db_inspect_meta"
         if st.button(t("db_manager.streamlit.reload_scopes", locale), key="reload_db_inspect_meta"):
             st.session_state.pop(meta_key, None)
+            st.session_state.pop("db_inspect_rows", None)
 
         try:
             if meta_key not in st.session_state:
@@ -307,11 +500,23 @@ def render_db_manager_page(api_base, user_prefs):
                     params["only_unmentioned"] = only_unmentioned
 
                 rows = _api_get_json(api_base, f"/memory/inspect/{table_key}", params=params, timeout=30)
-                st.subheader(table_options[table_key])
-                st.caption(scope_text)
-                _render_inspect_table(table_key, rows, scope_text, locale)
+                st.session_state["db_inspect_rows"] = {
+                    "table_key": table_key,
+                    "table_label": table_options[table_key],
+                    "scope_text": scope_text,
+                    "rows": rows,
+                }
             except Exception as e:
                 st.error(t("db_manager.streamlit.load_db_failed", locale, message=e))
+
+        loaded = st.session_state.get("db_inspect_rows")
+        if loaded:
+            loaded_table = loaded.get("table_key", table_key)
+            loaded_rows = loaded.get("rows") or []
+            st.subheader(loaded.get("table_label") or table_options.get(loaded_table, loaded_table))
+            st.caption(loaded.get("scope_text", ""))
+            _render_inspect_table(loaded_table, loaded_rows, loaded.get("scope_text", ""), locale)
+            _render_delete_controls(api_base, loaded_table, loaded_rows, locale)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Tab 4: 開發者工具

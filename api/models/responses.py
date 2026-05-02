@@ -159,6 +159,7 @@ class RetrievalContextDTO(BaseModel):
     dynamic_prompt: str = ""
     context_messages_count: int = 0
     perf_timing: PerfTimingDTO = PerfTimingDTO()
+    llm_trace: dict = {}
 
 
 class ChatTurnDTO(BaseModel):

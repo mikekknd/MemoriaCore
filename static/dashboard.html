@@ -75,15 +75,15 @@ body { height:100vh; overflow:hidden; }
     <div class="tab-content">
       <div class="tab-pane active" data-pane="viewer">
         <div class="viewer-toolbar">
-          <button class="active" onclick="setViewerMode('both',this)" data-i18n="dashboard.viewer.both">side by side</button>
-          <button onclick="setViewerMode('log',this)" data-i18n="dashboard.viewer.log_only">Log only</button>
-          <button onclick="setViewerMode('db',this)" data-i18n="dashboard.viewer.db_only">DB only</button>
+          <button class="active" data-viewer-mode="both" onclick="setViewerMode('both',this)" data-i18n="dashboard.viewer.both">side by side</button>
+          <button data-viewer-mode="log" onclick="setViewerMode('log',this)" data-i18n="dashboard.viewer.log_only">Log only</button>
+          <button data-viewer-mode="db" onclick="setViewerMode('db',this)" data-i18n="dashboard.viewer.db_only">DB only</button>
           <span style="margin-left:auto"></span>
           <button onclick="reloadLogViewer()" data-i18n="dashboard.viewer.reload_log">reload Log</button>
         </div>
         <div class="viewer-frames" id="viewerFrames">
           <iframe id="logFrame" src="/static/log_viewer.html?api=true" title="Log Viewer" data-i18n-title="dashboard.iframe.log"></iframe>
-          <iframe id="dbFrame" src="/static/db_viewer.html?v=i18n-ready-ui" title="DB Viewer" data-i18n-title="dashboard.iframe.db"></iframe>
+          <iframe id="dbFrame" src="/static/db_viewer.html?v=column-visibility" title="DB Viewer" data-i18n-title="dashboard.iframe.db"></iframe>
         </div>
       </div>
 
@@ -231,11 +231,31 @@ function setViewerMode(mode, btn) {
   document.getElementById('dbFrame').classList.toggle('hidden', mode === 'log');
 }
 
+function setViewerModeByName(mode) {
+  const btn = document.querySelector(`.viewer-toolbar button[data-viewer-mode="${mode}"]`);
+  if (btn) setViewerMode(mode, btn);
+}
+
 function reloadLogViewer() {
   const frame = document.getElementById('logFrame');
   try { frame.contentWindow.postMessage('reload-logs', '*'); } catch {}
   setTimeout(() => { try { frame.contentWindow.location.reload(); } catch {} }, 300);
 }
+
+window.addEventListener('message', ev => {
+  const data = ev.data || {};
+  if (data.type !== 'open-log-trace' || !data.llm_call_id) return;
+  const viewerBtn = document.querySelector('.tab-btn[data-tab="viewer"]');
+  if (viewerBtn) switchTab(viewerBtn);
+  setViewerModeByName('log');
+  const frame = document.getElementById('logFrame');
+  const payload = {type: 'focus-log', llm_call_id: data.llm_call_id};
+  try { frame.contentWindow.postMessage(payload, '*'); } catch {}
+  setTimeout(() => { try { frame.contentWindow.postMessage(payload, '*'); } catch {} }, 150);
+  if (!frame.getAttribute('src')) {
+    frame.src = `/static/log_viewer.html?api=true&llm_call_id=${encodeURIComponent(data.llm_call_id)}`;
+  }
+});
 </script>
 </body>
 </html>

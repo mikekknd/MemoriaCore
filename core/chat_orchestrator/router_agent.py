@@ -5,6 +5,8 @@
   避免單選 schema 下的 hallucination。
 - 只輸出 tool call，不產生文字；thinking_speech 由 coordinator 用模板生成。
 """
+import json
+
 from core.system_logger import SystemLogger
 from core.prompt_manager import get_prompt_manager
 from core.chat_orchestrator.dataclasses import RouterResult
@@ -32,6 +34,102 @@ DIRECT_CHAT_SCHEMA = {
         },
     },
 }
+
+
+def _tool_names(tools: list[dict]) -> list[str]:
+    names = []
+    for tool in tools:
+        name = tool.get("function", {}).get("name")
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _format_messages_for_fallback(messages: list[dict]) -> str:
+    lines = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = str(msg.get("content", ""))
+        lines.append(f"[{role}]\n{content}")
+    return "\n\n".join(lines)
+
+
+def _fallback_schema(tool_names: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "selected_tool": {
+                "type": "string",
+                "enum": tool_names,
+            },
+            "arguments": {
+                "type": "object",
+            },
+            "reason": {
+                "type": "string",
+            },
+        },
+        "required": ["selected_tool", "arguments", "reason"],
+        "additionalProperties": False,
+    }
+
+
+def _coerce_fallback_tool_call(parsed: dict, augmented_tools: list[dict]) -> dict | None:
+    selected = str(parsed.get("selected_tool") or "").strip()
+    if not selected or selected == "direct_chat":
+        return None
+
+    valid_names = set(_tool_names(augmented_tools))
+    if selected not in valid_names:
+        return None
+
+    arguments = parsed.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return {
+        "id": f"fallback_{selected}",
+        "type": "function",
+        "function": {
+            "name": selected,
+            "arguments": arguments,
+        },
+    }
+
+
+def _run_json_fallback(
+    *,
+    router,
+    messages: list[dict],
+    augmented_tools: list[dict],
+    original_content: str,
+) -> RouterResult:
+    tool_names = _tool_names(augmented_tools)
+    if not tool_names:
+        return RouterResult(needs_tools=False)
+
+    try:
+        prompt = get_prompt_manager().get("router_json_fallback").format(
+            tools_json=json.dumps(augmented_tools, ensure_ascii=False, indent=2),
+            conversation_messages=_format_messages_for_fallback(messages),
+            original_content=original_content[:1200],
+        )
+        parsed = router.generate_json(
+            "router",
+            [{"role": "user", "content": prompt}],
+            schema=_fallback_schema(tool_names),
+            temperature=0.0,
+        )
+    except Exception as exc:
+        SystemLogger.log_error("RouterAgent", f"JSON fallback failed: {type(exc).__name__}: {exc}")
+        return RouterResult(needs_tools=False)
+
+    if not isinstance(parsed, dict):
+        return RouterResult(needs_tools=False)
+
+    fallback_call = _coerce_fallback_tool_call(parsed, augmented_tools)
+    if not fallback_call:
+        return RouterResult(needs_tools=False)
+    return RouterResult(needs_tools=True, tool_calls=[fallback_call])
 
 
 # ════════════════════════════════════════════════════════════
@@ -96,7 +194,7 @@ def run_router_agent(
 
     try:
         content, tool_calls = router.generate_with_tools(
-            "router", messages, tools=augmented_tools, temperature=temperature,
+            "router", messages, tools=augmented_tools, temperature=0.0,
             tool_choice="required",
         )
     except Exception as e:
@@ -111,5 +209,20 @@ def run_router_agent(
         ]
         if real_tool_calls:
             return RouterResult(needs_tools=True, tool_calls=real_tool_calls)
+
+    # 某些 provider / cloud model 會忽略 tool_choice="required"，直接回自然語言。
+    # 不能讓這段文字進入最終回覆，也不能靜默漏掉真正需要的工具，改用 JSON fallback 再判斷一次。
+    if tools_list and content.strip():
+        SystemLogger.log_error(
+            "RouterAgent",
+            "tool_choice=required 未產生 tool_calls，改用 JSON fallback。",
+            details={"content_preview": content[:500]},
+        )
+        return _run_json_fallback(
+            router=router,
+            messages=messages,
+            augmented_tools=augmented_tools,
+            original_content=content,
+        )
 
     return RouterResult(needs_tools=False)

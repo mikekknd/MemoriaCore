@@ -486,9 +486,17 @@ class DiscordBotManager:
             )
             return
 
-        from api.dependencies import get_storage
+        from api.dependencies import get_storage, is_db_maintenance_mode
         from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
         from api.session_manager import session_manager
+
+        if is_db_maintenance_mode():
+            await message.reply(
+                "DB 編輯模式啟用中，暫停處理新對話。",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
 
         sid = await self._session_map.get_or_create_session(
             bot_id,

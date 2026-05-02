@@ -98,6 +98,57 @@ def test_extract_user_facts_dialogue_text_skips_followup(monkeypatch):
     assert "你好" in prompt_text
 
 
+def test_extract_user_facts_requires_user_evidence_and_long_term_flag():
+    """profile 後處理只驗證 evidence_quote 來自 user 原文與長期旗標，不維護 fact_key 白名單。"""
+    from core.memory_analyzer import MemoryAnalyzer
+
+    def _record(task, messages, *args, **kwargs):
+        return {
+            "facts": [
+                {
+                    "action": "INSERT",
+                    "fact_key": "favorite_food",
+                    "fact_value": "壽司",
+                    "category": "explicit_preference",
+                    "justification": "使用者明確宣告偏好",
+                    "evidence_quote": "我超愛吃壽司",
+                    "is_long_term_profile": True,
+                },
+                {
+                    "action": "INSERT",
+                    "fact_key": "pet_name",
+                    "fact_value": "可可",
+                    "category": "relationship",
+                    "justification": "assistant 提到可可",
+                    "evidence_quote": "可可今天很乖",
+                    "is_long_term_profile": True,
+                },
+                {
+                    "action": "INSERT",
+                    "fact_key": "electric_toothbrush",
+                    "fact_value": "電動牙刷",
+                    "category": "basic_info",
+                    "justification": "一次性物品不應進畫像",
+                    "evidence_quote": "白蓮大人怎麼知道我是用電動牙刷",
+                    "is_long_term_profile": False,
+                },
+            ]
+        }
+
+    router = MagicMock()
+    router.generate_json = MagicMock(side_effect=_record)
+    msgs = [
+        {"role": "user", "content": "我超愛吃壽司"},
+        {"role": "assistant", "content": "可可今天很乖"},
+        {"role": "user", "content": "白蓮大人怎麼知道我是用電動牙刷"},
+    ]
+
+    analyzer = MemoryAnalyzer(memory_sys=MagicMock(embed_provider=None))
+    facts = analyzer.extract_user_facts(msgs, current_profile=None, router=router)
+
+    assert [f["fact_key"] for f in facts] == ["favorite_food"]
+
+
 def test_expand_query_history_text_strips_ref_tag(monkeypatch):
     """expand_query 的 history_text 不應含 [Ref: uid]（被 sanitize 移除）。"""
     from core.core_memory import MemorySystem

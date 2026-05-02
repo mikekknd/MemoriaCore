@@ -596,6 +596,12 @@ class LLMRouter:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
         llm_call_id = SystemLogger.log_llm_prompt(task_key, route["model"], messages, log_context=log_context)
+        if isinstance(log_context, dict):
+            log_context["_last_llm_call"] = {
+                "task_key": task_key,
+                "model": route["model"],
+                "llm_call_id": llm_call_id,
+            }
         max_tokens = self._structured_chat_max_tokens(task_key, response_format, log_context)
         response_text, _ = self._generate_chat_with_optional_limit(
             route["provider"],

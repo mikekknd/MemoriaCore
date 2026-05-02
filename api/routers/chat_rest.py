@@ -14,7 +14,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 import base64
 
-from api.dependencies import get_current_user, get_storage, get_tts_client, get_character_manager, get_router
+from api.dependencies import (
+    get_current_user, get_storage, get_tts_client, get_character_manager, get_router,
+    require_db_writes_enabled,
+)
 from api.session_manager import session_manager
 from api.models.requests import ChatSyncRequest
 from api.models.responses import ChatSyncResponseDTO, ChatTurnDTO, RetrievalContextDTO
@@ -44,6 +47,10 @@ def _get_session_character(character_id: str) -> dict:
         SystemLogger.log_error("character_missing", f"missing_character_id={character_id}; fallback=default")
         char = char_mgr.get_active_character("default")
     return char or {}
+
+
+def _can_expose_llm_trace(current_user: dict) -> bool:
+    return current_user.get("role") == "admin"
 
 
 # ════════════════════════════════════════════════════════════
@@ -100,6 +107,7 @@ async def _resolve_session(
 
 @router.post("/sync", response_model=ChatSyncResponseDTO)
 async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_current_user)):
+    require_db_writes_enabled()
     session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
     sid = session.session_id
 
@@ -125,6 +133,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             user_prefs=user_prefs,
             orchestration_fn=orchestration_fn,
             user_name=_user_display_name(current_user),
+            expose_llm_trace=_can_expose_llm_trace(current_user),
         )
         if not turns:
             return ChatSyncResponseDTO(reply="（無回應）", turns=[], roster_event=roster_event)
@@ -168,6 +177,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         "active_character_ids": list(session.active_character_ids or [session.character_id]),
         "session_mode": session.session_mode,
         "group_name": session.group_name,
+        "expose_llm_trace": _can_expose_llm_trace(current_user),
     }
 
     result = await asyncio.to_thread(
@@ -243,6 +253,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
     與 /sync 功能相同，但以 SSE (Server-Sent Events) 串流回傳中間狀態。
     事件格式：data: {"type": "tool_status"|"result"|"error", ...}
     """
+    require_db_writes_enabled()
     # 優先從記憶體取得 session；找不到時先嘗試從 DB 還原（後端重啟後記憶體清空的情況）；
     # 都沒有才建新 session（channel 統一用 streamlit，確保能出現在 UI session 列表）
     session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
@@ -277,6 +288,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         "active_character_ids": list(session.active_character_ids or [session.character_id]),
         "session_mode": session.session_mode,
         "group_name": session.group_name,
+        "expose_llm_trace": _can_expose_llm_trace(current_user),
     }
 
     def on_event(data: dict):
@@ -302,6 +314,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
                 on_event=on_event,
                 on_turn=on_turn,
                 user_name=_user_display_name(current_user),
+                expose_llm_trace=_can_expose_llm_trace(current_user),
             ))
 
             while not group_task.done():

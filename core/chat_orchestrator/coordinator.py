@@ -544,6 +544,9 @@ def run_dual_layer_orchestration(
 
     # 將效能計時結果注入 retrieval_ctx
     retrieval_ctx["perf_timing"] = main_timer.summary()
+    _llm_trace = log_context.get("_last_llm_call") if isinstance(log_context, dict) else None
+    if _ctx.get("expose_llm_trace") and isinstance(_llm_trace, dict) and _llm_trace.get("task_key") == "chat":
+        retrieval_ctx["llm_trace"] = dict(_llm_trace)
 
     # 工具狀態 export：給群組接力 turn 1+ 復用，避免重複呼叫工具
     if tool_context is not None:

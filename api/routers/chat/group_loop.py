@@ -7,12 +7,12 @@ from api.dependencies import get_character_manager, get_router
 from api.session_manager import SessionState, session_manager
 from api.routers.chat.orchestration import _unpack_orchestration_result
 from api.routers.chat.pipeline import _run_memory_pipeline_bg
+from core.chat_orchestrator.group_followup import build_group_followup_instruction
 from core.chat_orchestrator.group_router import run_group_router
 from core.chat_orchestrator.dataclasses import SharedExpandState, SharedToolState
-from core.prompt_manager import get_prompt_manager
 
 
-MAX_GROUP_TURNS_HARD_LIMIT = 5
+MAX_GROUP_TURNS_HARD_LIMIT = 12
 MAX_GROUP_TURN_DELAY_SECONDS = 30.0
 
 
@@ -39,6 +39,7 @@ async def run_group_chat_loop(
     on_event: Callable[[dict], None] | None = None,
     on_turn: Callable[[dict[str, Any]], Any] | None = None,
     user_name: str = "",
+    expose_llm_trace: bool = False,
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
@@ -50,7 +51,8 @@ async def run_group_chat_loop(
     working_messages = list(session.messages)
     turns: list[dict[str, Any]] = []
     last_entities = list(session.last_entities)
-    last_speaker_id: str | None = None
+    participant_ids = _participant_ids(participants)
+    last_speaker_id: str | None = _latest_assistant_speaker_id(working_messages, participant_ids)
     last_reply = ""
     last_character_name = ""
     # 跨 turn 共用的工具狀態：turn 0 跑完工具後填入，後續 turn 直接復用，避免重複呼叫外部 API。
@@ -67,10 +69,18 @@ async def run_group_chat_loop(
             temperature=0.0,
             last_speaker_id=last_speaker_id,
             honor_mentions=(turn_index == 0),
+            bot_turn_index=turn_index,
+            max_bot_turns=max_turns,
         )
         if not route.should_respond or not route.target_character_id:
             if turn_index == 0:
-                target_character_id = participants[0]["character_id"]
+                target_character_id = _fallback_first_turn_target(
+                    participants,
+                    working_messages,
+                    last_speaker_id,
+                )
+                if not target_character_id:
+                    break
             else:
                 break
         else:
@@ -99,6 +109,8 @@ async def run_group_chat_loop(
                 "last_character_name": last_character_name,
                 "last_reply": last_reply,
                 "user_prompt_original": user_prompt,
+                "conversation_intent": route.conversation_intent,
+                "routing_action": route.action,
             }
 
         session_ctx = {
@@ -116,6 +128,7 @@ async def run_group_chat_loop(
             "shared_tool_state": shared_tool_state,
             "shared_expand_state": shared_expand_state,
             "followup_instruction": followup_instruction,
+            "expose_llm_trace": expose_llm_trace,
         }
 
         result = await asyncio.to_thread(
@@ -228,9 +241,71 @@ def _character_by_id(characters: list[dict], character_id: str) -> dict | None:
     return None
 
 
+def _participant_ids(characters: list[dict]) -> set[str]:
+    return {str(char.get("character_id") or "").strip() for char in characters if char.get("character_id")}
+
+
+def _latest_assistant_speaker_id(messages: list[dict], valid_ids: set[str]) -> str | None:
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        cid = str(msg.get("character_id") or "").strip()
+        if cid in valid_ids:
+            return cid
+    return None
+
+
+def _spoken_participant_ids_after_latest_user(messages: list[dict], valid_ids: set[str]) -> set[str]:
+    latest_user_index = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if messages[idx].get("role") == "user":
+            latest_user_index = idx
+            break
+    if latest_user_index is None:
+        return set()
+
+    spoken: set[str] = set()
+    for msg in messages[latest_user_index + 1:]:
+        if msg.get("role") != "assistant":
+            continue
+        cid = str(msg.get("character_id") or "").strip()
+        if cid in valid_ids:
+            spoken.add(cid)
+    return spoken
+
+
+def _fallback_first_turn_target(
+    participants: list[dict],
+    messages: list[dict],
+    last_speaker_id: str | None,
+) -> str | None:
+    valid_ids = _participant_ids(participants)
+    spoken_ids = _spoken_participant_ids_after_latest_user(messages, valid_ids)
+    unspoken_ids = [
+        char["character_id"]
+        for char in participants
+        if char.get("character_id") in valid_ids and char.get("character_id") not in spoken_ids
+    ]
+    for cid in unspoken_ids:
+        if cid != last_speaker_id:
+            return cid
+    if unspoken_ids:
+        return unspoken_ids[0]
+    for char in participants:
+        cid = char.get("character_id")
+        if cid and cid != last_speaker_id:
+            return cid
+    return participants[0].get("character_id") if participants else None
+
+
 def _build_followup_prompt(user_prompt: str, last_character_name: str, last_reply: str) -> str:
-    return get_prompt_manager().get("group_followup_user").format(
-        user_prompt=user_prompt,
-        last_character_name=last_character_name,
-        last_reply=last_reply,
+    return build_group_followup_instruction(
+        {
+            "user_prompt_original": user_prompt,
+            "last_character_name": last_character_name,
+            "last_reply": last_reply,
+            "conversation_intent": "",
+            "routing_action": "",
+        },
+        user_prompt,
     )

@@ -151,13 +151,73 @@ class TestRunRouterAgent:
 
         # 驗證傳入 router 的 tools 包含 direct_chat
         calls = router.generate_calls
-        assert len(calls) == 1
+        assert len(calls) >= 1
         passed_tools = calls[0]["tools"]
         assert len(passed_tools) == 3  # 2 real tools + direct_chat
         tool_names = [t.get("function", {}).get("name") for t in passed_tools]
         assert "direct_chat" in tool_names
         assert "tavily_search" in tool_names
         assert "weather" in tool_names
+
+    def test_non_tool_text_response_falls_back_to_json_tool(self, mock_pm):
+        """provider 忽略 required tool call 時，應用 JSON fallback 補回真工具。"""
+        from tests.mock_llm import MockRouter
+        router = MockRouter()
+        router.set_tool_calls([])
+        router._default_response = "我幫你查一下台北天氣。"
+        router._default_json_response = {
+            "selected_tool": "get_weather",
+            "arguments": {"city": "Taipei", "mode": "current"},
+            "reason": "使用者詢問即時天氣",
+        }
+
+        real_tools = [{
+            "type": "function",
+            "function": {"name": "get_weather", "parameters": {"type": "object"}},
+        }]
+
+        with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
+            result = run_router_agent(
+                user_prompt="台北現在天氣如何？",
+                tools_list=real_tools,
+                router=router,
+                temperature=0.9,
+            )
+
+        assert result.needs_tools is True
+        assert result.tool_calls[0]["id"] == "fallback_get_weather"
+        assert result.tool_calls[0]["function"]["name"] == "get_weather"
+        assert result.tool_calls[0]["function"]["arguments"]["city"] == "Taipei"
+        assert router.generate_calls[0]["temperature"] == 0.0
+        assert len(router.generate_json_calls) == 1
+
+    def test_non_tool_text_response_fallback_direct_chat_returns_no_tools(self, mock_pm):
+        """JSON fallback 選 direct_chat 時，仍應回到純聊天流程。"""
+        from tests.mock_llm import MockRouter
+        router = MockRouter()
+        router.set_tool_calls([])
+        router._default_response = "這只是一般聊天文字。"
+        router._default_json_response = {
+            "selected_tool": "direct_chat",
+            "arguments": {},
+            "reason": "沒有工具需求",
+        }
+
+        real_tools = [{
+            "type": "function",
+            "function": {"name": "get_weather", "parameters": {"type": "object"}},
+        }]
+
+        with patch('core.chat_orchestrator.router_agent.get_prompt_manager', return_value=mock_pm):
+            result = run_router_agent(
+                user_prompt="我打算做一個 Youtube 直播",
+                tools_list=real_tools,
+                router=router,
+            )
+
+        assert result.needs_tools is False
+        assert result.tool_calls == []
+        assert len(router.generate_json_calls) == 1
 
 
     def test_context_hints_injected_into_system_prompt(self, mock_pm):

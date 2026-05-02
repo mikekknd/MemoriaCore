@@ -45,6 +45,10 @@ embed_model: str = ""
 # SQLite 寫入序列化鎖
 db_write_lock = asyncio.Lock()
 
+# DB 維護模式：開啟時，對話與背景寫入入口應拒絕新寫入，方便本機 DB editor 進行維護。
+_db_maintenance_lock = threading.Lock()
+_db_maintenance_enabled = False
+
 # 啟動時間記錄（供 /health 使用）
 _startup_time: float = 0.0
 
@@ -214,6 +218,26 @@ def get_memory_sys() -> MemorySystem:
 def get_storage() -> StorageManager:
     assert storage is not None, "StorageManager not initialized"
     return storage
+
+
+def is_db_maintenance_mode() -> bool:
+    with _db_maintenance_lock:
+        return _db_maintenance_enabled
+
+
+def set_db_maintenance_mode(enabled: bool) -> bool:
+    global _db_maintenance_enabled
+    with _db_maintenance_lock:
+        _db_maintenance_enabled = bool(enabled)
+        return _db_maintenance_enabled
+
+
+def require_db_writes_enabled() -> None:
+    if is_db_maintenance_mode():
+        raise HTTPException(
+            status_code=503,
+            detail="DB maintenance mode is enabled; write operations are temporarily disabled.",
+        )
 
 
 def get_analyzer() -> MemoryAnalyzer:

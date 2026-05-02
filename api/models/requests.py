@@ -137,6 +137,21 @@ class BlockUpdateRequest(BaseModel):
     new_overview: str
 
 
+class MaintenanceModeRequest(BaseModel):
+    enabled: bool
+
+
+class DropMaintenanceTableRequest(BaseModel):
+    table_name: str
+    confirm_table_name: str
+
+    @model_validator(mode="after")
+    def validate_confirmation(self):
+        if self.table_name != self.confirm_table_name:
+            raise ValueError("confirm_table_name 必須與 table_name 相同")
+        return self
+
+
 # ── Auth ─────────────────────────────────────────────────
 class RegisterRequest(BaseModel):
     username: str

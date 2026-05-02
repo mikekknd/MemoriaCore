@@ -228,14 +228,16 @@ class TestDualLayerCoordinator:
         assert "<environment_context" in messages[-1]["content"]
         assert "<user_identity" not in messages[-1]["content"]
         assert '<user user_name="夏雪" />' not in messages[-1]["content"]
-        assert '<latest_user_message speaker="human_user" user_name="夏雪">' in messages[-1]["content"]
+        assert '<latest_user_message speaker="human_user" user_name="夏雪">' not in messages[-1]["content"]
+        assert '<original_user_request role="background_constraint" speaker="human_user" user_name="夏雪">' in messages[-1]["content"]
+        assert '<primary_reply_target role="primary_response_target" speaker="可可">' in messages[-1]["content"]
         assert "兩位早安阿" in messages[-1]["content"]
+        assert "早安呀" in messages[-1]["content"]
         assert '<group_followup_instruction source="system_control">' in messages[-1]["content"]
         assert messages[-1]["content"].count("<group_followup_instruction") == 1
         assert "<group_followup_control" not in messages[-1]["content"]
         assert "上一位發言者" not in messages[0]["content"]
         assert "早安呀" not in messages[0]["content"]
-        assert "早安呀" not in messages[-1]["content"]
 
     def test_group_followup_turn_skips_tool_router(
         self, mock_deps, mock_router_with_tools, sample_user_prefs
