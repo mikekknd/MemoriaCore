@@ -150,6 +150,10 @@ def _cors_origins() -> list[str]:
         "http://127.0.0.1:8501",
         "http://localhost:8502",
         "http://127.0.0.1:8502",
+        "http://localhost:8503",
+        "http://127.0.0.1:8503",
+        "http://localhost:8091",
+        "http://127.0.0.1:8091",
     ]
 
 

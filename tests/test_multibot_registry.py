@@ -34,6 +34,7 @@ def test_bot_registry_migrates_legacy_telegram_token():
             "character_id": "char-a",
             "token": "123:abc",
             "enabled": True,
+            "settings": {},
         }]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -112,6 +113,26 @@ def test_bot_registry_rejects_duplicate_enabled_discord_tokens():
 
         with pytest.raises(BotRegistryError, match="Discord token 不可重複"):
             registry.validate_configs(configs, character_ids={"char-a", "char-b"})
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_bot_registry_rejects_youtube_as_bot_platform():
+    tmp_dir = _tmp_dir()
+    try:
+        registry = BotRegistry(str(tmp_dir / "bot_configs.json"))
+        config = {
+            "bot_id": "youtube-a",
+            "platform": "youtube",
+            "display_name": "YouTube A",
+            "character_id": "char-a",
+            "token": "api-key",
+            "enabled": True,
+            "settings": {},
+        }
+
+        with pytest.raises(BotRegistryError, match="platform 必須是 telegram、discord 或 other"):
+            registry.validate_config(config, character_ids={"char-a"})
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

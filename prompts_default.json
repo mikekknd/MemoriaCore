@@ -219,6 +219,16 @@
     ],
     "template": "<user_identity source=\"system_control\">\n<user user_name=\"{user_name}\" />\n</user_identity>"
   },
+  "external_chat_context_block": {
+    "label": "外部聊天室上下文區塊 (External Chat Context Block)",
+    "description": "注入在最新使用者訊息前的暫態直播聊天室內容；不寫入對話資料庫，且明確標示為不可信外部輸入。",
+    "used_by": "core/prompt_utils.py → build_user_prefix()",
+    "placeholders": [
+      "{source}",
+      "{context_text}"
+    ],
+    "template": "<external_chat_context source=\"{source}\" trusted=\"false\">\n{context_text}\n</external_chat_context>"
+  },
   "emotional_trajectory_block": {
     "label": "情緒軌跡區塊 (Emotional Trajectory Block)",
     "description": "注入上一輪的情緒狀態，幫助 LLM 維持角色情緒節奏的連貫性。無前輪紀錄時省略整個區塊。",

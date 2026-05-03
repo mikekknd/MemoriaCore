@@ -122,6 +122,8 @@ class ChatSyncRequest(BaseModel):
     session_id: Optional[str] = None
     character_ids: Optional[list[str]] = None
     group_name: Optional[str] = None
+    external_context: Optional[dict] = None
+    include_speech: bool = True
 
 
 class CreateSessionRequest(BaseModel):

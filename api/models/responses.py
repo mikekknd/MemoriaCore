@@ -160,6 +160,7 @@ class RetrievalContextDTO(BaseModel):
     context_messages_count: int = 0
     perf_timing: PerfTimingDTO = PerfTimingDTO()
     llm_trace: dict = {}
+    external_context: dict = {}
 
 
 class ChatTurnDTO(BaseModel):
@@ -178,6 +179,7 @@ class ChatTurnDTO(BaseModel):
 
 
 class ChatSyncResponseDTO(BaseModel):
+    session_id: str = ""
     message_id: Optional[int] = None
     reply: str
     extracted_entities: list[str] = []

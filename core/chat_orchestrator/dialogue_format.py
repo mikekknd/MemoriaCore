@@ -146,6 +146,8 @@ def format_history_for_llm(messages: list[dict], force_group: bool = False) -> l
             continue
         if role == "system_event":
             debug_info = m.get("debug_info") or {}
+            if isinstance(debug_info, dict) and debug_info.get("llm_visible") is False:
+                continue
             event_type = debug_info.get("event_type") if isinstance(debug_info, dict) else ""
             formatted.append({
                 "role": "user",

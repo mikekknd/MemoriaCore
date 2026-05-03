@@ -40,6 +40,7 @@ async def run_group_chat_loop(
     on_turn: Callable[[dict[str, Any]], Any] | None = None,
     user_name: str = "",
     expose_llm_trace: bool = False,
+    extra_session_ctx: dict | None = None,
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
@@ -130,6 +131,8 @@ async def run_group_chat_loop(
             "followup_instruction": followup_instruction,
             "expose_llm_trace": expose_llm_trace,
         }
+        if extra_session_ctx:
+            session_ctx.update(extra_session_ctx)
 
         result = await asyncio.to_thread(
             orchestration_fn,
@@ -143,6 +146,9 @@ async def run_group_chat_loop(
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
             inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
             tool_state_export = _unpack_orchestration_result(result)
+        external_summary = ((extra_session_ctx or {}).get("external_chat_context") or {}).get("summary")
+        if isinstance(external_summary, dict):
+            retrieval_ctx["external_context"] = external_summary
 
         # turn 0 完成後鎖定工具狀態，後續 turn 共用；若 turn 0 沒觸發工具就保持 None。
         if shared_tool_state is None and isinstance(tool_state_export, SharedToolState) and tool_state_export.executed:

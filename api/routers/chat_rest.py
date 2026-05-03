@@ -53,6 +53,146 @@ def _can_expose_llm_trace(current_user: dict) -> bool:
     return current_user.get("role") == "admin"
 
 
+def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | None, dict]:
+    """將外部 bridge payload 轉成暫態 LLM context。
+
+    Bridge 提供的內容一律視為不可信外部上下文，只注入本次 LLM 呼叫，
+    不寫入對話紀錄或個人記憶。
+    """
+    raw = body.external_context if isinstance(body.external_context, dict) else {}
+    if not raw:
+        return None, {}
+
+    source = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(raw.get("source", "external_bridge") or "external_bridge"))[:64]
+    context_text = str(raw.get("context_text", "") or "").replace("\r", "\n").strip()
+    if not context_text:
+        return None, {}
+
+    try:
+        max_chars = int(raw.get("max_chars", 12000))
+    except (TypeError, ValueError):
+        max_chars = 12000
+    max_chars = max(1000, min(max_chars, 20000))
+    if len(context_text) > max_chars:
+        context_text = context_text[:max_chars].rstrip()
+
+    raw_summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
+    try:
+        event_count = int(raw_summary.get("event_count", 0) or 0)
+    except (TypeError, ValueError):
+        event_count = 0
+    summary = {
+        "source": source,
+        "source_session_id": str(raw.get("source_session_id", "") or ""),
+        "event_count": event_count,
+        "truncated": len(str(raw.get("context_text", "") or "")) > len(context_text),
+    }
+    if isinstance(raw.get("event_ids"), list):
+        summary["event_ids"] = [str(x) for x in raw["event_ids"][:100]]
+    if raw_summary.get("dropped_count") is not None:
+        try:
+            summary["dropped_count"] = int(raw_summary.get("dropped_count") or 0)
+        except (TypeError, ValueError):
+            summary["dropped_count"] = 0
+    for key in ("connector_id", "video_id", "live_chat_id"):
+        if raw.get(key):
+            summary[key] = str(raw.get(key))
+    visible_events = _normalize_visible_events(raw.get("visible_events"))
+    return {
+        "source": source,
+        "context_text": context_text,
+        "visible_events": visible_events,
+        "summary": summary,
+    }, summary
+
+
+def _normalize_visible_events(raw_events) -> list[dict]:
+    if not isinstance(raw_events, list):
+        return []
+    events: list[dict] = []
+    for raw in raw_events[:100]:
+        if not isinstance(raw, dict):
+            continue
+        author = str(raw.get("author_display_name") or raw.get("author") or "匿名觀眾").strip()
+        author_id = str(raw.get("author_channel_id") or raw.get("author_id") or "").strip()
+        message = str(raw.get("message_text") or raw.get("text") or "").replace("\r", " ").replace("\n", " ").strip()
+        if not message:
+            continue
+        events.append({
+            "event_id": str(raw.get("event_id") or raw.get("id") or "").strip(),
+            "author_display_name": author or "匿名觀眾",
+            "author_channel_id": author_id,
+            "message_text": message,
+        })
+    return events
+
+
+def _visible_context_lines(external_context: dict, context_text: str, preview_limit: int) -> list[str]:
+    visible_events = external_context.get("visible_events")
+    if isinstance(visible_events, list) and visible_events:
+        lines: list[str] = []
+        for event in visible_events[:preview_limit]:
+            author = str(event.get("author_display_name") or "匿名觀眾").strip()
+            message = str(event.get("message_text") or "").strip()
+            if not message:
+                continue
+            lines.append(f"{author or '匿名觀眾'}: {message}")
+        return lines
+    return [line.strip() for line in context_text.splitlines() if line.strip()][:preview_limit]
+
+
+def _build_external_context_visible_event(
+    external_context: dict | None,
+    summary: dict,
+) -> tuple[str, dict] | None:
+    if not external_context:
+        return None
+    context_text = str(external_context.get("context_text") or "").strip()
+    if not context_text:
+        return None
+
+    source = str(summary.get("source") or external_context.get("source") or "external").strip()
+    event_type = "youtube_live_batch" if source == "youtube_live" else "external_context_batch"
+    title = "YouTube Live 留言注入" if event_type == "youtube_live_batch" else "外部上下文注入"
+
+    preview_limit = 8
+    preview_lines = _visible_context_lines(external_context, context_text, preview_limit)
+    fallback_line_count = len([line for line in context_text.splitlines() if line.strip()])
+    event_count = int(summary.get("event_count") or len(external_context.get("visible_events") or []) or fallback_line_count)
+    hidden_count = max(0, event_count - len(preview_lines))
+
+    content_lines = [f"{title}：{event_count} 則"]
+    content_lines.extend(preview_lines)
+    if hidden_count:
+        content_lines.append(f"另有 {hidden_count} 則未顯示。")
+
+    debug_info = {
+        "event_type": event_type,
+        "llm_visible": False,
+        "source": source,
+        "preview_count": len(preview_lines),
+        "event_count": event_count,
+        "summary": summary,
+    }
+    return "\n".join(content_lines), debug_info
+
+
+def _external_context_user_prompt(content: str, external_context: dict | None) -> str:
+    """給 LLM/router 的暫態 user prompt；不寫入 DB。
+
+    有 external context 時，明確告訴 router/模型資料已由 bridge 提供，
+    避免把「回應 YouTube 留言」誤判成需要瀏覽器或搜尋工具。
+    """
+    if not external_context:
+        return content
+    source = str(external_context.get("source") or "external").strip() or "external"
+    return (
+        f"{content}\n\n"
+        f"[外部上下文已由 {source} bridge 提供；請只根據本次注入的 external_chat_context 回應。"
+        "不要開啟瀏覽器、不要搜尋網頁、不要嘗試連線外部平台。]"
+    )
+
+
 # ════════════════════════════════════════════════════════════
 # SECTION: 共用 — Session 取得/還原/建立
 # ════════════════════════════════════════════════════════════
@@ -110,6 +250,8 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     require_db_writes_enabled()
     session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
     sid = session.session_id
+    external_context, external_context_summary = _resolve_external_context_payload(body)
+    orchestration_prompt = _external_context_user_prompt(body.content, external_context)
 
     try:
         roster_event = await apply_roster_update(session, body.character_ids, group_name=body.group_name)
@@ -118,40 +260,53 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     if roster_event:
         session = await session_manager.get(sid) or session
 
+    visible_event = _build_external_context_visible_event(external_context, external_context_summary)
+    if visible_event:
+        # TODO: 此 system_event 目前仍可能被 topic-shift 背景記憶管線納入 raw dialogues；
+        # 未來應在 pipeline snapshot 排除 llm_visible=False 的外部聊天室預覽。
+        await session_manager.add_system_event(sid, visible_event[0], visible_event[1])
+
     await session_manager.add_user_message(sid, body.content)
     s = await session_manager.get(sid)
     if not s:
-        return ChatSyncResponseDTO(reply="Session error", roster_event=roster_event)
+        return ChatSyncResponseDTO(session_id=sid, reply="Session error", roster_event=roster_event)
 
     user_prefs = get_storage().load_prefs()
     orchestration_fn = _select_orchestration(user_prefs)
+    include_speech = body.include_speech and get_tts_client() is not None
 
     if is_group_session(s):
         turns = await run_group_chat_loop(
             session=s,
-            user_prompt=body.content,
+            user_prompt=orchestration_prompt,
             user_prefs=user_prefs,
             orchestration_fn=orchestration_fn,
             user_name=_user_display_name(current_user),
             expose_llm_trace=_can_expose_llm_trace(current_user),
+            extra_session_ctx={"external_chat_context": external_context} if external_context else None,
         )
         if not turns:
-            return ChatSyncResponseDTO(reply="（無回應）", turns=[], roster_event=roster_event)
-        from core.chat_orchestrator.coordinator import _generate_tts_speech
-        for turn in turns:
-            if not turn.get("speech"):
-                reply_char = _get_session_character(turn["character_id"])
-                turn["speech"] = _generate_tts_speech(
-                    turn["reply"],
-                    reply_char.get("tts_language", ""),
-                    reply_char.get("tts_rules", ""),
-                    get_router(),
-                )
+            return ChatSyncResponseDTO(session_id=sid, reply="（無回應）", turns=[], roster_event=roster_event)
+        if include_speech:
+            from core.chat_orchestrator.coordinator import _generate_tts_speech
+            for turn in turns:
+                if not turn.get("speech"):
+                    reply_char = _get_session_character(turn["character_id"])
+                    turn["speech"] = _generate_tts_speech(
+                        turn["reply"],
+                        reply_char.get("tts_language", ""),
+                        reply_char.get("tts_rules", ""),
+                        get_router(),
+                    )
         final_turn = turns[-1]
+        if external_context_summary:
+            for turn in turns:
+                turn.setdefault("retrieval_context", {})["external_context"] = external_context_summary
         joined_reply = "\n\n".join(
             f"{turn['character_name']}: {turn['reply']}" for turn in turns
         )
         return ChatSyncResponseDTO(
+            session_id=sid,
             message_id=final_turn.get("message_id"),
             reply=joined_reply,
             extracted_entities=final_turn.get("extracted_entities", []),
@@ -179,15 +334,19 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         "group_name": session.group_name,
         "expose_llm_trace": _can_expose_llm_trace(current_user),
     }
+    if external_context:
+        session_ctx["external_chat_context"] = external_context
 
     result = await asyncio.to_thread(
         orchestration_fn,
-        list(s.messages), list(s.last_entities), body.content, user_prefs,
+        list(s.messages), list(s.last_entities), orchestration_prompt, user_prefs,
         session_ctx=session_ctx,
     )
     reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
         inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
         _tool_state_export = _unpack_orchestration_result(result)
+    if external_context_summary:
+        retrieval_ctx["external_context"] = external_context_summary
 
     reply_char = _get_session_character(session.character_id)
     character_name = reply_char.get("name") or session.character_id
@@ -204,8 +363,8 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         if pipeline_data:
             asyncio.create_task(_run_memory_pipeline_bg(sid, pipeline_data))
 
-    # /sync 為完整請求-回應週期，翻譯同步執行
-    if not speech:
+    # /sync 為完整請求-回應週期；外部 bridge 可關閉 speech 以避免注入被 TTS 翻譯阻塞。
+    if include_speech and not speech:
         from core.chat_orchestrator.coordinator import _generate_tts_speech
         speech = _generate_tts_speech(
             reply_text,
@@ -215,6 +374,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         )
 
     return ChatSyncResponseDTO(
+        session_id=sid,
         message_id=message_id,
         reply=reply_text,
         extracted_entities=new_entities,
@@ -258,6 +418,8 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
     # 都沒有才建新 session（channel 統一用 streamlit，確保能出現在 UI session 列表）
     session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
     sid = session.session_id
+    external_context, external_context_summary = _resolve_external_context_payload(body)
+    orchestration_prompt = _external_context_user_prompt(body.content, external_context)
 
     try:
         roster_event = await apply_roster_update(session, body.character_ids, group_name=body.group_name)
@@ -265,6 +427,12 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         raise HTTPException(400, detail=str(exc))
     if roster_event:
         session = await session_manager.get(sid) or session
+
+    visible_event = _build_external_context_visible_event(external_context, external_context_summary)
+    if visible_event:
+        # TODO: 此 system_event 目前仍可能被 topic-shift 背景記憶管線納入 raw dialogues；
+        # 未來應在 pipeline snapshot 排除 llm_visible=False 的外部聊天室預覽。
+        await session_manager.add_system_event(sid, visible_event[0], visible_event[1])
 
     await session_manager.add_user_message(sid, body.content)
     s = await session_manager.get(sid)
@@ -290,6 +458,8 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         "group_name": session.group_name,
         "expose_llm_trace": _can_expose_llm_trace(current_user),
     }
+    if external_context:
+        session_ctx_sse["external_chat_context"] = external_context
 
     def on_event(data: dict):
         event_q.put(data)
@@ -308,13 +478,14 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
 
             group_task = asyncio.create_task(run_group_chat_loop(
                 session=s,
-                user_prompt=body.content,
+                user_prompt=orchestration_prompt,
                 user_prefs=user_prefs,
                 orchestration_fn=orchestration_fn,
                 on_event=on_event,
                 on_turn=on_turn,
                 user_name=_user_display_name(current_user),
                 expose_llm_trace=_can_expose_llm_trace(current_user),
+                extra_session_ctx={"external_chat_context": external_context} if external_context else None,
             ))
 
             while not group_task.done():
@@ -369,7 +540,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
 
         orch_task = asyncio.create_task(asyncio.to_thread(
             orchestration_fn,
-            list(s.messages), list(s.last_entities), body.content, user_prefs,
+            list(s.messages), list(s.last_entities), orchestration_prompt, user_prefs,
             on_event=on_event, session_ctx=session_ctx_sse,
         ))
 
@@ -396,6 +567,8 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
             inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
             _tool_state_export = _unpack_orchestration_result(result)
+        if external_context_summary:
+            retrieval_ctx["external_context"] = external_context_summary
 
         # 寫入 session 及背景任務（與 /sync 相同）
         reply_char = _get_session_character(session.character_id)

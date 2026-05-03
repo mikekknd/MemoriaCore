@@ -50,6 +50,21 @@ body { height:100vh; overflow:hidden; }
 .msg.assistant .md-content img { display:block; max-width:100%; height:auto; margin:8px 0; border-radius:8px; border:1px solid var(--border); cursor:pointer; background:var(--bg); }
 .msg.assistant .md-content a:has(img) { display:block; max-width:100%; }
 .msg.system-info { align-self:center; background:none; color:var(--text2); font-size:12px; padding:4px; font-style:italic; }
+.msg.system-info.external-context {
+  align-self:flex-start;
+  max-width:88%;
+  background:var(--surface2);
+  background:color-mix(in srgb, var(--surface2) 45%, transparent);
+  border:1px dashed var(--border);
+  color:var(--text2);
+  opacity:.9;
+  font-size:12px;
+  font-style:normal;
+  padding:7px 11px;
+  border-radius:8px;
+  white-space:pre-wrap;
+}
+.msg.system-info.external-context .msg-meta { margin-bottom:6px; }
 .msg.tool-status { align-self:flex-start; background:var(--surface2); border:1px solid var(--border); color:var(--warn); font-size:13px; padding:6px 12px; border-radius:8px; }
 .msg.tool-status .spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--warn); border-radius:50%; animation:spin .6s linear infinite; margin-right:6px; vertical-align:middle; }
 @keyframes spin { to{transform:rotate(360deg)} }
@@ -100,6 +115,7 @@ body { height:100vh; overflow:hidden; }
       </div>
     </div>
     <span class="session-chip" id="statusSession"></span>
+    <button type="button" onclick="copyCurrentSessionId()" title="copy current session id" data-i18n-title="chat.button.copy_session_id_title" data-i18n="chat.button.copy_session_id">copy id</button>
     <button onclick="createNewSession()" data-i18n="chat.button.new">+ new</button>
     <button onclick="deleteCurrentSession()" title="delete current session" data-i18n-title="chat.button.delete_title">x</button>
   </div>
@@ -119,6 +135,9 @@ let currentCharacterId = null;
 let currentCharacterIds = [];
 let currentSessionMode = 'single';
 let isSending = false;
+let renderedHistoryKeys = new Set();
+let sessionPollTimer = null;
+let lastSessionListRefreshAt = 0;
 let _ttsAudio = null;
 let _pendingTtsEl = null;
 let _ttsQueue = [];
@@ -127,6 +146,7 @@ let characters = [];
 let charactersById = new Map();
 let currentUser = null;
 let canOpenLlmTrace = false;
+let pendingExternalContext = null;
 const MAX_SESSION_CHARACTERS = 6;
 
 marked.setOptions({
@@ -147,7 +167,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (groupHint) groupHint.textContent = MCI18N.t('chat.group.hint', {count: MAX_SESSION_CHARACTERS});
   loadCharacters()
     .finally(() => loadSessionList())
-    .then(() => autoRestoreOrCreate());
+    .then(() => autoRestoreOrCreate())
+    .then(() => startSessionPolling());
 });
 
 async function loadCurrentUser() {
@@ -298,6 +319,7 @@ async function loadSessionList() {
       const ch = s.channel || '';
       const ai = sessionCharacterLabel(s);
       opt.textContent = MCI18N.t('chat.session.option', {datetime: dt, channel: ch, ai, count: s.message_count});
+      opt.title = s.session_id;
       if (s.session_id === currentSessionId) opt.selected = true;
       sel.appendChild(opt);
     });
@@ -335,7 +357,7 @@ async function createNewSession(characterIds = selectedGroupCharacterIds()) {
     currentSessionMode = data.session_mode || (currentCharacterIds.length > 1 ? 'group' : 'single');
     syncCharacterSelect();
     updateSessionDisplay();
-    document.getElementById('messages').innerHTML = '';
+    clearRenderedMessages();
     await loadSessionList();
     document.getElementById('sessionSelect').value = currentSessionId;
     toast(MCI18N.t('chat.toast.new_session_created'), 'success');
@@ -350,24 +372,10 @@ async function switchSession(sessionId) {
   if (!sessionId) return;
   currentSessionId = sessionId;
   updateSessionDisplay();
-  document.getElementById('messages').innerHTML = '';
+  clearRenderedMessages();
   try {
     await fetch(`${API}/session/${sessionId}/restore`, {method:'POST'});
-    const r = await fetch(`${API}/session/history/${sessionId}`);
-    const data = await r.json();
-    currentCharacterId = data.session?.character_id || currentCharacterId;
-    currentCharacterIds = data.session?.character_ids || [currentCharacterId];
-    currentSessionMode = data.session?.session_mode || (currentCharacterIds.length > 1 ? 'group' : 'single');
-    syncCharacterSelect();
-    const msgs = data.messages || [];
-    msgs.forEach(m => {
-      if (m.role === 'system_event') {
-        appendSystemEvent(m.content, null, false, m.message_id);
-      } else {
-        appendMessage(m.role, m.content, m.debug_info, false, m.character_name, m.character_id, m.message_id);
-      }
-    });
-    scrollToBottom();
+    await refreshCurrentSessionMessages({appendOnly: false});
   } catch {
     toast(MCI18N.t('chat.toast.load_session_failed'), 'error');
   }
@@ -379,7 +387,7 @@ async function deleteCurrentSession() {
   try {
     await fetch(`${API}/session/history/${currentSessionId}`, {method:'DELETE'});
     currentSessionId = null;
-    document.getElementById('messages').innerHTML = '';
+    clearRenderedMessages();
     updateSessionDisplay();
     await loadSessionList();
     toast(MCI18N.t('chat.toast.session_deleted'), 'info');
@@ -387,7 +395,29 @@ async function deleteCurrentSession() {
 }
 
 function updateSessionDisplay() {
-  document.getElementById('statusSession').textContent = currentSessionId ? currentSessionId.substring(0, 8) + '...' : '';
+  const el = document.getElementById('statusSession');
+  el.textContent = currentSessionId ? currentSessionId.substring(0, 8) + '...' : '';
+  el.title = currentSessionId || '';
+}
+
+async function copyCurrentSessionId() {
+  if (!currentSessionId) {
+    toast(MCI18N.t('chat.toast.no_session_id'), 'info');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(currentSessionId);
+  } catch {
+    const temp = document.createElement('textarea');
+    temp.value = currentSessionId;
+    temp.style.position = 'fixed';
+    temp.style.opacity = '0';
+    document.body.appendChild(temp);
+    temp.select();
+    document.execCommand('copy');
+    temp.remove();
+  }
+  toast(MCI18N.t('chat.toast.session_id_copied', {id: currentSessionId}), 'success');
 }
 
 function handleInputKey(e) {
@@ -506,6 +536,8 @@ async function sendMessage() {
 
   appendMessage('user', content);
   scrollToBottom();
+  const externalContext = pendingExternalContext;
+  pendingExternalContext = null;
 
   const firstMsgEl = appendMessage('assistant', '', null, false);
   setTypingState(firstMsgEl, true);
@@ -518,7 +550,7 @@ async function sendMessage() {
     const resp = await fetch(`${API}/chat/stream-sync`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({content, session_id: currentSessionId, character_ids: rosterIds}),
+      body: JSON.stringify({content, session_id: currentSessionId, character_ids: rosterIds, external_context: externalContext}),
     });
     if (!resp.ok) {
       let message = `HTTP ${resp.status}`;
@@ -638,13 +670,88 @@ async function sendMessage() {
   document.getElementById('sendBtn').disabled = false;
   setRosterControlsDisabled(false);
   scrollToBottom();
+  await refreshCurrentSessionMessages({appendOnly: false, silent: true});
   loadSessionList();
 }
 
-function appendSystemEvent(content, beforeEl=null, scroll=true, messageId=null) {
+function clearRenderedMessages() {
+  renderedHistoryKeys.clear();
+  document.getElementById('messages').innerHTML = '';
+}
+
+function trackRenderedMessageId(messageId) {
+  if (messageId === null || messageId === undefined || messageId === '') return;
+  renderedHistoryKeys.add(`id:${String(messageId)}`);
+}
+
+function historyMessageKey(message, index) {
+  if (message?.message_id !== null && message?.message_id !== undefined) {
+    return `id:${String(message.message_id)}`;
+  }
+  return `fallback:${index}:${message?.role || ''}:${message?.character_id || ''}:${message?.content || ''}`;
+}
+
+function renderHistoryMessages(data, {appendOnly=false} = {}) {
+  if (!appendOnly) clearRenderedMessages();
+  currentCharacterId = data.session?.character_id || currentCharacterId;
+  currentCharacterIds = data.session?.character_ids || [currentCharacterId];
+  currentSessionMode = data.session?.session_mode || (currentCharacterIds.length > 1 ? 'group' : 'single');
+  syncCharacterSelect();
+
+  let appended = false;
+  const msgs = data.messages || [];
+  msgs.forEach((m, index) => {
+    const key = historyMessageKey(m, index);
+    if (appendOnly && renderedHistoryKeys.has(key)) return;
+    if (m.role === 'system_event') {
+      appendSystemEvent(m.content, null, false, m.message_id, m.debug_info);
+    } else {
+      appendMessage(m.role, m.content, m.debug_info, false, m.character_name, m.character_id, m.message_id);
+    }
+    renderedHistoryKeys.add(key);
+    appended = true;
+  });
+  if (appended) scrollToBottom();
+  return appended;
+}
+
+async function refreshCurrentSessionMessages({appendOnly=false, silent=false} = {}) {
+  if (!currentSessionId) return false;
+  const sessionId = currentSessionId;
+  try {
+    const r = await fetch(`${API}/session/history/${sessionId}`);
+    if (!r.ok) throw new Error('load session failed');
+    const data = await r.json();
+    if (sessionId !== currentSessionId) return false;
+    const appended = renderHistoryMessages(data, {appendOnly});
+    if (appended && Date.now() - lastSessionListRefreshAt > 10000) {
+      lastSessionListRefreshAt = Date.now();
+      loadSessionList();
+    }
+    return appended;
+  } catch (e) {
+    if (!silent) toast(MCI18N.t('chat.toast.load_session_failed'), 'error');
+    return false;
+  }
+}
+
+function startSessionPolling() {
+  if (sessionPollTimer) clearInterval(sessionPollTimer);
+  sessionPollTimer = setInterval(() => {
+    if (!currentSessionId || isSending || document.hidden) return;
+    refreshCurrentSessionMessages({appendOnly: true, silent: true});
+  }, 3000);
+}
+
+function appendSystemEvent(content, beforeEl=null, scroll=true, messageId=null, debugData=null) {
   const container = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'msg system-info';
+  const eventType = debugData?.event_type || '';
+  if (eventType === 'youtube_live_batch' || eventType === 'external_context_batch') {
+    div.classList.add('external-context');
+    div.dataset.eventType = eventType;
+  }
   if (messageId !== null && messageId !== undefined) {
     addMessageIdBadge(div, messageId);
   }
@@ -698,6 +805,7 @@ function appendMessage(role, content, debugData, scroll=true, characterName=null
 
 function addMessageIdBadge(msgEl, messageId) {
   msgEl.dataset.messageId = String(messageId);
+  trackRenderedMessageId(messageId);
   const meta = ensureMessageMeta(msgEl);
   const badge = document.createElement('span');
   badge.className = 'msg-id';

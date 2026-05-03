@@ -139,6 +139,7 @@ def render_bots_page(api_base: str, user_prefs: dict | None = None):
             "character_id": character_id,
             "token": token,
             "enabled": enabled,
+            "settings": {},
         }
         if editing:
             r = requests.put(f"{api_base}/bots/{draft.get('bot_id')}", json=payload, timeout=10)
