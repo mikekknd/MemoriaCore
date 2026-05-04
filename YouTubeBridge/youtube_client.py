@@ -89,6 +89,16 @@ def normalize_message(item: dict[str, Any], *, session: dict, connector: dict) -
     snippet = item.get("snippet") or {}
     author = item.get("authorDetails") or {}
     super_chat = snippet.get("superChatDetails") or {}
+    try:
+        amount_micros = int(super_chat.get("amountMicros") or 0)
+    except (TypeError, ValueError):
+        amount_micros = 0
+    try:
+        sc_tier = int(super_chat.get("tier") or 0)
+    except (TypeError, ValueError):
+        sc_tier = 0
+    amount_display = str(super_chat.get("amountDisplayString") or "")
+    priority_class = "super_chat" if str(snippet.get("type") or "") == "superChatEvent" or amount_display else "normal"
     message_text = (
         snippet.get("displayMessage")
         or snippet.get("textMessageDetails", {}).get("messageText")
@@ -108,8 +118,11 @@ def normalize_message(item: dict[str, Any], *, session: dict, connector: dict) -
         "published_at": str(snippet.get("publishedAt") or ""),
         "received_at": datetime.now().isoformat(),
         "status": "active",
-        "amount_display_string": str(super_chat.get("amountDisplayString") or ""),
+        "amount_display_string": amount_display,
         "currency": str(super_chat.get("currency") or ""),
+        "amount_micros": amount_micros,
+        "sc_tier": sc_tier,
+        "priority_class": priority_class,
         "metadata": {
             "is_chat_owner": bool(author.get("isChatOwner")),
             "is_chat_sponsor": bool(author.get("isChatSponsor")),

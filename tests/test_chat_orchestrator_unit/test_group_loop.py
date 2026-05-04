@@ -80,6 +80,89 @@ async def test_group_loop_passes_target_character_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_group_loop_uses_transient_user_anchor_without_persisting_it(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-group-transient",
+        messages=[{
+            "role": "system_event",
+            "content": "YouTube Live 留言注入：1 則\n觀眾A: 這段怎麼看？",
+            "debug_info": {"event_type": "youtube_live_chat_batch", "llm_visible": False},
+        }],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions["sid-group-transient"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    captured_router_messages = []
+    captured_orchestration_messages = []
+
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(False, None, "done"),
+    ]
+
+    def fake_group_router(messages, *_args, **_kwargs):
+        captured_router_messages.append(list(messages))
+        return route_results.pop(0)
+
+    def fake_orchestration(messages, *_args, **kwargs):
+        captured_orchestration_messages.append(list(messages))
+        return (
+            "回覆 transient anchor",
+            [],
+            {},
+            False,
+            None,
+            "內在想法",
+            None,
+            None,
+            None,
+            "",
+            [],
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="隱藏的外部上下文控制 prompt",
+            user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            transient_user_content="請根據已帶入的 YouTube 直播留言上下文回應。",
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_router_messages[0][-1] == {
+        "role": "user",
+        "content": "請根據已帶入的 YouTube 直播留言上下文回應。",
+        "debug_info": {"transient_external_context_anchor": True},
+    }
+    assert captured_orchestration_messages[0][-1]["role"] == "user"
+    assert session.messages[0]["role"] == "system_event"
+    assert all(m.get("content") != "請根據已帶入的 YouTube 直播留言上下文回應。" for m in session.messages)
+
+
+@pytest.mark.asyncio
 async def test_group_loop_emits_each_turn_before_next_route(monkeypatch):
     from api.routers.chat import group_loop
 

@@ -41,6 +41,8 @@ async def run_group_chat_loop(
     user_name: str = "",
     expose_llm_trace: bool = False,
     extra_session_ctx: dict | None = None,
+    transient_user_content: str = "",
+    max_turns_override: int | None = None,
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
@@ -48,8 +50,21 @@ async def run_group_chat_loop(
         return []
 
     max_turns = _group_turn_limit(user_prefs)
+    if max_turns_override is not None:
+        try:
+            max_turns = int(max_turns_override)
+        except (TypeError, ValueError):
+            pass
+        max_turns = max(1, min(max_turns, MAX_GROUP_TURNS_HARD_LIMIT))
     turn_delay_seconds = _group_turn_delay_seconds(user_prefs)
     working_messages = list(session.messages)
+    transient_user_content = str(transient_user_content or "").strip()
+    if transient_user_content:
+        working_messages.append({
+            "role": "user",
+            "content": transient_user_content,
+            "debug_info": {"transient_external_context_anchor": True},
+        })
     turns: list[dict[str, Any]] = []
     last_entities = list(session.last_entities)
     participant_ids = _participant_ids(participants)
@@ -72,6 +87,7 @@ async def run_group_chat_loop(
             honor_mentions=(turn_index == 0),
             bot_turn_index=turn_index,
             max_bot_turns=max_turns,
+            allow_single_participant_repeat=bool(user_prefs.get("group_chat_allow_single_character_repeat", True)),
         )
         if not route.should_respond or not route.target_character_id:
             if turn_index == 0:

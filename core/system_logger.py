@@ -2,6 +2,7 @@
 # 同時輸出至終端機與結構化 JSON Lines 日誌檔。
 import json
 import os
+import sys
 import threading
 import uuid
 from datetime import datetime
@@ -12,6 +13,23 @@ _LOG_FILE = runtime_file("llm_trace.jsonl")
 _LOG_LOCK = threading.Lock()
 _LOG_SEQ = 0
 _LOG_SEQ_INITIALIZED = False
+
+
+def _console_print(*args, **kwargs) -> None:
+    """在 Windows cp950 console/redirect 下避免日誌輸出打斷主要流程。"""
+    try:
+        print(*args, **kwargs)
+        return
+    except UnicodeEncodeError:
+        pass
+
+    file = kwargs.get("file") or sys.stdout
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    text = sep.join(str(arg) for arg in args)
+    encoding = getattr(file, "encoding", None) or "utf-8"
+    safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    file.write(safe_text + end)
 
 
 class SystemLogger:
@@ -43,7 +61,7 @@ class SystemLogger:
                 with open(_LOG_FILE, "a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
-            print(f"[Logger] 寫入日誌檔失敗: {e}")
+            _console_print(f"[Logger] 寫入日誌檔失敗: {e}")
 
     @staticmethod
     def _load_max_trace_seq() -> int:
@@ -93,9 +111,9 @@ class SystemLogger:
     def log_system_event(category, message):
         """通用系統關鍵事件紀錄"""
         ts = SystemLogger._get_time()
-        print(f"\n[{ts}] 系統事件 [{category}]")
-        print(f"  -> {message}")
-        print(f"{'-'*60}\n")
+        _console_print(f"\n[{ts}] 系統事件 [{category}]")
+        _console_print(f"  -> {message}")
+        _console_print(f"{'-'*60}\n")
 
         SystemLogger._write_entry({
             "timestamp": SystemLogger._get_iso_time(),
@@ -112,11 +130,11 @@ class SystemLogger:
         else:
             reason = f"凝聚度: {cohesion_score:.2f} (閾值: {threshold:.2f})"
 
-        print(f"\n{'='*60}")
-        print(f"[{ts}] 偵測到話題偏移 (Topic Shift)")
-        print(f"  原因: {reason}")
-        print(f"  觸發句: {trigger_msg}")
-        print(f"{'='*60}\n")
+        _console_print(f"\n{'='*60}")
+        _console_print(f"[{ts}] 偵測到話題偏移 (Topic Shift)")
+        _console_print(f"  原因: {reason}")
+        _console_print(f"  觸發句: {trigger_msg}")
+        _console_print(f"{'='*60}\n")
 
         SystemLogger._write_entry({
             "timestamp": SystemLogger._get_iso_time(),
@@ -133,33 +151,33 @@ class SystemLogger:
     @staticmethod
     def log_pipeline_result(pipeline_res):
         ts = SystemLogger._get_time()
-        print(f"\n[{ts}] 一體化管線處理完成")
+        _console_print(f"\n[{ts}] 一體化管線處理完成")
 
         details = {}
         if "error" in pipeline_res:
-            print(f"  錯誤: {pipeline_res['error']}")
+            _console_print(f"  錯誤: {pipeline_res['error']}")
             details["error"] = pipeline_res["error"]
         else:
             healed = pipeline_res.get("healed_entities")
             if healed:
-                print(f"  成功修復歷史記憶: {healed}")
+                _console_print(f"  成功修復歷史記憶: {healed}")
                 details["healed_entities"] = healed
             else:
-                print("  無需修復歷史記憶")
+                _console_print("  無需修復歷史記憶")
 
             new_mems = pipeline_res.get("new_memories", [])
-            print(f"  生成新記憶區塊數量: {len(new_mems)}")
+            _console_print(f"  生成新記憶區塊數量: {len(new_mems)}")
             details["new_memory_count"] = len(new_mems)
             mem_blocks = []
             for i, mem in enumerate(new_mems):
                 ent = mem.get("entities", [])
                 summary = mem.get("summary", "")
-                print(f"    區塊 {i+1} 實體: {ent}")
-                print(f"    區塊 {i+1} 摘要: {summary}")
+                _console_print(f"    區塊 {i+1} 實體: {ent}")
+                _console_print(f"    區塊 {i+1} 摘要: {summary}")
                 mem_blocks.append({"entities": ent, "summary": summary})
             details["new_memories"] = mem_blocks
 
-        print(f"{'-'*60}\n")
+        _console_print(f"{'-'*60}\n")
 
         SystemLogger._write_entry({
             "timestamp": SystemLogger._get_iso_time(),
@@ -172,7 +190,7 @@ class SystemLogger:
     @staticmethod
     def log_error(context, error_msg, details: dict | None = None):
         ts = SystemLogger._get_time()
-        print(f"\n[{ts}] 錯誤 ({context}): {error_msg}\n")
+        _console_print(f"\n[{ts}] 錯誤 ({context}): {error_msg}\n")
 
         entry = {
             "timestamp": SystemLogger._get_iso_time(),
@@ -196,37 +214,37 @@ class SystemLogger:
         """紀錄發送給 LLM 的完整 Prompt"""
         llm_call_id = llm_call_id or uuid.uuid4().hex
         ts = SystemLogger._get_time()
-        print(f"\n[{ts}] >>> 發送至 LLM [任務: {task_key} | 模型: {model_name}]")
-        print(f"{'-'*60}")
+        _console_print(f"\n[{ts}] >>> 發送至 LLM [任務: {task_key} | 模型: {model_name}]")
+        _console_print(f"{'-'*60}")
         if log_context:
-            print("  [LOG CONTEXT]:")
+            _console_print("  [LOG CONTEXT]:")
             for key in ("session_id", "session_mode", "group_name", "user_id", "user_name",
                         "current_character_id", "current_character_name"):
                 val = log_context.get(key)
                 if val:
-                    print(f"    {key}: {val}")
+                    _console_print(f"    {key}: {val}")
             participants = log_context.get("participants") or []
             if participants:
                 names = [
                     f"{p.get('name') or p.get('character_id')}({p.get('character_id')})"
                     for p in participants
                 ]
-                print(f"    participants: {', '.join(names)}")
-            print()
+                _console_print(f"    participants: {', '.join(names)}")
+            _console_print()
         for msg in api_messages:
             role = msg.get("role", "unknown").upper()
             content = msg.get("content", "")
-            print(f"  [{role}]:")
+            _console_print(f"  [{role}]:")
             # 終端機上只印前 500 字避免洗版
             preview = content[:500] + ("..." if len(content) > 500 else "")
             for line in preview.split("\n"):
-                print(f"    {line}")
-            print()
+                _console_print(f"    {line}")
+            _console_print()
         if tools:
             tool_names = [t.get("function", {}).get("name", "?") for t in tools]
-            print(f"  [TOOLS]: {', '.join(tool_names)}")
-            print()
-        print(f"{'-'*60}\n")
+            _console_print(f"  [TOOLS]: {', '.join(tool_names)}")
+            _console_print()
+        _console_print(f"{'-'*60}\n")
 
         entry: dict = {
             "timestamp": SystemLogger._get_iso_time(),
@@ -248,12 +266,12 @@ class SystemLogger:
     def log_llm_response(task_key, model_name, response_text, llm_call_id: str | None = None):
         """紀錄 LLM 回傳的完整 Response"""
         ts = SystemLogger._get_time()
-        print(f"\n[{ts}] <<< 接收自 LLM [任務: {task_key} | 模型: {model_name}]")
-        print(f"{'-'*60}")
+        _console_print(f"\n[{ts}] <<< 接收自 LLM [任務: {task_key} | 模型: {model_name}]")
+        _console_print(f"{'-'*60}")
         preview = response_text[:800] + ("..." if len(response_text) > 800 else "")
         for line in preview.split("\n"):
-            print(f"  {line}")
-        print(f"\n{'-'*60}\n")
+            _console_print(f"  {line}")
+        _console_print(f"\n{'-'*60}\n")
 
         SystemLogger._write_entry({
             "timestamp": SystemLogger._get_iso_time(),
@@ -271,11 +289,11 @@ class SystemLogger:
         emoji_map = {"INSERT": "新增", "UPDATE": "更新", "DELETE": "刪除"}
         action_label = emoji_map.get(action, action)
         ts = SystemLogger._get_time()
-        print(f"\n[{ts}] 使用者畫像 [{action_label}]")
-        print(f"  -> {fact_key} = {fact_value}")
+        _console_print(f"\n[{ts}] 使用者畫像 [{action_label}]")
+        _console_print(f"  -> {fact_key} = {fact_value}")
         if source:
-            print(f"  -> 來源: {source}")
-        print(f"{'-'*60}\n")
+            _console_print(f"  -> 來源: {source}")
+        _console_print(f"{'-'*60}\n")
 
         SystemLogger._write_entry({
             "timestamp": SystemLogger._get_iso_time(),

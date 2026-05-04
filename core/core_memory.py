@@ -6,7 +6,7 @@ import uuid
 import numpy as np
 import re
 from datetime import datetime
-from core.storage_manager import StorageManager
+from core.storage_manager import SHARED_MEMORY_CHARACTER_ID, SHARED_MEMORY_USER_ID, StorageManager
 from core.system_logger import SystemLogger
 from core.prompt_manager import get_prompt_manager
 from core.xml_prompt import xml_attr
@@ -22,6 +22,8 @@ class MemorySystem:
         self._core_memories_cache: dict[tuple[str, str, str], list] = {}
         # user_id → list[dict]
         self._user_profiles_cache: dict[str, list] = {}
+        # character_id → shared public blocks
+        self._shared_memory_blocks_cache: dict[str, list] = {}
 
     # ── 向後相容屬性（指向 default 使用者 public 快取）─────────────────
     @property
@@ -64,6 +66,17 @@ class MemorySystem:
             )
         return self._memory_blocks_cache[key]
 
+    def _get_shared_memory_blocks(self, character_id: str) -> list:
+        key = str(character_id or "").strip()
+        if not key:
+            return []
+        if key not in self._shared_memory_blocks_cache:
+            self._shared_memory_blocks_cache[key] = (
+                self.storage.load_shared_memory_blocks(self.db_path, key, visibility_filter=["public"])
+                if self.db_path else []
+            )
+        return self._shared_memory_blocks_cache[key]
+
     def _get_core_memories(
         self, user_id: str, character_id: str, visibility: str = "public"
     ) -> list:
@@ -98,6 +111,7 @@ class MemorySystem:
         self._memory_blocks_cache.clear()
         self._core_memories_cache.clear()
         self._user_profiles_cache.clear()
+        self._shared_memory_blocks_cache.clear()
         # 預先載入 default 使用者 public 資料，嚴格限定 visibility 以防 private 資料洩入 public cache
         self._memory_blocks_cache[("default", "default", "public")] = self.storage.load_db(
             self.db_path, visibility_filter=["public"]
@@ -258,6 +272,42 @@ class MemorySystem:
 
         SystemLogger.log_system_event("情境記憶寫入", f"{overview.split(chr(10))[0]} (新建)")
         return block_item
+
+    def add_shared_memory_block(
+        self,
+        overview: str,
+        raw_dialogues: list[dict],
+        audience_character_ids: list[str],
+        *,
+        metadata: dict | None = None,
+        source: str = "youtube_live_summary",
+        duplicate_threshold: float = 0.85,
+    ) -> dict | None:
+        """寫入一份 shared public memory，並用 audience table 控制角色可見性。"""
+        clean_audience = [str(cid).strip() for cid in audience_character_ids if str(cid).strip()]
+        clean_audience = list(dict.fromkeys(clean_audience))
+        if not clean_audience:
+            raise ValueError("shared memory audience 不可為空")
+        block = self.add_memory_block(
+            overview,
+            raw_dialogues,
+            duplicate_threshold=duplicate_threshold,
+            router=None,
+            user_id=SHARED_MEMORY_USER_ID,
+            character_id=SHARED_MEMORY_CHARACTER_ID,
+            visibility="public",
+        )
+        if not block:
+            return None
+        self.storage.set_memory_block_audience(
+            self.db_path,
+            block["block_id"],
+            clean_audience,
+            source=source,
+            metadata=metadata or {},
+        )
+        self._shared_memory_blocks_cache.clear()
+        return block
 
     def _compress_old_dialogues(self, dialogues, keep_recent_turns, router):
         """將超出閾值的舊對話壓縮為編年史摘要，保留最近 keep_recent_turns 輪原文。
@@ -733,6 +783,8 @@ class MemorySystem:
             memory_blocks = []
             for vis in visibility_filter:
                 memory_blocks.extend(self._get_memory_blocks(user_id, character_id, vis))
+        if visibility_filter is None or "public" in visibility_filter:
+            memory_blocks.extend(self._get_shared_memory_blocks(character_id))
 
         if not memory_blocks: return []
         now = datetime.now()

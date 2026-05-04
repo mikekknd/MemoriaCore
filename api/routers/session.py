@@ -97,6 +97,15 @@ async def list_conversation_history(
     return [ConversationSessionDTO(**s) for s in sessions]
 
 
+@router.delete("/history")
+async def hard_delete_user_sessions(current_user: dict = Depends(get_current_user)):
+    """永久刪除目前使用者的所有 session 及訊息（不可恢復）。"""
+    user_id = str(current_user["id"])
+    await session_manager.delete_for_user(user_id)
+    count = get_storage().hard_delete_sessions_for_user(user_id)
+    return {"status": "all_permanently_deleted", "deleted_count": count}
+
+
 @router.get("/history/{session_id}", response_model=ConversationHistoryDTO)
 async def get_conversation_history(session_id: str, current_user: dict = Depends(get_current_user)):
     """從 DB 載入指定 session 的完整訊息（含已結束的 session）"""

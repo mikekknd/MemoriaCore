@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ConnectorConfig(BaseModel):
-    connector_id: str = Field(..., min_length=3, max_length=64)
+    connector_id: str = Field("youtube-main", min_length=3, max_length=64)
     display_name: str = ""
     api_key: str = ""
     enabled: bool = True
@@ -20,26 +20,52 @@ class ConnectorConfig(BaseModel):
 
 
 class LiveSessionConfig(BaseModel):
-    session_id: str = Field(..., min_length=3, max_length=64)
-    connector_id: str = Field(..., min_length=3, max_length=64)
+    session_id: str = Field("", max_length=64)
+    connector_id: str = Field("youtube-main", min_length=3, max_length=64)
     display_name: str = ""
     video_id: str = ""
     live_chat_id: str = ""
     target_memoria_session_id: str = ""
     character_ids: list[str] = Field(default_factory=list)
     status: str = "stopped"
-    auto_connect: bool = False
+    auto_connect: bool = True
     auto_inject: bool = False
     inject_interval_seconds: int = Field(30, ge=5, le=600)
     min_pending_events: int = Field(1, ge=1, le=100)
+    max_pending_events: int = Field(12, ge=1, le=200)
+    dynamic_inject_enabled: bool = True
     max_context_messages: int = Field(50, ge=1, le=100)
     max_context_chars: int = Field(8000, ge=1000, le=20000)
     retention_days: int = Field(30, ge=1, le=365)
+    planned_duration_minutes: int = Field(30, ge=0, le=720)
+    auto_finalize_on_duration: bool = True
+    auto_delete_after_processed: bool = True
+    director_guidance: str = Field("", max_length=2000)
+    auto_test_events_enabled: bool = False
+    test_event_min_seconds: int = Field(20, ge=1, le=3600)
+    test_event_max_seconds: int = Field(45, ge=1, le=3600)
+    test_event_count_per_tick: int = Field(3, ge=1, le=30)
+    test_event_use_llm: bool = True
+    test_super_chat_count_per_tick: int = Field(0, ge=0, le=30)
+    test_malicious_sc_enabled: bool = False
+    test_sc_burst_mode: bool = False
+    sc_interrupt_cooldown_seconds: int = Field(30, ge=0, le=600)
+    max_sc_per_batch: int = Field(5, ge=1, le=30)
+    director_anchor_every_turns: int = Field(2, ge=1, le=10)
+    director_max_chat_batches_before_anchor: int = Field(2, ge=1, le=10)
+    director_offtopic_policy: str = Field("defer", max_length=40)
+    director_sc_burst_policy: str = Field("summarize_batch", max_length=40)
+    research_enabled: bool = False
+    research_cooldown_seconds: int = Field(300, ge=0, le=3600)
+    research_max_per_session: int = Field(12, ge=0, le=100)
+    auto_sc_thanks_on_finalize: bool = True
 
     @field_validator("session_id")
     @classmethod
     def validate_session_id(cls, value: str) -> str:
         value = value.strip()
+        if not value:
+            return ""
         if not value.replace("_", "").replace("-", "").isalnum():
             raise ValueError("session_id 只能包含英數、底線、連字號")
         return value
@@ -51,12 +77,81 @@ class LiveSessionConfig(BaseModel):
 
 
 class ReplyRecentRequest(BaseModel):
-    content: str = "請根據已帶入的 YouTube 直播留言上下文回應。不要開啟瀏覽器或搜尋網頁。"
+    content: str = "請根據導播提供的 Topic Pack / fact card / 已帶入的 YouTube 直播留言上下文回應。不要自行開啟瀏覽器或搜尋網頁。"
     memoria_session_id: str = ""
     character_ids: list[str] = Field(default_factory=list)
     event_ids: list[int] = Field(default_factory=list)
     max_events: int = Field(50, ge=1, le=100)
+    priority: int = Field(200, ge=0, le=1000)
 
 
 class CleanupRequest(BaseModel):
     retention_days: int | None = Field(None, ge=1, le=365)
+
+
+class SummarizeRequest(BaseModel):
+    force: bool = False
+    min_events: int = Field(1, ge=1, le=1000)
+    max_events: int = Field(1000, ge=1, le=5000)
+    chunk_size: int = Field(120, ge=20, le=500)
+    include_memoria_session: bool = True
+    safe_memory_text: bool = True
+
+
+class InterruptRequest(BaseModel):
+    reason: str = "manual_interrupt"
+
+
+class DirectorStartRequest(BaseModel):
+    idle_seconds: int = Field(60, ge=10, le=3600)
+    guidance: str = Field("", max_length=2000)
+    kickoff: bool = False
+
+
+class DirectorGuidanceRequest(BaseModel):
+    guidance: str = Field("", max_length=2000)
+
+
+class WriteMemoryRequest(BaseModel):
+    force: bool = False
+
+
+class TestChatGenerateRequest(BaseModel):
+    count: int = Field(5, ge=1, le=30)
+    topic_hint: str = Field("", max_length=1200)
+    use_llm: bool = True
+    super_chat_count: int = Field(0, ge=0, le=30)
+    include_malicious_sc: bool = False
+    sc_burst: bool = False
+
+
+class TopicPackCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=1000)
+
+
+class TopicPackEntryCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=4000)
+    source_url: str = Field("", max_length=1000)
+    source_type: str = Field("manual", max_length=80)
+    tags: list[str] = Field(default_factory=list)
+
+
+class TopicPackAutoBuildRequest(BaseModel):
+    topic: str = Field(..., min_length=1, max_length=1200)
+    pack_id: int | None = None
+    card_count: int = Field(5, ge=1, le=10)
+    use_research: bool = True
+
+
+class ResearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    pack_id: int | None = None
+
+
+class MemoriaAuthConfig(BaseModel):
+    base_url: str = Field("http://localhost:8088/api/v1", max_length=500)
+    username: str = Field("", max_length=128)
+    password: str = Field("", max_length=512)
+    admin_bypass: bool = True

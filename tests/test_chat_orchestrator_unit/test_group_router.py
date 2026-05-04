@@ -24,6 +24,58 @@ def _chars():
     ]
 
 
+def test_single_participant_can_repeat_when_enabled_without_llm_call():
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "stop",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "繼續剛剛的話題"},
+            {"role": "assistant", "content": "上一輪回應", "character_id": "char-a"},
+        ],
+        [_chars()[0]],
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        allow_single_participant_repeat=True,
+    )
+
+    assert result.should_respond is True
+    assert result.target_character_id == "char-a"
+    assert result.action == "repeat_speaker_reply_to_ai"
+    assert router.called is False
+
+
+def test_single_participant_repeat_can_still_be_disabled():
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "new_speaker_ack",
+        "target_character_id": "char-a",
+        "reason": "continue",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "繼續剛剛的話題"},
+            {"role": "assistant", "content": "上一輪回應", "character_id": "char-a"},
+        ],
+        [_chars()[0]],
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        allow_single_participant_repeat=False,
+    )
+
+    assert result.should_respond is False
+    assert result.target_character_id is None
+    assert result.action == "stop_no_new_value"
+    assert router.called is False
+
+
 def test_explicit_mention_takes_priority_without_llm_call():
     router = _Router({
         "conversation_intent": "single_response",

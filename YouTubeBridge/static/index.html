@@ -1,0 +1,1700 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTubeBridge</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d8dde6;
+      --text: #17202a;
+      --muted: #657083;
+      --accent: #0f766e;
+      --accent-2: #2563eb;
+      --danger: #b42318;
+      --soft: #eef2f6;
+      --warn: #9a6700;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Noto Sans TC", system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 22px;
+      background: rgba(255, 255, 255, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }
+    h1 { margin: 0; font-size: 20px; line-height: 1.2; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(300px, 390px) minmax(360px, 1fr) minmax(300px, 380px);
+      gap: 16px;
+      padding: 16px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+    }
+    .stack { display: grid; gap: 16px; align-content: start; }
+    .right-rail {
+      position: sticky;
+      top: 84px;
+      max-height: calc(100vh - 100px);
+      overflow: auto;
+      align-self: start;
+    }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .wide { grid-column: 1 / -1; }
+    .section-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .section-heading h2 { margin: 0; }
+    .checkbox-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .session-actions {
+      display: grid;
+      grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .session-actions.single { grid-template-columns: 1fr; }
+    .advanced-session-picker {
+      margin-top: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+    }
+    .advanced-session-picker summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+    input, select, textarea {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 9px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      font-size: 13px;
+    }
+    textarea { min-height: 74px; resize: vertical; }
+    button,
+    a.button-link {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 11px;
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button.primary,
+    a.button-link.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.blue,
+    a.button-link.blue { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+    button.danger,
+    a.button-link.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+    button:disabled,
+    a.button-link.disabled,
+    a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-events: none; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 12px;
+      max-width: 100%;
+    }
+    .status.good { color: #067647; background: #ecfdf3; }
+    .status.warn { color: var(--warn); background: #fff7db; }
+    .status.bad { color: var(--danger); background: #fef3f2; }
+    .list {
+      display: grid;
+      gap: 8px;
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 3px;
+    }
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px;
+      background: #fff;
+    }
+    .item.processed {
+      background: #f5f7fa;
+      color: #6b7280;
+      opacity: 0.68;
+    }
+    .item.super-chat {
+      border-left: 4px solid #d97706;
+      background: #fffbeb;
+    }
+    .item.suspicious {
+      border-left-color: var(--danger);
+    }
+    .item strong { display: block; font-size: 13px; margin-bottom: 3px; }
+    .item p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .tab {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .pane { display: none; }
+    .pane.active { display: grid; gap: 12px; }
+    pre {
+      margin: 0;
+      max-height: 280px;
+      overflow: auto;
+      padding: 10px;
+      border-radius: 8px;
+      background: #101828;
+      color: #f8fafc;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .chat-preview-list {
+      display: grid;
+      gap: 8px;
+      max-height: min(48vh, 520px);
+      overflow: auto;
+      padding-right: 3px;
+    }
+    .chat-msg {
+      display: grid;
+      gap: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px;
+      background: #fff;
+    }
+    .chat-msg.user { border-left: 4px solid var(--accent-2); }
+    .chat-msg.assistant { border-left: 4px solid var(--accent); }
+    .chat-msg.system_event,
+    .chat-msg.system { background: #f5f7fa; color: #667085; }
+    .chat-msg-meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .chat-msg-content {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+      .session-actions { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+      .right-rail {
+        position: static;
+        max-height: none;
+        overflow: visible;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>YouTubeBridge</h1>
+      <div class="muted">Phase 2 測試 UI</div>
+    </div>
+    <div class="toolbar">
+      <span id="health" class="status">尚未連線</span>
+      <button id="refreshAll">更新</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="stack">
+      <section>
+        <div class="section-heading">
+          <h2>Live Session</h2>
+          <div class="toolbar">
+            <button id="newSession" class="primary">新直播</button>
+          </div>
+        </div>
+        <div class="grid">
+          <input id="sessionId" type="hidden">
+          <label>顯示名稱
+            <input id="sessionName" value="YT Live Test">
+          </label>
+          <label class="wide">YouTube video_id 或 URL
+            <input id="videoId" placeholder="真實直播才需要；測試留言可留空">
+          </label>
+          <label class="wide">MemoriaCore session
+            <select id="memoriaSession"></select>
+          </label>
+          <label class="wide">角色
+            <select id="characterSelect" multiple size="5"></select>
+          </label>
+          <label>注入間隔秒數
+            <input id="injectInterval" type="number" min="5" max="600" value="30">
+          </label>
+          <label>最少 pending 留言
+            <input id="minPending" type="number" min="1" max="100" value="1">
+          </label>
+          <label>pending 強制注入上限
+            <input id="maxPending" type="number" min="1" max="200" value="12">
+          </label>
+          <label>預計直播分鐘
+            <input id="plannedDuration" type="number" min="0" max="720" value="30">
+          </label>
+          <label>SC 打斷冷卻秒數
+            <input id="scInterruptCooldown" type="number" min="0" max="600" value="30">
+          </label>
+          <label>每批 SC 上限
+            <input id="maxScPerBatch" type="number" min="1" max="30" value="5">
+          </label>
+          <label>幾批留言後回主軸
+            <input id="directorMaxChatBatches" type="number" min="1" max="10" value="2">
+          </label>
+        </div>
+        <div class="checkbox-grid">
+          <label class="wide">
+            <span><input id="autoInject" type="checkbox" style="width:auto;min-height:auto"> 自動注入</span>
+          </label>
+          <label class="wide">
+            <span><input id="dynamicInject" type="checkbox" checked style="width:auto;min-height:auto"> 動態調整注入間隔</span>
+          </label>
+          <label class="wide">
+            <span><input id="autoFinalize" type="checkbox" checked style="width:auto;min-height:auto"> 到達預計時間自動結束</span>
+          </label>
+          <label class="wide">
+            <span><input id="autoScThanksOnFinalize" type="checkbox" checked style="width:auto;min-height:auto"> 結束前自動感謝未處理 SC</span>
+          </label>
+          <label class="wide">
+            <span><input id="autoDeleteProcessed" type="checkbox" checked style="width:auto;min-height:auto"> 摘要 / 記憶處理完成後自動刪除 runtime session</span>
+          </label>
+          <label class="wide">
+            <span><input id="autoDirector" type="checkbox" checked style="width:auto;min-height:auto"> 開始後自動啟動導播與開場</span>
+          </label>
+          <label class="wide">
+            <span><input id="researchEnabled" type="checkbox" style="width:auto;min-height:auto"> 啟用 Research Gate</span>
+          </label>
+        </div>
+        <div id="sessionActions" class="session-actions">
+          <button id="toggleSession" class="blue">開始</button>
+          <button id="updateSession">更新設定</button>
+        </div>
+        <details class="advanced-session-picker">
+          <summary>載入既有 Live Session（多直播 / 除錯）</summary>
+          <select id="sessionSelect"></select>
+          <p class="muted" style="margin:8px 0 0">一般測試流程會直接用「新直播」與「開始」。這裡主要用於同時管理多個直播，或載入先前未刪除的 runtime session。</p>
+          <div class="toolbar" style="margin-top:10px">
+            <button id="deleteSession" class="danger">刪除目前 Live Session</button>
+          </div>
+        </details>
+      </section>
+
+      <section>
+        <h2>Connector</h2>
+        <div class="grid">
+          <label>顯示名稱
+            <input id="connectorName" value="Local YouTube">
+          </label>
+          <label class="wide">YouTube Data API Key
+            <input id="apiKey" type="password" placeholder="留空代表沿用已儲存 key">
+          </label>
+          <label class="wide">
+            <span><input id="connectorEnabled" type="checkbox" checked style="width:auto;min-height:auto"> 啟用 connector</span>
+          </label>
+        </div>
+        <div class="toolbar" style="margin-top:10px">
+          <button id="saveConnector" class="primary">儲存 Connector</button>
+          <span id="connectorState" class="status">尚未載入</span>
+        </div>
+      </section>
+
+      <section>
+        <h2>MemoriaCore Auth</h2>
+        <div class="grid">
+          <label class="wide">API base URL
+            <input id="memoriaBaseUrl" value="http://localhost:8088/api/v1">
+          </label>
+          <label>admin username
+            <input id="memoriaUsername" autocomplete="username">
+          </label>
+          <label>admin password
+            <input id="memoriaPassword" type="password" autocomplete="current-password" placeholder="留空代表沿用已儲存密碼">
+          </label>
+          <label class="wide">
+            <span><input id="memoriaAdminBypass" type="checkbox" checked style="width:auto;min-height:auto"> 使用本機 admin bypass</span>
+          </label>
+        </div>
+        <div class="toolbar" style="margin-top:10px">
+          <button id="saveMemoriaConfig" class="primary">儲存 MemoriaCore 設定</button>
+          <button id="testMemoriaAuth">測試連線並更新下拉</button>
+          <span id="memoriaAuthState" class="status">尚未測試</span>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="stack">
+      <section>
+        <div class="tabs">
+          <button class="tab active" data-pane="eventsPane">Recent Events</button>
+          <button class="tab" data-pane="summaryPane">Summary</button>
+          <button class="tab" data-pane="directorPane">Director</button>
+          <button class="tab" data-pane="topicPackPane">Topic Pack</button>
+          <button class="tab" data-pane="queuePane">Queue</button>
+        </div>
+
+        <div id="eventsPane" class="pane active">
+          <div class="grid">
+            <label>測試留言數
+              <input id="testCommentCount" type="number" min="1" max="30" value="5">
+            </label>
+            <label>
+              <span><input id="testUseLlm" type="checkbox" checked style="width:auto;min-height:auto"> 使用 LLM 生成測試留言</span>
+            </label>
+            <label>測試 SC 數
+              <input id="testSuperChatCount" type="number" min="0" max="30" value="0">
+            </label>
+            <label>
+              <span><input id="testMaliciousSc" type="checkbox" style="width:auto;min-height:auto"> 加入惡意 SC 測試</span>
+            </label>
+            <label>
+              <span><input id="testScBurst" type="checkbox" style="width:auto;min-height:auto"> 大量 SC 壓力模式</span>
+            </label>
+            <label class="wide">測試留言方向
+              <textarea id="testTopicHint" placeholder="可留空；留空時會根據直播方向、近期留言與 AI 回覆生成。"></textarea>
+            </label>
+            <label>自動測試間隔最短秒數
+              <input id="testEventMinSeconds" type="number" min="1" max="3600" value="20">
+            </label>
+            <label>自動測試間隔最長秒數
+              <input id="testEventMaxSeconds" type="number" min="1" max="3600" value="45">
+            </label>
+            <label>每輪一般留言數
+              <input id="testEventCountPerTick" type="number" min="1" max="30" value="3">
+            </label>
+            <label>每輪 SC 數
+              <input id="testSuperChatCountPerTick" type="number" min="0" max="30" value="0">
+            </label>
+            <label>
+              <span><input id="autoTestEvents" type="checkbox" style="width:auto;min-height:auto"> 啟用自動測試留言</span>
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="refreshEvents">更新留言</button>
+            <button id="generateTestEvents">生成測試留言</button>
+            <button id="toggleAutoTestEvents">啟動自動測試</button>
+            <button id="injectSelected" class="primary">注入勾選留言</button>
+            <button id="injectPending" class="blue">注入未處理留言</button>
+            <button id="replySuperChats" class="primary">回應未處理 SC</button>
+            <button id="interruptNow" class="danger">中斷目前回應</button>
+            <span id="eventState" class="status">尚未選擇 session</span>
+          </div>
+          <textarea id="injectContent">請根據導播提供的 Topic Pack / fact card / 已帶入的 YouTube 直播留言上下文回應。不要自行開啟瀏覽器或搜尋網頁。</textarea>
+          <div id="eventsList" class="list"></div>
+        </div>
+
+        <div id="summaryPane" class="pane">
+          <div class="toolbar">
+            <button id="finalizeSession">標記結束</button>
+            <button id="makeSummary" class="primary">產生摘要</button>
+            <button id="forceSummary">強制重跑</button>
+            <button id="writeMemory" class="blue">寫入 shared memory</button>
+            <span id="summaryState" class="status">尚無摘要</span>
+          </div>
+          <div id="summaryView" class="item"></div>
+        </div>
+
+        <div id="directorPane" class="pane">
+          <div class="grid">
+            <label>idle_seconds
+              <input id="directorIdle" type="number" min="10" max="3600" value="60">
+            </label>
+            <label class="wide">本場直播方向
+              <textarea id="directorGuidance" placeholder="例：測試 YouTube 留言注入、自動導播與摘要品質；中段示範互動，尾段收束成共通記憶。"></textarea>
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="updateDirectorGuidance">更新導播設定</button>
+            <button id="toggleDirector" class="primary">啟動導播</button>
+            <span id="directorState" class="status">stopped</span>
+          </div>
+          <pre id="directorJson">{}</pre>
+        </div>
+
+        <div id="topicPackPane" class="pane">
+          <div class="grid">
+            <label class="wide">本場資料包
+              <select id="topicPackSelect"></select>
+            </label>
+            <label>資料包名稱
+              <input id="topicPackTitle" placeholder="例：四月新番資料包">
+            </label>
+            <label>資料包描述
+              <input id="topicPackDescription" placeholder="直播前準備的 fact cards">
+            </label>
+            <label>Fact card 標題
+              <input id="topicEntryTitle" placeholder="例：作品 A 製作資訊">
+            </label>
+            <label class="wide">Fact card 內容
+              <textarea id="topicEntryBody" placeholder="貼上直播中可以引用的客觀資料。"></textarea>
+            </label>
+            <label class="wide">自動資料卡主題
+              <input id="autoBuildTopic" placeholder="例：四月新番入門、LLM 基礎、美食直播話題">
+            </label>
+            <label>自動建立張數
+              <input id="autoBuildCount" type="number" min="1" max="10" value="5">
+            </label>
+            <label>
+              <span><input id="autoBuildUseResearch" type="checkbox" checked style="width:auto;min-height:auto"> 使用 Research Gate 查詢</span>
+            </label>
+            <label class="wide">Research Gate 查詢
+              <input id="researchQuery" placeholder="例：某部動畫的播出時間與製作公司">
+            </label>
+            <label class="wide">向量檢索測試
+              <input id="topicSearchQuery" placeholder="例：觀眾問四月新番作品資訊時應該召回什麼">
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="refreshTopicPacks">更新資料包</button>
+            <button id="createTopicPack" class="primary">建立資料包</button>
+            <button id="linkTopicPack" class="blue">綁定到本場直播</button>
+            <button id="addTopicEntry">新增 fact card</button>
+            <button id="autoBuildTopicPack" class="primary">自動建立資料卡</button>
+            <button id="rebuildTopicEmbeddings">重建向量索引</button>
+            <button id="searchTopicPack">測試向量檢索</button>
+            <button id="runResearch" class="primary">Research Gate 查詢</button>
+            <span id="topicPackState" class="status">尚未載入</span>
+          </div>
+          <div id="topicPackEntries" class="list"></div>
+        </div>
+
+        <div id="queuePane" class="pane">
+          <div class="toolbar">
+            <button id="refreshQueue">更新 queue</button>
+            <span id="queueState" class="status">尚無資料</span>
+          </div>
+          <p class="muted">
+            Queue 是直播互動工作紀錄，包含手動注入、自動注入、導播主動發話與中斷狀態；不是只有 Director 預計要下的指令。
+          </p>
+          <div id="queueList" class="list"></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="stack right-rail">
+      <section>
+        <div class="section-heading">
+          <h2>Chat Preview</h2>
+          <span id="chatPreviewState" class="status">尚未載入</span>
+        </div>
+        <div class="toolbar">
+          <button id="refreshChatPreview">更新 Chat Preview</button>
+          <a id="openFullChat" class="button-link disabled" href="#" aria-disabled="true">開啟完整 Chat</a>
+        </div>
+        <p class="muted">
+          Chat Preview 由 Bridge 後端透過 MemoriaCore Auth 讀取目前目標 session 的只讀歷史，最新訊息顯示在最上方；注入或導播回覆後會自動更新，也可手動更新。
+        </p>
+        <div id="chatPreviewList" class="chat-preview-list"></div>
+      </section>
+
+      <section>
+        <h2>Log</h2>
+        <pre id="log"></pre>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const SINGLE_CONNECTOR_ID = "youtube-main";
+
+    const state = {
+      sessions: [],
+      connectors: [],
+      connector: null,
+      characters: [],
+      memoriaSessions: [],
+      topicPacks: [],
+      events: [],
+      eventSource: null,
+      chatPreviewRefreshTimer: null,
+      selectedEventIds: new Set(),
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#39;",
+    }[ch]));
+    const log = (message, data) => {
+      const time = new Date().toLocaleTimeString();
+      const safeData = sanitizeLogData(data);
+      const line = safeData === undefined ? `[${time}] ${message}` : `[${time}] ${message}\n${JSON.stringify(safeData, null, 2)}`;
+      $("log").textContent = `${line}\n\n${$("log").textContent}`.slice(0, 12000);
+    };
+    const clearLog = () => {
+      $("log").textContent = "";
+    };
+
+    function sanitizeLogData(value, depth = 0) {
+      if (value === undefined) return undefined;
+      if (value === null) return null;
+      if (Array.isArray(value)) {
+        if (value.length > 16 && value.every((item) => typeof item === "number")) {
+          return `[embedding ${value.length} dims]`;
+        }
+        return value.slice(0, 24).map((item) => sanitizeLogData(item, depth + 1));
+      }
+      if (typeof value === "object") {
+        const output = {};
+        for (const [key, raw] of Object.entries(value)) {
+          if (["embedding", "embeddings", "embedding_vector", "embedding_blob", "vector"].includes(key)) {
+            output[key] = Array.isArray(raw) ? `[embedding ${raw.length} dims]` : "[hidden embedding]";
+            continue;
+          }
+          if (["prompt", "decision_prompt", "hidden_context", "external_context", "context_text"].includes(key)) {
+            output[key] = "[hidden]";
+            continue;
+          }
+          if (["events", "event_ids", "super_chats"].includes(key) && Array.isArray(raw)) {
+            output[key] = { count: raw.length };
+            continue;
+          }
+          if (key === "decision" && raw && typeof raw === "object") {
+            output[key] = {
+              action: raw.action,
+              reason: raw.reason,
+              current_topic: raw.current_topic,
+            };
+            continue;
+          }
+          output[key] = depth >= 3 ? "[nested]" : sanitizeLogData(raw, depth + 1);
+        }
+        return output;
+      }
+      if (typeof value === "string" && value.length > 800) {
+        return `${value.slice(0, 240)}... [truncated ${value.length} chars]`;
+      }
+      return value;
+    }
+
+    function summarizeSsePayload(payload) {
+      const eventCount = payload.event_count
+        ?? payload.events?.length
+        ?? payload.event_ids?.length
+        ?? payload.count
+        ?? payload.generated_count;
+      return {
+        type: payload.type,
+        session_id: payload.session_id,
+        job_id: payload.job_id || payload.interaction?.job_id,
+        status: payload.status || payload.interaction?.status,
+        source: payload.source || payload.interaction?.source,
+        event_count: eventCount,
+        pack_id: payload.pack_id || payload.entry?.pack_id,
+        entry_count: payload.entry_count || payload.entries?.length,
+      };
+    }
+
+    function installTestIds() {
+      [
+        "newSession", "sessionId", "sessionName", "videoId", "memoriaSession", "characterSelect",
+        "injectInterval", "plannedDuration", "scInterruptCooldown", "autoInject", "autoFinalize",
+        "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession", "deleteSession",
+        "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",
+        "testSuperChatCountPerTick", "autoTestEvents", "generateTestEvents", "eventsList",
+        "directorGuidance", "directorIdle", "toggleDirector", "topicPackSelect",
+        "autoBuildTopicPack", "runResearch", "queueList", "refreshChatPreview",
+        "chatPreviewList", "eventsPane", "summaryPane", "directorPane", "topicPackPane",
+        "queuePane", "log"
+      ].forEach((id) => {
+        const element = $(id);
+        if (element) element.dataset.testid = id;
+      });
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      });
+      const text = await response.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+      if (!response.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : text || response.statusText);
+      return data;
+    }
+
+    function selectedSessionId() {
+      return $("sessionSelect").value || $("sessionId").value.trim();
+    }
+
+    function selectedSessionInfo() {
+      const id = selectedSessionId();
+      return state.sessions.find((session) => session.session_id === id) || null;
+    }
+
+    function defaultLiveSession(preferredId = "") {
+      return state.sessions.find((session) => session.session_id === preferredId)
+        || state.sessions.find((session) => session.runtime_status?.running || session.status === "running")
+        || state.sessions.find((session) => session.target_memoria_session_id)
+        || state.sessions[0]
+        || null;
+    }
+
+    function isSelectedSessionRunning() {
+      const session = selectedSessionInfo();
+      const runtimeStatus = session?.runtime_status?.status || session?.status || "stopped";
+      return session?.runtime_status?.running || runtimeStatus === "running" || runtimeStatus === "starting";
+    }
+
+    function updateLiveSessionControls() {
+      const hasSession = !!selectedSessionId();
+      const running = isSelectedSessionRunning();
+      const session = selectedSessionInfo();
+      const hasStarted = !!(session?.started_at || session?.runtime_status?.running);
+      $("toggleSession").textContent = running ? "停止" : "開始";
+      $("toggleSession").className = running ? "danger" : "blue";
+      $("deleteSession").disabled = !hasSession;
+      $("updateSession").textContent = "更新設定";
+      $("updateSession").hidden = !hasStarted;
+      $("sessionActions").className = hasStarted ? "session-actions" : "session-actions single";
+      const autoTestRunning = !!session?.runtime_status?.auto_test_events_running;
+      $("toggleAutoTestEvents").textContent = autoTestRunning ? "停止自動測試" : "啟動自動測試";
+      $("toggleAutoTestEvents").className = autoTestRunning ? "danger" : "";
+      $("toggleAutoTestEvents").disabled = !hasSession;
+    }
+
+    function selectedCharacterIds() {
+      return Array.from($("characterSelect").selectedOptions).map((option) => option.value).filter(Boolean);
+    }
+
+    async function loadHealth() {
+      try {
+        const data = await api("/health");
+        $("health").textContent = data.ok ? "Bridge online" : "Bridge error";
+        $("health").className = data.ok ? "status good" : "status bad";
+      } catch (error) {
+        $("health").textContent = "Bridge offline";
+        $("health").className = "status bad";
+      }
+    }
+
+    function fillConnectorForm(connector) {
+      if (!connector) return;
+      $("connectorName").value = connector.display_name || "";
+      $("connectorEnabled").checked = !!connector.enabled;
+      $("connectorState").textContent = connector.api_key_configured ? "已儲存 API key" : "尚未儲存 API key";
+      $("connectorState").className = connector.api_key_configured ? "status good" : "status warn";
+    }
+
+    async function loadConnectors() {
+      state.connectors = await api("/connectors");
+      state.connector = state.connectors[0] || {
+        connector_id: SINGLE_CONNECTOR_ID,
+        display_name: "YouTube Main",
+        enabled: true,
+        api_key_configured: false,
+      };
+      fillConnectorForm(state.connector);
+    }
+
+    async function loadMemoriaConfig() {
+      try {
+        const config = await api("/memoria/config");
+        $("memoriaBaseUrl").value = config.base_url || "http://localhost:8088/api/v1";
+        $("memoriaUsername").value = config.username || "";
+        $("memoriaPassword").value = "";
+        $("memoriaPassword").placeholder = config.password_configured ? "已儲存密碼；留空沿用" : "可留空改用 admin bypass";
+        $("memoriaAdminBypass").checked = config.admin_bypass !== false;
+        $("memoriaAuthState").textContent = config.password_configured || config.admin_bypass ? "已設定" : "尚未設定";
+        $("memoriaAuthState").className = config.password_configured || config.admin_bypass ? "status good" : "status warn";
+        scheduleChatPreviewRefresh();
+      } catch (error) {
+        $("memoriaAuthState").textContent = "設定讀取失敗";
+        $("memoriaAuthState").className = "status bad";
+        log("MemoriaCore 設定讀取失敗", String(error));
+      }
+    }
+
+    function memoriaAuthPayload() {
+      return {
+        base_url: $("memoriaBaseUrl").value.trim() || "http://localhost:8088/api/v1",
+        username: $("memoriaUsername").value.trim(),
+        password: $("memoriaPassword").value,
+        admin_bypass: $("memoriaAdminBypass").checked,
+      };
+    }
+
+    function memoriaChatUrl(targetSessionId = "") {
+      const rawBase = $("memoriaBaseUrl").value.trim() || "http://localhost:8088/api/v1";
+      const url = new URL(rawBase, window.location.href);
+      url.pathname = url.pathname.replace(/\/api\/v1\/?$/, "").replace(/\/$/, "") + "/static/chat.html";
+      url.search = "";
+      url.hash = "";
+      if (targetSessionId) url.searchParams.set("session_id", targetSessionId);
+      url.searchParams.set("embed", "youtube_bridge");
+      return url;
+    }
+
+    function shortTime() {
+      return new Date().toLocaleTimeString("zh-TW", { hour12: false });
+    }
+
+    function selectedTargetMemoriaSessionId() {
+      const session = selectedSessionInfo();
+      return session?.target_memoria_session_id || $("memoriaSession").value || "";
+    }
+
+    function updateOpenChatLink(targetSessionId = selectedTargetMemoriaSessionId()) {
+      const link = $("openFullChat");
+      if (!link) return;
+      if (!targetSessionId) {
+        link.href = "#";
+        link.dataset.href = "";
+        link.classList.add("disabled");
+        link.setAttribute("aria-disabled", "true");
+        return;
+      }
+      try {
+        const href = memoriaChatUrl(targetSessionId).toString();
+        link.href = href;
+        link.dataset.href = href;
+        link.classList.remove("disabled");
+        link.setAttribute("aria-disabled", "false");
+      } catch {
+        link.href = "#";
+        link.dataset.href = "";
+        link.classList.add("disabled");
+        link.setAttribute("aria-disabled", "true");
+      }
+    }
+
+    function chatRoleLabel(message) {
+      if (message.role === "assistant") return message.character_name || "AI";
+      if (message.role === "user") return "使用者";
+      if (message.role === "system_event") return "系統事件";
+      return message.role || "訊息";
+    }
+
+    function renderChatPreview(messages) {
+      const newestFirst = (messages || []).slice().reverse();
+      $("chatPreviewList").innerHTML = newestFirst.map((message) => {
+        const role = ["user", "assistant", "system_event", "system"].includes(message.role) ? message.role : "system";
+        const idText = message.message_id !== undefined && message.message_id !== null ? ` #${message.message_id}` : "";
+        return `<div class="chat-msg ${escapeHtml(role)}">
+          <div class="chat-msg-meta">${escapeHtml(chatRoleLabel(message))}${escapeHtml(idText)}</div>
+          <div class="chat-msg-content">${escapeHtml(message.content || "")}</div>
+        </div>`;
+      }).join("") || `<div class="muted">目前沒有可顯示的聊天紀錄</div>`;
+      $("chatPreviewList").scrollTop = 0;
+    }
+
+    async function refreshChatPreview({ silent = false } = {}) {
+      let id = selectedSessionId();
+      if (!id && !silent && !state.sessions.length) {
+        await loadSessions();
+        id = selectedSessionId();
+      }
+      if (!id && !silent) {
+        const fallback = defaultLiveSession();
+        if (fallback) {
+          $("sessionSelect").value = fallback.session_id;
+          fillSessionForm(fallback);
+          subscribeEvents();
+          id = fallback.session_id;
+        }
+      }
+      if (!id) {
+        $("chatPreviewState").textContent = "尚未選擇 Live Session";
+        $("chatPreviewState").className = "status warn";
+        $("chatPreviewList").innerHTML = `<div class="muted">請先建立或選擇 Live Session。</div>`;
+        updateOpenChatLink("");
+        if (!silent) log("Chat Preview 未更新", "請先建立或選擇 Live Session。");
+        return;
+      }
+      if (!silent) {
+        $("refreshChatPreview").disabled = true;
+        $("chatPreviewState").textContent = "Chat Preview 更新中...";
+        $("chatPreviewState").className = "status";
+      }
+      try {
+        const data = await api(`/sessions/${encodeURIComponent(id)}/chat-preview?limit=80`);
+        updateOpenChatLink(data.memoria_session_id || "");
+        renderChatPreview(data.messages || []);
+        if (data.memoria_session_id) {
+          const shown = (data.messages || []).length;
+          if (data.stale) {
+            $("chatPreviewState").textContent = `後端忙碌，使用快取：${data.memoria_session_id.slice(0, 8)}... / ${shown}/${data.message_count || 0} 則`;
+            $("chatPreviewState").className = "status warn";
+          } else {
+            $("chatPreviewState").textContent = `MemoriaCore session: ${data.memoria_session_id.slice(0, 8)}... / ${shown}/${data.message_count || 0} 則，${shortTime()} 已更新`;
+            $("chatPreviewState").className = "status good";
+          }
+        } else {
+          $("chatPreviewState").textContent = data.stale ? "後端忙碌，沒有可用快取" : "尚未綁定 MemoriaCore session";
+          $("chatPreviewState").className = "status warn";
+        }
+        if (!silent) {
+          log(data.stale ? "Chat Preview 使用快取" : "Chat Preview 已更新", {
+            message_count: data.message_count || 0,
+            shown: (data.messages || []).length,
+            stale: !!data.stale,
+            last_success_at: data.last_success_at || "",
+            error: data.error || "",
+          });
+        }
+      } catch (error) {
+        $("chatPreviewState").textContent = "Chat Preview 讀取失敗";
+        $("chatPreviewState").className = "status bad";
+        if (!silent) log("Chat Preview 讀取失敗", String(error));
+      } finally {
+        if (!silent) $("refreshChatPreview").disabled = false;
+      }
+    }
+
+    function scheduleChatPreviewRefresh({ reloadSessions = false } = {}) {
+      if (state.chatPreviewRefreshTimer) clearTimeout(state.chatPreviewRefreshTimer);
+      state.chatPreviewRefreshTimer = setTimeout(async () => {
+        state.chatPreviewRefreshTimer = null;
+        try {
+          if (reloadSessions) await loadSessions(selectedSessionId());
+          await refreshChatPreview({ silent: true });
+        } catch (error) {
+          log("Chat Preview 讀取失敗", String(error));
+        }
+      }, 150);
+    }
+
+    async function saveMemoriaConfig() {
+      const data = await api("/memoria/config", {
+        method: "POST",
+        body: JSON.stringify(memoriaAuthPayload()),
+      });
+      $("memoriaPassword").value = "";
+      $("memoriaAuthState").textContent = data.password_configured || data.admin_bypass ? "已儲存" : "尚未設定";
+      $("memoriaAuthState").className = data.password_configured || data.admin_bypass ? "status good" : "status warn";
+      log("MemoriaCore 設定已儲存", data);
+      await loadMemoriaConfig();
+      await loadMemoriaRefs();
+      await refreshChatPreview({ silent: true });
+    }
+
+    async function testMemoriaAuth() {
+      const data = await api("/memoria/auth/test", {
+        method: "POST",
+        body: JSON.stringify(memoriaAuthPayload()),
+      });
+      $("memoriaAuthState").textContent = `連線成功：${data.character_count} 角色 / ${data.session_count} sessions`;
+      $("memoriaAuthState").className = "status good";
+      log("MemoriaCore 連線測試成功", data);
+      await loadMemoriaRefs();
+      await refreshChatPreview({ silent: true });
+    }
+
+    async function loadMemoriaRefs() {
+      try {
+        state.characters = await api("/memoria/characters");
+        $("characterSelect").innerHTML = state.characters.map((c) =>
+          `<option value="${escapeHtml(c.character_id)}" title="${escapeHtml(c.character_id)}">${escapeHtml(c.name || c.character_id)}</option>`
+        ).join("");
+      } catch (error) {
+        $("characterSelect").innerHTML = `<option value="">角色清單讀取失敗，請先設定 MemoriaCore Auth</option>`;
+        log("角色清單讀取失敗", String(error));
+      }
+      try {
+        state.memoriaSessions = await api("/memoria/sessions?limit=200");
+        $("memoriaSession").innerHTML = `<option value="">自動建立或沿用 Live Session 目標</option>` + state.memoriaSessions.map((s) =>
+          `<option value="${escapeHtml(s.session_id)}">${escapeHtml(s.group_name || s.session_id)} - ${escapeHtml(s.session_id)}</option>`
+        ).join("");
+      } catch (error) {
+        $("memoriaSession").innerHTML = `<option value="">Session 清單讀取失敗，請先設定 MemoriaCore Auth</option>`;
+        log("MemoriaCore session 清單讀取失敗", String(error));
+      }
+    }
+
+    async function loadSessions(preferredId = "") {
+      state.sessions = await api("/sessions");
+      $("sessionSelect").innerHTML = `<option value="">新直播草稿</option>` + state.sessions.map((s) => {
+        const name = s.display_name || s.session_id;
+        const status = s.runtime_status?.status || s.status;
+        return `<option value="${escapeHtml(s.session_id)}">${escapeHtml(name)} - ${escapeHtml(s.session_id)} [${escapeHtml(status)}]</option>`;
+      }).join("");
+      const selected = defaultLiveSession(preferredId);
+      if (selected) {
+        $("sessionSelect").value = selected.session_id;
+        fillSessionForm(selected);
+      }
+      else newSessionDraft();
+      subscribeEvents();
+    }
+
+    function fillSessionForm(session) {
+      $("sessionId").value = session.session_id || "";
+      $("sessionName").value = session.display_name || "";
+      $("videoId").value = session.video_id || "";
+      $("memoriaSession").value = session.target_memoria_session_id || "";
+      $("injectInterval").value = session.inject_interval_seconds || 30;
+      $("minPending").value = session.min_pending_events || 1;
+      $("maxPending").value = session.max_pending_events || 12;
+      $("plannedDuration").value = session.planned_duration_minutes || 30;
+      $("scInterruptCooldown").value = session.sc_interrupt_cooldown_seconds || 30;
+      $("maxScPerBatch").value = session.max_sc_per_batch || 5;
+      $("directorMaxChatBatches").value = session.director_max_chat_batches_before_anchor || 2;
+      $("autoInject").checked = !!session.auto_inject;
+      $("dynamicInject").checked = session.dynamic_inject_enabled !== false;
+      $("autoFinalize").checked = !!session.auto_finalize_on_duration;
+      $("autoScThanksOnFinalize").checked = session.auto_sc_thanks_on_finalize !== false;
+      $("autoDeleteProcessed").checked = !!session.auto_delete_after_processed;
+      $("autoDirector").checked = $("autoDirector").checked !== false;
+      $("directorGuidance").value = session.director_guidance || "";
+      $("researchEnabled").checked = !!session.research_enabled;
+      $("autoTestEvents").checked = !!session.auto_test_events_enabled;
+      $("testEventMinSeconds").value = session.test_event_min_seconds || 20;
+      $("testEventMaxSeconds").value = session.test_event_max_seconds || 45;
+      $("testEventCountPerTick").value = session.test_event_count_per_tick || 3;
+      $("testUseLlm").checked = session.test_event_use_llm !== false;
+      $("testSuperChatCountPerTick").value = session.test_super_chat_count_per_tick || 0;
+      $("testMaliciousSc").checked = !!session.test_malicious_sc_enabled;
+      $("testScBurst").checked = !!session.test_sc_burst_mode;
+      const ids = new Set(session.character_ids || []);
+      Array.from($("characterSelect").options).forEach((option) => option.selected = ids.has(option.value));
+      updateLiveSessionControls();
+      scheduleChatPreviewRefresh();
+    }
+
+    function newSessionDraft() {
+      clearLog();
+      $("sessionId").value = "";
+      $("sessionName").value = `YT Live ${new Date().toLocaleString()}`;
+      $("videoId").value = "";
+      $("memoriaSession").value = "";
+      Array.from($("characterSelect").options).forEach((option) => option.selected = false);
+      $("injectInterval").value = 30;
+      $("minPending").value = 1;
+      $("maxPending").value = 12;
+      $("plannedDuration").value = 30;
+      $("scInterruptCooldown").value = 30;
+      $("maxScPerBatch").value = 5;
+      $("directorMaxChatBatches").value = 2;
+      $("autoInject").checked = true;
+      $("dynamicInject").checked = true;
+      $("autoFinalize").checked = true;
+      $("autoScThanksOnFinalize").checked = true;
+      $("autoDeleteProcessed").checked = true;
+      $("autoDirector").checked = true;
+      $("directorGuidance").value = "";
+      $("researchEnabled").checked = false;
+      $("autoTestEvents").checked = false;
+      $("testEventMinSeconds").value = 20;
+      $("testEventMaxSeconds").value = 45;
+      $("testEventCountPerTick").value = 3;
+      $("testUseLlm").checked = true;
+      $("testSuperChatCountPerTick").value = 0;
+      $("testMaliciousSc").checked = false;
+      $("testScBurst").checked = false;
+      $("directorState").textContent = "stopped";
+      $("directorState").className = "status";
+      $("directorJson").textContent = "{}";
+      updateDirectorControls({ director_enabled: false, status: "stopped" });
+      renderNoSummary();
+      $("topicPackSelect").value = "";
+      $("topicPackEntries").innerHTML = `<div class="muted">尚無 fact card</div>`;
+      $("chatPreviewState").textContent = "尚未選擇 Live Session";
+      $("chatPreviewState").className = "status warn";
+      $("chatPreviewList").innerHTML = `<div class="muted">請先建立或選擇 Live Session。</div>`;
+      $("sessionSelect").value = "";
+      state.selectedEventIds.clear();
+      state.events = [];
+      renderEvents();
+      subscribeEvents();
+      updateLiveSessionControls();
+      scheduleChatPreviewRefresh();
+    }
+
+    async function saveConnector() {
+      const payload = {
+        connector_id: SINGLE_CONNECTOR_ID,
+        display_name: $("connectorName").value.trim(),
+        api_key: $("apiKey").value,
+        enabled: $("connectorEnabled").checked,
+      };
+      const data = await api("/connectors", { method: "POST", body: JSON.stringify(payload) });
+      $("apiKey").value = "";
+      log("Connector 已儲存", data);
+      await loadConnectors();
+    }
+
+    async function saveSession(createNew) {
+      const payload = {
+        session_id: createNew ? "" : $("sessionId").value.trim(),
+        connector_id: state.connector?.connector_id || SINGLE_CONNECTOR_ID,
+        display_name: $("sessionName").value.trim(),
+        video_id: $("videoId").value.trim(),
+        target_memoria_session_id: $("memoriaSession").value,
+        character_ids: selectedCharacterIds(),
+        auto_connect: true,
+        auto_inject: $("autoInject").checked,
+        inject_interval_seconds: Number($("injectInterval").value || 30),
+        min_pending_events: Number($("minPending").value || 1),
+        max_pending_events: Number($("maxPending").value || 12),
+        dynamic_inject_enabled: $("dynamicInject").checked,
+        planned_duration_minutes: Number($("plannedDuration").value || 30),
+        sc_interrupt_cooldown_seconds: Number($("scInterruptCooldown").value || 30),
+        max_sc_per_batch: Number($("maxScPerBatch").value || 5),
+        director_max_chat_batches_before_anchor: Number($("directorMaxChatBatches").value || 2),
+        auto_finalize_on_duration: $("autoFinalize").checked,
+        auto_sc_thanks_on_finalize: $("autoScThanksOnFinalize").checked,
+        auto_delete_after_processed: $("autoDeleteProcessed").checked,
+        director_guidance: $("directorGuidance").value.trim(),
+        research_enabled: $("researchEnabled").checked,
+        auto_test_events_enabled: $("autoTestEvents").checked,
+        test_event_min_seconds: Number($("testEventMinSeconds").value || 20),
+        test_event_max_seconds: Number($("testEventMaxSeconds").value || 45),
+        test_event_count_per_tick: Number($("testEventCountPerTick").value || 3),
+        test_event_use_llm: $("testUseLlm").checked,
+        test_super_chat_count_per_tick: Number($("testSuperChatCountPerTick").value || 0),
+        test_malicious_sc_enabled: $("testMaliciousSc").checked,
+        test_sc_burst_mode: $("testScBurst").checked,
+      };
+      const data = await api("/sessions", { method: "POST", body: JSON.stringify(payload) });
+      log(createNew ? "新直播已建立" : "直播設定已更新", data);
+      await loadSessions(data.session_id);
+      $("sessionSelect").value = data.session_id;
+      fillSessionForm(data);
+      subscribeEvents();
+      updateLiveSessionControls();
+    }
+
+    async function sessionAction(action) {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const data = await api(`/sessions/${encodeURIComponent(id)}/${action}`, { method: "POST", body: "{}" });
+      log(`${action} 完成`, data);
+      await loadSessions(id);
+      await refreshEvents();
+      updateLiveSessionControls();
+    }
+
+    async function deleteSession() {
+      const id = selectedSessionId();
+      if (!id) return;
+      if (!confirm(`刪除 runtime session ${id}？摘要紀錄會保留，但 raw events / queue / director state 會清掉。`)) return;
+      const data = await api(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      log("runtime session 已刪除", data);
+      await loadSessions();
+      updateLiveSessionControls();
+    }
+
+    async function updateSessionSettings() {
+      await saveSession(!selectedSessionId());
+    }
+
+    async function toggleSession() {
+      if (isSelectedSessionRunning()) {
+        await sessionAction("stop");
+        return;
+      }
+      let id = selectedSessionId();
+      if (!id) {
+        await saveSession(true);
+        id = selectedSessionId();
+      } else {
+        await saveSession(false);
+      }
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      await sessionAction("start");
+      if ($("autoDirector").checked) {
+        await setDirector(true, true);
+      }
+    }
+
+    async function refreshEvents() {
+      const id = selectedSessionId();
+      if (!id) return;
+      const data = await api(`/sessions/${encodeURIComponent(id)}/recent?limit=100`);
+      state.events = data.events || [];
+      renderEvents();
+      $("eventState").textContent = `${state.events.length} 則留言`;
+      $("eventState").className = "status good";
+    }
+
+    function renderEvents() {
+      $("eventsList").innerHTML = state.events.map((event) => {
+        const processed = !!event.injected_at;
+        const checked = state.selectedEventIds.has(event.id) ? "checked" : "";
+        const isSc = event.priority_class === "super_chat";
+        const suspicious = event.safety_label && event.safety_label !== "clean";
+        const amount = event.amount_display_string ? ` ${event.amount_display_string}` : "";
+        const badges = `${isSc ? ` <span class="status warn">SC${escapeHtml(amount)} / tier ${escapeHtml(event.sc_tier || 0)}</span>` : ""}${suspicious ? ` <span class="status bad">安全標記</span>` : ""}`;
+        return `<div class="item ${processed ? "processed" : ""} ${isSc ? "super-chat" : ""} ${suspicious ? "suspicious" : ""}">
+          <label style="display:flex;gap:8px;align-items:flex-start;color:inherit">
+            <input type="checkbox" data-event-id="${event.id}" ${checked} ${processed ? "disabled" : ""} style="width:auto;min-height:auto;margin-top:3px">
+            <span>
+              <strong>${escapeHtml(event.author_display_name || "匿名觀眾")} <span class="muted">#${escapeHtml(event.id)}${processed ? " 已注入" : ""}</span>${badges}</strong>
+              <p>${escapeHtml(event.message_text || "")}</p>
+            </span>
+          </label>
+        </div>`;
+      }).join("") || `<div class="muted">尚無留言</div>`;
+      $("eventsList").querySelectorAll("input[type=checkbox]").forEach((box) => {
+        box.addEventListener("change", () => {
+          const id = Number(box.dataset.eventId);
+          if (box.checked) state.selectedEventIds.add(id);
+          else state.selectedEventIds.delete(id);
+        });
+      });
+    }
+
+    async function injectEvents(usePending) {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const eventIds = usePending ? [] : Array.from(state.selectedEventIds);
+      const payload = {
+        content: $("injectContent").value,
+        memoria_session_id: $("memoriaSession").value,
+        character_ids: selectedCharacterIds(),
+        event_ids: eventIds,
+        max_events: 50,
+        priority: usePending ? 120 : 220,
+      };
+      const data = await api(`/sessions/${encodeURIComponent(id)}/reply-recent`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      state.selectedEventIds.clear();
+      log("注入完成", data);
+      await refreshEvents();
+      await refreshQueue();
+    }
+
+    async function generateTestEvents() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const payload = {
+        count: Number($("testCommentCount").value || 5),
+        topic_hint: $("testTopicHint").value.trim(),
+        use_llm: $("testUseLlm").checked,
+        super_chat_count: Number($("testSuperChatCount").value || 0),
+        include_malicious_sc: $("testMaliciousSc").checked,
+        sc_burst: $("testScBurst").checked,
+      };
+      const data = await api(`/sessions/${encodeURIComponent(id)}/test-events/generate`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      log("測試留言已生成", data);
+      await refreshEvents();
+    }
+
+    async function toggleAutoTestEvents() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      await saveSession(false);
+      const session = selectedSessionInfo();
+      const running = !!session?.runtime_status?.auto_test_events_running;
+      const path = running ? "stop" : "start";
+      const data = await api(`/sessions/${encodeURIComponent(id)}/test-events/auto/${path}`, {
+        method: "POST",
+        body: "{}",
+      });
+      $("autoTestEvents").checked = path === "start";
+      log(`自動測試留言 ${path}`, data);
+      await loadSessions(id);
+      updateLiveSessionControls();
+    }
+
+    async function replySuperChats() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const data = await api(`/sessions/${encodeURIComponent(id)}/super-chats/reply-batch`, {
+        method: "POST",
+        body: "{}",
+      });
+      log("SC 批次回應已送出", data);
+      await refreshEvents();
+      await refreshQueue();
+    }
+
+    async function interruptNow() {
+      const id = selectedSessionId();
+      const data = await api(`/sessions/${encodeURIComponent(id)}/interrupt`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "manual_ui_interrupt" }),
+      });
+      log("已要求中斷", data);
+      await refreshQueue();
+    }
+
+    async function refreshSummary() {
+      const id = selectedSessionId();
+      if (!id) return;
+      try {
+        const summary = await api(`/sessions/${encodeURIComponent(id)}/summary`);
+        renderSummary(summary);
+      } catch {
+        renderNoSummary();
+      }
+    }
+
+    function renderSummary(summary) {
+      if (!summary) {
+        renderNoSummary();
+        return;
+      }
+      const status = summary.metadata?.memory_write_status || summary.status || "completed";
+      $("summaryState").textContent = status;
+      $("summaryState").className = status === "completed" ? "status good" : (String(status).includes("fail") ? "status bad" : "status warn");
+      $("summaryView").innerHTML = `
+        <strong>${escapeHtml(summary.title || "直播摘要")}</strong>
+        <p>${escapeHtml(summary.summary_text || "")}</p>
+        <p class="muted">memory_text</p>
+        <p>${escapeHtml(summary.memory_text || "")}</p>
+        <p class="muted">topics: ${escapeHtml((summary.topic_tags || []).join(", "))}</p>
+      `;
+    }
+
+    function renderNoSummary() {
+      $("summaryState").textContent = "尚無摘要";
+      $("summaryState").className = "status";
+      $("summaryView").innerHTML = `<p class="muted">尚無摘要</p>`;
+    }
+
+    async function makeSummary(force) {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const data = await api(`/sessions/${encodeURIComponent(id)}/summarize`, {
+        method: "POST",
+        body: JSON.stringify({ force, include_memoria_session: true, safe_memory_text: true }),
+      });
+      log("摘要完成", data);
+      if (data.runtime_session_deleted) {
+        await loadSessions();
+        renderSummary(data.summary || data);
+      }
+      else {
+        renderSummary(data.summary || data);
+        await refreshSummary();
+      }
+    }
+
+    async function writeMemory() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const data = await api(`/sessions/${encodeURIComponent(id)}/summary/write-memory`, {
+        method: "POST",
+        body: JSON.stringify({ force: false }),
+      });
+      log("shared memory 寫入完成", data);
+      if (data.runtime_session_deleted) {
+        await loadSessions();
+        renderSummary(data.summary || data);
+      }
+      else {
+        renderSummary(data.summary || data);
+        await refreshSummary();
+      }
+    }
+
+    async function refreshDirector() {
+      const id = selectedSessionId();
+      if (!id) {
+        $("directorJson").textContent = "{}";
+        $("directorState").textContent = "stopped";
+        $("directorState").className = "status";
+        updateDirectorControls({ director_enabled: false, status: "stopped" });
+        return null;
+      }
+      const data = await api(`/sessions/${encodeURIComponent(id)}/director`);
+      $("directorJson").textContent = JSON.stringify(data, null, 2);
+      $("directorState").textContent = data.status || "stopped";
+      $("directorState").className = data.director_enabled ? "status good" : "status";
+      updateDirectorControls(data);
+      return data;
+    }
+
+    function updateDirectorControls(data) {
+      const button = $("toggleDirector");
+      if (!button) return;
+      const enabled = !!data?.director_enabled;
+      button.textContent = enabled ? "停止導播" : "啟動導播";
+      button.className = enabled ? "danger" : "primary";
+      button.disabled = !selectedSessionId();
+    }
+
+    async function updateDirectorGuidance() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const current = await refreshDirector();
+      if (current?.director_enabled) {
+        await setDirector(true, false);
+        return;
+      }
+      const data = await api(`/sessions/${encodeURIComponent(id)}/director/guidance`, {
+        method: "POST",
+        body: JSON.stringify({ guidance: $("directorGuidance").value.trim() }),
+      });
+      log("導播設定已更新", data);
+      await loadSessions(id);
+      const session = state.sessions.find((item) => item.session_id === id);
+      if (session) fillSessionForm(session);
+      await refreshDirector();
+    }
+
+    async function setDirector(start, kickoff = false) {
+      const id = selectedSessionId();
+      const path = start ? "start" : "stop";
+      const body = start ? JSON.stringify({
+        idle_seconds: Number($("directorIdle").value || 60),
+        guidance: $("directorGuidance").value.trim(),
+        kickoff,
+      }) : "{}";
+      const data = await api(`/sessions/${encodeURIComponent(id)}/director/${path}`, { method: "POST", body });
+      log(`director ${path}`, data);
+      if (start) await loadSessions(id);
+      await refreshDirector();
+    }
+
+    async function toggleDirector() {
+      const current = await refreshDirector();
+      const shouldStart = !current?.director_enabled;
+      await setDirector(shouldStart, shouldStart);
+    }
+
+    async function refreshQueue() {
+      const id = selectedSessionId();
+      if (!id) return;
+      const data = await api(`/sessions/${encodeURIComponent(id)}/interactions?limit=80`);
+      const items = data.interactions || [];
+      $("queueState").textContent = data.active ? `active: ${data.active.status}` : `${items.length} jobs`;
+      $("queueState").className = data.active ? "status warn" : "status";
+      $("queueList").innerHTML = items.map((item) => `
+        <div class="item">
+          <strong>${escapeHtml(item.source)} <span class="muted">${escapeHtml(item.status)} / p${escapeHtml(item.priority)}</span></strong>
+          <p class="mono">${escapeHtml(item.job_id)}</p>
+          <p>${escapeHtml(item.reply_text || item.closure_text || item.reason || item.content || "")}</p>
+        </div>
+      `).join("") || `<div class="muted">尚無 queue 紀錄</div>`;
+    }
+
+    async function refreshTopicPacks() {
+      state.topicPacks = await api("/topic-packs");
+      $("topicPackSelect").innerHTML = `<option value="">選擇資料包</option>` + state.topicPacks.map((pack) =>
+        `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.title)}</option>`
+      ).join("");
+      $("topicPackState").textContent = `${state.topicPacks.length} 個資料包`;
+      $("topicPackState").className = "status good";
+      await refreshTopicEntries();
+    }
+
+    async function refreshTopicEntries() {
+      const id = selectedSessionId();
+      const packId = Number($("topicPackSelect").value || 0);
+      let entries = [];
+      if (packId) {
+        const data = await api(`/topic-packs/${packId}/entries?limit=80`);
+        entries = data.entries || [];
+      } else if (id) {
+        const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs`);
+        entries = data.entries || [];
+      }
+      $("topicPackEntries").innerHTML = entries.map((entry) => `
+        <div class="item">
+          <strong>${escapeHtml(entry.title)} <span class="muted">${escapeHtml(entry.source_type || "manual")}</span></strong>
+          ${entry.similarity !== undefined ? `<p class="muted">相似度：${Number(entry.similarity || 0).toFixed(3)}</p>` : ""}
+          <p>${escapeHtml(entry.body)}</p>
+          ${entry.source_url ? `<p class="muted">${escapeHtml(entry.source_url)}</p>` : ""}
+        </div>
+      `).join("") || `<div class="muted">尚無 fact card</div>`;
+    }
+
+    async function createTopicPack() {
+      const data = await api("/topic-packs", {
+        method: "POST",
+        body: JSON.stringify({
+          title: $("topicPackTitle").value.trim(),
+          description: $("topicPackDescription").value.trim(),
+        }),
+      });
+      log("資料包已建立", data);
+      await refreshTopicPacks();
+      $("topicPackSelect").value = data.id;
+      await refreshTopicEntries();
+    }
+
+    async function linkTopicPack() {
+      const id = selectedSessionId();
+      const packId = Number($("topicPackSelect").value || 0);
+      if (!id || !packId) throw new Error("請先選擇 Live Session 與資料包");
+      const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs/${packId}`, {
+        method: "POST",
+        body: "{}",
+      });
+      log("資料包已綁定直播", data);
+      await refreshTopicEntries();
+    }
+
+    async function addTopicEntry() {
+      const packId = Number($("topicPackSelect").value || 0);
+      if (!packId) throw new Error("請先選擇資料包");
+      const tags = $("topicEntryTitle").value.split(/\s+/).filter(Boolean).slice(0, 6);
+      const data = await api(`/topic-packs/${packId}/entries`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: $("topicEntryTitle").value.trim(),
+          body: $("topicEntryBody").value.trim(),
+          source_url: "",
+          source_type: "manual",
+          tags,
+        }),
+      });
+      log("fact card 已新增", data);
+      $("topicEntryTitle").value = "";
+      $("topicEntryBody").value = "";
+      await refreshTopicEntries();
+    }
+
+    async function autoBuildTopicPack() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const packId = Number($("topicPackSelect").value || 0) || null;
+      const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs/auto-build`, {
+        method: "POST",
+        body: JSON.stringify({
+          topic: $("autoBuildTopic").value.trim(),
+          pack_id: packId,
+          card_count: Number($("autoBuildCount").value || 5),
+          use_research: $("autoBuildUseResearch").checked,
+        }),
+      });
+      log("自動資料卡已建立", data);
+      await refreshTopicPacks();
+      $("topicPackSelect").value = data.pack_id;
+      await refreshTopicEntries();
+    }
+
+    async function rebuildTopicEmbeddings() {
+      const packId = Number($("topicPackSelect").value || 0);
+      if (!packId) throw new Error("請先選擇資料包");
+      const data = await api(`/topic-packs/${packId}/embeddings/rebuild`, {
+        method: "POST",
+        body: "{}",
+      });
+      log("向量索引已重建", data);
+      await refreshTopicEntries();
+    }
+
+    async function searchTopicPack() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const query = $("topicSearchQuery").value.trim();
+      if (!query) throw new Error("請輸入向量檢索測試文字");
+      const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs/search?query=${encodeURIComponent(query)}&limit=8`);
+      log("向量檢索完成", data);
+      const entries = data.entries || [];
+      $("topicPackEntries").innerHTML = entries.map((entry) => `
+        <div class="item">
+          <strong>${escapeHtml(entry.title)} <span class="muted">${escapeHtml(entry.source_type || "manual")}</span></strong>
+          <p class="muted">相似度：${Number(entry.similarity || 0).toFixed(3)}</p>
+          <p>${escapeHtml(entry.body)}</p>
+        </div>
+      `).join("") || `<div class="muted">沒有找到相關 fact card</div>`;
+    }
+
+    async function runResearch() {
+      const id = selectedSessionId();
+      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const packId = Number($("topicPackSelect").value || 0) || null;
+      const data = await api(`/sessions/${encodeURIComponent(id)}/research/request`, {
+        method: "POST",
+        body: JSON.stringify({
+          query: $("researchQuery").value.trim(),
+          pack_id: packId,
+        }),
+      });
+      log("Research Gate fact card 已建立", data);
+      await refreshTopicPacks();
+      if (data.entry?.pack_id) $("topicPackSelect").value = data.entry.pack_id;
+      await refreshTopicEntries();
+    }
+
+    function subscribeEvents() {
+      if (state.eventSource) state.eventSource.close();
+      const id = selectedSessionId();
+      if (!id) return;
+      state.eventSource = new EventSource(`/sessions/${encodeURIComponent(id)}/events`);
+      state.eventSource.onmessage = async (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.type === "youtube_live_event") {
+          state.events.push(payload.event);
+          renderEvents();
+        }
+        if (["test_events_generated", "test_events_auto_generated", "super_chat_batch_injected"].includes(payload.type)) {
+          await refreshEvents();
+        }
+        if (["test_event_auto_started", "test_event_auto_stopped"].includes(payload.type)) {
+          await loadSessions(id);
+          updateLiveSessionControls();
+        }
+        if (["memoria_injected", "interaction_started", "interaction_completed", "interaction_interrupted", "director_injected", "interrupt_requested"].includes(payload.type)) {
+          await refreshQueue();
+        }
+        if (["research_card_created"].includes(payload.type)) {
+          await refreshTopicPacks();
+        }
+        if (["director_state", "director_error"].includes(payload.type)) {
+          await refreshDirector();
+        }
+        if (["interaction_completed", "memoria_injected", "director_injected", "closing_super_chat_thanks_completed"].includes(payload.type)) {
+          scheduleChatPreviewRefresh({ reloadSessions: true });
+        }
+        log(`SSE: ${payload.type}`, summarizeSsePayload(payload));
+      };
+      state.eventSource.onerror = () => {
+        $("eventState").textContent = "SSE 連線中斷";
+        $("eventState").className = "status warn";
+      };
+    }
+
+    async function refreshAll() {
+      await loadHealth();
+      await loadConnectors();
+      await loadMemoriaConfig();
+      await loadMemoriaRefs();
+      await loadSessions();
+      await refreshEvents();
+      await refreshSummary();
+      await refreshDirector();
+      await refreshQueue();
+      await refreshTopicPacks();
+      await refreshChatPreview({ silent: true });
+    }
+
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+        document.querySelectorAll(".pane").forEach((x) => x.classList.remove("active"));
+        tab.classList.add("active");
+        $(tab.dataset.pane).classList.add("active");
+      });
+    });
+    $("refreshAll").onclick = () => refreshAll().catch((error) => log("更新失敗", String(error)));
+    $("saveConnector").onclick = () => saveConnector().catch((error) => log("connector 儲存失敗", String(error)));
+    $("saveMemoriaConfig").onclick = () => saveMemoriaConfig().catch((error) => {
+      $("memoriaAuthState").textContent = "儲存失敗";
+      $("memoriaAuthState").className = "status bad";
+      log("MemoriaCore 設定儲存失敗", String(error));
+    });
+    $("testMemoriaAuth").onclick = () => testMemoriaAuth().catch((error) => {
+      $("memoriaAuthState").textContent = "連線失敗";
+      $("memoriaAuthState").className = "status bad";
+      log("MemoriaCore 連線測試失敗", String(error));
+    });
+    $("memoriaSession").onchange = () => refreshChatPreview({ silent: true });
+    $("memoriaBaseUrl").onchange = () => refreshChatPreview({ silent: true });
+    $("newSession").onclick = () => newSessionDraft();
+    $("toggleSession").onclick = () => toggleSession().catch((error) => log("開始 / 停止失敗", String(error)));
+    $("updateSession").onclick = () => updateSessionSettings().catch((error) => log("直播設定更新失敗", String(error)));
+    $("finalizeSession").onclick = () => sessionAction("finalize").catch((error) => log("標記結束失敗", String(error)));
+    $("deleteSession").onclick = () => deleteSession().catch((error) => log("刪除失敗", String(error)));
+    $("refreshEvents").onclick = () => refreshEvents().catch((error) => log("留言更新失敗", String(error)));
+    $("generateTestEvents").onclick = () => generateTestEvents().catch((error) => log("測試留言生成失敗", String(error)));
+    $("toggleAutoTestEvents").onclick = () => toggleAutoTestEvents().catch((error) => log("自動測試留言切換失敗", String(error)));
+    $("injectSelected").onclick = () => injectEvents(false).catch((error) => log("注入失敗", String(error)));
+    $("injectPending").onclick = () => injectEvents(true).catch((error) => log("注入失敗", String(error)));
+    $("replySuperChats").onclick = () => replySuperChats().catch((error) => log("SC 回應失敗", String(error)));
+    $("interruptNow").onclick = () => interruptNow().catch((error) => log("中斷失敗", String(error)));
+    $("makeSummary").onclick = () => makeSummary(false).catch((error) => log("摘要失敗", String(error)));
+    $("forceSummary").onclick = () => makeSummary(true).catch((error) => log("強制摘要失敗", String(error)));
+    $("writeMemory").onclick = () => writeMemory().catch((error) => log("寫入記憶失敗", String(error)));
+    $("updateDirectorGuidance").onclick = () => updateDirectorGuidance().catch((error) => log("導播方向更新失敗", String(error)));
+    $("toggleDirector").onclick = () => toggleDirector().catch((error) => log("導播啟動 / 停止失敗", String(error)));
+    $("refreshQueue").onclick = () => refreshQueue().catch((error) => log("queue 更新失敗", String(error)));
+    $("refreshTopicPacks").onclick = () => refreshTopicPacks().catch((error) => log("資料包更新失敗", String(error)));
+    $("createTopicPack").onclick = () => createTopicPack().catch((error) => log("資料包建立失敗", String(error)));
+    $("linkTopicPack").onclick = () => linkTopicPack().catch((error) => log("資料包綁定失敗", String(error)));
+    $("addTopicEntry").onclick = () => addTopicEntry().catch((error) => log("fact card 新增失敗", String(error)));
+    $("autoBuildTopicPack").onclick = () => autoBuildTopicPack().catch((error) => log("自動資料卡建立失敗", String(error)));
+    $("rebuildTopicEmbeddings").onclick = () => rebuildTopicEmbeddings().catch((error) => log("向量索引重建失敗", String(error)));
+    $("searchTopicPack").onclick = () => searchTopicPack().catch((error) => log("向量檢索失敗", String(error)));
+    $("runResearch").onclick = () => runResearch().catch((error) => log("Research Gate 查詢失敗", String(error)));
+    $("topicPackSelect").onchange = () => refreshTopicEntries().catch((error) => log("fact card 更新失敗", String(error)));
+    $("refreshChatPreview").onclick = () => refreshChatPreview().catch((error) => log("Chat Preview 更新失敗", String(error)));
+    $("openFullChat").onclick = (event) => {
+      const link = $("openFullChat");
+      if (link.getAttribute("aria-disabled") === "true" || !link.dataset.href) {
+        event.preventDefault();
+        log("完整 Chat 尚未可開啟", "目前 Live Session 尚未綁定 MemoriaCore session。");
+      }
+    };
+    $("sessionSelect").onchange = async () => {
+      const session = state.sessions.find((item) => item.session_id === $("sessionSelect").value);
+      if (session) fillSessionForm(session);
+      else newSessionDraft();
+      updateLiveSessionControls();
+      subscribeEvents();
+      await refreshEvents();
+      await refreshSummary();
+      await refreshDirector();
+      await refreshQueue();
+      await refreshTopicPacks();
+      await refreshChatPreview({ silent: true });
+    };
+
+    installTestIds();
+    refreshAll().catch((error) => log("初始化失敗", String(error)));
+  </script>
+</body>
+</html>

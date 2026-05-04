@@ -20,7 +20,7 @@ def _get(path: str):
 
 
 def _post(path: str, payload: dict | None = None):
-    return requests.post(f"{DEFAULT_BRIDGE_URL}{path}", json=payload or {}, headers=_headers(), timeout=180)
+    return requests.post(f"{DEFAULT_BRIDGE_URL}{path}", json=payload or {}, headers=_headers(), timeout=300)
 
 
 def _delete(path: str):
@@ -107,7 +107,7 @@ if not health.ok:
 memoria_characters, memoria_character_error = _load_memoria_characters()
 memoria_sessions, memoria_session_error = _load_memoria_sessions()
 
-tabs = st.tabs(["Connectors", "Live Sessions", "Inject"])
+tabs = st.tabs(["Connectors", "Live Sessions", "Inject", "Summary"])
 
 with tabs[0]:
     st.subheader("Connectors")
@@ -173,6 +173,12 @@ with tabs[1]:
                 st.write(f"live_chat_id: `{session.get('live_chat_id')}`")
                 st.write(f"target_memoria_session_id: `{session.get('target_memoria_session_id')}`")
                 st.write(f"character_ids: `{', '.join(session.get('character_ids') or [])}`")
+                st.write(f"event_count: `{session.get('event_count', 0)}`")
+                st.write(f"summary_status: `{session.get('summary_status', 'pending')}`")
+                if session.get("finalized_at"):
+                    st.write(f"finalized_at: `{session.get('finalized_at')}`")
+                if session.get("summary_error"):
+                    st.warning(f"summary_error: {session.get('summary_error')}")
                 st.write(
                     "auto_inject: "
                     f"`{session.get('auto_inject')}` / "
@@ -332,6 +338,99 @@ with tabs[1]:
             st.rerun()
         else:
             st.error(_json_or_text(resp))
+
+with tabs[3]:
+    st.subheader("直播摘要")
+    st.caption("Phase 2 第一版只把摘要保存到 YouTubeBridge DB，不會自動寫入 MemoriaCore 長期記憶。")
+    session_ids = [s.get("session_id") for s in sessions]
+    selected_summary_session = st.selectbox("來源 live session", session_ids or [""], index=0, key="summary_session")
+    selected_summary_config = next((s for s in sessions if s.get("session_id") == selected_summary_session), {})
+
+    if selected_summary_session:
+        st.write(f"video_id: `{selected_summary_config.get('video_id', '')}`")
+        st.write(f"event_count: `{selected_summary_config.get('event_count', 0)}`")
+        st.write(f"summary_status: `{selected_summary_config.get('summary_status', 'pending')}`")
+        if selected_summary_config.get("finalized_at"):
+            st.write(f"finalized_at: `{selected_summary_config.get('finalized_at')}`")
+        if selected_summary_config.get("summary_error"):
+            st.warning(selected_summary_config.get("summary_error"))
+
+        col_finalize, col_refresh = st.columns(2)
+        with col_finalize:
+            if st.button("標記直播結束", disabled=not selected_summary_session):
+                resp = _post(f"/sessions/{selected_summary_session}/finalize")
+                st.success("已標記直播結束") if resp.ok else st.error(_json_or_text(resp))
+                st.rerun()
+        with col_refresh:
+            if st.button("重新整理摘要狀態"):
+                st.rerun()
+
+        st.divider()
+        st.write("摘要設定")
+        min_events = st.number_input("最少留言數", min_value=1, max_value=1000, value=1)
+        max_summary_events = st.number_input("最多摘要留言數", min_value=1, max_value=5000, value=1000)
+        chunk_size = st.number_input("分段大小", min_value=20, max_value=500, value=120)
+        col_summary, col_force_summary = st.columns(2)
+        with col_summary:
+            if st.button("產生摘要", type="primary", disabled=not selected_summary_session):
+                resp = _post(f"/sessions/{selected_summary_session}/summarize", {
+                    "force": False,
+                    "min_events": int(min_events),
+                    "max_events": int(max_summary_events),
+                    "chunk_size": int(chunk_size),
+                })
+                if resp.ok:
+                    st.success("摘要完成")
+                    st.json(resp.json())
+                    st.rerun()
+                else:
+                    st.error(_json_or_text(resp))
+        with col_force_summary:
+            if st.button("強制重跑摘要", disabled=not selected_summary_session):
+                resp = _post(f"/sessions/{selected_summary_session}/summarize", {
+                    "force": True,
+                    "min_events": int(min_events),
+                    "max_events": int(max_summary_events),
+                    "chunk_size": int(chunk_size),
+                })
+                if resp.ok:
+                    st.success("已重跑摘要")
+                    st.json(resp.json())
+                    st.rerun()
+                else:
+                    st.error(_json_or_text(resp))
+
+        st.divider()
+        summary_resp = _get(f"/sessions/{selected_summary_session}/summary")
+        if summary_resp.ok:
+            summary = summary_resp.json()
+            st.subheader(summary.get("title") or "摘要")
+            st.write(summary.get("summary_text", ""))
+            if summary.get("audience_mood"):
+                st.write(f"觀眾反應：{summary.get('audience_mood')}")
+            if summary.get("topic_tags"):
+                st.write("主題")
+                st.write(", ".join(summary.get("topic_tags") or []))
+            if summary.get("key_points"):
+                st.write("重點")
+                for point in summary.get("key_points") or []:
+                    st.write(f"- {point}")
+            if summary.get("qa_pairs"):
+                st.write("重要問答")
+                for pair in summary.get("qa_pairs") or []:
+                    question = pair.get("question", "")
+                    answer = pair.get("answer", "")
+                    st.write(f"Q: {question}")
+                    st.write(f"A: {answer}")
+            if summary.get("memory_text"):
+                st.write("預備寫入共通記憶的文字")
+                st.info(summary.get("memory_text"))
+            with st.expander("摘要原始資料"):
+                st.json(summary)
+        else:
+            st.info("目前尚未產生摘要。")
+    else:
+        st.info("尚未建立 live session。")
 
 with tabs[2]:
     st.subheader("注入 MemoriaCore")

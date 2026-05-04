@@ -66,6 +66,7 @@ def run_group_router(
     honor_mentions: bool = True,
     bot_turn_index: int = 0,
     max_bot_turns: int | None = None,
+    allow_single_participant_repeat: bool = True,
 ) -> GroupRouterResult:
     """根據近期群組上下文選出下一位 AI；無需接話時回傳 should_respond=False。"""
     participants = _normalize_characters(active_characters)
@@ -86,8 +87,10 @@ def run_group_router(
 
     if len(participants) == 1:
         only_id = participants[0]["character_id"]
-        if only_id == last_speaker_id:
+        if only_id == last_speaker_id and not allow_single_participant_repeat:
             return GroupRouterResult(False, None, "single participant already spoke", "stop_no_new_value")
+        if only_id == last_speaker_id:
+            return GroupRouterResult(True, only_id, "single participant repeat", "repeat_speaker_reply_to_ai")
         return GroupRouterResult(True, only_id, "single participant", "new_speaker_ack")
 
     prompt = get_prompt_manager().get("group_router_system").format(

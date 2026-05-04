@@ -180,6 +180,18 @@ class SessionManager:
                 self._storage.deactivate_session(session_id)
             return removed
 
+    async def delete_for_user(self, user_id: str) -> list[str]:
+        """從記憶體移除指定使用者的所有活躍 session。"""
+        target_user_id = str(user_id)
+        async with self._lock:
+            removed_ids = [
+                sid for sid, session in self._sessions.items()
+                if session.user_id == target_user_id
+            ]
+            for sid in removed_ids:
+                self._sessions.pop(sid, None)
+            return removed_ids
+
     async def bridge(self, session_id: str, keep_last_n: int = 6) -> bool:
         """橋接邏輯：話題偏移後保留最近 N 條訊息（預設 6 條 = 3 輪），並記錄截斷點到 DB。"""
         async with self._lock:

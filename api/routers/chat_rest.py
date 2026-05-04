@@ -123,8 +123,69 @@ def _normalize_visible_events(raw_events) -> list[dict]:
             "author_display_name": author or "匿名觀眾",
             "author_channel_id": author_id,
             "message_text": message,
+            "priority_class": str(raw.get("priority_class") or "normal"),
+            "amount_display_string": str(raw.get("amount_display_string") or "").strip(),
+            "safety_label": str(raw.get("safety_label") or "clean"),
         })
     return events
+
+
+def _visible_event_display_line(event: dict) -> str:
+    author = str(event.get("author_display_name") or "匿名觀眾").strip() or "匿名觀眾"
+    message = str(event.get("message_text") or "").replace("\r", " ").replace("\n", " ").strip()
+    if not message:
+        return ""
+    if str(event.get("priority_class") or "normal") == "super_chat":
+        amount = str(event.get("amount_display_string") or "").strip()
+        prefix = f"[SC {amount}] " if amount else "[SC] "
+        if str(event.get("safety_label") or "clean") != "clean":
+            message = "已收到一則可疑 SC，將安全回應。"
+        return f"{prefix}{author}: {message}"
+    return f"{author}: {message}"
+
+
+def _director_display_from_context(external_context: dict | None) -> str:
+    if not external_context:
+        return "導播推進直播流程。"
+    summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
+    action = str(summary.get("action") or "").strip()
+    return {
+        "continue_topic": "讓我們繼續目前話題。",
+        "transition_topic": "讓我們繼續進行下一個話題。",
+        "anchor_to_topic": "讓我們回到本場直播主題。",
+        "reply_chat_batch": "回應聊天室留言。",
+        "reply_super_chat_batch": "回應 Super Chat 留言。",
+        "closing_super_chat_thanks": "感謝本場 Super Chat。",
+        "recap": "整理一下剛才的重點。",
+        "close_topic": "先收束目前話題。",
+    }.get(action, "導播推進直播流程。")
+
+
+def _resolve_chat_display_content(body: ChatSyncRequest, external_context: dict | None) -> str:
+    """決定要寫入聊天紀錄並顯示給人的 user 訊息。
+
+    `body.content` 可能是 Bridge 給 LLM/router 的完整控制 prompt；有 external
+    context 時不可直接保存。Bridge 可用 `display_content` 明確提供人類可見文字；
+    若未提供，則只從 visible_events 取出觀眾姓名與留言內容。
+    """
+    explicit = str(body.display_content or "").replace("\r", "\n").strip()
+    if explicit:
+        return explicit
+    if external_context:
+        lines: list[str] = []
+        for event in external_context.get("visible_events") or []:
+            if not isinstance(event, dict):
+                continue
+            line = _visible_event_display_line(event)
+            if line:
+                lines.append(line)
+        if lines:
+            return "\n".join(lines)
+        source = str(external_context.get("source") or "").strip()
+        if source == "youtube_live_director":
+            return _director_display_from_context(external_context)
+        return "外部上下文已提供給 AI。"
+    return str(body.content or "").strip()
 
 
 def _visible_context_lines(external_context: dict, context_text: str, preview_limit: int) -> list[str]:
@@ -132,11 +193,9 @@ def _visible_context_lines(external_context: dict, context_text: str, preview_li
     if isinstance(visible_events, list) and visible_events:
         lines: list[str] = []
         for event in visible_events[:preview_limit]:
-            author = str(event.get("author_display_name") or "匿名觀眾").strip()
-            message = str(event.get("message_text") or "").strip()
-            if not message:
-                continue
-            lines.append(f"{author or '匿名觀眾'}: {message}")
+            line = _visible_event_display_line(event)
+            if line:
+                lines.append(line)
         return lines
     return [line.strip() for line in context_text.splitlines() if line.strip()][:preview_limit]
 
@@ -152,13 +211,25 @@ def _build_external_context_visible_event(
         return None
 
     source = str(summary.get("source") or external_context.get("source") or "external").strip()
-    event_type = "youtube_live_batch" if source == "youtube_live" else "external_context_batch"
-    title = "YouTube Live 留言注入" if event_type == "youtube_live_batch" else "外部上下文注入"
-
-    preview_limit = 8
-    preview_lines = _visible_context_lines(external_context, context_text, preview_limit)
+    if source == "youtube_live":
+        event_type = "youtube_live_chat_batch"
+        title = "YouTube Live 留言注入"
+        preview_limit = 3
+        preview_lines = _visible_context_lines(external_context, context_text, preview_limit)
+    elif source == "youtube_live_director":
+        event_type = "youtube_live_director_notice"
+        title = "直播導播"
+        preview_limit = 1
+        preview_lines = [_director_display_from_context(external_context)]
+    else:
+        event_type = "external_context_notice"
+        title = "外部上下文注入"
+        preview_limit = 3
+        preview_lines = _visible_context_lines(external_context, context_text, preview_limit)
     fallback_line_count = len([line for line in context_text.splitlines() if line.strip()])
     event_count = int(summary.get("event_count") or len(external_context.get("visible_events") or []) or fallback_line_count)
+    if source == "youtube_live_director":
+        event_count = 1
     hidden_count = max(0, event_count - len(preview_lines))
 
     content_lines = [f"{title}：{event_count} 則"]
@@ -191,6 +262,62 @@ def _external_context_user_prompt(content: str, external_context: dict | None) -
         f"[外部上下文已由 {source} bridge 提供；請只根據本次注入的 external_chat_context 回應。"
         "不要開啟瀏覽器、不要搜尋網頁、不要嘗試連線外部平台。]"
     )
+
+
+def _transient_user_content_for_external_context(body: ChatSyncRequest, external_context: dict | None) -> str:
+    if not external_context:
+        return ""
+    source = str(external_context.get("source") or "").strip()
+    if source == "youtube_live_director":
+        return "請根據導播提供的直播流程提示回應。"
+    if source == "youtube_live":
+        return "請根據已帶入的 YouTube 直播留言上下文回應。"
+    return "請根據已帶入的外部上下文回應。"
+
+
+def _memory_write_policy_for_request(body: ChatSyncRequest, external_context: dict | None) -> str:
+    if external_context:
+        return "transient"
+    return body.memory_write_policy
+
+
+def _messages_for_orchestration(
+    messages: list[dict],
+    body: ChatSyncRequest,
+    external_context: dict | None,
+) -> list[dict]:
+    out = list(messages)
+    transient = _transient_user_content_for_external_context(body, external_context)
+    if transient:
+        out.append({
+            "role": "user",
+            "content": transient,
+            "debug_info": {"transient_external_context_anchor": True},
+        })
+    return out
+
+
+def _external_context_group_turn_limit(session, external_context: dict | None) -> int | None:
+    if not external_context:
+        return None
+    participant_count = len(session.active_character_ids or [session.character_id])
+    return max(1, min(participant_count, 3))
+
+
+async def _persist_incoming_chat_message(
+    session_id: str,
+    body: ChatSyncRequest,
+    external_context: dict | None,
+    external_context_summary: dict,
+) -> None:
+    if external_context:
+        visible_event = _build_external_context_visible_event(external_context, external_context_summary)
+        if visible_event:
+            content, debug_info = visible_event
+            await session_manager.add_system_event(session_id, content, debug_info)
+        return
+    display_content = _resolve_chat_display_content(body, external_context)
+    await session_manager.add_user_message(session_id, display_content)
 
 
 # ════════════════════════════════════════════════════════════
@@ -252,6 +379,8 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     sid = session.session_id
     external_context, external_context_summary = _resolve_external_context_payload(body)
     orchestration_prompt = _external_context_user_prompt(body.content, external_context)
+    transient_user_content = _transient_user_content_for_external_context(body, external_context)
+    memory_write_policy = _memory_write_policy_for_request(body, external_context)
 
     try:
         roster_event = await apply_roster_update(session, body.character_ids, group_name=body.group_name)
@@ -260,13 +389,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     if roster_event:
         session = await session_manager.get(sid) or session
 
-    visible_event = _build_external_context_visible_event(external_context, external_context_summary)
-    if visible_event:
-        # TODO: 此 system_event 目前仍可能被 topic-shift 背景記憶管線納入 raw dialogues；
-        # 未來應在 pipeline snapshot 排除 llm_visible=False 的外部聊天室預覽。
-        await session_manager.add_system_event(sid, visible_event[0], visible_event[1])
-
-    await session_manager.add_user_message(sid, body.content)
+    await _persist_incoming_chat_message(sid, body, external_context, external_context_summary)
     s = await session_manager.get(sid)
     if not s:
         return ChatSyncResponseDTO(session_id=sid, reply="Session error", roster_event=roster_event)
@@ -276,6 +399,11 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     include_speech = body.include_speech and get_tts_client() is not None
 
     if is_group_session(s):
+        extra_session_ctx = {}
+        if external_context:
+            extra_session_ctx["external_chat_context"] = external_context
+        if memory_write_policy == "transient":
+            extra_session_ctx["memory_write_policy"] = "transient"
         turns = await run_group_chat_loop(
             session=s,
             user_prompt=orchestration_prompt,
@@ -283,7 +411,9 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             orchestration_fn=orchestration_fn,
             user_name=_user_display_name(current_user),
             expose_llm_trace=_can_expose_llm_trace(current_user),
-            extra_session_ctx={"external_chat_context": external_context} if external_context else None,
+            extra_session_ctx=extra_session_ctx or None,
+            transient_user_content=transient_user_content,
+            max_turns_override=_external_context_group_turn_limit(s, external_context),
         )
         if not turns:
             return ChatSyncResponseDTO(session_id=sid, reply="（無回應）", turns=[], roster_event=roster_event)
@@ -336,10 +466,12 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
     }
     if external_context:
         session_ctx["external_chat_context"] = external_context
+    if memory_write_policy == "transient":
+        session_ctx["memory_write_policy"] = "transient"
 
     result = await asyncio.to_thread(
         orchestration_fn,
-        list(s.messages), list(s.last_entities), orchestration_prompt, user_prefs,
+        _messages_for_orchestration(s.messages, body, external_context), list(s.last_entities), orchestration_prompt, user_prefs,
         session_ctx=session_ctx,
     )
     reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
@@ -420,6 +552,8 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
     sid = session.session_id
     external_context, external_context_summary = _resolve_external_context_payload(body)
     orchestration_prompt = _external_context_user_prompt(body.content, external_context)
+    transient_user_content = _transient_user_content_for_external_context(body, external_context)
+    memory_write_policy = _memory_write_policy_for_request(body, external_context)
 
     try:
         roster_event = await apply_roster_update(session, body.character_ids, group_name=body.group_name)
@@ -428,13 +562,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
     if roster_event:
         session = await session_manager.get(sid) or session
 
-    visible_event = _build_external_context_visible_event(external_context, external_context_summary)
-    if visible_event:
-        # TODO: 此 system_event 目前仍可能被 topic-shift 背景記憶管線納入 raw dialogues；
-        # 未來應在 pipeline snapshot 排除 llm_visible=False 的外部聊天室預覽。
-        await session_manager.add_system_event(sid, visible_event[0], visible_event[1])
-
-    await session_manager.add_user_message(sid, body.content)
+    await _persist_incoming_chat_message(sid, body, external_context, external_context_summary)
     s = await session_manager.get(sid)
     if not s:
         async def _err():
@@ -460,6 +588,8 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
     }
     if external_context:
         session_ctx_sse["external_chat_context"] = external_context
+    if memory_write_policy == "transient":
+        session_ctx_sse["memory_write_policy"] = "transient"
 
     def on_event(data: dict):
         event_q.put(data)
@@ -469,6 +599,12 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
             yield f"data: {json.dumps(roster_event, ensure_ascii=False)}\n\n"
 
         if is_group_session(s):
+            extra_session_ctx = {}
+            if external_context:
+                extra_session_ctx["external_chat_context"] = external_context
+            if memory_write_policy == "transient":
+                extra_session_ctx["memory_write_policy"] = "transient"
+
             def on_turn(turn: dict):
                 event_q.put({
                     "type": "result",
@@ -485,7 +621,9 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
                 on_turn=on_turn,
                 user_name=_user_display_name(current_user),
                 expose_llm_trace=_can_expose_llm_trace(current_user),
-                extra_session_ctx={"external_chat_context": external_context} if external_context else None,
+                extra_session_ctx=extra_session_ctx or None,
+                transient_user_content=transient_user_content,
+                max_turns_override=_external_context_group_turn_limit(s, external_context),
             ))
 
             while not group_task.done():
@@ -507,7 +645,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
 
             yield f"data: {json.dumps({'type': 'group_done', 'session_id': sid, 'turn_count': len(turns)}, ensure_ascii=False)}\n\n"
 
-            tts = get_tts_client()
+            tts = get_tts_client() if body.include_speech else None
             if tts:
                 from core.chat_orchestrator.coordinator import _generate_tts_speech
                 for turn in turns:
@@ -540,7 +678,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
 
         orch_task = asyncio.create_task(asyncio.to_thread(
             orchestration_fn,
-            list(s.messages), list(s.last_entities), orchestration_prompt, user_prefs,
+            _messages_for_orchestration(s.messages, body, external_context), list(s.last_entities), orchestration_prompt, user_prefs,
             on_event=on_event, session_ctx=session_ctx_sse,
         ))
 
@@ -605,7 +743,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
 
         # TTS 合成（若啟用）：result 事件已送出，翻譯 + 合成在此背景執行，不阻塞文字顯示
-        tts = get_tts_client()
+        tts = get_tts_client() if body.include_speech else None
         if tts:
             from core.chat_orchestrator.coordinator import _generate_tts_speech
             _tts_lang = reply_char.get("tts_language", "")

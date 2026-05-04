@@ -261,6 +261,51 @@ def test_conversation_message_persists_character_name():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_delete_all_session_history_is_current_user_scoped(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-clear-sessions-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+
+    try:
+        client = TestClient(_app(), client=("127.0.0.1", 50000))
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "owner",
+                "password": "abc123",
+                "password_confirm": "abc123",
+            },
+        )
+        assert registered.status_code == 200, registered.text
+        csrf = registered.json()["csrf_token"]
+
+        storage.create_conversation_session("owner-db-a", user_id="1", character_id="char-a")
+        storage.create_conversation_session("owner-db-b", user_id="1", character_id="char-a")
+        storage.create_conversation_session("other-db", user_id="999", character_id="char-a")
+        active_owner = asyncio.run(session_manager.create(user_id="1", character_id="char-a"))
+        active_other = asyncio.run(session_manager.create(user_id="999", character_id="char-a"))
+
+        deleted = client.request(
+            "DELETE",
+            "/api/v1/session/history",
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["deleted_count"] == 3
+        assert storage.load_conversation_sessions(user_id="1") == []
+        assert storage.get_session_info("other-db") is not None
+        assert asyncio.run(session_manager.get(active_owner.session_id)) is None
+        assert asyncio.run(session_manager.get(active_other.session_id)) is not None
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_group_session_creation_dedupes_and_persists_participants(monkeypatch):
     monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-group-secret")
     base = _tmp_dir()

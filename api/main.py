@@ -20,7 +20,7 @@ from api.dependencies import (
 from api.session_manager import session_manager
 from core.background_gatherer import start_background_gather_loop
 from api.middleware.auth import AuthMiddleware
-from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots
+from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots, llm_tasks
 
 
 def _persona_sync_candidate_character_ids(storage) -> list[str]:
@@ -183,6 +183,7 @@ app.include_router(chat_rest.router, prefix=PREFIX)
 app.include_router(character.router, prefix=PREFIX)
 app.include_router(bots.router, prefix=PREFIX)
 app.include_router(prompts.router, prefix=PREFIX)
+app.include_router(llm_tasks.router, prefix=PREFIX)
 app.include_router(persona_evolution.router, prefix=PREFIX)
 app.include_router(personality_public.router, prefix=PREFIX)
 app.include_router(admin_users.router, prefix=PREFIX)

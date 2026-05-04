@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from core.runtime_paths import runtime_file
 
 GLOBAL_TOPIC_CHARACTER_ID = "__global__"
+SHARED_MEMORY_USER_ID = "__system__"
+SHARED_MEMORY_CHARACTER_ID = "__shared__"
 DEFAULT_SYSTEM_PROMPT = "你是一個具備情境記憶與核心認知的 AI 助理。"
 MAINTENANCE_DROP_TABLE_ALLOWLIST = {
     "ai_personality_observations",
@@ -109,6 +111,26 @@ class StorageManager:
             "CREATE INDEX IF NOT EXISTS idx_mb_scope "
             "ON memory_blocks(user_id, character_id, visibility)"
         )
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS memory_block_audience (
+                block_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                source TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (block_id, character_id)
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mb_audience_character "
+            "ON memory_block_audience(character_id, source)"
+        )
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS memory_block_metadata (
+                block_id TEXT PRIMARY KEY,
+                metadata_json TEXT DEFAULT '{}',
+                updated_at TEXT NOT NULL
+            )
+        ''')
 
         # ── core_memories（含三維度隔離欄位）──
         cursor.execute('''
@@ -341,6 +363,117 @@ class StorageManager:
 
         conn.close()
         return memory_blocks
+
+    def load_shared_memory_blocks(
+        self,
+        db_path,
+        character_id: str,
+        visibility_filter=None,
+    ) -> list[dict]:
+        """讀取指定角色可見的 shared public memory blocks。"""
+        if not os.path.exists(db_path):
+            return []
+        if visibility_filter is not None and "public" not in visibility_filter:
+            return []
+        character_id = str(character_id or "").strip()
+        if not character_id:
+            return []
+
+        conn = self._init_db(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT mb.block_id, mb.timestamp, mb.overview, mb.overview_vector,
+                   mb.sparse_vector, mb.raw_dialogues, mb.is_consolidated,
+                   mb.encounter_count, mb.potential_preferences,
+                   COALESCE(mbm.metadata_json, '{}') AS metadata_json,
+                   mba.source AS audience_source
+            FROM memory_blocks mb
+            JOIN memory_block_audience mba ON mba.block_id = mb.block_id
+            LEFT JOIN memory_block_metadata mbm ON mbm.block_id = mb.block_id
+            WHERE mb.user_id = ?
+              AND mb.character_id = ?
+              AND mb.visibility = 'public'
+              AND mba.character_id = ?
+            """,
+            (SHARED_MEMORY_USER_ID, SHARED_MEMORY_CHARACTER_ID, character_id),
+        )
+        rows = cursor.fetchall()
+        memory_blocks = []
+        for row in rows:
+            (
+                block_id, timestamp, overview, overview_vector_blob,
+                sparse_vector_json, raw_dialogues_json, is_consolidated,
+                encounter_count, potential_preferences_json,
+                metadata_json, audience_source,
+            ) = row
+            overview_vector = np.frombuffer(overview_vector_blob, dtype=np.float32).tolist()
+            block = {
+                "block_id": block_id,
+                "timestamp": timestamp,
+                "overview": overview,
+                "overview_vector": overview_vector,
+                "sparse_vector": json.loads(sparse_vector_json) if sparse_vector_json else {},
+                "raw_dialogues": json.loads(raw_dialogues_json) if raw_dialogues_json else [],
+                "is_consolidated": bool(is_consolidated),
+                "encounter_count": float(encounter_count) if encounter_count is not None else 1.0,
+                "potential_preferences": json.loads(potential_preferences_json) if potential_preferences_json else [],
+                "shared_memory": True,
+                "audience_source": audience_source or "",
+                "metadata": json.loads(metadata_json) if metadata_json else {},
+            }
+            memory_blocks.append(block)
+        conn.close()
+        return memory_blocks
+
+    def set_memory_block_audience(
+        self,
+        db_path,
+        block_id: str,
+        character_ids: list[str],
+        *,
+        source: str = "",
+        metadata: dict | None = None,
+    ) -> None:
+        """設定 shared memory block 可見角色與 metadata。"""
+        clean_ids = [str(cid).strip() for cid in character_ids if str(cid).strip()]
+        clean_ids = list(dict.fromkeys(clean_ids))
+        conn = self._init_db(db_path)
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        try:
+            cursor.execute("BEGIN")
+            existing_ids = [
+                row[0] for row in cursor.execute(
+                    "SELECT character_id FROM memory_block_audience WHERE block_id = ?",
+                    (block_id,),
+                ).fetchall()
+            ]
+            for cid in list(dict.fromkeys(existing_ids + clean_ids)):
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_block_audience (block_id, character_id, source, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (block_id, cid, source, now),
+                )
+            if metadata is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO memory_block_metadata (block_id, metadata_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(block_id) DO UPDATE SET
+                        metadata_json=excluded.metadata_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (block_id, json.dumps(metadata, ensure_ascii=False), now),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def save_db(
         self,
@@ -2059,6 +2192,33 @@ class StorageManager:
         cursor.execute('DELETE FROM conversation_sessions WHERE session_id = ?', (session_id,))
         conn.commit()
         conn.close()
+
+    def hard_delete_sessions_for_user(self, user_id: str) -> int:
+        """永久刪除指定使用者的所有 conversation sessions 與訊息。"""
+        conn = self._init_conversation_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT session_id FROM conversation_sessions WHERE user_id = ?',
+            (str(user_id),),
+        )
+        session_ids = [r[0] for r in cursor.fetchall()]
+        if session_ids:
+            placeholders = ','.join('?' * len(session_ids))
+            cursor.execute(
+                f'DELETE FROM conversation_messages WHERE session_id IN ({placeholders})',
+                session_ids,
+            )
+            cursor.execute(
+                f'DELETE FROM conversation_session_participants WHERE session_id IN ({placeholders})',
+                session_ids,
+            )
+            cursor.execute(
+                f'DELETE FROM conversation_sessions WHERE session_id IN ({placeholders})',
+                session_ids,
+            )
+            conn.commit()
+        conn.close()
+        return len(session_ids)
 
     def hard_delete_sessions_older_than(self, days: int) -> int:
         conn = self._init_conversation_db()
