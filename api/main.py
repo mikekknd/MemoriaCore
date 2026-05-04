@@ -30,7 +30,7 @@ def _persona_sync_candidate_character_ids(storage) -> list[str]:
     不以 active/default character 補位，避免同步目標被全域預設角色污染。
     """
     if hasattr(storage, "list_conversation_character_ids"):
-        return storage.list_conversation_character_ids()
+        return storage.list_conversation_character_ids(exclude_channels=("youtube_live",))
     return storage.list_recent_conversation_character_ids(limit=50)
 
 
@@ -39,6 +39,7 @@ def _should_log_persona_sync_skip(reason: str) -> bool:
     quiet_prefixes = (
         "no_messages_yet",
         "insufficient_messages(",
+        "daily_limit_reached(",
     )
     return not any(reason.startswith(prefix) for prefix in quiet_prefixes)
 

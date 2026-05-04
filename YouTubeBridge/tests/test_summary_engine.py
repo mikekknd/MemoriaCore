@@ -75,7 +75,7 @@ def _seed_storage(tmp_dir: Path) -> BridgeStorage:
         "target_memoria_session_id": "mem-a",
         "character_ids": ["coco"],
     })
-    storage.save_event({
+    event = storage.save_event({
         "bridge_session_id": "live-a",
         "connector_id": "yt-main",
         "youtube_message_id": "msg-a",
@@ -85,6 +85,15 @@ def _seed_storage(tmp_dir: Path) -> BridgeStorage:
         "message_type": "textMessageEvent",
         "published_at": "2026-05-02T15:53:17.8658+00:00",
     })
+    storage.update_event_safety(
+        event["id"],
+        status="completed",
+        label="clean",
+        safe_message_text=event["message_text"],
+        safety_summary=event["message_text"],
+        reason="測試資料已標記為一般留言。",
+        confidence=1.0,
+    )
     return storage
 
 

@@ -123,6 +123,11 @@ class ChatSyncRequest(BaseModel):
     session_id: Optional[str] = None
     character_ids: Optional[list[str]] = None
     group_name: Optional[str] = None
+    channel: Optional[str] = None
+    channel_uid: Optional[str] = None
+    user_id: Optional[str] = None
+    channel_class: Optional[Literal["public", "private"]] = None
+    persona_face: Optional[Literal["public", "private"]] = None
     external_context: Optional[dict] = None
     include_speech: bool = True
     memory_write_policy: Literal["normal", "transient"] = "normal"
@@ -150,6 +155,11 @@ class CreateSessionRequest(BaseModel):
     character_id: Optional[str] = None
     character_ids: list[str] = []
     group_name: str = ""
+
+
+class SessionSystemEventRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=2000)
+    debug_info: dict[str, Any] = Field(default_factory=dict)
 
 
 class BlockUpdateRequest(BaseModel):

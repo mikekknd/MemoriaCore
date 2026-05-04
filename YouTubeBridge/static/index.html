@@ -47,6 +47,16 @@
       gap: 16px;
       padding: 16px;
     }
+    body.embedded-control header { position: static; }
+    body.embedded-control main {
+      grid-template-columns: minmax(300px, 390px) minmax(360px, 1fr);
+      padding: 12px;
+    }
+    body.embedded-control .right-rail section:first-child { display: none; }
+    body.embedded-control .right-rail {
+      position: static;
+      max-height: none;
+    }
     section {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -294,6 +304,9 @@
           </label>
           <label>每批 SC 上限
             <input id="maxScPerBatch" type="number" min="1" max="30" value="5">
+          </label>
+          <label>導播回合上限
+            <input id="directorGroupTurnLimit" type="number" min="1" max="12" value="3">
           </label>
           <label>幾批留言後回主軸
             <input id="directorMaxChatBatches" type="number" min="1" max="10" value="2">
@@ -552,6 +565,9 @@
   </main>
 
   <script>
+    if (new URLSearchParams(window.location.search).get("embedded") === "control") {
+      document.body.classList.add("embedded-control");
+    }
     const SINGLE_CONNECTOR_ID = "youtube-main";
 
     const state = {
@@ -844,11 +860,11 @@
 
     async function refreshChatPreview({ silent = false } = {}) {
       let id = selectedSessionId();
-      if (!id && !silent && !state.sessions.length) {
+      if (!id && !state.sessions.length) {
         await loadSessions();
         id = selectedSessionId();
       }
-      if (!id && !silent) {
+      if (!id) {
         const fallback = defaultLiveSession();
         if (fallback) {
           $("sessionSelect").value = fallback.session_id;
@@ -992,6 +1008,7 @@
       $("plannedDuration").value = session.planned_duration_minutes || 30;
       $("scInterruptCooldown").value = session.sc_interrupt_cooldown_seconds || 30;
       $("maxScPerBatch").value = session.max_sc_per_batch || 5;
+      $("directorGroupTurnLimit").value = session.director_group_turn_limit || 3;
       $("directorMaxChatBatches").value = session.director_max_chat_batches_before_anchor || 2;
       $("autoInject").checked = !!session.auto_inject;
       $("dynamicInject").checked = session.dynamic_inject_enabled !== false;
@@ -1028,6 +1045,7 @@
       $("plannedDuration").value = 30;
       $("scInterruptCooldown").value = 30;
       $("maxScPerBatch").value = 5;
+      $("directorGroupTurnLimit").value = 3;
       $("directorMaxChatBatches").value = 2;
       $("autoInject").checked = true;
       $("dynamicInject").checked = true;
@@ -1094,6 +1112,7 @@
         planned_duration_minutes: Number($("plannedDuration").value || 30),
         sc_interrupt_cooldown_seconds: Number($("scInterruptCooldown").value || 30),
         max_sc_per_batch: Number($("maxScPerBatch").value || 5),
+        director_group_turn_limit: Number($("directorGroupTurnLimit").value || 3),
         director_max_chat_batches_before_anchor: Number($("directorMaxChatBatches").value || 2),
         auto_finalize_on_duration: $("autoFinalize").checked,
         auto_sc_thanks_on_finalize: $("autoScThanksOnFinalize").checked,
@@ -1581,7 +1600,7 @@
           state.events.push(payload.event);
           renderEvents();
         }
-        if (["test_events_generated", "test_events_auto_generated", "super_chat_batch_injected"].includes(payload.type)) {
+        if (["test_events_generated", "test_events_auto_generated", "super_chat_batch_injected", "safety_classified"].includes(payload.type)) {
           await refreshEvents();
         }
         if (["test_event_auto_started", "test_event_auto_stopped"].includes(payload.type)) {

@@ -30,6 +30,9 @@ from tools.minimax_image import generated_image_path
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
+YOUTUBE_LIVE_EXTERNAL_SOURCES = {"youtube_live", "youtube_live_director"}
+YOUTUBE_LIVE_USER_ID = "__youtube_live__"
+
 
 def _user_display_name(current_user: dict) -> str:
     return (
@@ -51,6 +54,59 @@ def _get_session_character(character_id: str) -> dict:
 
 def _can_expose_llm_trace(current_user: dict) -> bool:
     return current_user.get("role") == "admin"
+
+
+def _is_youtube_live_external_context(external_context: dict | None) -> bool:
+    if not isinstance(external_context, dict):
+        return False
+    return str(external_context.get("source") or "").strip() in YOUTUBE_LIVE_EXTERNAL_SOURCES
+
+
+def _live_session_scope_for_external_context(
+    body: ChatSyncRequest | None,
+    external_context: dict | None,
+) -> dict | None:
+    """YouTube live bridge 固定使用 public/transient 對話 scope。
+
+    Bridge 端使用 admin auth 只是為了取得 API 權限，不代表直播內容可以寫進
+    admin 的 private face。這裡不信任 client 傳入的 user/persona override，
+    只依 external context source 決定 live scope。
+    """
+    if not _is_youtube_live_external_context(external_context):
+        return None
+    summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
+    channel_uid = (
+        str(summary.get("source_session_id") or "").strip()
+        or str(external_context.get("source_session_id") or "").strip()
+        or str((body.channel_uid if body else "") or "").strip()
+        or "youtube_live"
+    )
+    return {
+        "channel": "youtube_live",
+        "channel_uid": channel_uid[:128],
+        "user_id": YOUTUBE_LIVE_USER_ID,
+        "channel_class": "public",
+        "persona_face": "public",
+    }
+
+
+def _session_matches_scope(session, scope: dict | None) -> bool:
+    if not scope:
+        return True
+    return (
+        session.user_id == scope["user_id"]
+        and session.channel == scope["channel"]
+        and session.channel_uid == scope["channel_uid"]
+        and session.channel_class == scope["channel_class"]
+        and session.persona_face == scope["persona_face"]
+    )
+
+
+def _chat_user_display_name(current_user: dict, external_context: dict | None) -> str:
+    """YouTube live 注入不帶真人帳號名稱，避免角色誤以為是私人對話。"""
+    if _is_youtube_live_external_context(external_context):
+        return ""
+    return _user_display_name(current_user)
 
 
 def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | None, dict]:
@@ -146,7 +202,7 @@ def _visible_event_display_line(event: dict) -> str:
 
 def _director_display_from_context(external_context: dict | None) -> str:
     if not external_context:
-        return "導播推進直播流程。"
+        return "讓我們繼續直播節奏。"
     summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
     action = str(summary.get("action") or "").strip()
     return {
@@ -158,7 +214,7 @@ def _director_display_from_context(external_context: dict | None) -> str:
         "closing_super_chat_thanks": "感謝本場 Super Chat。",
         "recap": "整理一下剛才的重點。",
         "close_topic": "先收束目前話題。",
-    }.get(action, "導播推進直播流程。")
+    }.get(action, "讓我們繼續直播節奏。")
 
 
 def _resolve_chat_display_content(body: ChatSyncRequest, external_context: dict | None) -> str:
@@ -218,7 +274,7 @@ def _build_external_context_visible_event(
         preview_lines = _visible_context_lines(external_context, context_text, preview_limit)
     elif source == "youtube_live_director":
         event_type = "youtube_live_director_notice"
-        title = "直播導播"
+        title = "直播節奏"
         preview_limit = 1
         preview_lines = [_director_display_from_context(external_context)]
     else:
@@ -257,9 +313,10 @@ def _external_context_user_prompt(content: str, external_context: dict | None) -
     if not external_context:
         return content
     source = str(external_context.get("source") or "external").strip() or "external"
+    source_label = "直播流程" if source == "youtube_live_director" else source
     return (
         f"{content}\n\n"
-        f"[外部上下文已由 {source} bridge 提供；請只根據本次注入的 external_chat_context 回應。"
+        f"[外部上下文已由 {source_label} 提供；請只根據本次注入的 external_chat_context 回應。"
         "不要開啟瀏覽器、不要搜尋網頁、不要嘗試連線外部平台。]"
     )
 
@@ -269,7 +326,7 @@ def _transient_user_content_for_external_context(body: ChatSyncRequest, external
         return ""
     source = str(external_context.get("source") or "").strip()
     if source == "youtube_live_director":
-        return "請根據導播提供的直播流程提示回應。"
+        return "請根據已提供的直播流程提示回應。"
     if source == "youtube_live":
         return "請根據已帶入的 YouTube 直播留言上下文回應。"
     return "請根據已帶入的外部上下文回應。"
@@ -301,6 +358,15 @@ def _external_context_group_turn_limit(session, external_context: dict | None) -
     if not external_context:
         return None
     participant_count = len(session.active_character_ids or [session.character_id])
+    source = str(external_context.get("source") or "").strip()
+    if source == "youtube_live_director":
+        summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
+        raw_limit = external_context.get("group_turn_limit", summary.get("group_turn_limit", 3))
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            limit = 3
+        return max(1, min(limit, 12))
     return max(1, min(participant_count, 3))
 
 
@@ -329,23 +395,34 @@ async def _resolve_session(
     current_user: dict,
     character_ids: list[str] | None = None,
     group_name: str | None = None,
+    external_context: dict | None = None,
 ):
     """取得 session：優先從記憶體取，其次從 DB 還原，最後才建新 session。"""
-    user_id = str(current_user["id"])
+    scope = _live_session_scope_for_external_context(None, external_context)
+    user_id = scope["user_id"] if scope else str(current_user["id"])
     session = None
     if session_id:
         session = await session_manager.get(session_id)
-        if session is not None and session.user_id != user_id:
+        if session is not None and scope and not _session_matches_scope(session, scope):
+            session = None
+        if session is not None and not scope and session.user_id != user_id:
             raise HTTPException(403, detail="Session owner mismatch")
         if session is None:
             try:
                 session = await session_manager.restore_from_db(session_id, user_id=user_id)
             except PermissionError:
-                raise HTTPException(403, detail="Session owner mismatch")
+                if scope:
+                    session = None
+                else:
+                    raise HTTPException(403, detail="Session owner mismatch")
+            if session is not None and scope and not _session_matches_scope(session, scope):
+                session = None
     if session is None:
         prefs = get_storage().load_prefs()
-        channel_class = "private" if current_user.get("role") == "admin" else "public"
-        persona_face = "private" if current_user.get("role") == "admin" else "public"
+        channel = scope["channel"] if scope else "dashboard"
+        channel_uid = scope["channel_uid"] if scope else user_id
+        channel_class = scope["channel_class"] if scope else ("private" if current_user.get("role") == "admin" else "public")
+        persona_face = scope["persona_face"] if scope else ("private" if current_user.get("role") == "admin" else "public")
         try:
             normalized = normalize_character_ids(character_ids)
         except ValueError as exc:
@@ -355,8 +432,8 @@ async def _resolve_session(
         else:
             requested_ids = [prefs.get("active_character_id", "default")]
         session = await session_manager.create(
-            channel="dashboard",
-            channel_uid=user_id,
+            channel=channel,
+            channel_uid=channel_uid,
             user_id=user_id,
             character_id=requested_ids[0],
             character_ids=requested_ids,
@@ -375,9 +452,9 @@ async def _resolve_session(
 @router.post("/sync", response_model=ChatSyncResponseDTO)
 async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_current_user)):
     require_db_writes_enabled()
-    session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
-    sid = session.session_id
     external_context, external_context_summary = _resolve_external_context_payload(body)
+    session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name, external_context)
+    sid = session.session_id
     orchestration_prompt = _external_context_user_prompt(body.content, external_context)
     transient_user_content = _transient_user_content_for_external_context(body, external_context)
     memory_write_policy = _memory_write_policy_for_request(body, external_context)
@@ -409,7 +486,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
             user_prompt=orchestration_prompt,
             user_prefs=user_prefs,
             orchestration_fn=orchestration_fn,
-            user_name=_user_display_name(current_user),
+            user_name=_chat_user_display_name(current_user, external_context),
             expose_llm_trace=_can_expose_llm_trace(current_user),
             extra_session_ctx=extra_session_ctx or None,
             transient_user_content=transient_user_content,
@@ -458,7 +535,7 @@ async def chat_sync(body: ChatSyncRequest, current_user: dict = Depends(get_curr
         "session_id": sid,
         "bot_id": session.bot_id,
         "channel": session.channel,
-        "user_name": _user_display_name(current_user),
+        "user_name": _chat_user_display_name(current_user, external_context),
         "active_character_ids": list(session.active_character_ids or [session.character_id]),
         "session_mode": session.session_mode,
         "group_name": session.group_name,
@@ -548,9 +625,9 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
     require_db_writes_enabled()
     # 優先從記憶體取得 session；找不到時先嘗試從 DB 還原（後端重啟後記憶體清空的情況）；
     # 都沒有才建新 session（channel 統一用 streamlit，確保能出現在 UI session 列表）
-    session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name)
-    sid = session.session_id
     external_context, external_context_summary = _resolve_external_context_payload(body)
+    session = await _resolve_session(body.session_id, current_user, body.character_ids, body.group_name, external_context)
+    sid = session.session_id
     orchestration_prompt = _external_context_user_prompt(body.content, external_context)
     transient_user_content = _transient_user_content_for_external_context(body, external_context)
     memory_write_policy = _memory_write_policy_for_request(body, external_context)
@@ -580,7 +657,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
         "session_id": sid,
         "bot_id": session.bot_id,
         "channel": session.channel,
-        "user_name": _user_display_name(current_user),
+        "user_name": _chat_user_display_name(current_user, external_context),
         "active_character_ids": list(session.active_character_ids or [session.character_id]),
         "session_mode": session.session_mode,
         "group_name": session.group_name,
@@ -619,7 +696,7 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
                 orchestration_fn=orchestration_fn,
                 on_event=on_event,
                 on_turn=on_turn,
-                user_name=_user_display_name(current_user),
+                user_name=_chat_user_display_name(current_user, external_context),
                 expose_llm_trace=_can_expose_llm_trace(current_user),
                 extra_session_ctx=extra_session_ctx or None,
                 transient_user_content=transient_user_content,

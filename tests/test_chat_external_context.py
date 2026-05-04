@@ -1,6 +1,9 @@
 from api.models.requests import ChatSyncRequest
 from api.routers.chat_rest import (
     _build_external_context_visible_event,
+    _chat_user_display_name,
+    _external_context_group_turn_limit,
+    _live_session_scope_for_external_context,
     _memory_write_policy_for_request,
     _resolve_chat_display_content,
     _resolve_external_context_payload,
@@ -190,7 +193,7 @@ def test_external_context_without_visible_events_never_displays_hidden_prompt():
 
     display = _resolve_chat_display_content(body, context)
 
-    assert display == "導播推進直播流程。"
+    assert display == "讓我們繼續直播節奏。"
     assert "external_chat_context" not in display
     assert "直播導播 action" not in display
     assert "topic_pack_fact_cards" not in display
@@ -227,3 +230,68 @@ def test_external_context_forces_transient_memory_write_policy():
     body = ChatSyncRequest(content="hello", memory_write_policy="normal")
 
     assert _memory_write_policy_for_request(body, {"source": "youtube_live"}) == "transient"
+
+
+def test_youtube_live_external_context_uses_public_live_scope():
+    body = ChatSyncRequest(
+        content="hello",
+        user_id="1",
+        channel_class="private",
+        persona_face="private",
+        external_context={
+            "source": "youtube_live",
+            "source_session_id": "yt-live-a",
+            "context_text": "觀眾: hi",
+        },
+    )
+    context, _summary = _resolve_external_context_payload(body)
+
+    scope = _live_session_scope_for_external_context(body, context)
+
+    assert scope == {
+        "channel": "youtube_live",
+        "channel_uid": "yt-live-a",
+        "user_id": "__youtube_live__",
+        "channel_class": "public",
+        "persona_face": "public",
+    }
+
+
+def test_youtube_live_external_context_hides_admin_display_name():
+    current_user = {"id": 1, "username": "mikekknd", "nickname": "夏雪", "role": "admin"}
+
+    assert _chat_user_display_name(current_user, {"source": "youtube_live_director"}) == ""
+    assert _chat_user_display_name(current_user, None) == "夏雪"
+
+
+class _SessionStub:
+    def __init__(self, character_ids: list[str]):
+        self.active_character_ids = character_ids
+        self.character_id = character_ids[0] if character_ids else "default"
+
+
+def test_youtube_live_director_external_context_uses_explicit_group_turn_limit():
+    session = _SessionStub(["char-a", "char-b"])
+
+    limit = _external_context_group_turn_limit(
+        session,
+        {"source": "youtube_live_director", "group_turn_limit": 5},
+    )
+
+    assert limit == 5
+
+
+def test_youtube_live_director_external_context_defaults_to_group_chat_limit_shape():
+    session = _SessionStub(["char-a", "char-b", "char-c", "char-d"])
+
+    limit = _external_context_group_turn_limit(session, {"source": "youtube_live_director"})
+
+    assert limit == 3
+
+
+def test_youtube_live_chat_external_context_keeps_short_batch_round_limit():
+    session = _SessionStub(["char-a", "char-b", "char-c", "char-d"])
+
+    limit = _external_context_group_turn_limit(session, {"source": "youtube_live"})
+
+    assert limit == 3

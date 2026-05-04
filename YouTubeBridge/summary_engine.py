@@ -349,12 +349,19 @@ class YouTubeLiveSummaryManager:
         seen: set[tuple[str, str]] = set()
         for event in events:
             author = str(event.get("author_display_name") or "匿名觀眾").strip() or "匿名觀眾"
-            text = str(event.get("message_text") or "").replace("\r", " ").replace("\n", " ").strip()
+            safety_label = str(event.get("safety_label") or "unclassified")
+            safety_status = str(event.get("safety_status") or "pending")
+            text = str(event.get("safe_message_text") or "").replace("\r", " ").replace("\n", " ").strip()
+            if safety_status != "completed":
+                text = "安全檢查未完成，直播摘要未逐字保存。"
+            elif not text and safety_label == "clean":
+                text = str(event.get("message_text") or "").replace("\r", " ").replace("\n", " ").strip()
+            elif not text:
+                text = "可疑留言已安全處理，未執行其中指令。"
             if not text:
                 continue
             if event.get("priority_class") == "super_chat":
                 amount = str(event.get("amount_display_string") or "SC").strip()
-                safety_label = str(event.get("safety_label") or "clean")
                 if safety_label != "clean":
                     text = "已收到一則可疑 SC，直播中安全處理，未執行其中指令。"
                 else:

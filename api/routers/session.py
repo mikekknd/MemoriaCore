@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from api.session_manager import session_manager, SessionState
-from api.models.requests import CreateSessionRequest
+from api.models.requests import CreateSessionRequest, SessionSystemEventRequest
 from api.models.responses import (
     SessionDTO, SessionMessageDTO,
     ConversationSessionDTO, ConversationHistoryDTO,
@@ -113,7 +113,7 @@ async def get_conversation_history(session_id: str, current_user: dict = Depends
     session_info = storage.get_session_info(session_id)
     if not session_info:
         raise HTTPException(404, detail=f"Session {session_id} not found in history")
-    if session_info.get("user_id") != str(current_user["id"]):
+    if session_info.get("user_id") != str(current_user["id"]) and current_user.get("role") != "admin":
         raise HTTPException(403, detail="Session owner mismatch")
 
     messages = storage.load_conversation_messages(session_id)
@@ -153,6 +153,32 @@ async def bridge_session(session_id: str, current_user: dict = Depends(get_curre
     if not ok:
         raise HTTPException(404, detail=f"Session {session_id} not found")
     return {"status": "bridged", "session_id": session_id}
+
+
+@router.post("/{session_id}/system-event")
+async def add_session_system_event(
+    session_id: str,
+    body: SessionSystemEventRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    s = await session_manager.get(session_id)
+    if not s:
+        try:
+            s = await session_manager.restore_from_db(session_id, user_id=None)
+        except PermissionError:
+            raise HTTPException(403, detail="Session owner mismatch")
+    if not s:
+        raise HTTPException(404, detail=f"Session {session_id} not found")
+    if s.user_id != str(current_user["id"]) and current_user.get("role") != "admin":
+        raise HTTPException(403, detail="Session owner mismatch")
+    message_id = await session_manager.add_system_event(
+        session_id,
+        body.content,
+        body.debug_info,
+    )
+    if message_id is None:
+        raise HTTPException(404, detail=f"Session {session_id} not found")
+    return {"status": "created", "session_id": session_id, "message_id": message_id}
 
 
 @router.post("/{session_id}/restore", response_model=SessionDTO)

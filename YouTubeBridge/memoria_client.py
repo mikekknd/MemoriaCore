@@ -55,6 +55,28 @@ class MemoriaClient:
             headers[CSRF_HEADER_NAME] = self.csrf_token
         return headers
 
+    @staticmethod
+    def _live_scope_payload(external_context: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(external_context, dict):
+            return {}
+        source = str(external_context.get("source") or "").strip()
+        if source not in {"youtube_live", "youtube_live_director"}:
+            return {}
+        summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
+        channel_uid = (
+            str(summary.get("source_session_id") or "").strip()
+            or str(external_context.get("source_session_id") or "").strip()
+            or "youtube_live"
+        )
+        return {
+            "channel": "youtube_live",
+            "channel_uid": channel_uid[:128],
+            "user_id": "__youtube_live__",
+            "channel_class": "public",
+            "persona_face": "public",
+            "group_name": "YouTube Live",
+        }
+
     def ensure_auth(self) -> None:
         if self.session.cookies.get(AUTH_COOKIE_NAME) and self.csrf_token:
             return
@@ -95,6 +117,7 @@ class MemoriaClient:
             "include_speech": include_speech,
             "memory_write_policy": "transient" if external_context else "normal",
         }
+        payload.update(self._live_scope_payload(external_context))
         response = self.session.post(
             f"{self.base_url}/chat/sync",
             json=payload,
@@ -132,6 +155,7 @@ class MemoriaClient:
             "include_speech": include_speech,
             "memory_write_policy": "transient" if external_context else "normal",
         }
+        payload.update(self._live_scope_payload(external_context))
         last_result: dict[str, Any] | None = None
         watcher_done = threading.Event()
         with self.session.post(
@@ -220,6 +244,25 @@ class MemoriaClient:
         )
         if response.status_code >= 400:
             raise RuntimeError(f"MemoriaCore session history failed: HTTP {response.status_code} {response.text[:500]}")
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    def add_system_event(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        debug_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_auth()
+        response = self.session.post(
+            f"{self.base_url}/session/{session_id}/system-event",
+            json={"content": content, "debug_info": debug_info or {}},
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"MemoriaCore system event failed: HTTP {response.status_code} {response.text[:500]}")
         data = response.json()
         return data if isinstance(data, dict) else {}
 

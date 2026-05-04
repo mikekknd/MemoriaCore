@@ -20,24 +20,8 @@ DEFAULT_CONNECTOR_NAME = "YouTube Main"
 
 
 def classify_live_event_safety(text: str) -> str:
-    """第一版規則式分類，避免把明顯攻擊內容當成可信指令。"""
-    raw = str(text or "")
-    lowered = raw.lower()
-    if any(term in lowered for term in (
-        "system prompt", "developer message", "ignore previous", "ignore above",
-        "忽略以上", "忽略前面", "系統提示", "開發者訊息", "prompt injection",
-    )):
-        return "suspicious_prompt_injection"
-    if any(term in lowered for term in (
-        "api key", "apikey", "token", "password", "secret", "憑證", "金鑰", "密碼", "洩漏",
-    )):
-        return "suspicious_secret_request"
-    if "http://" in lowered or "https://" in lowered or "sk-" in lowered or "ghp_" in lowered:
-        return "suspicious_url_or_token"
-    compact = "".join(raw.split())
-    if len(compact) >= 12 and compact[:6] * 3 in compact:
-        return "spam_or_duplicate"
-    return "clean"
+    """舊 API 相容用：安全分類改由 SafetyLLM 負責。"""
+    return "unclassified" if str(text or "").strip() else "clean"
 
 
 def infer_super_chat_tier(amount_micros: int, explicit_tier: int = 0) -> int:
@@ -139,6 +123,7 @@ class BridgeStorage:
                     sc_interrupt_cooldown_seconds INTEGER NOT NULL DEFAULT 30,
                     max_sc_per_batch INTEGER NOT NULL DEFAULT 5,
                     director_anchor_every_turns INTEGER NOT NULL DEFAULT 2,
+                    director_group_turn_limit INTEGER NOT NULL DEFAULT 3,
                     director_max_chat_batches_before_anchor INTEGER NOT NULL DEFAULT 2,
                     director_offtopic_policy TEXT DEFAULT 'defer',
                     director_sc_burst_policy TEXT DEFAULT 'summarize_batch',
@@ -180,7 +165,13 @@ class BridgeStorage:
                     amount_micros INTEGER NOT NULL DEFAULT 0,
                     sc_tier INTEGER NOT NULL DEFAULT 0,
                     priority_class TEXT DEFAULT 'normal',
-                    safety_label TEXT DEFAULT 'clean',
+                    safety_label TEXT DEFAULT 'unclassified',
+                    safety_status TEXT DEFAULT 'pending',
+                    safe_message_text TEXT DEFAULT '',
+                    safety_summary TEXT DEFAULT '',
+                    safety_reason TEXT DEFAULT '',
+                    safety_confidence REAL NOT NULL DEFAULT 0,
+                    safety_checked_at TEXT DEFAULT '',
                     handled_in_closing_at TEXT DEFAULT '',
                     injected_at TEXT DEFAULT '',
                     injection_count INTEGER NOT NULL DEFAULT 0,
@@ -388,6 +379,7 @@ class BridgeStorage:
             "sc_interrupt_cooldown_seconds": "sc_interrupt_cooldown_seconds INTEGER NOT NULL DEFAULT 30",
             "max_sc_per_batch": "max_sc_per_batch INTEGER NOT NULL DEFAULT 5",
             "director_anchor_every_turns": "director_anchor_every_turns INTEGER NOT NULL DEFAULT 2",
+            "director_group_turn_limit": "director_group_turn_limit INTEGER NOT NULL DEFAULT 3",
             "director_max_chat_batches_before_anchor": "director_max_chat_batches_before_anchor INTEGER NOT NULL DEFAULT 2",
             "director_offtopic_policy": "director_offtopic_policy TEXT DEFAULT 'defer'",
             "director_sc_burst_policy": "director_sc_burst_policy TEXT DEFAULT 'summarize_batch'",
@@ -413,7 +405,13 @@ class BridgeStorage:
             "amount_micros": "amount_micros INTEGER NOT NULL DEFAULT 0",
             "sc_tier": "sc_tier INTEGER NOT NULL DEFAULT 0",
             "priority_class": "priority_class TEXT DEFAULT 'normal'",
-            "safety_label": "safety_label TEXT DEFAULT 'clean'",
+            "safety_label": "safety_label TEXT DEFAULT 'unclassified'",
+            "safety_status": "safety_status TEXT DEFAULT 'pending'",
+            "safe_message_text": "safe_message_text TEXT DEFAULT ''",
+            "safety_summary": "safety_summary TEXT DEFAULT ''",
+            "safety_reason": "safety_reason TEXT DEFAULT ''",
+            "safety_confidence": "safety_confidence REAL NOT NULL DEFAULT 0",
+            "safety_checked_at": "safety_checked_at TEXT DEFAULT ''",
             "handled_in_closing_at": "handled_in_closing_at TEXT DEFAULT ''",
         }
         for name, ddl in columns.items():
@@ -524,6 +522,7 @@ class BridgeStorage:
             "sc_interrupt_cooldown_seconds": int(cls._row_value(row, "sc_interrupt_cooldown_seconds", 30) or 30),
             "max_sc_per_batch": int(cls._row_value(row, "max_sc_per_batch", 5) or 5),
             "director_anchor_every_turns": int(cls._row_value(row, "director_anchor_every_turns", 2) or 2),
+            "director_group_turn_limit": int(cls._row_value(row, "director_group_turn_limit", 3) or 3),
             "director_max_chat_batches_before_anchor": int(cls._row_value(row, "director_max_chat_batches_before_anchor", 2) or 2),
             "director_offtopic_policy": cls._row_value(row, "director_offtopic_policy", "defer") or "defer",
             "director_sc_burst_policy": cls._row_value(row, "director_sc_burst_policy", "summarize_batch") or "summarize_batch",
@@ -565,7 +564,13 @@ class BridgeStorage:
             "amount_micros": int(cls._row_value(row, "amount_micros", 0) or 0),
             "sc_tier": int(cls._row_value(row, "sc_tier", 0) or 0),
             "priority_class": cls._row_value(row, "priority_class", "normal") or "normal",
-            "safety_label": cls._row_value(row, "safety_label", "clean") or "clean",
+            "safety_label": cls._row_value(row, "safety_label", "unclassified") or "unclassified",
+            "safety_status": cls._row_value(row, "safety_status", "pending") or "pending",
+            "safe_message_text": cls._row_value(row, "safe_message_text", "") or "",
+            "safety_summary": cls._row_value(row, "safety_summary", "") or "",
+            "safety_reason": cls._row_value(row, "safety_reason", "") or "",
+            "safety_confidence": float(cls._row_value(row, "safety_confidence", 0) or 0),
+            "safety_checked_at": cls._row_value(row, "safety_checked_at", "") or "",
             "handled_in_closing_at": cls._row_value(row, "handled_in_closing_at", "") or "",
             "injected_at": row["injected_at"] or "",
             "injection_count": int(row["injection_count"] or 0),
@@ -923,6 +928,7 @@ class BridgeStorage:
                 "sc_interrupt_cooldown_seconds": int(config.get("sc_interrupt_cooldown_seconds", 30) or 30),
                 "max_sc_per_batch": int(config.get("max_sc_per_batch", 5) or 5),
                 "director_anchor_every_turns": int(config.get("director_anchor_every_turns", 2) or 2),
+                "director_group_turn_limit": int(config.get("director_group_turn_limit", 3) or 3),
                 "director_max_chat_batches_before_anchor": int(config.get("director_max_chat_batches_before_anchor", 2) or 2),
                 "director_offtopic_policy": str(config.get("director_offtopic_policy", "defer") or "defer"),
                 "director_sc_burst_policy": str(config.get("director_sc_burst_policy", "summarize_batch") or "summarize_batch"),
@@ -1051,7 +1057,18 @@ class BridgeStorage:
         if not priority_class:
             priority_class = "super_chat" if message_type == "superChatEvent" or amount_display or amount_micros > 0 else "normal"
         sc_tier = infer_super_chat_tier(amount_micros, explicit_tier) if priority_class == "super_chat" else 0
-        safety_label = str(event.get("safety_label", "") or classify_live_event_safety(str(event.get("message_text", "") or "")))
+        safety_label = str(event.get("safety_label", "") or "").strip() or "unclassified"
+        safety_status = str(event.get("safety_status", "") or "").strip() or (
+            "completed" if safety_label == "clean" and event.get("safe_message_text") else "pending"
+        )
+        safe_message_text = str(event.get("safe_message_text", "") or "")
+        safety_summary = str(event.get("safety_summary", "") or "")
+        safety_reason = str(event.get("safety_reason", "") or "")
+        try:
+            safety_confidence = float(event.get("safety_confidence", 0) or 0)
+        except (TypeError, ValueError):
+            safety_confidence = 0.0
+        safety_checked_at = str(event.get("safety_checked_at", "") or "")
         with self._lock, self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -1060,8 +1077,9 @@ class BridgeStorage:
                     message_type, author_channel_id, author_display_name, author_profile_image_url,
                     message_text, published_at, received_at, status, amount_display_string,
                     currency, amount_micros, sc_tier, priority_class, safety_label,
-                    handled_in_closing_at, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    safety_status, safe_message_text, safety_summary, safety_reason,
+                    safety_confidence, safety_checked_at, handled_in_closing_at, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(event.get("bridge_session_id", "") or ""),
@@ -1083,6 +1101,12 @@ class BridgeStorage:
                     sc_tier,
                     priority_class,
                     safety_label,
+                    safety_status,
+                    safe_message_text,
+                    safety_summary,
+                    safety_reason,
+                    safety_confidence,
+                    safety_checked_at,
                     str(event.get("handled_in_closing_at", "") or ""),
                     self._json_dump(metadata),
                 ),
@@ -1156,6 +1180,66 @@ class BridgeStorage:
                 (session_id, limit),
             ).fetchall()
         return [event for row in rows if (event := self._row_to_event(row))]
+
+    def list_events_pending_safety(self, session_id: str, *, limit: int = 100) -> list[dict]:
+        limit = max(1, min(int(limit or 100), 500))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM live_events
+                WHERE bridge_session_id = ?
+                  AND status = 'active'
+                  AND TRIM(COALESCE(message_text, '')) != ''
+                  AND COALESCE(safety_status, 'pending') IN ('pending', 'failed_retryable')
+                ORDER BY
+                  CASE WHEN priority_class = 'super_chat' THEN 0 ELSE 1 END,
+                  sc_tier DESC,
+                  id ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [event for row in rows if (event := self._row_to_event(row))]
+
+    def update_event_safety(
+        self,
+        event_id: int,
+        *,
+        status: str,
+        label: str,
+        safe_message_text: str,
+        safety_summary: str = "",
+        reason: str = "",
+        confidence: float = 0.0,
+    ) -> dict | None:
+        now = datetime.now().isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE live_events
+                SET safety_status = ?,
+                    safety_label = ?,
+                    safe_message_text = ?,
+                    safety_summary = ?,
+                    safety_reason = ?,
+                    safety_confidence = ?,
+                    safety_checked_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(status or "completed"),
+                    str(label or "unclassified"),
+                    str(safe_message_text or ""),
+                    str(safety_summary or ""),
+                    str(reason or ""),
+                    float(confidence or 0.0),
+                    now,
+                    int(event_id),
+                ),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM live_events WHERE id = ?", (int(event_id),)).fetchone()
+        return self._row_to_event(row)
 
     def count_events(self, session_id: str, *, active_only: bool = False) -> int:
         where = "bridge_session_id = ?"

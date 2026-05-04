@@ -52,6 +52,7 @@ class LiveSessionConfig(BaseModel):
     sc_interrupt_cooldown_seconds: int = Field(30, ge=0, le=600)
     max_sc_per_batch: int = Field(5, ge=1, le=30)
     director_anchor_every_turns: int = Field(2, ge=1, le=10)
+    director_group_turn_limit: int = Field(3, ge=1, le=12)
     director_max_chat_batches_before_anchor: int = Field(2, ge=1, le=10)
     director_offtopic_policy: str = Field("defer", max_length=40)
     director_sc_burst_policy: str = Field("summarize_batch", max_length=40)
@@ -77,7 +78,7 @@ class LiveSessionConfig(BaseModel):
 
 
 class ReplyRecentRequest(BaseModel):
-    content: str = "請根據導播提供的 Topic Pack / fact card / 已帶入的 YouTube 直播留言上下文回應。不要自行開啟瀏覽器或搜尋網頁。"
+    content: str = "請根據已提供的 Topic Pack / fact card / YouTube 直播留言上下文回應。不要自行開啟瀏覽器或搜尋網頁。"
     memoria_session_id: str = ""
     character_ids: list[str] = Field(default_factory=list)
     event_ids: list[int] = Field(default_factory=list)

@@ -1,4 +1,4 @@
-from core.llm_gateway import ILLMProvider, LLMRouter
+from core.llm_gateway import ILLMProvider, LLMRouter, OllamaProvider
 import json
 
 
@@ -28,6 +28,58 @@ class _FakeProvider(ILLMProvider):
         if self.calls == 1:
             return self.first_response, []
         return '{"reply": "ok"}', []
+
+
+class _NativeOllamaClientWithoutTools:
+    def __init__(self):
+        self.calls = []
+
+    def chat(self, model, messages, options, format=None):
+        self.calls.append({
+            "model": model,
+            "messages": messages,
+            "options": options,
+            "format": format,
+        })
+        return {"message": {"content": "native ok", "tool_calls": []}}
+
+
+class _FailingOpenAICompatibleClient:
+    class _Completions:
+        def create(self, **_kwargs):
+            raise RuntimeError("openai-compatible unavailable")
+
+    class _Chat:
+        completions = None
+
+    def __init__(self):
+        self.chat = self._Chat()
+        self.chat.completions = self._Completions()
+
+
+def test_ollama_provider_does_not_pass_tools_to_native_client_without_tools(monkeypatch):
+    logs = []
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_error",
+        lambda *args, **kwargs: logs.append((args, kwargs)),
+    )
+    provider = OllamaProvider()
+    native = _NativeOllamaClientWithoutTools()
+    provider._client = native
+    provider._openai_client = _FailingOpenAICompatibleClient()
+
+    content, tool_calls = provider.generate_chat(
+        [{"role": "user", "content": "需要工具判斷"}],
+        "fake-model",
+        tools=[{"type": "function", "function": {"name": "direct_chat", "parameters": {"type": "object"}}}],
+        tool_choice="required",
+    )
+
+    assert content == "native ok"
+    assert tool_calls == []
+    assert native.calls
+    assert "tools" not in native.calls[0]
+    assert logs
 
 
 def test_fenced_json_response_is_normalized_without_retry(monkeypatch):

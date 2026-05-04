@@ -168,7 +168,8 @@ def test_personality_root_endpoint_removed_and_sync_requires_character_id(monkey
 
 def test_auto_persona_sync_uses_conversation_candidates_without_default_fallback():
     class FakeStorage:
-        def list_conversation_character_ids(self):
+        def list_conversation_character_ids(self, exclude_channels=()):
+            assert exclude_channels == ("youtube_live",)
             return ["char-a", "char-b"]
 
         def list_recent_conversation_character_ids(self, limit=50):
@@ -177,15 +178,59 @@ def test_auto_persona_sync_uses_conversation_candidates_without_default_fallback
     assert _persona_sync_candidate_character_ids(FakeStorage()) == ["char-a", "char-b"]
 
     class EmptyStorage:
-        def list_conversation_character_ids(self):
+        def list_conversation_character_ids(self, exclude_channels=()):
             return []
 
     assert _persona_sync_candidate_character_ids(EmptyStorage()) == []
 
 
+def test_auto_persona_sync_candidates_ignore_youtube_live_channel():
+    base = _tmp_dir()
+    storage = _storage(base)
+
+    try:
+        storage.create_conversation_session(
+            "sid-live",
+            channel="youtube_live",
+            channel_uid="yt-live-a",
+            user_id="__youtube_live__",
+            character_id="char-live",
+            channel_class="public",
+            persona_face="public",
+        )
+        storage.save_conversation_message(
+            "sid-live",
+            "assistant",
+            "直播測試回覆",
+            character_id="char-live",
+            character_name="直播角色",
+        )
+        storage.create_conversation_session(
+            "sid-dashboard",
+            channel="dashboard",
+            channel_uid="1",
+            user_id="1",
+            character_id="char-dashboard",
+            channel_class="public",
+            persona_face="public",
+        )
+        storage.save_conversation_message(
+            "sid-dashboard",
+            "assistant",
+            "一般公開回覆",
+            character_id="char-dashboard",
+            character_name="公開角色",
+        )
+
+        assert _persona_sync_candidate_character_ids(storage) == ["char-dashboard"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_auto_persona_sync_skip_log_suppresses_insufficient_messages():
     assert _should_log_persona_sync_skip("no_messages_yet") is False
     assert _should_log_persona_sync_skip("insufficient_messages(12/50)") is False
+    assert _should_log_persona_sync_skip("daily_limit_reached(2/2)") is False
     assert _should_log_persona_sync_skip("not_idle(1.0min < 10min)") is True
 
 

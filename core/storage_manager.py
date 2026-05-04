@@ -2313,19 +2313,24 @@ class StorageManager:
             return None
 
     def get_last_message_time_by_character_and_channel_class(
-        self, character_id: str, channel_class: str
+        self, character_id: str, channel_class: str, exclude_channels: tuple[str, ...] = ()
     ) -> "datetime | None":
         """回傳指定角色在指定 channel_class 的最後 assistant 發言時間。"""
         try:
             conn = self._init_conversation_db()
             cursor = conn.cursor()
-            cursor.execute(
+            query = (
                 "SELECT cm.timestamp FROM conversation_messages cm "
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
                 "WHERE cm.character_id = ? AND cm.role = 'assistant' AND cs.channel_class = ? "
-                "ORDER BY cm.msg_id DESC LIMIT 1",
-                (character_id, channel_class),
             )
+            params: list = [character_id, channel_class]
+            if exclude_channels:
+                placeholders = ",".join("?" for _ in exclude_channels)
+                query += f"AND cs.channel NOT IN ({placeholders}) "
+                params.extend(exclude_channels)
+            query += "ORDER BY cm.msg_id DESC LIMIT 1"
+            cursor.execute(query, tuple(params))
             row = cursor.fetchone()
             conn.close()
             if row and row[0]:
@@ -2374,26 +2379,35 @@ class StorageManager:
             return 0
 
     def count_messages_since_by_character_and_channel_class(
-        self, since_iso: str, character_id: str, channel_class: str
+        self, since_iso: str, character_id: str, channel_class: str, exclude_channels: tuple[str, ...] = ()
     ) -> int:
         """計算指定角色在 since_iso 之後的 assistant 發言數。"""
         try:
             conn = self._init_conversation_db()
             cursor = conn.cursor()
-            cursor.execute(
+            query = (
                 "SELECT COUNT(*) FROM conversation_messages cm "
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
                 "WHERE cm.character_id = ? AND cm.role = 'assistant' "
-                "AND cs.channel_class = ? AND cm.timestamp > ?",
-                (character_id, channel_class, since_iso),
+                "AND cs.channel_class = ? AND cm.timestamp > ? "
             )
+            params: list = [character_id, channel_class, since_iso]
+            if exclude_channels:
+                placeholders = ",".join("?" for _ in exclude_channels)
+                query += f"AND cs.channel NOT IN ({placeholders}) "
+                params.extend(exclude_channels)
+            cursor.execute(query, tuple(params))
             count = cursor.fetchone()[0]
             conn.close()
             return count
         except Exception:
             return 0
 
-    def list_conversation_character_ids(self, limit: int | None = None) -> list[str]:
+    def list_conversation_character_ids(
+        self,
+        limit: int | None = None,
+        exclude_channels: tuple[str, ...] = (),
+    ) -> list[str]:
         """列出實際有 assistant 發言的 character_id，供 PersonaSync 掃描候選角色。
 
         這是由 conversation DB 推導出的 dirty set：只有角色真的發言後才會出現在
@@ -2408,14 +2422,17 @@ class StorageManager:
                 "JOIN conversation_sessions cs ON cm.session_id = cs.session_id "
                 "WHERE cm.role = 'assistant' "
                 "AND cm.character_id IS NOT NULL AND cm.character_id != '' "
-                "GROUP BY cm.character_id "
-                "ORDER BY last_ts DESC"
             )
-            params: tuple = ()
+            params: list = []
+            if exclude_channels:
+                placeholders = ",".join("?" for _ in exclude_channels)
+                query += f"AND cs.channel NOT IN ({placeholders}) "
+                params.extend(exclude_channels)
+            query += "GROUP BY cm.character_id ORDER BY last_ts DESC"
             if limit is not None:
                 query += " LIMIT ?"
-                params = (limit,)
-            cursor.execute(query, params)
+                params.append(limit)
+            cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
             conn.close()
             return [r[0] for r in rows if r and r[0]]

@@ -69,6 +69,125 @@ def require_bridge_key(request: Request) -> None:
         raise HTTPException(status_code=403, detail="invalid bridge key")
 
 
+def _sanitize_chat_preview_message(message: dict) -> dict:
+    if not isinstance(message, dict):
+        return {}
+    return {
+        "message_id": message.get("message_id"),
+        "role": str(message.get("role") or ""),
+        "content": str(message.get("content") or ""),
+        "created_at": message.get("created_at") or message.get("timestamp") or "",
+        "timestamp": message.get("timestamp") or message.get("created_at") or "",
+        "character_id": message.get("character_id"),
+        "character_name": message.get("character_name"),
+    }
+
+
+def _sanitize_chat_preview_session(session: dict | None) -> dict | None:
+    if not isinstance(session, dict):
+        return None
+    allowed = (
+        "session_id",
+        "channel",
+        "channel_uid",
+        "character_id",
+        "character_ids",
+        "session_mode",
+        "group_name",
+        "last_active",
+        "is_active",
+        "message_count",
+    )
+    return {key: session.get(key) for key in allowed if key in session}
+
+
+def _sanitize_public_text(value: Any, *, max_chars: int = 800) -> str:
+    text = str(value or "")
+    hidden_markers = (
+        "<external_chat_context",
+        "<topic_pack_fact_cards",
+        "hidden external context",
+        "完整 SC 清單",
+    )
+    if any(marker in text for marker in hidden_markers):
+        return "[hidden context]"
+    if len(text) > max_chars:
+        return f"{text[:max_chars]}... [truncated {len(text)} chars]"
+    return text
+
+
+def _sanitize_interaction_metadata(value: Any, *, depth: int = 0) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        if len(value) > 16 and all(isinstance(item, (int, float)) for item in value):
+            return f"[embedding {len(value)} dims]"
+        return [_sanitize_interaction_metadata(item, depth=depth + 1) for item in value[:24]]
+    if not isinstance(value, dict):
+        if isinstance(value, str):
+            return _sanitize_public_text(value)
+        return value
+
+    output: dict[str, Any] = {}
+    for key, raw in value.items():
+        key_str = str(key)
+        key_lower = key_str.lower()
+        if key_lower in {"embedding", "embeddings", "embedding_vector", "embedding_blob", "vector"}:
+            output[key_str] = (
+                f"[embedding {len(raw)} dims]" if isinstance(raw, list) else "[hidden embedding]"
+            )
+            continue
+        if (
+            "prompt" in key_lower
+            or key_lower in {"hidden_context", "external_context", "context_text", "raw_context"}
+        ):
+            output[key_str] = "[hidden]"
+            continue
+        if key_lower in {"events", "event_ids", "super_chats", "comments"} and isinstance(raw, list):
+            output[key_str] = {"count": len(raw)}
+            continue
+        if key_lower == "decision" and isinstance(raw, dict):
+            output[key_str] = {
+                "action": raw.get("action"),
+                "reason": raw.get("reason"),
+                "current_topic": raw.get("current_topic"),
+            }
+            continue
+        if key_lower == "summary" and isinstance(raw, dict):
+            allowed_summary = (
+                "source",
+                "source_session_id",
+                "connector_id",
+                "video_id",
+                "live_chat_id",
+                "event_count",
+                "dropped_count",
+            )
+            output[key_str] = {
+                summary_key: raw.get(summary_key)
+                for summary_key in allowed_summary
+                if summary_key in raw
+            }
+            continue
+        output[key_str] = (
+            "[nested]"
+            if depth >= 3
+            else _sanitize_interaction_metadata(raw, depth=depth + 1)
+        )
+    return output
+
+
+def _sanitize_interaction(interaction: dict | None) -> dict | None:
+    if not isinstance(interaction, dict):
+        return None
+    sanitized = dict(interaction)
+    sanitized["content"] = _sanitize_public_text(sanitized.get("content"))
+    sanitized["reply_text"] = _sanitize_public_text(sanitized.get("reply_text"))
+    sanitized["closure_text"] = _sanitize_public_text(sanitized.get("closure_text"))
+    sanitized["metadata"] = _sanitize_interaction_metadata(sanitized.get("metadata") or {})
+    return sanitized
+
+
 def _public_connector(connector: dict | None) -> dict | None:
     if not connector:
         return None
@@ -106,6 +225,18 @@ async def health():
 @app.get("/ui")
 async def bridge_ui():
     return FileResponse(os.path.join(STATIC_ROOT, "index.html"))
+
+
+@app.get("/live/")
+@app.get("/live")
+async def bridge_live():
+    return FileResponse(os.path.join(STATIC_ROOT, "live.html"))
+
+
+@app.get("/live-chat/")
+@app.get("/live-chat")
+async def bridge_live_chat():
+    return FileResponse(os.path.join(STATIC_ROOT, "live_chat.html"))
 
 
 @app.get("/connectors")
@@ -267,14 +398,19 @@ async def recent_events(
 ):
     if not storage.get_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
+    events = storage.list_events(
+        session_id,
+        limit=limit,
+        after_id=after_id,
+        uninjected_only=uninjected_only,
+    )
     return {
         "session_id": session_id,
-        "events": storage.list_events(
-            session_id,
-            limit=limit,
-            after_id=after_id,
-            uninjected_only=uninjected_only,
-        ),
+        "events": [
+            public_event
+            for event in events
+            if (public_event := manager._public_live_event(event))
+        ],
     }
 
 
@@ -302,10 +438,15 @@ async def events_stream(session_id: str):
 async def list_session_interactions(session_id: str, limit: int = 100):
     if not storage.get_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
+    interactions = [
+        sanitized
+        for interaction in storage.list_interactions(session_id, limit=limit)
+        if (sanitized := _sanitize_interaction(interaction))
+    ]
     return {
         "session_id": session_id,
-        "interactions": storage.list_interactions(session_id, limit=limit),
-        "active": storage.get_active_interaction(session_id),
+        "interactions": interactions,
+        "active": _sanitize_interaction(storage.get_active_interaction(session_id)),
     }
 
 
@@ -353,11 +494,15 @@ async def get_chat_preview(session_id: str, limit: int = 80):
     if not isinstance(messages, list):
         messages = []
     limit = max(1, min(int(limit or 80), 200))
-    visible_messages = messages[-limit:]
+    visible_messages = [
+        sanitized
+        for message in messages[-limit:]
+        if (sanitized := _sanitize_chat_preview_message(message))
+    ]
     payload = {
         "bridge_session_id": session_id,
         "memoria_session_id": target_session_id,
-        "session": history.get("session") if isinstance(history, dict) else None,
+        "session": _sanitize_chat_preview_session(history.get("session") if isinstance(history, dict) else None),
         "messages": visible_messages,
         "message_count": len(messages),
         "stale": False,

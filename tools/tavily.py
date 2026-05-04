@@ -67,17 +67,27 @@ def search_web(query: str, topic: str = "general") -> str:
         data = resp.json()
         results = data.get("results", [])
         
-        formatted_results = []
+        formatted_text_results = []
+        structured_results = []
         for idx, r in enumerate(results, 1):
             title = r.get("title", "")
+            url = r.get("url", "")
             content = r.get("content", "")
-            formatted_results.append(f"[{idx}] {title}\n{content}")
+            formatted_text_results.append(f"[{idx}] {title}\n{content}")
+            structured_results.append({
+                "title": title,
+                "url": url,
+                "content": content,
+            })
         
-        final_str = "\n\n".join(formatted_results)
+        final_str = "\n\n".join(formatted_text_results)
         if not final_str:
             return json.dumps({"message": "找不到相關結果"}, ensure_ascii=False)
         
-        return json.dumps({"search_results": final_str}, ensure_ascii=False)
+        return json.dumps({
+            "search_results": final_str,
+            "results": structured_results,
+        }, ensure_ascii=False)
         
     except Exception as e:
         SystemLogger.log_error("Tavily", f"搜尋過程中發生錯誤: {e}")
