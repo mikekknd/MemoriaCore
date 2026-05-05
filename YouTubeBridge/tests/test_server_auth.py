@@ -17,10 +17,11 @@ spec.loader.exec_module(server_module)
 require_bridge_key = server_module.require_bridge_key
 
 
-def _request(host: str, key: str = ""):
+def _request(host: str, key: str = "", path: str = ""):
     return SimpleNamespace(
         client=SimpleNamespace(host=host),
         headers={"X-Bridge-Key": key} if key else {},
+        url=SimpleNamespace(path=path) if path else None,
     )
 
 
@@ -37,6 +38,17 @@ def test_bridge_key_accepts_matching_loopback_header(monkeypatch):
     monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
 
     require_bridge_key(_request("127.0.0.1", key="secret"))
+
+
+def test_ui_config_bypasses_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/ui-config"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/ui-config"))
+
+    assert exc.value.status_code == 403
 
 
 def test_live_page_static_files_are_registered():

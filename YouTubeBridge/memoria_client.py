@@ -294,6 +294,18 @@ class MemoriaClient:
         result = data.get("result") if isinstance(data, dict) else None
         return result if isinstance(result, dict) else {}
 
+    def get_prompt_template(self, prompt_key: str) -> str:
+        self.ensure_auth()
+        response = self.session.get(
+            f"{self.base_url}/llm/prompt-template/{prompt_key}",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"MemoriaCore prompt template failed: HTTP {response.status_code} {response.text[:500]}")
+        data = response.json()
+        return str(data.get("template") or "")
+
     def embed_text(self, text: str, model: str = "") -> dict[str, Any]:
         self.ensure_auth()
         response = self.session.post(

@@ -51,6 +51,15 @@ async def generate_prompt_json(body: PromptJsonRequest, _current_user: dict = De
     }
 
 
+@router.get("/prompt-template/{prompt_key}")
+async def get_prompt_template(prompt_key: str, _current_user: dict = Depends(require_admin_user)):
+    """回傳 prompt 模板字串，供外部子專案（如 YouTubeBridge）取用。"""
+    try:
+        return {"prompt_key": prompt_key, "template": get_prompt_manager().get(prompt_key)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/embed")
 async def embed_text(body: EmbedTextRequest, _current_user: dict = Depends(require_admin_user)):
     """回傳目前 MemoriaCore embedding provider 的 dense vector。

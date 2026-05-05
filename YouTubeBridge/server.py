@@ -10,6 +10,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -62,6 +63,12 @@ manager = YouTubeBridgeManager(storage)
 summary_manager = YouTubeLiveSummaryManager(storage)
 
 
+_LOOPBACK_ONLY_PATHS = frozenset({
+    "/ui/", "/ui", "/live/", "/live", "/live-chat/", "/live-chat", "/ui-config",
+})
+_SSE_PATH_RE = re.compile(r"^/sessions/[^/]+/events$")
+
+
 def _is_loopback_request(request: Request) -> bool:
     host = request.client.host if request.client else ""
     try:
@@ -71,6 +78,11 @@ def _is_loopback_request(request: Request) -> bool:
 
 
 def require_bridge_key(request: Request) -> None:
+    path = getattr(getattr(request, "url", None), "path", "")
+    if path in _LOOPBACK_ONLY_PATHS or _SSE_PATH_RE.match(path):
+        if not _is_loopback_request(request):
+            raise HTTPException(status_code=403, detail="loopback access only")
+        return
     expected = os.getenv("YOUTUBE_BRIDGE_API_KEY", "").strip()
     if expected:
         if request.headers.get("X-Bridge-Key") != expected:
@@ -341,6 +353,12 @@ async def health():
     return {"ok": True}
 
 
+@app.get("/ui-config")
+async def ui_config():
+    key = os.getenv("YOUTUBE_BRIDGE_API_KEY", "").strip()
+    return {"bridge_key": key}
+
+
 @app.get("/ui/")
 @app.get("/ui")
 async def bridge_ui():
@@ -493,6 +511,10 @@ async def delete_session(session_id: str):
     deleted = storage.delete_session(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
+    runtimes = getattr(manager, "_runtimes", None)
+    if isinstance(runtimes, dict):
+        runtimes.pop(session_id, None)
+    chat_preview_cache.pop(session_id, None)
     return {"deleted": True, "session_id": session_id}
 
 

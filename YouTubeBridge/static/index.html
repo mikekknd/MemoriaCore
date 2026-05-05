@@ -840,11 +840,24 @@
       });
     }
 
+    let _bridgeKey = "";
+
+    async function initBridgeKey() {
+      try {
+        const cfg = await fetch("/ui-config").then((r) => r.json());
+        _bridgeKey = cfg.bridge_key || "";
+      } catch {
+        _bridgeKey = "";
+      }
+    }
+
     async function api(path, options = {}) {
+      const keyHeaders = _bridgeKey ? { "X-Bridge-Key": _bridgeKey } : {};
       const response = await fetch(path, {
         ...options,
         headers: {
           "Content-Type": "application/json",
+          ...keyHeaders,
           ...(options.headers || {}),
         },
       });
@@ -2212,7 +2225,7 @@
 
     installTestIds();
     updateTopicActionVisibility();
-    refreshAll().catch((error) => log("初始化失敗", String(error)));
+    initBridgeKey().then(() => refreshAll()).catch((error) => log("初始化失敗", String(error)));
   </script>
 </body>
 </html>

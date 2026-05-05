@@ -61,6 +61,28 @@ def test_default_fact_cards_dir_lives_under_runtime_tree():
     assert not DEFAULT_FACT_CARDS_DIR.is_relative_to(BRIDGE_ROOT)
 
 
+def test_resolve_gemini_executable_does_not_probe_machine_specific_d_drive(monkeypatch):
+    checked: list[str] = []
+    machine_specific_prefix = "\\".join(["D:", "AppData", "Roaming", "npm", "gemini"])
+
+    def fake_which(candidate: str) -> str:
+        checked.append(str(candidate))
+        if str(candidate).startswith(machine_specific_prefix):
+            return str(candidate)
+        return ""
+
+    monkeypatch.delenv("GEMINI_CLI_PATH", raising=False)
+    monkeypatch.setenv("APPDATA", r"C:\Users\alice\AppData\Roaming")
+    monkeypatch.setattr(fact_cards.Path, "home", staticmethod(lambda: Path(r"C:\Users\alice")))
+    monkeypatch.setattr(fact_cards.Path, "exists", lambda _path: False)
+    monkeypatch.setattr(fact_cards.shutil, "which", fake_which)
+
+    resolved = fact_cards._resolve_gemini_executable("gemini")
+
+    assert resolved == "gemini"
+    assert all(not path.startswith(machine_specific_prefix) for path in checked)
+
+
 def test_parse_fact_card_markdown_keeps_only_summary_and_facts():
     document = parse_fact_card_markdown(_sample_markdown(), source_name="anime-detail.md")
 

@@ -1,11 +1,11 @@
 """FactCards Markdown 解析與 Gemini CLI 產檔工具。"""
 from __future__ import annotations
 
+import json
 import re
 import os
 import shutil
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,15 +13,20 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from core.prompt_manager import get_prompt_manager
-
 
 DEFAULT_FACT_CARDS_DIR = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "FactCards"
 FACT_CARD_SOURCE_TYPE = "factcards_folder"
 FACT_CARD_DEFAULT_TAGS = ["factcards", "動畫新番", "anime_new_release"]
+
+
+def _load_local_prompt_template(key: str) -> str:
+    prompts_path = PROJECT_ROOT / "prompts_default.json"
+    try:
+        data = json.loads(prompts_path.read_text(encoding="utf-8"))
+        entry = data.get(key)
+        return str(entry.get("template") or "") if isinstance(entry, dict) else ""
+    except Exception:
+        return ""
 
 
 @dataclass(frozen=True)
@@ -98,10 +103,13 @@ def build_gemini_fact_card_prompt(
     output_name: str,
     session_title: str = "",
     director_guidance: str = "",
+    client=None,
 ) -> str:
     clean_topic = str(topic or "").strip() or "動畫新番最新一話細節討論"
     clean_output = Path(output_name).name
-    return get_prompt_manager().get("youtube_live_fact_card_gemini_file_prompt").format(
+    key = "youtube_live_fact_card_gemini_file_prompt"
+    template = client.get_prompt_template(key) if client else _load_local_prompt_template(key)
+    return template.format(
         output_name=clean_output,
         session_title=session_title or "動畫新番直播",
         director_guidance=director_guidance or "固定討論動畫新番，不切換到 LLM、美食或其他領域。",
@@ -114,9 +122,12 @@ def build_gemini_fact_card_stdout_prompt(
     topic: str,
     session_title: str = "",
     director_guidance: str = "",
+    client=None,
 ) -> str:
     clean_topic = str(topic or "").strip() or "動畫新番最新一話細節討論"
-    return get_prompt_manager().get("youtube_live_fact_card_gemini_stdout_prompt").format(
+    key = "youtube_live_fact_card_gemini_stdout_prompt"
+    template = client.get_prompt_template(key) if client else _load_local_prompt_template(key)
+    return template.format(
         session_title=session_title or "動畫新番直播",
         director_guidance=director_guidance or "固定討論動畫新番，不切換到 LLM、美食或其他領域。",
         topic=clean_topic,
@@ -185,6 +196,7 @@ def generate_fact_card_markdown_with_gemini(
     director_guidance: str = "",
     executable: str = "gemini",
     timeout_seconds: int = 300,
+    memoria_client=None,
 ) -> dict[str, Any]:
     root = Path(output_dir or DEFAULT_FACT_CARDS_DIR).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -195,6 +207,7 @@ def generate_fact_card_markdown_with_gemini(
         output_name=file_name,
         session_title=session_title,
         director_guidance=director_guidance,
+        client=memoria_client,
     )
     executable_path = _resolve_gemini_executable(executable)
     timeout = max(30, min(int(timeout_seconds or 300), 900))
@@ -206,6 +219,7 @@ def generate_fact_card_markdown_with_gemini(
         session_title=session_title,
         director_guidance=director_guidance,
         timeout=timeout,
+        client=memoria_client,
     )
     stdout_markdown = _valid_stdout_markdown(completed.stdout, source_name=file_name) if completed.returncode == 0 else ""
     if stdout_markdown:
@@ -308,11 +322,13 @@ def _run_fact_card_markdown_stdout(
     session_title: str,
     director_guidance: str,
     timeout: int,
+    client=None,
 ) -> subprocess.CompletedProcess[str]:
     prompt = build_gemini_fact_card_stdout_prompt(
         topic=topic,
         session_title=session_title,
         director_guidance=director_guidance,
+        client=client,
     )
     command = [
         executable_path,
@@ -474,8 +490,6 @@ def _resolve_gemini_executable(executable: str) -> str:
     candidates.extend([
         str(Path.home() / "AppData" / "Roaming" / "npm" / "gemini.cmd"),
         str(Path.home() / "AppData" / "Roaming" / "npm" / "gemini"),
-        r"D:\AppData\Roaming\npm\gemini.cmd",
-        r"D:\AppData\Roaming\npm\gemini",
     ])
     seen: set[str] = set()
     for candidate in candidates:

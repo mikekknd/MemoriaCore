@@ -2498,6 +2498,7 @@ class YouTubeBridgeManager:
             session_title=str(session.get("display_name") or session_id),
             director_guidance=str(session.get("director_guidance") or "固定討論動畫新番。"),
             timeout_seconds=timeout_seconds,
+            memoria_client=self._memoria_client(),
         )
         import_result = self.import_fact_card_file(
             session_id,
@@ -2533,6 +2534,7 @@ class YouTubeBridgeManager:
             session_title="動畫新番 FactCards",
             director_guidance="固定討論動畫新番，補充最新話劇情細節、作畫品質、演出超展開與社群討論。",
             timeout_seconds=timeout_seconds,
+            memoria_client=self._memoria_client(),
         )
         target_pack_id = self._ensure_fact_cards_standalone_pack(pack_id)
         import_result = self._import_fact_card_paths_to_pack(
