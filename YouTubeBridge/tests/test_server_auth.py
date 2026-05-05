@@ -25,6 +25,18 @@ def _request(host: str, key: str = "", path: str = ""):
     )
 
 
+def _control_ui_source() -> str:
+    static_root = Path(server_module.STATIC_ROOT)
+    parts = [(static_root / "index.html").read_text(encoding="utf-8")]
+    ui_root = static_root / "ui"
+    if ui_root.exists():
+        for name in ("index.css", "core.js", "selectors.js", "topic-packs.js", "control.js", "app.js"):
+            path = ui_root / name
+            if path.exists():
+                parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 def test_bridge_key_is_required_even_for_loopback(monkeypatch):
     monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
 
@@ -47,6 +59,17 @@ def test_ui_config_bypasses_key_only_for_loopback(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         require_bridge_key(_request("203.0.113.10", path="/ui-config"))
+
+    assert exc.value.status_code == 403
+
+
+def test_ui_assets_bypass_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/ui-assets/app.js"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/ui-assets/app.js"))
 
     assert exc.value.status_code == 403
 
@@ -117,14 +140,44 @@ def test_live_page_propagates_requested_session_id_to_live_chat_frame():
 
 
 def test_control_ui_honors_requested_session_id_on_initial_load():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
 
     assert "function requestedSessionIdFromUrl()" in index_html
     assert "loadSessions(requestedSessionIdFromUrl())" in index_html
 
 
-def test_control_ui_delete_session_clears_selection_instead_of_auto_selecting_next_session():
+def test_control_ui_loads_external_css_and_module_script():
     index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+
+    assert '<link rel="stylesheet" href="/ui-assets/index.css">' in index_html
+    assert '<script type="module" src="/ui-assets/app.js"></script>' in index_html
+    assert "<style>" not in index_html
+    assert "<script>\n" not in index_html
+
+
+@pytest.mark.asyncio
+async def test_ui_asset_route_serves_split_css_and_js():
+    css_response = await server_module.bridge_ui_asset("index.css")
+    js_response = await server_module.bridge_ui_asset("app.js")
+
+    assert Path(css_response.path).name == "index.css"
+    assert Path(js_response.path).name == "app.js"
+
+
+@pytest.mark.asyncio
+async def test_ui_asset_route_rejects_traversal_and_non_assets():
+    with pytest.raises(HTTPException) as traversal_exc:
+        await server_module.bridge_ui_asset("../index.html")
+
+    with pytest.raises(HTTPException) as html_exc:
+        await server_module.bridge_ui_asset("index.html")
+
+    assert traversal_exc.value.status_code == 404
+    assert html_exc.value.status_code == 404
+
+
+def test_control_ui_delete_session_clears_selection_instead_of_auto_selecting_next_session():
+    index_html = _control_ui_source()
 
     assert 'async function loadSessions(preferredId = "", options = {})' in index_html
     assert "const selectDefault = options.selectDefault !== false" in index_html
@@ -145,7 +198,7 @@ def test_control_ui_delete_session_clears_selection_instead_of_auto_selecting_ne
 
 
 def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
 
     assert 'id="importFactCardsFolder"' in index_html
     assert 'id="generateGeminiFactCards"' in index_html
@@ -213,7 +266,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
 
 
 def test_topic_pack_buttons_are_contextual_in_control_ui():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
 
     assert ".is-hidden { display: none !important; }" in index_html
     assert "function updateTopicActionVisibility()" in index_html
@@ -251,11 +304,13 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert '<button id="autoBuildTopicPack" class="primary is-hidden">依主題自動建立資料卡</button>' in index_html
     assert '<button id="generateGeminiFactCards" class="primary is-hidden">依主題生成 Fact Cards</button>' in index_html
     assert '<button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>' in index_html
-    assert "installTestIds();\n    updateTopicActionVisibility();" in index_html
+    init_start = index_html.index("installTestIds();")
+    init_block = index_html[init_start:index_html.index("initBridgeKey()", init_start)]
+    assert "updateTopicActionVisibility();" in init_block
 
 
 def test_topic_pack_vector_search_can_restore_full_entry_list():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
     search_block = index_html[
         index_html.index("async function searchTopicPack"):
         index_html.index("function subscribeEvents")
@@ -270,7 +325,7 @@ def test_topic_pack_vector_search_can_restore_full_entry_list():
 
 
 def test_topic_pack_rebuild_embeddings_action_lives_with_pack_controls():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
     pack_panel = index_html[
         index_html.index('<div class="topic-panel topic-pack-panel">'):
         index_html.index('<div class="topic-panel topic-entry-panel">')
@@ -285,7 +340,7 @@ def test_topic_pack_rebuild_embeddings_action_lives_with_pack_controls():
 
 
 def test_topic_pack_entry_list_drives_edit_and_delete_actions():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
 
     assert "currentTopicEntryId: 0" in index_html
     assert "function currentTopicEntryId()" in index_html
@@ -303,7 +358,7 @@ def test_topic_pack_entry_list_drives_edit_and_delete_actions():
 
 
 def test_topic_pack_entry_editor_can_cancel_editing():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
 
     assert "function cancelTopicEntryEdit()" in index_html
     assert "fillTopicEntryForm(null);" in index_html[
@@ -314,7 +369,7 @@ def test_topic_pack_entry_editor_can_cancel_editing():
 
 
 def test_topic_pack_entry_save_locks_editor_while_request_is_running():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
     update_block = index_html[
         index_html.index("async function updateTopicEntry"):
         index_html.index("async function deleteTopicEntry")
@@ -331,7 +386,7 @@ def test_topic_pack_entry_save_locks_editor_while_request_is_running():
 
 
 def test_fact_card_generation_shows_blocking_progress_and_clears_topic_on_success():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
     generate_block = index_html[
         index_html.index("async function generateGeminiFactCards"):
         index_html.index("async function rebuildTopicEmbeddings")
@@ -352,7 +407,7 @@ def test_fact_card_generation_shows_blocking_progress_and_clears_topic_on_succes
 
 
 def test_topic_pack_entry_save_clears_editor_after_success():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
     update_block = index_html[
         index_html.index("async function updateTopicEntry"):
         index_html.index("async function deleteTopicEntry")
@@ -366,7 +421,7 @@ def test_topic_pack_entry_save_clears_editor_after_success():
 
 
 def test_topic_pack_entry_editor_hides_system_metadata_fields():
-    index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
+    index_html = _control_ui_source()
 
     assert 'id="topicEntrySelectorRow" class="is-hidden"' in index_html
     assert 'id="topicEntryMetadataFields" class="is-hidden" aria-hidden="true"' in index_html

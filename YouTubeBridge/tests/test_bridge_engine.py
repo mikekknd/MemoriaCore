@@ -42,6 +42,18 @@ class FakeEmbeddingMemoriaClient:
         return {"dense": [0.7, 0.3], "model": model or "fake-embed"}
 
     def generate_prompt_json(self, *, prompt_key: str, variables: dict, task_key: str = "compress", temperature: float = 0.1, schema: dict | None = None):
+        if prompt_key == "youtube_live_audience_query_classifier_prompt":
+            events = json.loads(variables["events_json"])
+            text = " / ".join(str(event.get("message_text") or "") for event in events)
+            return {
+                "is_factual_question": "？" in text or "?" in text,
+                "needs_external_search": "？" in text or "?" in text,
+                "safe_search_allowed": True,
+                "sanitized_query": text,
+                "topic_scope": "anime_new_release",
+                "risk_label": "clean",
+                "reason": "測試用查詢分類。",
+            }
         assert prompt_key == "youtube_live_topic_pack_auto_build_prompt"
         return {
             "cards": [
@@ -357,6 +369,401 @@ def test_build_external_context_retrieves_relevant_topic_pack_fact_cards():
         assert food_stat["usage_count"] == 0
         assert stats["used_entry_count"] == 1
         assert stats["unused_entry_count"] == 1
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class OffTopicEmbeddingMemoriaClient:
+    def embed_text(self, text: str, model: str = ""):
+        if "拉麵" in text or "豚骨" in text:
+            return {"dense": [1.0, 0.0], "model": model or "fake-embed"}
+        return {"dense": [0.0, 1.0], "model": model or "fake-embed"}
+
+    def generate_prompt_json(self, *, prompt_key: str, variables: dict, task_key: str = "compress", temperature: float = 0.1, schema: dict | None = None):
+        assert prompt_key == "youtube_live_audience_query_classifier_prompt"
+        events = json.loads(variables["events_json"])
+        text = " / ".join(str(event.get("message_text") or "") for event in events)
+        return {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": text,
+            "topic_scope": "anime_new_release",
+            "risk_label": "clean",
+            "reason": "測試用查詢分類。",
+        }
+
+
+class ContractOnlyQueryClient(OffTopicEmbeddingMemoriaClient):
+    def generate_prompt_json(self, *, prompt_key: str, variables: dict, task_key: str = "compress", temperature: float = 0.1, schema: dict | None = None):
+        assert prompt_key == "youtube_live_audience_query_classifier_prompt"
+        return {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": "動畫新番 STAFF 名單與演出看點",
+            "topic_scope": "anime_new_release",
+            "risk_label": "clean",
+            "reason": "留言要求補充 STAFF 名單，屬於事實型查詢。",
+        }
+
+
+def test_audience_query_detection_uses_prompt_schema_contract():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=ContractOnlyQueryClient)
+        event = {
+            "message_text": "STAFF名單想補一下",
+            "safe_message_text": "STAFF名單想補一下",
+            "safety_status": "completed",
+            "safety_label": "clean",
+        }
+
+        query = manager._audience_query_text_from_events([event])
+
+        assert query == "動畫新番 STAFF 名單與演出看點"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_question_does_not_fallback_to_unrelated_fact_cards():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": False,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "完全不相關的拉麵資料",
+            "body": "豚骨拉麵的湯頭通常使用豬骨長時間熬煮。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.upsert_topic_pack_entry_embedding(entry["id"], [1.0, 0.0], model="fake-embed", content_hash="ramen")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "這部動畫的聲優陣容是誰？",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        payload, summary = manager.build_external_context("live-a")
+
+        assert "這部動畫的聲優陣容是誰？" in payload["context_text"]
+        assert "豚骨拉麵" not in payload["context_text"]
+        assert summary["query_resolution"]["local_answerable"] is False
+        assert summary["query_resolution"]["research_status"] == "disabled"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_question_queues_research_gate_without_blocking_injection(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "不相關的美食資料",
+            "body": "這張卡只描述拉麵湯頭，不能回答動畫聲優問題。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.upsert_topic_pack_entry_embedding(entry["id"], [1.0, 0.0], model="fake-embed", content_hash="ramen")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "最新一話的聲優陣容有什麼看點？",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        queued: list[dict] = []
+
+        def fail_inline_research(*_args, **_kwargs):
+            raise AssertionError("Research Gate must not run inline while building live context")
+
+        def fake_ensure_worker(session: dict, query: str, *, pack_id: int | None = None):
+            queued.append({
+                "session_id": session["session_id"],
+                "query": query,
+                "pack_id": pack_id,
+            })
+            return {"status": "queued", "query": query}
+
+        monkeypatch.setattr(manager, "_research_request_sync", fail_inline_research, raising=False)
+        monkeypatch.setattr(manager, "_ensure_audience_research_worker", fake_ensure_worker, raising=False)
+
+        with pytest.raises(ValueError, match="觀眾查詢資料搜尋中"):
+            manager.build_external_context("live-a")
+
+        assert queued
+        assert queued[0]["session_id"] == "live-a"
+        assert "最新一話的聲優陣容" in queued[0]["query"]
+        assert not storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_question_uses_completed_research_fact_card_on_next_injection():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "不相關的美食資料",
+            "body": "這張卡只描述拉麵湯頭，不能回答動畫聲優問題。",
+            "source_type": "manual",
+        })
+        research_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "最新一話聲優陣容整理",
+            "body": "summary: 官方與社群討論集中在主役聲線變化、配角登場時機與情緒爆發場面。",
+            "source_type": "research_gate",
+            "tags": ["research_gate"],
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.upsert_topic_pack_entry_embedding(research_entry["id"], [0.0, 1.0], model="fake-embed", content_hash="voice")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "最新一話的聲優陣容有什麼看點？",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+
+        payload, summary = manager.build_external_context("live-a")
+
+        assert "最新一話的聲優陣容有什麼看點？" in payload["context_text"]
+        assert "summary: 官方與社群討論" in payload["context_text"]
+        assert "拉麵湯頭" not in payload["context_text"]
+        assert summary["query_resolution"]["local_answerable"] is True
+        assert summary["query_resolution"]["research_status"] == "not_needed"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_research_worker_records_completed_status(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        calls: list[dict] = []
+
+        def fake_research_request_sync(session_id: str, query: str, *, pack_id: int | None = None, enforce_cooldown: bool = True):
+            calls.append({
+                "session_id": session_id,
+                "query": query,
+                "pack_id": pack_id,
+                "enforce_cooldown": enforce_cooldown,
+            })
+            created = storage.create_topic_pack_entry(int(pack_id or pack["id"]), {
+                "title": "最新一話聲優陣容整理",
+                "body": "summary: 官方與社群討論集中在主役聲線變化、配角登場時機與情緒爆發場面。",
+                "source_type": "research_gate",
+                "tags": ["research_gate"],
+            })
+            return {
+                "status": "completed",
+                "entry": created,
+                "record": {"status": "completed_with_results"},
+                "embedding": None,
+            }
+
+        monkeypatch.setattr(manager, "_research_request_sync", fake_research_request_sync, raising=False)
+
+        manager._run_audience_research_worker(
+            "live-a",
+            "voice-cast",
+            "最新一話的聲優陣容有什麼看點？",
+            pack_id=pack["id"],
+        )
+
+        assert calls
+        assert calls[0]["session_id"] == "live-a"
+        assert "最新一話的聲優陣容" in calls[0]["query"]
+        state = storage.get_director_state("live-a")
+        jobs = state["metadata"]["audience_query_research"]
+        assert jobs["voice-cast"]["status"] == "completed_with_results"
+        assert jobs["voice-cast"]["in_progress"] is False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_research_worker_requeues_stale_in_progress_job(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        query = "最新一話的聲優陣容有什麼看點？"
+        query_key = manager._audience_query_key("live-a", query)
+        manager._update_audience_research_job("live-a", query_key, {
+            "status": "running",
+            "in_progress": True,
+            "query": query,
+            "pack_id": 0,
+            "started_at": "2026-05-01T00:00:00",
+            "updated_at": "2026-05-01T00:00:00",
+            "error": "",
+        })
+        started_threads: list[dict] = []
+
+        class FakeThread:
+            def __init__(self, *, target, args, kwargs, name, daemon):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs
+                self.name = name
+                self.daemon = daemon
+
+            def is_alive(self):
+                return False
+
+            def start(self):
+                started_threads.append({
+                    "target": self.target,
+                    "args": self.args,
+                    "kwargs": self.kwargs,
+                    "name": self.name,
+                    "daemon": self.daemon,
+                })
+
+        monkeypatch.setattr(bridge_engine.threading, "Thread", FakeThread)
+
+        result = manager._ensure_audience_research_worker(
+            storage.get_session("live-a"),
+            query,
+            pack_id=None,
+        )
+
+        assert result["status"] == "queued"
+        assert started_threads
+        refreshed = manager._audience_research_job("live-a", query_key)
+        assert refreshed["status"] == "queued"
+        assert refreshed["in_progress"] is True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_completed_audience_research_card_is_used_even_without_embedding(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        research_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "無向量但已完成的聲優資料",
+            "body": "summary: worker 已整理出聲優陣容、配角登場與情緒爆發場面。",
+            "source_type": "research_gate",
+            "tags": ["research_gate"],
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "最新一話的聲優陣容有什麼看點？",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        monkeypatch.setattr(manager, "_ensure_session_topic_pack_embeddings", lambda _session_id: None)
+        query = "最新一話的聲優陣容有什麼看點？"
+        query_key = manager._audience_query_key("live-a", query)
+        manager._update_audience_research_job("live-a", query_key, {
+            "status": "completed_with_results",
+            "in_progress": False,
+            "query": query,
+            "entry_id": research_entry["id"],
+            "pack_id": pack["id"],
+        })
+
+        payload, summary = manager.build_external_context("live-a")
+
+        assert "summary: worker 已整理出聲優陣容" in payload["context_text"]
+        assert summary["query_resolution"]["research_status"] == "completed_with_results"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
