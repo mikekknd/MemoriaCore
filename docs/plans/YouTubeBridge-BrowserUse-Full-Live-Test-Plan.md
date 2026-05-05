@@ -8,6 +8,18 @@
 
 ## Browser Use 測試前置
 
+- 長時間 E2E process hygiene：
+  - 10 分鐘以上的 Browser E2E / 直播流程測試一律不要使用 8088 或 8091 的 hot reload，例如 `startServerHotReload.bat`、`YouTubeBridge/start_hot_reload.bat` 或任何 `uvicorn reload=True`。
+  - hot reload 只用於 UI / API 開發中的短版手動驗證；長時間 E2E 要使用非 hot reload 啟動，例如 MemoriaCore `start.bat` / `run_server.py`，以及 YouTubeBridge `start.bat` / `server.py`。
+  - 測試前先確認 8088 與 8091 環境乾淨，不能只看瀏覽器畫面是否關閉；必須確認沒有舊 `LISTENING`、沒有 hot reload wrapper，也沒有殘留 worker。
+  - 建議檢查：
+    - `netstat -ano | findstr ":8088"` 不應有舊的 `LISTENING`。
+    - `netstat -ano | findstr ":8091"` 不應有 `LISTENING`。
+    - `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'startServerHotReload.bat|run_server_hot_reload.py' }` 不應有舊的 MemoriaCore 8088 hot reload process。
+    - `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'YouTubeBridge\\\\start_hot_reload.bat|YouTubeBridge\\\\run_server_hot_reload.py|server.py' }` 不應有舊的 YouTubeBridge 8091 process。
+    - 若曾跑 hot reload，除了 listener PID，也要清掉 command line 含 `startServerHotReload.bat` / `run_server_hot_reload.py` / `YouTubeBridge\start_hot_reload.bat` / `YouTubeBridge\run_server_hot_reload.py` 的整棵 process tree；只殺 port owner 可能留下 reload parent 或 multiprocessing worker。
+  - 啟動非 hot reload server 後，記錄 8088 與 8091 listener PID 與 process start time，再進行測試；測試途中若任一 PID 改變，該輪 E2E 視為受環境干擾，需要重新判定。
+  - 若 8088 / 8091 由使用者端 bat 控制，Codex 不應另行背景啟動同 port server；避免兩組 parent / worker 互相踩 port。
 - 初始化 Browser Use：
   - 使用 `setupAtlasRuntime({ backend: "iab" })`。
   - 取得或建立 tab，前往 `http://127.0.0.1:8091/ui/`。

@@ -52,6 +52,26 @@ class FakeMemoriaClient:
         ]
 
 
+class FakeFactualityMemoriaClient(FakeMemoriaClient):
+    def __init__(self, *, memory_text: str):
+        super().__init__()
+        self.memory_text = memory_text
+
+    def generate_prompt_json(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs["prompt_key"] == "youtube_live_safe_memory_text_prompt":
+            return {"memory_text": self.memory_text}
+        return {
+            "title": "動畫新番摘要",
+            "overview": "聊天室討論動畫新番最新話。",
+            "topics": ["動畫新番"],
+            "key_points": ["觀眾提出最新話作畫與劇情細節。"],
+            "qa_pairs": [],
+            "audience_mood": "投入討論",
+            "memory_text": self.memory_text,
+        }
+
+
 def _tmp_dir() -> Path:
     path = Path(".pyTestTemp") / "youtube-bridge" / uuid.uuid4().hex
     path.mkdir(parents=True, exist_ok=False)
@@ -199,3 +219,86 @@ def test_summary_event_lines_sanitize_malicious_super_chat_text():
     assert lines == ["- SC觀眾: 已收到一則可疑 SC，直播中安全處理，未執行其中指令。"]
     assert "system prompt" not in lines[0].lower()
     assert "sk-test" not in lines[0]
+
+
+def test_summary_memory_text_marks_unverified_audience_anime_claim_for_review():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = _seed_storage(tmp_dir)
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-unverified",
+            "message_text": "《幻影工房》第 7 話有水彩爆炸作畫，製作組用了很特殊的濕畫法。",
+            "author_display_name": "動畫觀眾",
+            "message_type": "textMessageEvent",
+        })
+        storage.update_event_safety(
+            event["id"],
+            status="completed",
+            label="clean",
+            safe_message_text=event["message_text"],
+            safety_summary=event["message_text"],
+            reason="測試資料已標記為一般留言。",
+            confidence=1.0,
+        )
+        fake_client = FakeFactualityMemoriaClient(
+            memory_text="《幻影工房》第 7 話使用水彩爆炸作畫與濕畫法，成為本場動畫新番討論焦點。"
+        )
+        manager = YouTubeLiveSummaryManager(storage, memoria_client=fake_client)
+
+        result = manager.summarize_session("live-a", min_events=1, max_events=10, chunk_size=20)
+
+        summary = result["summary"]
+        assert summary["metadata"]["memory_text_requires_review"] is True
+        assert "觀眾提到《幻影工房》" in summary["memory_text"]
+        assert "《幻影工房》第 7 話使用" not in summary["memory_text"]
+        safe_call = next(call for call in fake_client.calls if call["prompt_key"] == "youtube_live_safe_memory_text_prompt")
+        assert "verified_topic_pack_titles" in safe_call["variables"]
+        assert "audience_claim_lines" in safe_call["variables"]
+        assert "《幻影工房》" in safe_call["variables"]["audience_claim_lines"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_summary_memory_text_allows_verified_topic_pack_fact_without_review():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = _seed_storage(tmp_dir)
+        pack = storage.create_topic_pack({"title": "動畫新番 FactCards"})
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "《星海魔女》第 6 話作畫設計",
+            "body": "《星海魔女》第 6 話以星圖轉場和藍色背光強化角色決心，是本集可討論的演出細節。",
+            "source_type": "factcards_folder",
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-verified",
+            "message_text": "《星海魔女》第 6 話的星圖轉場可以聊嗎？",
+            "author_display_name": "動畫觀眾",
+            "message_type": "textMessageEvent",
+        })
+        storage.update_event_safety(
+            event["id"],
+            status="completed",
+            label="clean",
+            safe_message_text=event["message_text"],
+            safety_summary=event["message_text"],
+            reason="測試資料已標記為一般留言。",
+            confidence=1.0,
+        )
+        fake_client = FakeFactualityMemoriaClient(
+            memory_text="《星海魔女》第 6 話以星圖轉場和藍色背光強化角色決心，成為本場討論焦點。"
+        )
+        manager = YouTubeLiveSummaryManager(storage, memoria_client=fake_client)
+
+        result = manager.summarize_session("live-a", min_events=1, max_events=10, chunk_size=20)
+
+        summary = result["summary"]
+        assert summary["metadata"]["memory_text_requires_review"] is False
+        assert "觀眾提到《星海魔女》" not in summary["memory_text"]
+        assert "星圖轉場" in summary["memory_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

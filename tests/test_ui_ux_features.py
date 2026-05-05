@@ -2,14 +2,17 @@
 import asyncio
 from pathlib import Path
 import shutil
+import threading
 import uuid
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 import api.dependencies as deps
 from api.middleware.auth import AuthMiddleware
 from api.main import _persona_sync_candidate_character_ids, _should_log_persona_sync_skip
+from api.models.requests import ChatSyncRequest
 from api.routers import auth, chat_rest, session, system
 from api.session_manager import session_manager
 from core.storage_manager import StorageManager
@@ -508,6 +511,67 @@ def test_stream_sync_emits_roster_changed_before_group_done(monkeypatch):
 
         messages = storage.load_conversation_messages(session_id)
         assert [m["role"] for m in messages[:2]] == ["system_event", "user"]
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
+        deps.character_mgr = None
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_stream_sync_cancels_group_task_when_client_disconnects(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-stream-cancel-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            if character_id in {"char-a", "char-b"}:
+                return {
+                    "character_id": character_id,
+                    "name": {"char-a": "角色 A", "char-b": "角色 B"}[character_id],
+                    "tts_language": "",
+                    "tts_rules": "",
+                }
+            return None
+
+    async def fake_group_loop(**kwargs):
+        kwargs["on_event"]({"type": "debug_tick"})
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    deps.character_mgr = FakeCharacterManager()
+    monkeypatch.setattr(chat_rest, "run_group_chat_loop", fake_group_loop)
+
+    try:
+        response = await chat_rest.chat_stream_sync(
+            ChatSyncRequest(
+                content="hello",
+                character_ids=["char-a", "char-b"],
+            ),
+            current_user={"id": "owner", "username": "owner", "role": "admin"},
+        )
+        iterator = response.body_iterator
+        first_event = await asyncio.wait_for(anext(iterator), timeout=1.0)
+        assert '"type": "debug_tick"' in first_event
+        assert started.is_set()
+
+        await iterator.aclose()
+        for _ in range(20):
+            if cancelled.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert cancelled.is_set()
     finally:
         session_manager._sessions.clear()
         session_manager.set_storage(None)

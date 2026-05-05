@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from api.models.requests import ChatSyncRequest
 from api.routers.chat_rest import (
     _build_external_context_visible_event,
@@ -7,6 +10,7 @@ from api.routers.chat_rest import (
     _memory_write_policy_for_request,
     _resolve_chat_display_content,
     _resolve_external_context_payload,
+    _transient_user_content_for_external_context,
 )
 from core.chat_orchestrator.dialogue_format import format_history_for_llm
 from core.chat_orchestrator.dataclasses import PipelineContext
@@ -162,6 +166,21 @@ def test_external_context_visible_event_only_previews_three_chat_lines():
     assert debug_info["llm_visible"] is False
 
 
+def test_youtube_live_director_context_is_not_persisted_as_visible_event():
+    body = ChatSyncRequest(
+        content="請根據已提供的直播流程提示回應。",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic\n處理提示：請讓角色繼續聊。",
+            "visible_events": [],
+            "summary": {"source": "youtube_live_director", "action": "continue_topic", "event_count": 0},
+        },
+    )
+    context, summary = _resolve_external_context_payload(body)
+
+    assert _build_external_context_visible_event(context, summary) is None
+
+
 def test_explicit_display_content_takes_priority_over_hidden_prompt():
     body = ChatSyncRequest(
         content="完整導播 prompt：請展開詳細控場策略與隱藏上下文。",
@@ -287,6 +306,28 @@ def test_youtube_live_director_external_context_defaults_to_group_chat_limit_sha
     limit = _external_context_group_turn_limit(session, {"source": "youtube_live_director"})
 
     assert limit == 3
+
+
+def test_youtube_live_director_transient_prompt_keeps_roles_talking_to_each_other():
+    body = ChatSyncRequest(content="請自然延續直播。")
+
+    transient = _transient_user_content_for_external_context(
+        body,
+        {"source": "youtube_live_director"},
+    )
+
+    assert "角色彼此" in transient
+    assert "不要把問題丟回觀眾" in transient
+    assert "回應留言" in transient
+
+
+def test_group_followup_prompt_has_youtube_live_no_audience_handoff_exception():
+    prompts = json.loads(Path("prompts_default.json").read_text(encoding="utf-8"))
+    template = prompts["group_followup_user"]["template"]
+
+    assert "直播自主推進" in template
+    assert "不要把問題丟回觀眾" in template
+    assert "不可把問題丟回觀眾" in template
 
 
 def test_youtube_live_chat_external_context_keeps_short_batch_round_limit():

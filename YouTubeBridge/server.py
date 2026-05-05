@@ -10,9 +10,16 @@ import asyncio
 import ipaddress
 import json
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+# Windows 預設 Proactor loop 在長時間本機 SSE / keep-alive 壓測下可能讓 uvicorn
+# accept socket 失效；server 啟動前改用 Selector policy，讓 8091 行為和 8088 一致。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -22,9 +29,11 @@ from bridge_engine import YouTubeBridgeManager
 from memoria_client import MemoriaClient
 from models import (
     CleanupRequest, ConnectorConfig, DirectorGuidanceRequest, DirectorStartRequest,
-    InterruptRequest, LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
+    E2ECheckpointRequest, FactCardGenerateRequest, FactCardImportRequest, InterruptRequest,
+    LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
     ResearchRequest, SummarizeRequest, TestChatGenerateRequest, TopicPackCreateRequest,
-    TopicPackAutoBuildRequest, TopicPackEntryCreateRequest, WriteMemoryRequest,
+    TopicPackAutoBuildRequest, TopicPackEntryCreateRequest, TopicPackEntryUpdateRequest,
+    TopicPackUpdateRequest, WriteMemoryRequest,
 )
 from storage import BridgeStorage, DEFAULT_CONNECTOR_ID
 from summary_engine import YouTubeLiveSummaryManager
@@ -32,6 +41,8 @@ from youtube_client import extract_video_id
 
 
 STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+E2E_CHECKPOINT_PATH = PROJECT_ROOT / "runtime" / "youtube_bridge_e2e_checkpoint.json"
 
 
 storage = BridgeStorage()
@@ -186,6 +197,115 @@ def _sanitize_interaction(interaction: dict | None) -> dict | None:
     sanitized["closure_text"] = _sanitize_public_text(sanitized.get("closure_text"))
     sanitized["metadata"] = _sanitize_interaction_metadata(sanitized.get("metadata") or {})
     return sanitized
+
+
+def _sanitize_topic_pack_usage_status(status: dict[str, Any]) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for item in status.get("entries") or []:
+        if not isinstance(item, dict):
+            continue
+        entries.append({
+            "entry_id": int(item.get("entry_id") or 0),
+            "pack_id": int(item.get("pack_id") or 0),
+            "title": str(item.get("title") or "")[:200],
+            "source_type": str(item.get("source_type") or "")[:80],
+            "usage_count": int(item.get("usage_count") or 0),
+            "avg_similarity": float(item.get("avg_similarity") or 0.0),
+            "last_used_at": str(item.get("last_used_at") or ""),
+            "usage_sources": [
+                str(source)[:80]
+                for source in (item.get("usage_sources") if isinstance(item.get("usage_sources"), list) else [])
+            ],
+        })
+    repeated = status.get("repeated_entry") if isinstance(status.get("repeated_entry"), dict) else None
+    research_gate_raw = status.get("research_gate") if isinstance(status.get("research_gate"), dict) else {}
+    research_statuses = research_gate_raw.get("statuses") if isinstance(research_gate_raw.get("statuses"), dict) else {}
+    research_gate = {
+        "total_count": int(research_gate_raw.get("total_count") or 0),
+        "success_count": int(research_gate_raw.get("success_count") or 0),
+        "degraded_count": int(research_gate_raw.get("degraded_count") or 0),
+        "statuses": {
+            str(key)[:80]: int(value or 0)
+            for key, value in research_statuses.items()
+            if str(key).strip()
+        },
+    }
+    return {
+        "session_id": str(status.get("session_id") or ""),
+        "total_entries": int(status.get("total_entries") or 0),
+        "used_entry_count": int(status.get("used_entry_count") or 0),
+        "unused_entry_count": int(status.get("unused_entry_count") or 0),
+        "low_unused": bool(status.get("low_unused")),
+        "repeated_entry": {
+            "entry_id": int(repeated.get("entry_id") or 0),
+            "recent_count": int(repeated.get("recent_count") or 0),
+            "title": str(repeated.get("title") or "")[:200],
+        } if repeated else None,
+        "last_replenished_at": str(status.get("last_replenished_at") or ""),
+        "last_replenish_reason": str(status.get("last_replenish_reason") or ""),
+        "last_replenish_status": str(status.get("last_replenish_status") or ""),
+        "worker_status": str(status.get("worker_status") or ""),
+        "last_replenish_fallback_mode": str(status.get("last_replenish_fallback_mode") or ""),
+        "last_replenish_error": str(status.get("last_replenish_error") or "")[:300],
+        "replenishment_in_progress": bool(status.get("replenishment_in_progress")),
+        "research_gate": research_gate,
+        "entries": entries,
+        "recent_usage_count": len(status.get("recent_usage") or []),
+    }
+
+
+def _build_e2e_checkpoint(storage_obj: BridgeStorage, session_id: str) -> dict[str, Any]:
+    session = storage_obj.get_session(session_id)
+    if not session:
+        raise ValueError("session not found")
+    packs = storage_obj.list_session_topic_packs(session_id)
+    interactions = storage_obj.list_interactions(session_id, limit=100)
+    events = storage_obj.list_events(session_id, limit=500)
+    active_interactions = [
+        item for item in interactions
+        if str(item.get("status") or "") in {"queued", "running", "active"}
+    ]
+    usage_stats = storage_obj.get_topic_pack_usage_stats(session_id)
+    director_state = storage_obj.get_director_state(session_id)
+    return {
+        "session_id": session_id,
+        "topic_pack_id": int(packs[0]["id"]) if packs else None,
+        "status": str(session.get("status") or ""),
+        "started_at": str(session.get("started_at") or session.get("created_at") or ""),
+        "ended_at": str(session.get("ended_at") or ""),
+        "last_message_count": storage_obj.count_events(session_id),
+        "last_sc_count": sum(1 for event in events if str(event.get("priority_class") or "") == "super_chat"),
+        "active_interaction_count": len(active_interactions),
+        "usage_stats": {
+            "total_entries": int(usage_stats.get("total_entries") or 0),
+            "used_entry_count": int(usage_stats.get("used_entry_count") or 0),
+            "unused_entry_count": int(usage_stats.get("unused_entry_count") or 0),
+            "low_unused": bool(usage_stats.get("low_unused")),
+            "repeated_entry": usage_stats.get("repeated_entry") if isinstance(usage_stats.get("repeated_entry"), dict) else None,
+        },
+        "director_status": str(director_state.get("status") or ""),
+        "checkpoint_created_at": datetime.now().isoformat(),
+        "can_resume": str(session.get("status") or "") not in {"deleted"},
+    }
+
+
+def _write_e2e_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    E2E_CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    E2E_CHECKPOINT_PATH.write_text(
+        json.dumps(checkpoint, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {"path": str(E2E_CHECKPOINT_PATH), "checkpoint": checkpoint}
+
+
+def _read_e2e_checkpoint() -> dict[str, Any] | None:
+    if not E2E_CHECKPOINT_PATH.exists():
+        return None
+    try:
+        payload = json.loads(E2E_CHECKPOINT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _public_connector(connector: dict | None) -> dict | None:
@@ -373,7 +493,7 @@ async def delete_session(session_id: str):
     deleted = storage.delete_session(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
-    return {"deleted": True}
+    return {"deleted": True, "session_id": session_id}
 
 
 @app.post("/sessions/{session_id}/start")
@@ -710,6 +830,32 @@ async def create_topic_pack(body: TopicPackCreateRequest):
     return storage.create_topic_pack(body.model_dump())
 
 
+@app.delete("/topic-packs")
+async def delete_all_topic_packs():
+    result = storage.delete_all_topic_packs()
+    return {
+        "status": "deleted",
+        "pack_count": int(result.get("pack_count") or 0),
+        "entry_count": int(result.get("entry_count") or 0),
+    }
+
+
+@app.put("/topic-packs/{pack_id}")
+async def update_topic_pack(pack_id: int, body: TopicPackUpdateRequest):
+    try:
+        return storage.update_topic_pack(pack_id, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "不存在" in str(exc) else 400, detail=str(exc))
+
+
+@app.delete("/topic-packs/{pack_id}")
+async def delete_topic_pack(pack_id: int):
+    result = storage.delete_topic_pack(pack_id)
+    if not result.get("deleted"):
+        raise HTTPException(status_code=404, detail="topic pack not found")
+    return {"status": "deleted", "pack_id": int(pack_id), "entry_count": int(result.get("entry_count") or 0)}
+
+
 @app.get("/topic-packs/{pack_id}/entries")
 async def list_topic_pack_entries(pack_id: int, limit: int = 100):
     if not storage.get_topic_pack(pack_id):
@@ -734,6 +880,33 @@ async def create_topic_pack_entry(pack_id: int, body: TopicPackEntryCreateReques
         raise HTTPException(status_code=404 if "不存在" in str(exc) else 400, detail=str(exc))
 
 
+@app.put("/topic-packs/{pack_id}/entries/{entry_id}")
+async def update_topic_pack_entry(pack_id: int, entry_id: int, body: TopicPackEntryUpdateRequest):
+    existing = storage.get_topic_pack_entry(entry_id)
+    if not existing or int(existing["pack_id"]) != int(pack_id):
+        raise HTTPException(status_code=404, detail="topic pack entry not found")
+    try:
+        entry = storage.update_topic_pack_entry(entry_id, body.model_dump())
+        try:
+            await asyncio.to_thread(manager.index_topic_pack_entry, int(entry["id"]))
+        except Exception as exc:
+            return {**entry, "embedding_status": "failed", "embedding_error": str(exc)[:300]}
+        return {**entry, "embedding_status": "indexed"}
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "不存在" in str(exc) else 400, detail=str(exc))
+
+
+@app.delete("/topic-packs/{pack_id}/entries/{entry_id}")
+async def delete_topic_pack_entry(pack_id: int, entry_id: int):
+    existing = storage.get_topic_pack_entry(entry_id)
+    if not existing or int(existing["pack_id"]) != int(pack_id):
+        raise HTTPException(status_code=404, detail="topic pack entry not found")
+    deleted = storage.delete_topic_pack_entry(entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="topic pack entry not found")
+    return {"status": "deleted", "pack_id": int(pack_id), "entry_id": int(entry_id)}
+
+
 @app.get("/sessions/{session_id}/topic-packs")
 async def list_session_topic_packs(session_id: str):
     if not storage.get_session(session_id):
@@ -745,20 +918,93 @@ async def list_session_topic_packs(session_id: str):
     }
 
 
-@app.get("/sessions/{session_id}/topic-packs/search")
-async def search_session_topic_packs(session_id: str, query: str, limit: int = 6):
+@app.get("/sessions/{session_id}/topic-packs/usage")
+async def get_session_topic_pack_usage(session_id: str):
     if not storage.get_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
+    return _sanitize_topic_pack_usage_status(manager.get_topic_pack_usage_status(session_id))
+
+
+@app.get("/testing/e2e-checkpoint")
+async def get_e2e_checkpoint(session_id: str | None = None):
+    if session_id:
+        try:
+            return _build_e2e_checkpoint(storage, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+    checkpoint = _read_e2e_checkpoint()
+    if not checkpoint:
+        raise HTTPException(status_code=404, detail="checkpoint not found")
+    return checkpoint
+
+
+@app.post("/testing/e2e-checkpoint")
+async def save_e2e_checkpoint(body: E2ECheckpointRequest):
     try:
-        embedding = await asyncio.to_thread(manager._embed_text, query)
+        checkpoint = _build_e2e_checkpoint(storage, body.session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return _write_e2e_checkpoint(checkpoint)
+
+
+@app.get("/sessions/{session_id}/topic-packs/search")
+async def search_session_topic_packs(session_id: str, query: str, limit: int = 6):
+    def _search_entries() -> dict[str, Any]:
+        if not storage.get_session(session_id):
+            raise ValueError("session not found")
+        embedding = manager._embed_text(query, timeout_seconds=20)
         vector = embedding.get("dense") if isinstance(embedding, dict) else []
         entries = storage.search_session_topic_pack_entries(session_id, vector, limit=limit, min_score=0.0)
+        storage.record_topic_pack_entry_usages(
+            session_id,
+            entries,
+            query_text=query,
+            usage_source="manual_search",
+        )
+        manager.maybe_replenish_fact_cards(
+            session_id,
+            reason="",
+            topic_hint=query,
+            run_inline=False,
+        )
         return {
             "session_id": session_id,
             "query": query,
             "embedding_model": embedding.get("model") if isinstance(embedding, dict) else "",
             "entries": entries,
         }
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_search_entries), timeout=30)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="topic pack search timeout")
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "session not found" in str(exc) else 400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/topic-packs/{pack_id}/search")
+async def search_topic_pack(pack_id: int, query: str, limit: int = 6):
+    def _search_entries() -> dict[str, Any]:
+        if not storage.get_topic_pack(pack_id):
+            raise ValueError("topic pack not found")
+        embedding = manager._embed_text(query, timeout_seconds=20)
+        vector = embedding.get("dense") if isinstance(embedding, dict) else []
+        entries = storage.search_topic_pack_entries(pack_id, vector, limit=limit, min_score=0.0)
+        return {
+            "pack_id": pack_id,
+            "query": query,
+            "embedding_model": embedding.get("model") if isinstance(embedding, dict) else "",
+            "entries": entries,
+        }
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_search_entries), timeout=30)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="topic pack search timeout")
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc) else 400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -769,6 +1015,36 @@ async def rebuild_topic_pack_embeddings(pack_id: int):
         raise HTTPException(status_code=404, detail="topic pack not found")
     try:
         return await asyncio.to_thread(manager.rebuild_topic_pack_embeddings, pack_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/topic-packs/fact-cards/import-folder")
+async def import_fact_cards_folder_to_pack(body: FactCardImportRequest):
+    try:
+        return await asyncio.to_thread(
+            manager.import_fact_cards_folder_to_pack,
+            pack_id=body.pack_id,
+            max_files=body.max_files,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/topic-packs/fact-cards/generate")
+async def generate_fact_cards_with_gemini_to_pack(body: FactCardGenerateRequest):
+    try:
+        return await asyncio.to_thread(
+            manager.generate_fact_cards_with_gemini_to_pack,
+            topic=body.topic,
+            pack_id=body.pack_id,
+            output_name=body.output_name or None,
+            timeout_seconds=body.timeout_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -789,6 +1065,38 @@ async def auto_build_session_topic_pack(session_id: str, body: TopicPackAutoBuil
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@app.post("/sessions/{session_id}/fact-cards/import-folder")
+async def import_fact_cards_folder(session_id: str, body: FactCardImportRequest):
+    try:
+        return await asyncio.to_thread(
+            manager.import_fact_cards_folder,
+            session_id,
+            pack_id=body.pack_id,
+            max_files=body.max_files,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/sessions/{session_id}/fact-cards/generate")
+async def generate_fact_cards_with_gemini(session_id: str, body: FactCardGenerateRequest):
+    try:
+        return await asyncio.to_thread(
+            manager.generate_fact_cards_with_gemini,
+            session_id,
+            topic=body.topic,
+            pack_id=body.pack_id,
+            output_name=body.output_name or None,
+            timeout_seconds=body.timeout_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @app.post("/sessions/{session_id}/topic-packs/{pack_id}")
 async def link_topic_pack(session_id: str, pack_id: int):
     try:
@@ -800,7 +1108,12 @@ async def link_topic_pack(session_id: str, pack_id: int):
 @app.post("/sessions/{session_id}/research/request")
 async def request_research(session_id: str, body: ResearchRequest):
     try:
-        return await manager.research_request(session_id, body.query, pack_id=body.pack_id)
+        return await manager.research_request(
+            session_id,
+            body.query,
+            pack_id=body.pack_id,
+            enforce_cooldown=False,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -867,6 +1180,8 @@ async def write_summary_memory(session_id: str, body: WriteMemoryRequest = Write
     memory_text = str(summary.get("memory_text") or "").strip()
     if not memory_text:
         raise HTTPException(status_code=400, detail="summary memory_text is empty")
+    if metadata.get("memory_text_requires_review") and not body.force:
+        raise HTTPException(status_code=409, detail="summary memory_text requires review before writing shared memory")
     character_ids = summary.get("character_ids") or session.get("character_ids") or []
     if not character_ids:
         raise HTTPException(status_code=400, detail="summary character_ids is empty")

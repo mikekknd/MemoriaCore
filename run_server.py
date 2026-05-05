@@ -1,4 +1,5 @@
 # 【環境假設】：Python 3.12, uvicorn, PyInstaller 打包環境
+import asyncio
 import signal
 import sys
 import os
@@ -7,6 +8,11 @@ import multiprocessing
 
 # huggingface_hub 舊版內部呼叫 resume_download 的 FutureWarning，來自第三方套件無法修改
 warnings.filterwarnings("ignore", message=".*resume_download.*", category=FutureWarning)
+
+# Windows 預設 Proactor loop 在長時間本機 SSE / keep-alive 壓測下可能讓 uvicorn
+# accept socket 失效；server 啟動前改用 Selector policy，避免 8088 停止 listen。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # import 期間暫時忽略 SIGINT，防止 Windows console 把 Ctrl+C 傳播給剛啟動的子進程
 _original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)

@@ -141,6 +141,8 @@ class YouTubeLiveSummaryManager:
 
         source_started_at = self._event_time(events[0])
         source_ended_at = finalized_at or self._event_time(events[-1])
+        verified_topic_pack_titles, verified_topic_pack_text = self._verified_topic_pack_context(session_id)
+        audience_claim_lines = self._audience_claim_lines(events)
         lines = self._event_lines(events)
         if len(lines) > max_events:
             lines = lines[:max_events]
@@ -190,10 +192,17 @@ class YouTubeLiveSummaryManager:
                 session=session,
                 summary=normalized,
                 summary_source=full_source,
+                verified_topic_pack_titles=verified_topic_pack_titles,
+                audience_claim_lines=audience_claim_lines,
             )
         normalized["memory_text"] = self._sanitize_memory_text(
             normalized.get("memory_text", ""),
             source_text=full_source,
+        )
+        normalized["memory_text"], memory_text_requires_review = self._apply_memory_factuality_gate(
+            normalized.get("memory_text", ""),
+            verified_text=verified_topic_pack_text,
+            audience_claim_lines=audience_claim_lines,
         )
         summary = self.storage.create_summary(
             session_id,
@@ -213,6 +222,9 @@ class YouTubeLiveSummaryManager:
                     "memoria_message_count": len(memoria_lines),
                     "truncated": self.storage.count_events(session_id, active_only=True) > event_count,
                     "memory_write_status": "not_started",
+                    "memory_text_requires_review": memory_text_requires_review,
+                    "verified_topic_pack_count": len(verified_topic_pack_titles),
+                    "audience_claim_count": len(audience_claim_lines),
                     "cleanup_required": True,
                 },
             },
@@ -324,6 +336,8 @@ class YouTubeLiveSummaryManager:
         session: dict[str, Any],
         summary: dict[str, Any],
         summary_source: str,
+        verified_topic_pack_titles: list[str] | None = None,
+        audience_claim_lines: list[str] | None = None,
     ) -> str:
         result = self.memoria_client.generate_prompt_json(
             prompt_key="youtube_live_safe_memory_text_prompt",
@@ -332,12 +346,107 @@ class YouTubeLiveSummaryManager:
                 "video_id": session.get("video_id", ""),
                 "summary_json": json.dumps(summary, ensure_ascii=False, indent=2),
                 "summary_source": summary_source,
+                "verified_topic_pack_titles": "\n".join(verified_topic_pack_titles or []) or "（無）",
+                "audience_claim_lines": "\n".join(audience_claim_lines or []) or "（無）",
             },
             task_key="compress",
             temperature=0.0,
             schema=SAFE_MEMORY_SCHEMA,
         )
         return str(result.get("memory_text") or summary.get("memory_text") or "").strip()
+
+    def _verified_topic_pack_context(self, session_id: str) -> tuple[list[str], str]:
+        entries = self.storage.list_session_topic_pack_entries(session_id, limit=500)
+        titles: list[str] = []
+        blocks: list[str] = []
+        trusted_sources = {"factcards_folder", "research_gate", "manual"}
+        for entry in entries:
+            source_type = str(entry.get("source_type") or "")
+            if source_type not in trusted_sources:
+                continue
+            title = str(entry.get("title") or "").strip()
+            body = str(entry.get("body") or "").strip()
+            if title:
+                titles.append(title)
+            if title or body:
+                blocks.append(f"{title}\n{body}".strip())
+        return titles, "\n\n".join(blocks)
+
+    @classmethod
+    def _audience_claim_lines(cls, events: list[dict[str, Any]]) -> list[str]:
+        lines: list[str] = []
+        for event in events:
+            if str(event.get("safety_status") or "pending") != "completed":
+                continue
+            if str(event.get("safety_label") or "unclassified") != "clean":
+                continue
+            text = str(event.get("safe_message_text") or event.get("message_text") or "").replace("\r", " ").replace("\n", " ").strip()
+            if not text:
+                continue
+            if not cls._extract_quoted_titles(text):
+                continue
+            author = str(event.get("author_display_name") or "匿名觀眾").strip() or "匿名觀眾"
+            lines.append(f"- {author}: {cls._truncate(text, 500)}")
+        return lines[:80]
+
+    @staticmethod
+    def _extract_quoted_titles(text: str) -> list[str]:
+        seen: list[str] = []
+        for match in re.finditer(r"《([^》]{1,80})》", str(text or "")):
+            title = match.group(1).strip()
+            if title and title not in seen:
+                seen.append(title)
+        return seen
+
+    @classmethod
+    def _apply_memory_factuality_gate(
+        cls,
+        memory_text: str,
+        *,
+        verified_text: str,
+        audience_claim_lines: list[str],
+    ) -> tuple[str, bool]:
+        text = str(memory_text or "").strip()
+        if not text:
+            return "", False
+        verified_corpus = str(verified_text or "")
+        unverified_titles: list[str] = []
+        for line in audience_claim_lines:
+            for title in cls._extract_quoted_titles(line):
+                if title not in verified_corpus and title not in unverified_titles:
+                    unverified_titles.append(title)
+        if not unverified_titles:
+            return text, False
+        requires_review = False
+        for title in unverified_titles:
+            quoted = f"《{title}》"
+            if quoted not in text:
+                continue
+            if f"觀眾提到{quoted}" in text or f"聊天室提到{quoted}" in text or f"有觀眾提到{quoted}" in text:
+                requires_review = True
+                continue
+            text = cls._rewrite_unverified_title_sentence(text, quoted)
+            requires_review = True
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\s*。", "。", text)
+        return text[:1200].strip(), requires_review
+
+    @staticmethod
+    def _rewrite_unverified_title_sentence(text: str, quoted_title: str) -> str:
+        parts = re.split(r"(。|！|？|!|\?)", text)
+        rebuilt: list[str] = []
+        replaced = False
+        for index in range(0, len(parts), 2):
+            sentence = parts[index]
+            punct = parts[index + 1] if index + 1 < len(parts) else ""
+            if quoted_title in sentence and not replaced:
+                rebuilt.append(f"觀眾提到{quoted_title}相關細節，尚未由 FactCard 或 Research Gate 驗證")
+                rebuilt.append("。")
+                replaced = True
+            else:
+                rebuilt.append(sentence)
+                rebuilt.append(punct)
+        return "".join(rebuilt)
 
     @staticmethod
     def _event_time(event: dict[str, Any]) -> str:

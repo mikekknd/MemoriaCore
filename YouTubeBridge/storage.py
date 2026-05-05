@@ -248,6 +248,20 @@ class BridgeStorage:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS topic_pack_entry_usages (
+                    session_id TEXT NOT NULL,
+                    entry_id INTEGER NOT NULL,
+                    pack_id INTEGER NOT NULL,
+                    query_text TEXT DEFAULT '',
+                    similarity REAL DEFAULT 0,
+                    usage_source TEXT DEFAULT 'external_context',
+                    interaction_id TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS live_session_topic_packs (
                     session_id TEXT NOT NULL,
                     pack_id INTEGER NOT NULL,
@@ -348,6 +362,14 @@ class BridgeStorage:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_topic_pack_embeddings_pack "
                 "ON topic_pack_entry_embeddings(pack_id, entry_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_topic_pack_usages_session "
+                "ON topic_pack_entry_usages(session_id, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_topic_pack_usages_entry "
+                "ON topic_pack_entry_usages(session_id, entry_id)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_research_requests_session "
@@ -1021,6 +1043,7 @@ class BridgeStorage:
                 conn.execute("DELETE FROM live_interactions WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM live_director_state WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM live_session_topic_packs WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM topic_pack_entry_usages WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM research_requests WHERE session_id = ?", (session_id,))
                 rows = conn.execute(
                     "SELECT id, metadata_json FROM youtube_live_summaries WHERE session_id = ?",
@@ -1383,6 +1406,30 @@ class BridgeStorage:
             raise RuntimeError("topic pack 建立失敗")
         return pack
 
+    def update_topic_pack(self, pack_id: int, data: dict[str, Any]) -> dict:
+        now = datetime.now().isoformat()
+        title = str(data.get("title", "") or "").strip()
+        if not title:
+            raise ValueError("topic pack title 不可為空")
+        description = str(data.get("description", "") or "").strip()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE topic_packs
+                SET title = ?, description = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (title[:200], description[:1000], now, int(pack_id)),
+            )
+            if int(cursor.rowcount or 0) <= 0:
+                raise ValueError("topic pack 不存在")
+            conn.commit()
+            row = conn.execute("SELECT * FROM topic_packs WHERE id = ?", (int(pack_id),)).fetchone()
+        pack = self._row_to_topic_pack(row)
+        if not pack:
+            raise RuntimeError("topic pack 更新失敗")
+        return pack
+
     def list_topic_packs(self, *, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit or 100), 500))
         with self._lock, self._connect() as conn:
@@ -1427,6 +1474,120 @@ class BridgeStorage:
         if not entry:
             raise RuntimeError("topic pack entry 建立失敗")
         return entry
+
+    def update_topic_pack_entry(self, entry_id: int, data: dict[str, Any]) -> dict:
+        existing = self.get_topic_pack_entry(int(entry_id))
+        if not existing:
+            raise ValueError("topic pack entry 不存在")
+        title = str(data.get("title", "") or "").strip()
+        body = str(data.get("body", "") or "").strip()
+        if not title or not body:
+            raise ValueError("topic pack entry 需要 title 與 body")
+        tags = data.get("tags") if isinstance(data.get("tags"), list) else []
+        now = datetime.now().isoformat()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE topic_pack_entries
+                SET title = ?, body = ?, source_url = ?, source_type = ?, tags_json = ?
+                WHERE id = ?
+                """,
+                (
+                    title[:200],
+                    body[:4000],
+                    str(data.get("source_url", "") or "")[:1000],
+                    str(data.get("source_type", "manual") or "manual")[:80],
+                    self._json_dump([str(tag).strip() for tag in tags if str(tag).strip()]),
+                    int(entry_id),
+                ),
+            )
+            if int(cursor.rowcount or 0) <= 0:
+                raise ValueError("topic pack entry 不存在")
+            conn.execute("DELETE FROM topic_pack_entry_embeddings WHERE entry_id = ?", (int(entry_id),))
+            conn.execute("UPDATE topic_packs SET updated_at = ? WHERE id = ?", (now, int(existing["pack_id"])))
+            conn.commit()
+            row = conn.execute("SELECT * FROM topic_pack_entries WHERE id = ?", (int(entry_id),)).fetchone()
+        entry = self._row_to_topic_pack_entry(row)
+        if not entry:
+            raise RuntimeError("topic pack entry 更新失敗")
+        return entry
+
+    def delete_topic_pack_entry(self, entry_id: int) -> bool:
+        existing = self.get_topic_pack_entry(int(entry_id))
+        if not existing:
+            return False
+        now = datetime.now().isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM topic_pack_entry_embeddings WHERE entry_id = ?", (int(entry_id),))
+            conn.execute("DELETE FROM topic_pack_entry_usages WHERE entry_id = ?", (int(entry_id),))
+            conn.execute("UPDATE research_requests SET result_entry_id = NULL WHERE result_entry_id = ?", (int(entry_id),))
+            cursor = conn.execute("DELETE FROM topic_pack_entries WHERE id = ?", (int(entry_id),))
+            conn.execute("UPDATE topic_packs SET updated_at = ? WHERE id = ?", (now, int(existing["pack_id"])))
+            conn.commit()
+        return int(cursor.rowcount or 0) > 0
+
+    def delete_topic_pack(self, pack_id: int) -> dict[str, Any]:
+        pack_id = int(pack_id)
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT id FROM topic_packs WHERE id = ?", (pack_id,)).fetchone()
+            if not row:
+                return {"deleted": False, "pack_id": pack_id, "entry_count": 0}
+            entry_rows = conn.execute(
+                "SELECT id FROM topic_pack_entries WHERE pack_id = ?",
+                (pack_id,),
+            ).fetchall()
+            entry_ids = [int(item["id"]) for item in entry_rows]
+            entry_count = len(entry_ids)
+            if entry_ids:
+                placeholders = ",".join("?" for _ in entry_ids)
+                conn.execute(
+                    f"UPDATE research_requests SET result_entry_id = NULL WHERE result_entry_id IN ({placeholders})",
+                    entry_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM topic_pack_entry_embeddings WHERE entry_id IN ({placeholders})",
+                    entry_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM topic_pack_entry_usages WHERE entry_id IN ({placeholders})",
+                    entry_ids,
+                )
+            conn.execute("DELETE FROM topic_pack_entry_embeddings WHERE pack_id = ?", (pack_id,))
+            conn.execute("DELETE FROM topic_pack_entry_usages WHERE pack_id = ?", (pack_id,))
+            conn.execute("DELETE FROM live_session_topic_packs WHERE pack_id = ?", (pack_id,))
+            conn.execute("DELETE FROM topic_pack_entries WHERE pack_id = ?", (pack_id,))
+            cursor = conn.execute("DELETE FROM topic_packs WHERE id = ?", (pack_id,))
+            conn.commit()
+        return {
+            "deleted": int(cursor.rowcount or 0) > 0,
+            "pack_id": pack_id,
+            "entry_count": entry_count,
+        }
+
+    def delete_all_topic_packs(self) -> dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            pack_row = conn.execute("SELECT COUNT(*) AS count FROM topic_packs").fetchone()
+            entry_row = conn.execute("SELECT COUNT(*) AS count FROM topic_pack_entries").fetchone()
+            pack_count = int(pack_row["count"] or 0) if pack_row else 0
+            entry_count = int(entry_row["count"] or 0) if entry_row else 0
+            conn.execute(
+                """
+                UPDATE research_requests
+                SET result_entry_id = NULL
+                WHERE result_entry_id IN (SELECT id FROM topic_pack_entries)
+                """
+            )
+            conn.execute("DELETE FROM topic_pack_entry_embeddings")
+            conn.execute("DELETE FROM topic_pack_entry_usages")
+            conn.execute("DELETE FROM live_session_topic_packs")
+            conn.execute("DELETE FROM topic_pack_entries")
+            conn.execute("DELETE FROM topic_packs")
+            conn.commit()
+        return {
+            "deleted": pack_count > 0,
+            "pack_count": pack_count,
+            "entry_count": entry_count,
+        }
 
     def list_topic_pack_entries(self, pack_id: int, *, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit or 100), 500))
@@ -1559,6 +1720,245 @@ class BridgeStorage:
         scored.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
         return scored[:limit]
 
+    def search_topic_pack_entries(
+        self,
+        pack_id: int,
+        query_embedding: list[float],
+        *,
+        limit: int = 6,
+        min_score: float = 0.0,
+    ) -> list[dict]:
+        limit = max(1, min(int(limit or 6), 50))
+        query_vector = [float(value) for value in query_embedding if isinstance(value, int | float)]
+        if not query_vector:
+            return []
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.*, p.title AS pack_title, emb.embedding_model, emb.embedding_dim,
+                       emb.embedding_blob, emb.content_hash AS embedding_content_hash,
+                       emb.updated_at AS embedding_updated_at
+                FROM topic_packs p
+                JOIN topic_pack_entries e ON e.pack_id = p.id
+                JOIN topic_pack_entry_embeddings emb ON emb.entry_id = e.id
+                WHERE p.id = ?
+                """,
+                (int(pack_id),),
+            ).fetchall()
+        scored: list[dict] = []
+        for row in rows:
+            entry = self._row_to_topic_pack_entry(row)
+            if not entry:
+                continue
+            vector = self._blob_to_vector(row["embedding_blob"], int(row["embedding_dim"] or 0))
+            score = self._cosine_similarity(query_vector, vector)
+            if score < float(min_score or 0.0):
+                continue
+            entry.update({
+                "similarity": score,
+                "embedding_model": row["embedding_model"] or "",
+                "embedding_content_hash": row["embedding_content_hash"] or "",
+                "embedding_updated_at": row["embedding_updated_at"] or "",
+            })
+            scored.append(entry)
+        scored.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
+        return scored[:limit]
+
+    def record_topic_pack_entry_usages(
+        self,
+        session_id: str,
+        entries: list[dict[str, Any]],
+        *,
+        query_text: str = "",
+        usage_source: str = "external_context",
+        interaction_id: str | int | None = None,
+    ) -> list[dict[str, Any]]:
+        now = datetime.now().isoformat()
+        clean_session_id = str(session_id or "").strip()
+        if not clean_session_id or not entries:
+            return []
+        clean_source = str(usage_source or "external_context").strip()[:80] or "external_context"
+        clean_query = str(query_text or "").replace("\r", " ").replace("\n", " ").strip()[:1000]
+        clean_interaction_id = str(interaction_id or "").strip()[:120]
+        rows: list[tuple[str, int, int, str, float, str, str, str]] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            try:
+                entry_id = int(item.get("entry_id") or item.get("id") or 0)
+                pack_id = int(item.get("pack_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if entry_id <= 0:
+                continue
+            if pack_id <= 0:
+                entry = self.get_topic_pack_entry(entry_id)
+                if not entry:
+                    continue
+                pack_id = int(entry["pack_id"])
+            try:
+                similarity = float(item.get("similarity") or 0.0)
+            except (TypeError, ValueError):
+                similarity = 0.0
+            rows.append((
+                clean_session_id,
+                entry_id,
+                pack_id,
+                clean_query,
+                similarity,
+                clean_source,
+                clean_interaction_id,
+                now,
+            ))
+        if not rows:
+            return []
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO topic_pack_entry_usages (
+                    session_id, entry_id, pack_id, query_text, similarity,
+                    usage_source, interaction_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+        return [
+            {
+                "session_id": row[0],
+                "entry_id": row[1],
+                "pack_id": row[2],
+                "query_text": row[3],
+                "similarity": row[4],
+                "usage_source": row[5],
+                "interaction_id": row[6],
+                "created_at": row[7],
+            }
+            for row in rows
+        ]
+
+    def get_topic_pack_usage_stats(
+        self,
+        session_id: str,
+        *,
+        recent_limit: int = 8,
+        low_unused_threshold: int = 3,
+        repeat_threshold: int = 3,
+    ) -> dict[str, Any]:
+        recent_limit = max(1, min(int(recent_limit or 8), 100))
+        low_unused_threshold = max(0, int(low_unused_threshold or 0))
+        repeat_threshold = max(1, int(repeat_threshold or 1))
+        entries = self.list_session_topic_pack_entries(session_id, limit=500)
+        usage_by_entry: dict[int, dict[str, Any]] = {}
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT entry_id,
+                       COUNT(*) AS usage_count,
+                       AVG(similarity) AS avg_similarity,
+                       MAX(created_at) AS last_used_at
+                FROM topic_pack_entry_usages
+                WHERE session_id = ?
+                GROUP BY entry_id
+                """,
+                (session_id,),
+            ).fetchall()
+            source_rows = conn.execute(
+                """
+                SELECT entry_id, usage_source
+                FROM topic_pack_entry_usages
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                """,
+                (session_id,),
+            ).fetchall()
+            recent_rows = conn.execute(
+                """
+                SELECT session_id, entry_id, pack_id, query_text, similarity,
+                       usage_source, interaction_id, created_at
+                FROM topic_pack_entry_usages
+                WHERE session_id = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (session_id, recent_limit),
+            ).fetchall()
+        for row in rows:
+            usage_by_entry[int(row["entry_id"])] = {
+                "usage_count": int(row["usage_count"] or 0),
+                "avg_similarity": float(row["avg_similarity"] or 0.0),
+                "last_used_at": row["last_used_at"] or "",
+                "usage_sources": [],
+            }
+        for row in source_rows:
+            entry_id = int(row["entry_id"])
+            usage = usage_by_entry.setdefault(
+                entry_id,
+                {"usage_count": 0, "avg_similarity": 0.0, "last_used_at": "", "usage_sources": []},
+            )
+            source = str(row["usage_source"] or "").strip()
+            if source and source not in usage["usage_sources"]:
+                usage["usage_sources"].append(source)
+
+        stats_entries: list[dict[str, Any]] = []
+        for entry in entries:
+            entry_id = int(entry["id"])
+            usage = usage_by_entry.get(
+                entry_id,
+                {"usage_count": 0, "avg_similarity": 0.0, "last_used_at": "", "usage_sources": []},
+            )
+            stats_entries.append({
+                "entry_id": entry_id,
+                "pack_id": int(entry["pack_id"]),
+                "title": entry.get("title", ""),
+                "source_type": entry.get("source_type", ""),
+                "usage_count": int(usage.get("usage_count") or 0),
+                "avg_similarity": float(usage.get("avg_similarity") or 0.0),
+                "last_used_at": str(usage.get("last_used_at") or ""),
+                "usage_sources": list(usage.get("usage_sources") or []),
+            })
+
+        recent_usage = [
+            {
+                "session_id": row["session_id"],
+                "entry_id": int(row["entry_id"]),
+                "pack_id": int(row["pack_id"]),
+                "query_text": row["query_text"] or "",
+                "similarity": float(row["similarity"] or 0.0),
+                "usage_source": row["usage_source"] or "",
+                "interaction_id": row["interaction_id"] or "",
+                "created_at": row["created_at"],
+            }
+            for row in recent_rows
+        ]
+        recent_counts: dict[int, int] = {}
+        for item in recent_usage:
+            entry_id = int(item["entry_id"])
+            recent_counts[entry_id] = recent_counts.get(entry_id, 0) + 1
+        repeated_entry = None
+        for entry_id, count in sorted(recent_counts.items(), key=lambda pair: pair[1], reverse=True):
+            if count < repeat_threshold:
+                continue
+            entry = next((item for item in stats_entries if item["entry_id"] == entry_id), None)
+            repeated_entry = {
+                "entry_id": entry_id,
+                "recent_count": count,
+                "title": entry.get("title", "") if entry else "",
+            }
+            break
+        used_entry_count = sum(1 for item in stats_entries if int(item["usage_count"] or 0) > 0)
+        unused_entry_count = max(0, len(stats_entries) - used_entry_count)
+        return {
+            "session_id": session_id,
+            "total_entries": len(stats_entries),
+            "used_entry_count": used_entry_count,
+            "unused_entry_count": unused_entry_count,
+            "low_unused": unused_entry_count < low_unused_threshold,
+            "repeated_entry": repeated_entry,
+            "entries": stats_entries,
+            "recent_usage": recent_usage,
+        }
+
     def link_topic_pack_to_session(self, session_id: str, pack_id: int) -> dict:
         if not self.get_session(session_id):
             raise ValueError("live session 不存在")
@@ -1649,6 +2049,31 @@ class BridgeStorage:
         with self._lock, self._connect() as conn:
             row = conn.execute(f"SELECT COUNT(*) AS count FROM research_requests WHERE {where}", params).fetchone()
         return int(row["count"] or 0) if row else 0
+
+    def list_research_requests(self, session_id: str, *, limit: int = 50) -> list[dict]:
+        limit = max(1, min(int(limit or 50), 200))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM research_requests
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "session_id": row["session_id"],
+                "query": row["query"],
+                "status": row["status"],
+                "result_entry_id": row["result_entry_id"],
+                "created_at": row["created_at"],
+                "metadata": self._json_load(row["metadata_json"], {}),
+            }
+            for row in rows
+        ]
 
     def create_interaction(self, data: dict[str, Any]) -> dict:
         now = datetime.now().isoformat()

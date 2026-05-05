@@ -4,6 +4,7 @@ WebSocket 端點見 chat_ws.py；
 共用編排邏輯見 api/routers/chat/。
 """
 import asyncio
+import contextlib
 import json
 import re
 import queue as sync_queue
@@ -273,10 +274,7 @@ def _build_external_context_visible_event(
         preview_limit = 3
         preview_lines = _visible_context_lines(external_context, context_text, preview_limit)
     elif source == "youtube_live_director":
-        event_type = "youtube_live_director_notice"
-        title = "直播節奏"
-        preview_limit = 1
-        preview_lines = [_director_display_from_context(external_context)]
+        return None
     else:
         event_type = "external_context_notice"
         title = "外部上下文注入"
@@ -326,7 +324,11 @@ def _transient_user_content_for_external_context(body: ChatSyncRequest, external
         return ""
     source = str(external_context.get("source") or "").strip()
     if source == "youtube_live_director":
-        return "請根據已提供的直播流程提示回應。"
+        return (
+            "請根據已提供的直播流程提示回應。"
+            "這是直播自主推進，不保證有觀眾即時回覆；請讓角色彼此接話、補充或提出不同角度。"
+            "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+        )
     if source == "youtube_live":
         return "請根據已帶入的 YouTube 直播留言上下文回應。"
     return "請根據已帶入的外部上下文回應。"
@@ -703,55 +705,61 @@ async def chat_stream_sync(body: ChatSyncRequest, current_user: dict = Depends(g
                 max_turns_override=_external_context_group_turn_limit(s, external_context),
             ))
 
-            while not group_task.done():
-                try:
+            try:
+                while not group_task.done():
+                    try:
+                        event = event_q.get_nowait()
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    except sync_queue.Empty:
+                        await asyncio.sleep(0.1)
+
+                while not event_q.empty():
                     event = event_q.get_nowait()
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except sync_queue.Empty:
-                    await asyncio.sleep(0.1)
 
-            while not event_q.empty():
-                event = event_q.get_nowait()
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                try:
+                    turns = group_task.result()
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+                    return
 
-            try:
-                turns = group_task.result()
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'group_done', 'session_id': sid, 'turn_count': len(turns)}, ensure_ascii=False)}\n\n"
+
+                tts = get_tts_client() if body.include_speech else None
+                if tts:
+                    from core.chat_orchestrator.coordinator import _generate_tts_speech
+                    for turn in turns:
+                        reply_char = _get_session_character(turn["character_id"])
+                        speech = turn.get("speech")
+                        _tts_lang = reply_char.get("tts_language", "")
+                        _tts_rules = reply_char.get("tts_rules", "")
+                        if _tts_lang and not speech:
+                            speech = await asyncio.to_thread(
+                                _generate_tts_speech, turn["reply"], _tts_lang, _tts_rules, get_router())
+                        raw_tts_text = speech or _strip_markdown(turn["reply"])
+                        tts_text = raw_tts_text[:400] if raw_tts_text else ""
+                        if not tts_text:
+                            continue
+                        try:
+                            audio_bytes = await tts.synthesize(tts_text)
+                            if audio_bytes:
+                                tts_event = {
+                                    "type": "tts_audio",
+                                    "format": "mp3",
+                                    "data": base64.b64encode(audio_bytes).decode("ascii"),
+                                    "turn_index": turn["turn_index"],
+                                    "character_id": turn["character_id"],
+                                    "character_name": turn["character_name"],
+                                }
+                                yield f"data: {json.dumps(tts_event, ensure_ascii=False)}\n\n"
+                        except Exception:
+                            pass
                 return
-
-            yield f"data: {json.dumps({'type': 'group_done', 'session_id': sid, 'turn_count': len(turns)}, ensure_ascii=False)}\n\n"
-
-            tts = get_tts_client() if body.include_speech else None
-            if tts:
-                from core.chat_orchestrator.coordinator import _generate_tts_speech
-                for turn in turns:
-                    reply_char = _get_session_character(turn["character_id"])
-                    speech = turn.get("speech")
-                    _tts_lang = reply_char.get("tts_language", "")
-                    _tts_rules = reply_char.get("tts_rules", "")
-                    if _tts_lang and not speech:
-                        speech = await asyncio.to_thread(
-                            _generate_tts_speech, turn["reply"], _tts_lang, _tts_rules, get_router())
-                    raw_tts_text = speech or _strip_markdown(turn["reply"])
-                    tts_text = raw_tts_text[:400] if raw_tts_text else ""
-                    if not tts_text:
-                        continue
-                    try:
-                        audio_bytes = await tts.synthesize(tts_text)
-                        if audio_bytes:
-                            tts_event = {
-                                "type": "tts_audio",
-                                "format": "mp3",
-                                "data": base64.b64encode(audio_bytes).decode("ascii"),
-                                "turn_index": turn["turn_index"],
-                                "character_id": turn["character_id"],
-                                "character_name": turn["character_name"],
-                            }
-                            yield f"data: {json.dumps(tts_event, ensure_ascii=False)}\n\n"
-                    except Exception:
-                        pass
-            return
+            finally:
+                if not group_task.done():
+                    group_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await group_task
 
         orch_task = asyncio.create_task(asyncio.to_thread(
             orchestration_fn,

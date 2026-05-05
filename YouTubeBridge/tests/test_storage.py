@@ -404,6 +404,137 @@ def test_topic_pack_crud_and_session_linking():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_topic_pack_and_entry_can_be_edited_and_deleted():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+        })
+        pack = storage.create_topic_pack({
+            "title": "舊資料包",
+            "description": "舊描述",
+        })
+        entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "舊標題",
+            "body": "舊內容",
+            "source_url": "https://example.test/old",
+            "source_type": "manual",
+            "tags": ["old"],
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.upsert_topic_pack_entry_embedding(entry["id"], [1.0, 0.0], model="fake", content_hash="old")
+        storage.record_topic_pack_entry_usages(
+            "live-a",
+            [{"id": entry["id"], "pack_id": pack["id"], "similarity": 0.9}],
+            query_text="舊標題",
+            usage_source="manual_search",
+        )
+
+        updated_pack = storage.update_topic_pack(pack["id"], {
+            "title": "新資料包",
+            "description": "新描述",
+        })
+        updated_entry = storage.update_topic_pack_entry(entry["id"], {
+            "title": "新標題",
+            "body": "新內容",
+            "source_url": "https://example.test/new",
+            "source_type": "edited",
+            "tags": ["new", "anime"],
+        })
+
+        assert updated_pack["title"] == "新資料包"
+        assert updated_pack["description"] == "新描述"
+        assert storage.get_topic_pack(pack["id"])["updated_at"] >= pack["updated_at"]
+        assert updated_entry["title"] == "新標題"
+        assert updated_entry["body"] == "新內容"
+        assert updated_entry["source_url"] == "https://example.test/new"
+        assert updated_entry["source_type"] == "edited"
+        assert updated_entry["tags"] == ["new", "anime"]
+        assert storage.get_topic_pack_entry_embedding(entry["id"]) is None
+
+        deleted = storage.delete_topic_pack_entry(entry["id"])
+
+        assert deleted is True
+        assert storage.get_topic_pack_entry(entry["id"]) is None
+        assert storage.get_topic_pack_entry_embedding(entry["id"]) is None
+        stats = storage.get_topic_pack_usage_stats("live-a")
+        assert stats["entries"] == []
+        assert stats["used_entry_count"] == 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_delete_topic_pack_removes_entries_embeddings_links_and_usage():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+        })
+        pack = storage.create_topic_pack({
+            "title": "待刪資料包",
+            "description": "會一起清掉子資料",
+        })
+        first = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一張",
+            "body": "第一張內容",
+        })
+        second = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第二張",
+            "body": "第二張內容",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.upsert_topic_pack_entry_embedding(first["id"], [1.0, 0.0], model="fake", content_hash="first")
+        storage.upsert_topic_pack_entry_embedding(second["id"], [0.0, 1.0], model="fake", content_hash="second")
+        storage.record_topic_pack_entry_usages(
+            "live-a",
+            [
+                {"id": first["id"], "pack_id": pack["id"], "similarity": 0.8},
+                {"id": second["id"], "pack_id": pack["id"], "similarity": 0.7},
+            ],
+            query_text="刪除整包",
+            usage_source="manual_search",
+        )
+        storage.create_research_request(
+            "live-a",
+            "刪除後 research 不應保留 entry 外鍵",
+            status="completed_with_results",
+            result_entry_id=first["id"],
+        )
+
+        result = storage.delete_topic_pack(pack["id"])
+
+        assert result == {"deleted": True, "pack_id": pack["id"], "entry_count": 2}
+        assert storage.get_topic_pack(pack["id"]) is None
+        assert storage.list_topic_pack_entries(pack["id"]) == []
+        assert storage.get_topic_pack_entry(first["id"]) is None
+        assert storage.get_topic_pack_entry(second["id"]) is None
+        assert storage.get_topic_pack_entry_embedding(first["id"]) is None
+        assert storage.get_topic_pack_entry_embedding(second["id"]) is None
+        assert storage.list_session_topic_packs("live-a") == []
+        stats = storage.get_topic_pack_usage_stats("live-a")
+        assert stats["entries"] == []
+        assert stats["recent_usage"] == []
+        assert storage.list_research_requests("live-a")[0]["result_entry_id"] is None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_topic_pack_entry_embeddings_support_session_vector_search():
     tmp_dir = _tmp_dir()
     try:
@@ -442,6 +573,37 @@ def test_topic_pack_entry_embeddings_support_session_vector_search():
         assert results[0]["id"] == anime["id"]
         assert results[0]["similarity"] > 0.99
         assert storage.get_topic_pack_entry_embedding(anime["id"])["embedding_model"] == "fake-embed"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_topic_pack_entry_embeddings_support_pack_vector_search_without_session_link():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        pack = storage.create_topic_pack({
+            "title": "單包檢索",
+            "description": "不需要 live session 綁定",
+        })
+        anime = storage.create_topic_pack_entry(pack["id"], {
+            "title": "四月新番",
+            "body": "動畫新番討論動畫作品、製作公司與播出資訊。",
+            "source_type": "manual",
+        })
+        food = storage.create_topic_pack_entry(pack["id"], {
+            "title": "拉麵",
+            "body": "豚骨拉麵的湯頭通常濃厚，適合美食主題。",
+            "source_type": "manual",
+        })
+        storage.upsert_topic_pack_entry_embedding(anime["id"], [1.0, 0.0], model="fake-embed", content_hash="anime")
+        storage.upsert_topic_pack_entry_embedding(food["id"], [0.0, 1.0], model="fake-embed", content_hash="food")
+
+        results = storage.search_topic_pack_entries(pack["id"], [0.95, 0.05], limit=1)
+
+        assert len(results) == 1
+        assert results[0]["id"] == anime["id"]
+        assert results[0]["pack_id"] == pack["id"]
+        assert results[0]["similarity"] > 0.99
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -295,3 +295,35 @@ def test_logit_bias_survives_json_retry(monkeypatch):
 
     assert result == '{"reply": "ok"}'
     assert provider.logit_bias_per_call == [bias, bias]
+
+
+def test_youtube_safety_prompt_json_uses_output_limit(monkeypatch):
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_prompt",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_response",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_error",
+        lambda *args, **kwargs: None,
+    )
+
+    provider = _FakeProvider('{"classifications": []}')
+    router = LLMRouter()
+    router.register_route("router", provider, "fake-model")
+
+    result = router.generate(
+        "router",
+        [{"role": "user", "content": "請分類 YouTube 留言"}],
+        response_format={"type": "object"},
+        log_context={
+            "source": "prompt_json",
+            "prompt_key": "youtube_live_safety_classifier_prompt",
+        },
+    )
+
+    assert json.loads(result) == {"classifications": []}
+    assert provider.max_tokens_per_call == [4096]

@@ -1,6 +1,8 @@
 """管理用 LLM 任務端點。"""
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.dependencies import get_embed_model, get_memory_sys, get_router, require_admin_user
@@ -28,7 +30,9 @@ async def generate_prompt_json(body: PromptJsonRequest, _current_user: dict = De
         raise HTTPException(status_code=400, detail=f"缺少 prompt 變數：{exc}") from exc
 
     schema = body.response_schema or {"type": "object"}
-    result = get_router().generate_json(
+    llm_router = get_router()
+    result = await asyncio.to_thread(
+        llm_router.generate_json,
         body.task_key,
         [{"role": "user", "content": prompt}],
         schema=schema,

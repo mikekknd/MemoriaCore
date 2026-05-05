@@ -144,6 +144,7 @@
     button:disabled,
     a.button-link.disabled,
     a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-events: none; }
+    .is-hidden { display: none !important; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .status {
       display: inline-flex;
@@ -199,6 +200,95 @@
     .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .pane { display: none; }
     .pane.active { display: grid; gap: 12px; }
+    .topic-workspace {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.75fr) minmax(340px, 1.25fr) minmax(280px, 0.9fr);
+      gap: 14px;
+      align-items: start;
+    }
+    .topic-panel {
+      min-width: 0;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+    .topic-panel + .topic-panel {
+      border-left: 1px solid var(--line);
+      padding-left: 14px;
+    }
+    .topic-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .topic-panel-header h3 {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.3;
+    }
+    .topic-form-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .topic-form-actions.single { grid-template-columns: 1fr; }
+    .topic-ops-group {
+      display: grid;
+      gap: 8px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+    .topic-entry-list {
+      max-height: 300px;
+    }
+    .topic-entry-card p {
+      max-height: 8.6em;
+      overflow: hidden;
+    }
+    .blocking-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(15, 23, 42, 0.38);
+    }
+    .blocking-dialog {
+      width: min(420px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: #fff;
+      box-shadow: 0 18px 50px rgba(15, 23, 42, 0.22);
+      display: grid;
+      gap: 10px;
+    }
+    .blocking-dialog h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .progress-track {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--soft);
+    }
+    .progress-track span {
+      display: block;
+      width: 42%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+      animation: progress-slide 1.1s ease-in-out infinite;
+    }
+    @keyframes progress-slide {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(250%); }
+    }
     pre {
       margin: 0;
       max-height: 280px;
@@ -243,6 +333,13 @@
       main { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .session-actions { grid-template-columns: 1fr; }
+      .topic-workspace { grid-template-columns: 1fr; }
+      .topic-panel + .topic-panel {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        padding-left: 0;
+        padding-top: 14px;
+      }
       header { align-items: flex-start; flex-direction: column; }
       .right-rail {
         position: static;
@@ -263,6 +360,16 @@
       <button id="refreshAll">更新</button>
     </div>
   </header>
+
+  <div id="factCardGenerationOverlay" class="blocking-overlay is-hidden" aria-hidden="true">
+    <div class="blocking-dialog" role="dialog" aria-modal="true" aria-labelledby="factCardGenerationTitle">
+      <h3 id="factCardGenerationTitle">正在產生 Fact Cards</h3>
+      <p id="factCardGenerationMessage" class="muted" aria-live="polite">Gemini 正在搜尋並寫入資料卡，請稍候。</p>
+      <div class="progress-track" role="progressbar" aria-label="Fact Cards 產生進度">
+        <span></span>
+      </div>
+    </div>
+  </div>
 
   <main>
     <div class="stack">
@@ -467,7 +574,7 @@
         <div id="directorPane" class="pane">
           <div class="grid">
             <label>idle_seconds
-              <input id="directorIdle" type="number" min="10" max="3600" value="60">
+              <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="10" max="3600" value="60">
             </label>
             <label class="wide">本場直播方向
               <textarea id="directorGuidance" placeholder="例：測試 YouTube 留言注入、自動導播與摘要品質；中段示範互動，尾段收束成共通記憶。"></textarea>
@@ -482,50 +589,98 @@
         </div>
 
         <div id="topicPackPane" class="pane">
-          <div class="grid">
-            <label class="wide">本場資料包
-              <select id="topicPackSelect"></select>
-            </label>
-            <label>資料包名稱
-              <input id="topicPackTitle" placeholder="例：四月新番資料包">
-            </label>
-            <label>資料包描述
-              <input id="topicPackDescription" placeholder="直播前準備的 fact cards">
-            </label>
-            <label>Fact card 標題
-              <input id="topicEntryTitle" placeholder="例：作品 A 製作資訊">
-            </label>
-            <label class="wide">Fact card 內容
-              <textarea id="topicEntryBody" placeholder="貼上直播中可以引用的客觀資料。"></textarea>
-            </label>
-            <label class="wide">自動資料卡主題
-              <input id="autoBuildTopic" placeholder="例：四月新番入門、LLM 基礎、美食直播話題">
-            </label>
-            <label>自動建立張數
-              <input id="autoBuildCount" type="number" min="1" max="10" value="5">
-            </label>
-            <label>
-              <span><input id="autoBuildUseResearch" type="checkbox" checked style="width:auto;min-height:auto"> 使用 Research Gate 查詢</span>
-            </label>
-            <label class="wide">Research Gate 查詢
-              <input id="researchQuery" placeholder="例：某部動畫的播出時間與製作公司">
-            </label>
-            <label class="wide">向量檢索測試
-              <input id="topicSearchQuery" placeholder="例：觀眾問四月新番作品資訊時應該召回什麼">
-            </label>
+          <div class="topic-workspace">
+            <div class="topic-panel topic-pack-panel">
+              <div class="topic-panel-header">
+                <h3>資料包</h3>
+                <span id="topicPackState" class="status">尚未載入</span>
+              </div>
+              <label>目前資料包
+                <select id="topicPackSelect"></select>
+              </label>
+              <label>名稱
+                <input id="topicPackTitle" placeholder="例：四月新番資料包">
+              </label>
+              <label>管理備註
+                <textarea id="topicPackDescription" placeholder="只供管理辨識，不會影響檢索或直播內容"></textarea>
+              </label>
+              <div class="topic-form-actions">
+                <button id="refreshTopicPacks">重新載入清單</button>
+                <button id="createTopicPack" class="primary" disabled>建立</button>
+                <button id="updateTopicPack" class="is-hidden">儲存</button>
+                <button id="linkTopicPack" class="blue is-hidden">綁定本場</button>
+              </div>
+              <div class="topic-form-actions">
+                <button id="deleteTopicPack" class="danger is-hidden">刪除資料包</button>
+                <button id="rebuildTopicEmbeddings" class="is-hidden">重建向量</button>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="deleteAllTopicPacks" class="danger is-hidden">清空所有資料包</button>
+              </div>
+            </div>
+
+            <div class="topic-panel topic-entry-panel">
+              <div class="topic-panel-header">
+                <h3>Fact Cards</h3>
+                <span class="status">可編輯</span>
+              </div>
+              <label id="topicEntrySelectorRow" class="is-hidden">選擇 fact card
+                <select id="topicEntrySelect"></select>
+              </label>
+              <p class="muted">從下方資料包清單選一張卡片編輯；未選卡片時可直接填寫標題與內容新增。</p>
+              <label>標題
+                <input id="topicEntryTitle" placeholder="例：作品 A 製作資訊">
+              </label>
+              <div id="topicEntryMetadataFields" class="is-hidden" aria-hidden="true">
+                <input id="topicEntrySourceType" type="hidden" value="manual">
+                <input id="topicEntryTags" type="hidden">
+                <input id="topicEntrySourceUrl" type="hidden">
+              </div>
+              <label>內容
+                <textarea id="topicEntryBody" placeholder="貼上直播中可以引用的客觀資料。"></textarea>
+              </label>
+              <div class="topic-form-actions">
+                <button id="addTopicEntry" class="primary is-hidden">新增</button>
+                <button id="updateTopicEntry" class="is-hidden">儲存</button>
+                <button id="cancelTopicEntryEdit" class="is-hidden">取消</button>
+              </div>
+              <div id="topicPackEntries" class="list topic-entry-list"></div>
+            </div>
+
+            <div class="topic-panel topic-ops-panel">
+              <div class="topic-panel-header">
+                <h3>補卡與狀態</h3>
+              </div>
+              <span id="topicPackUsageState" class="status">已召回 0 / 未使用 0 / 最近補卡：尚無</span>
+              <label>生成主題（執行時使用，不會自動儲存）
+                <input id="autoBuildTopic" placeholder="例：四月新番最新話細節、作畫與劇情討論">
+              </label>
+              <div class="topic-form-actions single">
+                <button id="generateGeminiFactCards" class="primary is-hidden">依主題生成 Fact Cards</button>
+                <button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>
+              </div>
+              <div id="topicAutoBuildControls" class="topic-ops-group is-hidden">
+                <div class="grid">
+                  <label>自動建立張數
+                    <input id="autoBuildCount" type="number" min="1" max="10" value="5">
+                  </label>
+                  <label>
+                    <span><input id="autoBuildUseResearch" type="checkbox" checked style="width:auto;min-height:auto"> Research Gate</span>
+                  </label>
+                </div>
+                <div class="topic-form-actions single">
+                  <button id="autoBuildTopicPack" class="primary is-hidden">依主題自動建立資料卡</button>
+                </div>
+              </div>
+              <div class="topic-ops-group">
+                <label>向量檢索測試
+                  <input id="topicSearchQuery" placeholder="例：觀眾問四月新番作品資訊時應該召回什麼">
+                </label>
+                <button id="searchTopicPack" class="is-hidden">測試向量檢索</button>
+                <button id="restoreTopicEntries" class="is-hidden">顯示全部</button>
+              </div>
+            </div>
           </div>
-          <div class="toolbar">
-            <button id="refreshTopicPacks">更新資料包</button>
-            <button id="createTopicPack" class="primary">建立資料包</button>
-            <button id="linkTopicPack" class="blue">綁定到本場直播</button>
-            <button id="addTopicEntry">新增 fact card</button>
-            <button id="autoBuildTopicPack" class="primary">自動建立資料卡</button>
-            <button id="rebuildTopicEmbeddings">重建向量索引</button>
-            <button id="searchTopicPack">測試向量檢索</button>
-            <button id="runResearch" class="primary">Research Gate 查詢</button>
-            <span id="topicPackState" class="status">尚未載入</span>
-          </div>
-          <div id="topicPackEntries" class="list"></div>
         </div>
 
         <div id="queuePane" class="pane">
@@ -577,6 +732,11 @@
       characters: [],
       memoriaSessions: [],
       topicPacks: [],
+      topicEntries: [],
+      currentTopicEntryId: 0,
+      topicEntryEditorBusy: false,
+      topicEntrySearchActive: false,
+      factCardGenerationBusy: false,
       events: [],
       eventSource: null,
       chatPreviewRefreshTimer: null,
@@ -669,8 +829,10 @@
         "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",
         "testSuperChatCountPerTick", "autoTestEvents", "generateTestEvents", "eventsList",
         "directorGuidance", "directorIdle", "toggleDirector", "topicPackSelect",
-        "autoBuildTopicPack", "runResearch", "queueList", "refreshChatPreview",
-        "chatPreviewList", "eventsPane", "summaryPane", "directorPane", "topicPackPane",
+        "topicEntrySelect", "updateTopicPack", "deleteTopicPack", "deleteAllTopicPacks", "updateTopicEntry", "cancelTopicEntryEdit",
+        "topicAutoBuildControls", "autoBuildTopicPack", "importFactCardsFolder", "generateGeminiFactCards", "searchTopicPack", "restoreTopicEntries",
+        "queueList", "refreshChatPreview",
+        "topicPackUsageState", "chatPreviewList", "eventsPane", "summaryPane", "directorPane", "topicPackPane",
         "queuePane", "log"
       ].forEach((id) => {
         const element = $(id);
@@ -702,12 +864,183 @@
       return state.sessions.find((session) => session.session_id === id) || null;
     }
 
+    function selectedTopicPack() {
+      const packId = Number($("topicPackSelect").value || 0);
+      return state.topicPacks.find((pack) => Number(pack.id) === packId) || null;
+    }
+
+    function currentTopicEntryId() {
+      return Number(state.currentTopicEntryId || $("topicEntrySelect").value || 0);
+    }
+
+    function topicEntryById(entryId) {
+      const id = Number(entryId || 0);
+      if (!id) return null;
+      return state.topicEntries.find((entry) => Number(entry.id) === id) || null;
+    }
+
+    function selectedTopicEntry() {
+      return topicEntryById(currentTopicEntryId());
+    }
+
+    function setTopicActionVisible(id, visible) {
+      const element = $(id);
+      if (!element) return;
+      element.classList.toggle("is-hidden", !visible);
+      element.disabled = !visible;
+    }
+
+    function updateTopicActionVisibility() {
+      const hasSession = !!selectedSessionId();
+      const hasPack = Number($("topicPackSelect").value || 0) > 0;
+      const hasEntry = currentTopicEntryId() > 0;
+      const entryBusy = !!state.topicEntryEditorBusy;
+      const factCardBusy = !!state.factCardGenerationBusy;
+      const hasPackTitle = !!$("topicPackTitle").value.trim();
+      const hasEntryContent = !!$("topicEntryTitle").value.trim() && !!$("topicEntryBody").value.trim();
+
+      setTopicActionVisible("createTopicPack", !hasPack);
+      setTopicActionVisible("updateTopicPack", hasPack);
+      setTopicActionVisible("deleteTopicPack", hasPack);
+      setTopicActionVisible("deleteAllTopicPacks", state.topicPacks.length > 0);
+      setTopicActionVisible("linkTopicPack", hasPack && hasSession);
+      setTopicActionVisible("addTopicEntry", hasPack && !hasEntry);
+      setTopicActionVisible("updateTopicEntry", hasPack && hasEntry);
+      setTopicActionVisible("cancelTopicEntryEdit", hasPack && hasEntry);
+      setTopicActionVisible("rebuildTopicEmbeddings", hasPack);
+      setTopicActionVisible("topicAutoBuildControls", hasSession);
+      setTopicActionVisible("autoBuildTopicPack", hasSession);
+      setTopicActionVisible("generateGeminiFactCards", true);
+      setTopicActionVisible("importFactCardsFolder", true);
+      setTopicActionVisible("searchTopicPack", hasPack);
+      setTopicActionVisible("restoreTopicEntries", hasPack && state.topicEntrySearchActive);
+
+      $("createTopicPack").disabled = hasPack || !hasPackTitle;
+      $("updateTopicPack").disabled = !hasPack || !hasPackTitle;
+      $("addTopicEntry").disabled = !hasPack || hasEntry || !hasEntryContent || entryBusy;
+      $("updateTopicEntry").disabled = !hasPack || !hasEntry || !hasEntryContent || entryBusy;
+      $("cancelTopicEntryEdit").disabled = !hasPack || !hasEntry || entryBusy;
+      $("autoBuildTopicPack").disabled = !hasSession || factCardBusy;
+      $("generateGeminiFactCards").disabled = factCardBusy;
+      $("importFactCardsFolder").disabled = factCardBusy;
+    }
+
+    function setTopicEntryEditorBusy(isBusy) {
+      const busy = !!isBusy;
+      state.topicEntryEditorBusy = busy;
+      $("topicEntryTitle").disabled = busy;
+      $("topicEntryBody").disabled = busy;
+      $("updateTopicEntry").textContent = busy ? "儲存中..." : "儲存";
+      updateTopicActionVisibility();
+    }
+
+    function setFactCardGenerationBusy(isBusy, message = "Gemini 正在搜尋並寫入資料卡，請稍候。") {
+      const busy = !!isBusy;
+      state.factCardGenerationBusy = busy;
+      $("factCardGenerationMessage").textContent = message;
+      $("factCardGenerationOverlay").classList.toggle("is-hidden", !busy);
+      $("factCardGenerationOverlay").setAttribute("aria-hidden", busy ? "false" : "true");
+      $("autoBuildTopic").disabled = busy;
+      $("generateGeminiFactCards").textContent = busy ? "生成中..." : "依主題生成 Fact Cards";
+      updateTopicActionVisibility();
+    }
+
+    function topicEntryPayload() {
+      const tags = $("topicEntryTags").value.split(/[\s,，]+/).map((tag) => tag.trim()).filter(Boolean).slice(0, 12);
+      return {
+        title: $("topicEntryTitle").value.trim(),
+        body: $("topicEntryBody").value.trim(),
+        source_url: $("topicEntrySourceUrl").value.trim(),
+        source_type: $("topicEntrySourceType").value.trim() || "manual",
+        tags,
+      };
+    }
+
+    function fillTopicPackForm(pack) {
+      $("topicPackTitle").value = pack?.title || "";
+      $("topicPackDescription").value = pack?.description || "";
+      updateTopicActionVisibility();
+    }
+
+    function fillTopicEntryForm(entry) {
+      state.currentTopicEntryId = Number(entry?.id || 0);
+      $("topicEntrySelect").value = entry?.id ? String(entry.id) : "";
+      $("topicEntryTitle").value = entry?.title || "";
+      $("topicEntryBody").value = entry?.body || "";
+      $("topicEntrySourceUrl").value = entry?.source_url || "";
+      $("topicEntrySourceType").value = entry?.source_type || "manual";
+      $("topicEntryTags").value = (entry?.tags || []).join(" ");
+      updateTopicActionVisibility();
+    }
+
+    function selectTopicEntryForEditing(entryId) {
+      const entry = topicEntryById(entryId);
+      if (!entry) {
+        fillTopicEntryForm(null);
+        return;
+      }
+      if (entry.pack_id && state.topicPacks.some((pack) => Number(pack.id) === Number(entry.pack_id))) {
+        $("topicPackSelect").value = String(entry.pack_id);
+        fillTopicPackForm(selectedTopicPack());
+      }
+      fillTopicEntryForm(entry);
+    }
+
+    function cancelTopicEntryEdit() {
+      if (state.topicEntryEditorBusy) return;
+      fillTopicEntryForm(null);
+    }
+
+    function topicEntryPreviewText(entry) {
+      const body = String(entry?.body || "")
+        .replace(/^#{1,6}\s+/gm, "")
+        .replace(/^\s*[-*]\s+/gm, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!body) return "尚無內容摘要";
+      return body.length > 180 ? `${body.slice(0, 180)}...` : body;
+    }
+
+    function renderTopicEntries(entries) {
+      return entries.map((entry) => {
+        return `
+          <div class="item topic-entry-card" data-topic-entry-id="${escapeHtml(entry.id)}">
+            <strong>${escapeHtml(entry.title)}</strong>
+            ${entry.similarity !== undefined ? `<p class="muted">相似度：${Number(entry.similarity || 0).toFixed(3)}</p>` : ""}
+            <p>${escapeHtml(topicEntryPreviewText(entry))}</p>
+            <div class="toolbar" style="margin-top:8px">
+              <button type="button" data-edit-topic-entry="${escapeHtml(entry.id)}">編輯</button>
+              <button type="button" class="danger" data-delete-topic-entry="${escapeHtml(entry.id)}">刪除</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function bindTopicEntryCardButtons() {
+      document.querySelectorAll("[data-edit-topic-entry]").forEach((button) => {
+        button.onclick = () => {
+          selectTopicEntryForEditing(button.dataset.editTopicEntry || "");
+        };
+      });
+      document.querySelectorAll("[data-delete-topic-entry]").forEach((button) => {
+        button.onclick = () => {
+          const entryId = Number(button.dataset.deleteTopicEntry || 0);
+          deleteTopicEntry(entryId).catch((error) => log("fact card 刪除失敗", String(error)));
+        };
+      });
+    }
+
     function defaultLiveSession(preferredId = "") {
       return state.sessions.find((session) => session.session_id === preferredId)
         || state.sessions.find((session) => session.runtime_status?.running || session.status === "running")
         || state.sessions.find((session) => session.target_memoria_session_id)
         || state.sessions[0]
         || null;
+    }
+
+    function requestedSessionIdFromUrl() {
+      return new URLSearchParams(location.search).get("session_id") || "";
     }
 
     function isSelectedSessionRunning() {
@@ -860,19 +1193,6 @@
 
     async function refreshChatPreview({ silent = false } = {}) {
       let id = selectedSessionId();
-      if (!id && !state.sessions.length) {
-        await loadSessions();
-        id = selectedSessionId();
-      }
-      if (!id) {
-        const fallback = defaultLiveSession();
-        if (fallback) {
-          $("sessionSelect").value = fallback.session_id;
-          fillSessionForm(fallback);
-          subscribeEvents();
-          id = fallback.session_id;
-        }
-      }
       if (!id) {
         $("chatPreviewState").textContent = "尚未選擇 Live Session";
         $("chatPreviewState").className = "status warn";
@@ -981,14 +1301,15 @@
       }
     }
 
-    async function loadSessions(preferredId = "") {
+    async function loadSessions(preferredId = "", options = {}) {
+      const selectDefault = options.selectDefault !== false;
       state.sessions = await api("/sessions");
       $("sessionSelect").innerHTML = `<option value="">新直播草稿</option>` + state.sessions.map((s) => {
         const name = s.display_name || s.session_id;
         const status = s.runtime_status?.status || s.status;
         return `<option value="${escapeHtml(s.session_id)}">${escapeHtml(name)} - ${escapeHtml(s.session_id)} [${escapeHtml(status)}]</option>`;
       }).join("");
-      const selected = defaultLiveSession(preferredId);
+      const selected = selectDefault ? defaultLiveSession(preferredId) : null;
       if (selected) {
         $("sessionSelect").value = selected.session_id;
         fillSessionForm(selected);
@@ -1150,10 +1471,11 @@
     async function deleteSession() {
       const id = selectedSessionId();
       if (!id) return;
-      if (!confirm(`刪除 runtime session ${id}？摘要紀錄會保留，但 raw events / queue / director state 會清掉。`)) return;
       const data = await api(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
       log("runtime session 已刪除", data);
-      await loadSessions();
+      await loadSessions("", { selectDefault: false });
+      $("sessionSelect").value = "";
+      newSessionDraft();
       updateLiveSessionControls();
     }
 
@@ -1449,34 +1771,82 @@
     }
 
     async function refreshTopicPacks() {
+      const previousPackId = Number($("topicPackSelect").value || 0);
       state.topicPacks = await api("/topic-packs");
       $("topicPackSelect").innerHTML = `<option value="">選擇資料包</option>` + state.topicPacks.map((pack) =>
         `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.title)}</option>`
       ).join("");
+      if (previousPackId && state.topicPacks.some((pack) => Number(pack.id) === previousPackId)) {
+        $("topicPackSelect").value = String(previousPackId);
+      }
       $("topicPackState").textContent = `${state.topicPacks.length} 個資料包`;
       $("topicPackState").className = "status good";
+      fillTopicPackForm(selectedTopicPack());
       await refreshTopicEntries();
     }
 
     async function refreshTopicEntries() {
       const id = selectedSessionId();
       const packId = Number($("topicPackSelect").value || 0);
+      const previousEntryId = currentTopicEntryId();
       let entries = [];
+      state.topicEntrySearchActive = false;
       if (packId) {
         const data = await api(`/topic-packs/${packId}/entries?limit=80`);
         entries = data.entries || [];
+        fillTopicPackForm(selectedTopicPack());
       } else if (id) {
         const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs`);
         entries = data.entries || [];
       }
-      $("topicPackEntries").innerHTML = entries.map((entry) => `
-        <div class="item">
-          <strong>${escapeHtml(entry.title)} <span class="muted">${escapeHtml(entry.source_type || "manual")}</span></strong>
-          ${entry.similarity !== undefined ? `<p class="muted">相似度：${Number(entry.similarity || 0).toFixed(3)}</p>` : ""}
-          <p>${escapeHtml(entry.body)}</p>
-          ${entry.source_url ? `<p class="muted">${escapeHtml(entry.source_url)}</p>` : ""}
-        </div>
-      `).join("") || `<div class="muted">尚無 fact card</div>`;
+      state.topicEntries = entries;
+      $("topicEntrySelect").innerHTML = `<option value="">選擇 fact card</option>` + entries.map((entry) =>
+        `<option value="${escapeHtml(entry.id)}">${escapeHtml(entry.title)}</option>`
+      ).join("");
+      if (previousEntryId && entries.some((entry) => Number(entry.id) === previousEntryId)) {
+        $("topicEntrySelect").value = String(previousEntryId);
+        fillTopicEntryForm(selectedTopicEntry());
+      } else {
+        $("topicEntrySelect").value = "";
+        fillTopicEntryForm(null);
+      }
+      $("topicPackEntries").innerHTML = renderTopicEntries(entries) || `<div class="muted">尚無 fact card</div>`;
+      bindTopicEntryCardButtons();
+      await refreshTopicPackUsage();
+      updateTopicActionVisibility();
+    }
+
+    async function refreshTopicPackUsage() {
+      const id = selectedSessionId();
+      updateTopicActionVisibility();
+      if (!id) {
+        $("topicPackUsageState").textContent = "已召回 0 / 未使用 0 / 最近補卡：尚無";
+        $("topicPackUsageState").className = "status";
+        return;
+      }
+      try {
+        const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs/usage`);
+        const recalled = Number(data.used_entry_count || 0);
+        const unused = Number(data.unused_entry_count || 0);
+        const total = Number(data.total_entries || 0);
+        const fallback = data.last_replenish_fallback_mode ? ` (${data.last_replenish_fallback_mode})` : "";
+        const research = data.research_gate || {};
+        const researchTotal = Number(research.total_count || 0);
+        const researchSuccess = Number(research.success_count || 0);
+        const researchDegraded = Number(research.degraded_count || 0);
+        const researchText = researchTotal
+          ? ` / Research Gate：成功 ${researchSuccess} / degraded ${researchDegraded}${researchDegraded > 0 ? "；可手動重試" : ""}`
+          : "";
+        const recent = data.replenishment_in_progress
+          ? "進行中"
+          : (data.last_replenished_at ? `${data.last_replenish_reason || "補卡"} ${data.last_replenish_status || ""}${fallback}`.trim() : "尚無");
+        const repeat = data.repeated_entry ? `；重複召回：${data.repeated_entry.title || data.repeated_entry.entry_id}` : "";
+        $("topicPackUsageState").textContent = `已召回 ${recalled}/${total} / 未使用 ${unused} / 最近補卡：${recent}${repeat}${researchText}`;
+        $("topicPackUsageState").className = (data.low_unused || researchDegraded > 0) ? "status warn" : "status good";
+      } catch (error) {
+        $("topicPackUsageState").textContent = `usage 狀態讀取失敗：${String(error).slice(0, 120)}`;
+        $("topicPackUsageState").className = "status warn";
+      }
     }
 
     async function createTopicPack() {
@@ -1490,6 +1860,55 @@
       log("資料包已建立", data);
       await refreshTopicPacks();
       $("topicPackSelect").value = data.id;
+      await refreshTopicEntries();
+    }
+
+    async function updateTopicPack() {
+      const packId = Number($("topicPackSelect").value || 0);
+      if (!packId) throw new Error("請先選擇資料包");
+      const data = await api(`/topic-packs/${packId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          title: $("topicPackTitle").value.trim(),
+          description: $("topicPackDescription").value.trim(),
+        }),
+      });
+      log("資料包已更新", data);
+      const selectedId = String(data.id);
+      await refreshTopicPacks();
+      $("topicPackSelect").value = selectedId;
+      fillTopicPackForm(data);
+      await refreshTopicEntries();
+    }
+
+    async function deleteTopicPack() {
+      const pack = selectedTopicPack();
+      if (!pack) throw new Error("請先選擇資料包");
+      const packId = Number(pack.id);
+      const data = await api(`/topic-packs/${packId}`, {
+        method: "DELETE",
+      });
+      log("資料包已刪除", data);
+      $("topicPackSelect").value = "";
+      $("topicEntrySelect").value = "";
+      state.topicEntries = [];
+      fillTopicPackForm(null);
+      fillTopicEntryForm(null);
+      await refreshTopicPacks();
+      $("topicPackSelect").value = "";
+      await refreshTopicEntries();
+    }
+
+    async function deleteAllTopicPacks() {
+      const data = await api("/topic-packs", { method: "DELETE" });
+      log("所有資料包已清空", data);
+      $("topicPackSelect").value = "";
+      $("topicEntrySelect").value = "";
+      state.topicEntries = [];
+      fillTopicPackForm(null);
+      fillTopicEntryForm(null);
+      await refreshTopicPacks();
+      $("topicPackSelect").value = "";
       await refreshTopicEntries();
     }
 
@@ -1508,20 +1927,48 @@
     async function addTopicEntry() {
       const packId = Number($("topicPackSelect").value || 0);
       if (!packId) throw new Error("請先選擇資料包");
-      const tags = $("topicEntryTitle").value.split(/\s+/).filter(Boolean).slice(0, 6);
       const data = await api(`/topic-packs/${packId}/entries`, {
         method: "POST",
-        body: JSON.stringify({
-          title: $("topicEntryTitle").value.trim(),
-          body: $("topicEntryBody").value.trim(),
-          source_url: "",
-          source_type: "manual",
-          tags,
-        }),
+        body: JSON.stringify(topicEntryPayload()),
       });
       log("fact card 已新增", data);
-      $("topicEntryTitle").value = "";
-      $("topicEntryBody").value = "";
+      fillTopicEntryForm(null);
+      await refreshTopicEntries();
+      $("topicEntrySelect").value = String(data.id);
+      fillTopicEntryForm(selectedTopicEntry());
+    }
+
+    async function updateTopicEntry() {
+      const entryId = currentTopicEntryId();
+      const entry = topicEntryById(entryId) || selectedTopicEntry();
+      const packId = Number(entry?.pack_id || $("topicPackSelect").value || 0);
+      if (!packId || !entryId) throw new Error("請先選擇資料包與 fact card");
+      const payload = topicEntryPayload();
+      setTopicEntryEditorBusy(true);
+      try {
+        const data = await api(`/topic-packs/${packId}/entries/${entryId}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+        log("fact card 已更新，已清空編輯區", data);
+        await refreshTopicEntries();
+        fillTopicEntryForm(null);
+      } finally {
+        setTopicEntryEditorBusy(false);
+      }
+    }
+
+    async function deleteTopicEntry(entryId = null) {
+      const entry = topicEntryById(entryId) || selectedTopicEntry();
+      const packId = Number(entry?.pack_id || $("topicPackSelect").value || 0);
+      if (!packId || !entry) throw new Error("請先選擇資料包與 fact card");
+      const data = await api(`/topic-packs/${packId}/entries/${entry.id}`, {
+        method: "DELETE",
+      });
+      log("fact card 已刪除", data);
+      if (currentTopicEntryId() === Number(entry.id)) {
+        fillTopicEntryForm(null);
+      }
       await refreshTopicEntries();
     }
 
@@ -1544,6 +1991,46 @@
       await refreshTopicEntries();
     }
 
+    async function importFactCardsFolder() {
+      const packId = Number($("topicPackSelect").value || 0) || null;
+      const data = await api("/topic-packs/fact-cards/import-folder", {
+        method: "POST",
+        body: JSON.stringify({
+          pack_id: packId,
+          max_files: 50,
+        }),
+      });
+      log("FactCards 資料夾已匯入", data);
+      await refreshTopicPacks();
+      $("topicPackSelect").value = data.pack_id;
+      await refreshTopicEntries();
+    }
+
+    async function generateGeminiFactCards() {
+      const packId = Number($("topicPackSelect").value || 0) || null;
+      const topic = $("autoBuildTopic").value.trim();
+      if (!topic) throw new Error("請先輸入生成主題");
+      setFactCardGenerationBusy(true, "Gemini 正在依主題產生 Fact Cards，可能需要數分鐘。");
+      log("Gemini FactCards 開始產生", { topic, pack_id: packId || "auto" });
+      try {
+        const data = await api("/topic-packs/fact-cards/generate", {
+          method: "POST",
+          body: JSON.stringify({
+            topic,
+            pack_id: packId,
+            timeout_seconds: 300,
+          }),
+        });
+        log("Gemini FactCards 已產生並匯入", data);
+        await refreshTopicPacks();
+        $("topicPackSelect").value = data.import?.pack_id || packId || $("topicPackSelect").value;
+        await refreshTopicEntries();
+        $("autoBuildTopic").value = "";
+      } finally {
+        setFactCardGenerationBusy(false);
+      }
+    }
+
     async function rebuildTopicEmbeddings() {
       const packId = Number($("topicPackSelect").value || 0);
       if (!packId) throw new Error("請先選擇資料包");
@@ -1556,36 +2043,30 @@
     }
 
     async function searchTopicPack() {
-      const id = selectedSessionId();
-      if (!id) throw new Error("請先建立或選擇 Live Session");
+      const packId = Number($("topicPackSelect").value || 0);
+      if (!packId) throw new Error("請先選擇資料包");
       const query = $("topicSearchQuery").value.trim();
-      if (!query) throw new Error("請輸入向量檢索測試文字");
-      const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs/search?query=${encodeURIComponent(query)}&limit=8`);
+      if (!query) {
+        await restoreTopicEntries();
+        return;
+      }
+      const data = await api(`/topic-packs/${packId}/search?query=${encodeURIComponent(query)}&limit=8`);
       log("向量檢索完成", data);
       const entries = data.entries || [];
-      $("topicPackEntries").innerHTML = entries.map((entry) => `
-        <div class="item">
-          <strong>${escapeHtml(entry.title)} <span class="muted">${escapeHtml(entry.source_type || "manual")}</span></strong>
-          <p class="muted">相似度：${Number(entry.similarity || 0).toFixed(3)}</p>
-          <p>${escapeHtml(entry.body)}</p>
-        </div>
-      `).join("") || `<div class="muted">沒有找到相關 fact card</div>`;
+      state.topicEntrySearchActive = true;
+      state.topicEntries = entries;
+      $("topicEntrySelect").innerHTML = `<option value="">選擇 fact card</option>` + entries.map((entry) =>
+        `<option value="${escapeHtml(entry.id)}">${escapeHtml(entry.title)}</option>`
+      ).join("");
+      $("topicPackEntries").innerHTML = renderTopicEntries(entries) || `<div class="muted">沒有找到相關 fact card</div>`;
+      bindTopicEntryCardButtons();
+      await refreshTopicPackUsage();
+      updateTopicActionVisibility();
     }
 
-    async function runResearch() {
-      const id = selectedSessionId();
-      if (!id) throw new Error("請先建立或選擇 Live Session");
-      const packId = Number($("topicPackSelect").value || 0) || null;
-      const data = await api(`/sessions/${encodeURIComponent(id)}/research/request`, {
-        method: "POST",
-        body: JSON.stringify({
-          query: $("researchQuery").value.trim(),
-          pack_id: packId,
-        }),
-      });
-      log("Research Gate fact card 已建立", data);
-      await refreshTopicPacks();
-      if (data.entry?.pack_id) $("topicPackSelect").value = data.entry.pack_id;
+    async function restoreTopicEntries() {
+      state.topicEntrySearchActive = false;
+      $("topicSearchQuery").value = "";
       await refreshTopicEntries();
     }
 
@@ -1632,7 +2113,7 @@
       await loadConnectors();
       await loadMemoriaConfig();
       await loadMemoriaRefs();
-      await loadSessions();
+      await loadSessions(requestedSessionIdFromUrl());
       await refreshEvents();
       await refreshSummary();
       await refreshDirector();
@@ -1663,7 +2144,10 @@
     });
     $("memoriaSession").onchange = () => refreshChatPreview({ silent: true });
     $("memoriaBaseUrl").onchange = () => refreshChatPreview({ silent: true });
-    $("newSession").onclick = () => newSessionDraft();
+    $("newSession").onclick = () => {
+      newSessionDraft();
+      updateTopicActionVisibility();
+    };
     $("toggleSession").onclick = () => toggleSession().catch((error) => log("開始 / 停止失敗", String(error)));
     $("updateSession").onclick = () => updateSessionSettings().catch((error) => log("直播設定更新失敗", String(error)));
     $("finalizeSession").onclick = () => sessionAction("finalize").catch((error) => log("標記結束失敗", String(error)));
@@ -1683,13 +2167,27 @@
     $("refreshQueue").onclick = () => refreshQueue().catch((error) => log("queue 更新失敗", String(error)));
     $("refreshTopicPacks").onclick = () => refreshTopicPacks().catch((error) => log("資料包更新失敗", String(error)));
     $("createTopicPack").onclick = () => createTopicPack().catch((error) => log("資料包建立失敗", String(error)));
+    $("updateTopicPack").onclick = () => updateTopicPack().catch((error) => log("資料包更新失敗", String(error)));
+    $("deleteTopicPack").onclick = () => deleteTopicPack().catch((error) => log("資料包刪除失敗", String(error)));
+    $("deleteAllTopicPacks").onclick = () => deleteAllTopicPacks().catch((error) => log("清空資料包失敗", String(error)));
     $("linkTopicPack").onclick = () => linkTopicPack().catch((error) => log("資料包綁定失敗", String(error)));
     $("addTopicEntry").onclick = () => addTopicEntry().catch((error) => log("fact card 新增失敗", String(error)));
+    $("updateTopicEntry").onclick = () => updateTopicEntry().catch((error) => log("fact card 更新失敗", String(error)));
+    $("cancelTopicEntryEdit").onclick = () => cancelTopicEntryEdit();
     $("autoBuildTopicPack").onclick = () => autoBuildTopicPack().catch((error) => log("自動資料卡建立失敗", String(error)));
+    $("importFactCardsFolder").onclick = () => importFactCardsFolder().catch((error) => log("FactCards 資料夾匯入失敗", String(error)));
+    $("generateGeminiFactCards").onclick = () => generateGeminiFactCards().catch((error) => log("Gemini FactCards 產生失敗", String(error)));
     $("rebuildTopicEmbeddings").onclick = () => rebuildTopicEmbeddings().catch((error) => log("向量索引重建失敗", String(error)));
     $("searchTopicPack").onclick = () => searchTopicPack().catch((error) => log("向量檢索失敗", String(error)));
-    $("runResearch").onclick = () => runResearch().catch((error) => log("Research Gate 查詢失敗", String(error)));
+    $("restoreTopicEntries").onclick = () => restoreTopicEntries().catch((error) => log("fact card 清單恢復失敗", String(error)));
     $("topicPackSelect").onchange = () => refreshTopicEntries().catch((error) => log("fact card 更新失敗", String(error)));
+    $("topicEntrySelect").onchange = () => {
+      fillTopicEntryForm(selectedTopicEntry());
+      updateTopicActionVisibility();
+    };
+    $("topicPackTitle").addEventListener("input", updateTopicActionVisibility);
+    $("topicEntryTitle").addEventListener("input", updateTopicActionVisibility);
+    $("topicEntryBody").addEventListener("input", updateTopicActionVisibility);
     $("refreshChatPreview").onclick = () => refreshChatPreview().catch((error) => log("Chat Preview 更新失敗", String(error)));
     $("openFullChat").onclick = (event) => {
       const link = $("openFullChat");
@@ -1713,6 +2211,7 @@
     };
 
     installTestIds();
+    updateTopicActionVisibility();
     refreshAll().catch((error) => log("初始化失敗", String(error)));
   </script>
 </body>

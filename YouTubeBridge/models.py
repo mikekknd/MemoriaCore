@@ -131,7 +131,20 @@ class TopicPackCreateRequest(BaseModel):
     description: str = Field("", max_length=1000)
 
 
+class TopicPackUpdateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=1000)
+
+
 class TopicPackEntryCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=4000)
+    source_url: str = Field("", max_length=1000)
+    source_type: str = Field("manual", max_length=80)
+    tags: list[str] = Field(default_factory=list)
+
+
+class TopicPackEntryUpdateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     body: str = Field(..., min_length=1, max_length=4000)
     source_url: str = Field("", max_length=1000)
@@ -146,9 +159,25 @@ class TopicPackAutoBuildRequest(BaseModel):
     use_research: bool = True
 
 
+class FactCardImportRequest(BaseModel):
+    pack_id: int | None = None
+    max_files: int = Field(50, ge=1, le=200)
+
+
+class FactCardGenerateRequest(BaseModel):
+    topic: str = Field("動畫新番最新一話細節討論", min_length=1, max_length=500)
+    pack_id: int | None = None
+    output_name: str = Field("", max_length=120)
+    timeout_seconds: int = Field(300, ge=30, le=900)
+
+
 class ResearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     pack_id: int | None = None
+
+
+class E2ECheckpointRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=120)
 
 
 class MemoriaAuthConfig(BaseModel):

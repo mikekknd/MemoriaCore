@@ -5,7 +5,9 @@ import asyncio
 import json
 import logging
 import math
+import os
 import random
+import subprocess
 import sys
 import threading
 import uuid
@@ -14,6 +16,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from fact_cards import (
+    DEFAULT_FACT_CARDS_DIR,
+    generate_fact_card_markdown_with_gemini,
+    iter_fact_card_files,
+    parse_fact_card_markdown,
+)
 from memoria_client import GenerationInterrupted, MemoriaClient
 from storage import BridgeStorage, infer_super_chat_tier
 from youtube_client import YouTubeClient, normalize_message
@@ -27,6 +35,8 @@ logger = logging.getLogger("youtube_bridge")
 DEFAULT_LLM_TRACE_PATH = PROJECT_ROOT / "runtime" / "llm_trace.jsonl"
 DEFAULT_INJECT_CONTENT = "請根據已提供的 Topic Pack / fact card / YouTube 直播留言上下文回應。不要自行開啟瀏覽器或搜尋網頁。"
 CONTROLLED_CONTEXT_CONTENT = DEFAULT_INJECT_CONTENT
+FACT_CARDS_PACK_TITLE = "動畫新番 FactCards"
+FACT_CARDS_PACK_DESCRIPTION = "FactCards 資料夾匯入的動畫新番參考資料。"
 DIRECTOR_SCHEMA = {
     "type": "object",
     "properties": {
@@ -88,6 +98,7 @@ SAFETY_CLASSIFIER_SCHEMA = {
         },
     },
 }
+SAFETY_CLASSIFIER_BATCH_LIMIT = 20
 
 
 def clear_llm_trace_log(path: Path | None = None) -> dict[str, Any]:
@@ -154,21 +165,22 @@ class YouTubeBridgeManager:
         for key, value in metadata.items():
             key_str = str(key)
             key_lower = key_str.lower()
-            if key_lower in {"opening_decision", "last_decision"} and isinstance(value, dict):
+            if key_lower in {"opening_decision", "last_decision", "decision"} and isinstance(value, dict):
                 public[key_str] = YouTubeBridgeManager._public_decision(value)
                 continue
-            if "prompt" in key_lower or key_lower in {"hidden_context", "external_context", "context_text"}:
+            if "prompt" in key_lower:
+                continue
+            if key_lower in {"hidden_context", "external_context", "context_text", "raw_context"}:
                 public[key_str] = "[hidden]"
                 continue
-            if key_lower in {"events", "event_ids", "super_chats"} and isinstance(value, list):
+            if key_lower in {"events", "event_ids", "super_chats", "comments"} and isinstance(value, list):
                 public[key_str] = {"count": len(value)}
                 continue
+            if key_lower == "interaction" and isinstance(value, dict):
+                public[key_str] = YouTubeBridgeManager._public_interaction_status(value)
+                continue
             if isinstance(value, dict):
-                public[key_str] = {
-                    nested_key: "[hidden]" if "prompt" in str(nested_key).lower() else nested_value
-                    for nested_key, nested_value in value.items()
-                    if str(nested_key).lower() not in {"prompt"}
-                }
+                public[key_str] = YouTubeBridgeManager._public_director_metadata(value)
                 continue
             public[key_str] = value
         return public
@@ -186,23 +198,48 @@ class YouTubeBridgeManager:
         if not isinstance(interaction, dict):
             return interaction
         public = dict(interaction)
+        for field in ("content", "reply_text", "closure_text"):
+            public[field] = YouTubeBridgeManager._public_interaction_text(public.get(field))
         metadata = public.get("metadata") if isinstance(public.get("metadata"), dict) else {}
         public_metadata: dict[str, Any] = {}
         for key, value in metadata.items():
-            if str(key) == "decision" and isinstance(value, dict):
+            key_str = str(key)
+            key_lower = key_str.lower()
+            if key_lower == "decision" and isinstance(value, dict):
                 public_metadata["decision"] = YouTubeBridgeManager._public_decision(value)
-            elif "prompt" in str(key).lower():
-                public_metadata[str(key)] = "[hidden]"
-            elif str(key) in {"summary"} and isinstance(value, dict):
-                public_metadata[str(key)] = {
+            elif "prompt" in key_lower:
+                continue
+            elif key_lower in {"hidden_context", "external_context", "context_text", "raw_context"}:
+                public_metadata[key_str] = "[hidden]"
+            elif key_lower in {"events", "event_ids", "super_chats", "comments"} and isinstance(value, list):
+                public_metadata[key_str] = {"count": len(value)}
+            elif key_lower in {"summary"} and isinstance(value, dict):
+                public_metadata[key_str] = {
                     summary_key: value.get(summary_key)
                     for summary_key in ("source", "source_session_id", "event_count", "dropped_count")
                     if summary_key in value
                 }
+            elif isinstance(value, dict):
+                public_metadata[key_str] = YouTubeBridgeManager._public_director_metadata(value)
             else:
-                public_metadata[str(key)] = value
+                public_metadata[key_str] = value
         public["metadata"] = public_metadata
         return public
+
+    @staticmethod
+    def _public_interaction_text(value: Any) -> str:
+        text = str(value or "")
+        hidden_markers = (
+            "<external_chat_context",
+            "<topic_pack_fact_cards",
+            "hidden external context",
+            "完整 SC 清單",
+        )
+        if any(marker in text for marker in hidden_markers):
+            return "[hidden context]"
+        if len(text) > 800:
+            return f"{text[:800]}... [truncated {len(text)} chars]"
+        return text
 
     def get_status(self, session_id: str) -> dict[str, Any]:
         runtime = self._runtimes.get(session_id)
@@ -696,6 +733,8 @@ class YouTubeBridgeManager:
         session_id: str,
         *,
         timeout_seconds: float = 20.0,
+        per_batch_timeout_seconds: float = 75.0,
+        batch_limit: int = 10,
     ) -> dict[str, Any]:
         """Resolve last-minute pending events before final closing interactions.
 
@@ -707,19 +746,41 @@ class YouTubeBridgeManager:
         if not initial_pending:
             return {"status": "no_pending", "initial_pending_count": 0, "fallback_count": 0}
 
-        classify_result: dict[str, Any] | None = None
+        classified_count = 0
+        failed_count = 0
+        batch_count = 0
         classify_error = ""
-        try:
-            classify_result = await asyncio.wait_for(
-                self.classify_pending_events(session_id, limit=500),
-                timeout=max(1.0, float(timeout_seconds)),
-            )
-        except asyncio.TimeoutError:
-            classify_error = "timeout"
-        except Exception as exc:
-            classify_error = str(exc)[:300]
-        if not classify_error and classify_result and classify_result.get("error"):
-            classify_error = str(classify_result.get("error") or "")[:300]
+        loop = asyncio.get_running_loop()
+        closing_batch_limit = min(max(1, int(batch_limit or 10)), SAFETY_CLASSIFIER_BATCH_LIMIT)
+        expected_batches = max(1, (len(initial_pending) + closing_batch_limit - 1) // closing_batch_limit)
+        per_batch_timeout = max(1.0, float(per_batch_timeout_seconds))
+        total_timeout = max(1.0, float(timeout_seconds), expected_batches * per_batch_timeout)
+        deadline = loop.time() + total_timeout
+        while self.storage.list_events_pending_safety(session_id, limit=1):
+            remaining_seconds = deadline - loop.time()
+            if remaining_seconds <= 0:
+                classify_error = "timeout"
+                break
+            try:
+                classify_result = await asyncio.wait_for(
+                    self.classify_pending_events(
+                        session_id,
+                        limit=closing_batch_limit,
+                    ),
+                    timeout=max(0.1, min(per_batch_timeout, remaining_seconds)),
+                )
+            except asyncio.TimeoutError:
+                classify_error = "timeout"
+                break
+            except Exception as exc:
+                classify_error = str(exc)[:300]
+                break
+            batch_count += 1
+            classified_count += int(classify_result.get("classified_count") or 0)
+            failed_count += int(classify_result.get("failed_count") or 0)
+            if classify_result.get("error"):
+                classify_error = str(classify_result.get("error") or "")[:300]
+                break
 
         fallback_events: list[dict[str, Any]] = []
         remaining = self.storage.list_events_pending_safety(session_id, limit=500)
@@ -746,9 +807,10 @@ class YouTubeBridgeManager:
         return {
             "status": status,
             "initial_pending_count": len(initial_pending),
-            "classified_count": int((classify_result or {}).get("classified_count") or 0),
-            "failed_count": int((classify_result or {}).get("failed_count") or 0),
+            "classified_count": classified_count,
+            "failed_count": failed_count,
             "fallback_count": len(fallback_events),
+            "batch_count": batch_count,
             "error": classify_error,
         }
 
@@ -1167,7 +1229,7 @@ class YouTubeBridgeManager:
                     return
                 pending = [
                     event for event in self.storage.list_events(runtime.session_id, limit=5, uninjected_only=True)
-                    if event.get("status") == "active" and event.get("message_text")
+                    if self._should_block_director_for_pending_inject(event)
                 ]
                 if pending:
                     latest = max(int(event["id"]) for event in pending)
@@ -1263,16 +1325,22 @@ class YouTubeBridgeManager:
         recent_events = self.storage.list_events(session["session_id"], limit=20)
         recent_interactions = self.storage.list_interactions(session["session_id"], limit=20)
         elapsed_minutes, elapsed_percent, remaining_minutes = self._session_elapsed(session)
-        event_lines = "\n".join(self._director_event_line(event) for event in recent_events[-20:]) or "（無近期留言）"
+        event_lines = "\n".join(
+            line
+            for event in recent_events[-20:]
+            if (line := self._director_event_line(event))
+        ) or "（無近期留言）"
         interaction_lines = "\n".join(
-            f"- {item.get('source')} [{item.get('status')}]: {str(item.get('reply_text') or item.get('closure_text') or '')[:240]}"
+            line
             for item in reversed(recent_interactions)
+            if (line := self._test_comment_interaction_line(item))
         ) or "（無近期互動）"
+        public_guidance = self._public_director_topic(session, state)
         decision = self._memoria_client().generate_prompt_json(
             prompt_key="youtube_live_director_decision_prompt",
             variables={
                 "session_title": session.get("display_name") or session["session_id"],
-                "director_guidance": session.get("director_guidance") or "（未設定）",
+                "director_guidance": public_guidance or "（未設定）",
                 "current_topic": state.get("current_topic") or "",
                 "consecutive_ai_turns": str(state.get("consecutive_ai_turns", 0)),
                 "planned_duration_minutes": str(session.get("planned_duration_minutes", 0) or 0),
@@ -1361,18 +1429,19 @@ class YouTubeBridgeManager:
     ) -> str:
         topic = YouTubeBridgeManager._public_director_topic(session, state)
         prompts = {
-            "reply_chat_batch": f"請簡短回應剛剛的聊天室留言，並自然拉回「{topic}」。",
-            "reply_super_chat_batch": f"請感謝並回應剛剛的 Super Chat，接著自然拉回「{topic}」。",
-            "defer_offtopic": f"請簡短帶過離題留言，並把直播節奏拉回「{topic}」。",
-            "anchor_to_topic": f"請自然承接剛剛的互動，簡短拉回「{topic}」。",
-            "transition_topic": f"請自然把話題轉向「{topic}」，用 1 到 3 句推進直播。",
-            "recap": f"請用 1 到 3 句整理目前「{topic}」的討論重點。",
-            "close_topic": f"請用 1 到 3 句收束目前「{topic}」的話題。",
+            "reply_chat_batch": f"請簡短回應剛剛的聊天室留言，接著讓角色彼此補充並自然拉回「{topic}」。",
+            "reply_super_chat_batch": f"請感謝並回應剛剛的 Super Chat，接著讓角色彼此補充並自然拉回「{topic}」。",
+            "defer_offtopic": f"請簡短帶過離題留言，並讓角色彼此把直播節奏拉回「{topic}」。",
+            "anchor_to_topic": f"請自然承接剛剛的互動，讓角色彼此簡短拉回「{topic}」，不要把問題丟回聊天室。",
+            "ask_character": f"請讓角色彼此互問或補充「{topic}」的一個具體觀點，不要把問題丟回聊天室。",
+            "transition_topic": f"請自然把話題轉向「{topic}」，讓角色彼此接話，用 1 到 3 句推進直播，不要把問題丟回聊天室。",
+            "recap": f"請讓角色彼此整理目前「{topic}」的討論重點，用 1 到 3 句收束，不要把問題丟回聊天室。",
+            "close_topic": f"請讓角色彼此收束目前「{topic}」的話題，用 1 到 3 句提出下一個切入點，不要把問題丟回聊天室。",
             "closing_super_chat_thanks": "直播即將收尾，請感謝本場 Super Chat 支持；不適合公開回覆的內容不用提起。",
         }
         return prompts.get(
             action,
-            f"請自然延續「{topic}」，用 1 到 3 句推進話題，並留一個讓觀眾接話的入口。",
+            f"請自然延續「{topic}」，讓角色彼此接話、補充或提出不同角度，用 1 到 3 句推進話題；不要把問題丟回聊天室。",
         )
 
     @staticmethod
@@ -1414,8 +1483,8 @@ class YouTubeBridgeManager:
             "action": "continue_topic",
             "reason": "目前沒有未處理留言或進行中的互動，且尚未達連續 AI 主動輪數上限；導播主動延續直播節奏。",
             "prompt": (
-                f"目前還沒有新的觀眾留言，請自然延續「{topic[:160]}」。"
-                "用 1 到 3 句推進話題，並留一個容易讓觀眾接話的入口。"
+                f"目前還沒有新的聊天室留言，請自然延續「{topic[:160]}」。"
+                "讓角色彼此接話、補充或提出不同角度，用 1 到 3 句推進話題；不要把問題丟回聊天室。"
             ),
             "current_topic": topic[:200],
         }
@@ -1432,7 +1501,7 @@ class YouTubeBridgeManager:
             "reason": "直播方向已更新，且目前沒有未處理留言；需要主動把話題轉到新的方向。",
             "prompt": (
                 f"請自然承接「{current_topic[:80]}」，把話題轉向「{guidance[:160]}」。"
-                "用 1 到 3 句推進直播，並保留觀眾可以接話的空間。"
+                "讓角色彼此接話或互問，用 1 到 3 句推進直播；不要把問題丟回聊天室。"
             ),
             "current_topic": guidance[:200],
         }
@@ -1449,12 +1518,14 @@ class YouTubeBridgeManager:
             "reason": "聊天室已連續帶動多批互動，需要把節奏拉回本場主軸。",
             "prompt": (
                 f"請自然承接剛剛聊天室互動，簡短拉回「{topic[:160]}」。"
-                "用 1 到 3 句整理重點，並留下觀眾可以繼續接話的入口。"
+                "讓角色彼此整理重點或提出下一個切入點；不要把問題丟回聊天室。"
             ),
             "current_topic": topic[:200],
         }
 
     def _director_event_line(self, event: dict[str, Any]) -> str:
+        if not self._is_public_live_event_displayable(event):
+            return ""
         status = "已處理" if event.get("injected_at") else "未處理"
         return f"- ({status}) {self._event_line(event).lstrip('- ')}"
 
@@ -1467,7 +1538,8 @@ class YouTubeBridgeManager:
             "reason": "直播剛開始，需要先建立開場與觀眾互動入口。",
             "prompt": (
                 "直播剛開始，請用 1 到 3 句自然開場，簡短帶出本場方向"
-                f"「{topic[:160]}」，並邀請觀眾留言或提問。"
+                f"「{topic[:160]}」，讓角色彼此先拋出一個可延伸觀點。"
+                "不要把問題丟回聊天室。"
                 "不要提到內部導播、queue、prompt 或系統。"
             ),
             "current_topic": topic[:200] or str(state.get("current_topic") or ""),
@@ -1502,6 +1574,8 @@ class YouTubeBridgeManager:
                 str(state.get("current_topic") or ""),
             ]),
             limit=6,
+            usage_source="director",
+            replenish_reason="transition_topic" if action == "transition_topic" else "",
         )
         context_parts = [
             f"直播流程 action={action}",
@@ -1510,6 +1584,10 @@ class YouTubeBridgeManager:
             f"直播進度：{elapsed_percent}%（已 {elapsed_minutes} 分鐘，剩餘約 {remaining_minutes} 分鐘）",
             f"處理提示：{public_prompt}",
         ]
+        if action not in {"reply_chat_batch", "reply_super_chat_batch"}:
+            context_parts.append(
+                "直播互動規則：目前不是回應留言批次；請讓角色彼此接話、補充、反駁或提出下一個切入點，不要把問題丟回聊天室。"
+            )
         if action == "closing_super_chat_thanks" and prompt:
             context_parts.append("本場 Super Chat 參考內容：\n" + prompt[:3000])
         if topic_context:
@@ -1706,11 +1784,18 @@ class YouTubeBridgeManager:
             "interaction": result.get("interaction"),
         }
 
-    def _embed_text(self, text: str) -> dict[str, Any]:
+    def _embed_text(self, text: str, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         clean = str(text or "").strip()
         if not clean:
             raise ValueError("embedding text 不可為空")
-        return self._memoria_client().embed_text(clean)
+        if timeout_seconds is None:
+            client = self._memoria_client()
+        else:
+            try:
+                client = self.memoria_client_factory(timeout=float(timeout_seconds))
+            except TypeError:
+                client = self._memoria_client()
+        return client.embed_text(clean)
 
     @staticmethod
     def _topic_entry_embedding_text(entry: dict[str, Any]) -> str:
@@ -1762,9 +1847,20 @@ class YouTubeBridgeManager:
                         exc,
                     )
 
-    def _topic_pack_context_for_query(self, session_id: str, query_text: str, *, limit: int = 6) -> str:
+    def _topic_pack_context_for_query(
+        self,
+        session_id: str,
+        query_text: str,
+        *,
+        limit: int = 6,
+        usage_source: str = "external_context",
+        replenish_reason: str = "",
+    ) -> str:
+        entries: list[dict[str, Any]] = []
         if not str(query_text or "").strip():
-            return self._topic_pack_context_text(self.storage.list_session_topic_pack_entries(session_id, limit=limit))
+            entries = self.storage.list_session_topic_pack_entries(session_id, limit=limit)
+            self._record_topic_pack_usage(session_id, entries, query_text, usage_source, replenish_reason)
+            return self._topic_pack_context_text(entries)
         try:
             self._ensure_session_topic_pack_embeddings(session_id)
             query_result = self._embed_text(query_text)
@@ -1777,10 +1873,342 @@ class YouTubeBridgeManager:
                     min_score=0.05,
                 )
                 if entries:
+                    self._record_topic_pack_usage(session_id, entries, query_text, usage_source, replenish_reason)
                     return self._topic_pack_context_text(entries)
         except Exception as exc:
             logger.warning("topic pack vector retrieval failed session_id=%s error=%s", session_id, exc)
-        return self._topic_pack_context_text(self.storage.list_session_topic_pack_entries(session_id, limit=limit))
+        entries = self.storage.list_session_topic_pack_entries(session_id, limit=limit)
+        self._record_topic_pack_usage(session_id, entries, query_text, usage_source, replenish_reason)
+        return self._topic_pack_context_text(entries)
+
+    def _record_topic_pack_usage(
+        self,
+        session_id: str,
+        entries: list[dict[str, Any]],
+        query_text: str,
+        usage_source: str,
+        replenish_reason: str = "",
+    ) -> None:
+        if not entries:
+            return
+        try:
+            self.storage.record_topic_pack_entry_usages(
+                session_id,
+                entries,
+                query_text=query_text,
+                usage_source=usage_source,
+            )
+        except Exception as exc:
+            logger.warning("topic pack usage record failed session_id=%s error=%s", session_id, exc)
+        reason = str(replenish_reason or "").strip()
+        try:
+            self.maybe_replenish_fact_cards(
+                session_id,
+                reason=reason,
+                topic_hint=query_text,
+                run_inline=False,
+            )
+        except Exception as exc:
+            logger.warning("fact card replenishment check failed session_id=%s error=%s", session_id, exc)
+
+    def get_topic_pack_usage_status(self, session_id: str) -> dict[str, Any]:
+        stats = self.storage.get_topic_pack_usage_stats(session_id)
+        entries = self.storage.list_session_topic_pack_entries(session_id, limit=200)
+        research_requests = self.storage.list_research_requests(session_id, limit=100)
+        state = self.storage.get_director_state(session_id)
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        replenishment = metadata.get("fact_card_replenishment") if isinstance(metadata.get("fact_card_replenishment"), dict) else {}
+        worker_status = str(replenishment.get("last_status") or "")
+        return {
+            **stats,
+            "last_replenished_at": str(replenishment.get("last_replenished_at") or ""),
+            "last_replenish_reason": str(replenishment.get("last_reason") or ""),
+            "last_replenish_status": worker_status,
+            "worker_status": worker_status,
+            "last_replenish_error": str(replenishment.get("last_error") or ""),
+            "last_replenish_fallback_mode": str(replenishment.get("last_fallback_mode") or ""),
+            "replenishment_in_progress": bool(replenishment.get("in_progress")),
+            "research_gate": self._research_gate_usage_status(entries, research_requests),
+        }
+
+    @classmethod
+    def _research_gate_usage_status(
+        cls,
+        entries: list[dict[str, Any]],
+        research_requests: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        statuses: dict[str, int] = {}
+        total = 0
+        success = 0
+        degraded = 0
+        entry_ids = set()
+        for entry in entries:
+            if str(entry.get("source_type") or "") != "research_gate":
+                continue
+            entry_ids.add(int(entry.get("id") or entry.get("entry_id") or 0))
+            total += 1
+            status = cls._classify_research_gate_entry(entry)
+            statuses[status] = statuses.get(status, 0) + 1
+            if status == "success":
+                success += 1
+            else:
+                degraded += 1
+        for request in research_requests or []:
+            status = str(request.get("status") or "").strip() or "unknown"
+            result_entry_id = int(request.get("result_entry_id") or 0)
+            if result_entry_id and result_entry_id in entry_ids:
+                continue
+            if status == "completed_with_results":
+                continue
+            statuses[status] = statuses.get(status, 0) + 1
+            total += 1
+            degraded += 1
+        return {
+            "total_count": total,
+            "success_count": success,
+            "degraded_count": degraded,
+            "statuses": statuses,
+        }
+
+    @staticmethod
+    def _classify_research_gate_entry(entry: dict[str, Any]) -> str:
+        body = str(entry.get("body") or "").strip()
+        body_lower = body.lower()
+        if not body:
+            return "degraded"
+        if body.startswith(("{", "[")) or '"search_results"' in body_lower or "'search_results'" in body_lower:
+            return "raw_dump"
+        if "completed_no_results" in body_lower:
+            return "completed_no_results"
+        if "completed_with_results" in body_lower:
+            return "success" if str(entry.get("source_url") or "").strip() else "degraded"
+        if "confidence: low" in body_lower:
+            return "degraded"
+        return "degraded"
+
+    def maybe_replenish_fact_cards(
+        self,
+        session_id: str,
+        *,
+        reason: str = "",
+        topic_hint: str = "",
+        run_inline: bool = True,
+    ) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            return {"triggered": False, "reason": "session_not_found"}
+        stats = self.storage.get_topic_pack_usage_stats(session_id)
+        if not any(str(entry.get("source_type") or "") == "factcards_folder" for entry in stats.get("entries", [])):
+            return {"triggered": False, "reason": "no_factcards_entries", "stats": stats}
+        requested_reason = str(reason or "").strip()
+        trigger_reason = ""
+        if stats.get("low_unused"):
+            trigger_reason = "low_unused"
+        elif stats.get("repeated_entry"):
+            trigger_reason = "repeated_entry"
+        elif requested_reason == "transition_topic":
+            trigger_reason = "transition_topic"
+        elif requested_reason in {"low_unused", "repeated_entry"}:
+            trigger_reason = requested_reason
+        if not trigger_reason:
+            return {"triggered": False, "reason": "threshold_not_met", "stats": stats}
+
+        state = self.storage.get_director_state(session_id)
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        previous = metadata.get("fact_card_replenishment") if isinstance(metadata.get("fact_card_replenishment"), dict) else {}
+        if previous.get("in_progress"):
+            return {"triggered": False, "reason": "in_progress", "stats": stats}
+        last_at = self._parse_iso_datetime(previous.get("last_replenished_at"))
+        if last_at and (datetime.now() - last_at).total_seconds() < 120:
+            return {"triggered": False, "reason": "cooldown", "stats": stats}
+
+        packs = self.storage.list_session_topic_packs(session_id)
+        pack_id = int(packs[0]["id"]) if packs else self._ensure_fact_cards_pack(session_id)
+        clean_hint = self._single_line(topic_hint)[:240]
+        repeated = stats.get("repeated_entry") if isinstance(stats.get("repeated_entry"), dict) else {}
+        repeated_title = str(repeated.get("title") or "").strip()
+        topic_focus = repeated_title or clean_hint or "動畫新番最新一話細節"
+        topic = (
+            "動畫新番最新一話細節、作畫爭議、劇情超展開與社群討論。"
+            f"補卡原因：{trigger_reason}。"
+            f"請以「{topic_focus[:160]}」作為主要切入，補充具體作品、集數、場面、製作或社群討論細節。"
+        )[:500]
+        started_at = datetime.now().isoformat()
+        output_name = f"auto-replenish-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+        self.storage.update_director_state(
+            session_id,
+            metadata={
+                "fact_card_replenishment": {
+                    "in_progress": not run_inline,
+                    "last_reason": trigger_reason,
+                    "last_replenished_at": started_at,
+                    "last_status": "queued" if not run_inline else "started",
+                    "last_error": "",
+                    "last_fallback_mode": "",
+                }
+            },
+        )
+
+        def _run_generation() -> dict[str, Any]:
+            try:
+                self.storage.update_director_state(
+                    session_id,
+                    metadata={
+                        "fact_card_replenishment": {
+                            "in_progress": not run_inline,
+                            "last_reason": trigger_reason,
+                            "last_replenished_at": started_at,
+                            "last_status": "running",
+                            "last_error": "",
+                            "last_fallback_mode": "",
+                        }
+                    },
+                )
+                if run_inline:
+                    result = self.generate_fact_cards_with_gemini(
+                        session_id,
+                        topic=topic,
+                        pack_id=pack_id,
+                        output_name=output_name,
+                        timeout_seconds=300,
+                    )
+                else:
+                    result = self._run_fact_card_replenishment_worker_process(
+                        session_id,
+                        topic=topic,
+                        pack_id=pack_id,
+                        output_name=output_name,
+                        timeout_seconds=300,
+                    )
+                if str(result.get("status") or "") == "failed":
+                    raise RuntimeError(str(result.get("error") or "FactCard worker failed"))
+                fallback_mode = str(result.get("fallback_mode") or "")
+                final_status = "fallback" if fallback_mode == "local_template" else "completed"
+                self.storage.update_director_state(
+                    session_id,
+                    metadata={
+                        "fact_card_replenishment": {
+                            "in_progress": False,
+                            "last_reason": trigger_reason,
+                            "last_replenished_at": started_at,
+                            "last_status": final_status,
+                            "last_error": "",
+                            "last_fallback_mode": fallback_mode,
+                            "created_count": int((result.get("import") or {}).get("created_count") or 0),
+                            "embedding_count": int((result.get("import") or {}).get("embedding_count") or 0),
+                        }
+                    },
+                )
+                return result
+            except Exception as exc:
+                self.storage.update_director_state(
+                    session_id,
+                    metadata={
+                        "fact_card_replenishment": {
+                            "in_progress": False,
+                            "last_reason": trigger_reason,
+                            "last_replenished_at": started_at,
+                            "last_status": "failed",
+                            "last_error": str(exc)[:500],
+                        }
+                    },
+                )
+                logger.warning("fact card replenishment failed session_id=%s reason=%s error=%s", session_id, trigger_reason, exc)
+                return {"status": "failed", "error": str(exc)[:500]}
+
+        if not run_inline:
+            thread = threading.Thread(
+                target=_run_generation,
+                name=f"fact-card-replenish-{session_id[:12]}",
+                daemon=True,
+            )
+            thread.start()
+            return {
+                "triggered": True,
+                "scheduled": True,
+                "reason": trigger_reason,
+                "pack_id": pack_id,
+                "topic": topic,
+                "output_name": output_name,
+                "worker_status": "queued",
+                "stats": stats,
+            }
+
+        result = _run_generation()
+        return {
+            "triggered": True,
+            "scheduled": False,
+            "reason": trigger_reason,
+            "pack_id": pack_id,
+            "topic": topic,
+            "result": result,
+            "stats": stats,
+        }
+
+    def _run_fact_card_replenishment_worker_process(
+        self,
+        session_id: str,
+        *,
+        topic: str,
+        pack_id: int,
+        output_name: str,
+        timeout_seconds: int = 300,
+    ) -> dict[str, Any]:
+        worker_path = Path(__file__).with_name("fact_card_worker.py")
+        timeout = max(30, min(int(timeout_seconds or 300), 900))
+        command = [
+            sys.executable,
+            str(worker_path),
+            "--db-path",
+            str(self.storage.db_path),
+            "--session-id",
+            session_id,
+            "--topic",
+            str(topic or ""),
+            "--pack-id",
+            str(int(pack_id)),
+            "--output-name",
+            str(output_name or ""),
+            "--timeout-seconds",
+            str(timeout),
+        ]
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(PROJECT_ROOT),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=timeout + 90,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(f"FactCard worker timeout after {timeout + 90}s") from exc
+        payload = self._parse_fact_card_worker_payload(completed.stdout)
+        if completed.returncode != 0:
+            error = str(payload.get("error") or completed.stderr or completed.stdout or "FactCard worker failed")
+            raise RuntimeError(error[:500])
+        if str(payload.get("status") or "") == "failed":
+            raise RuntimeError(str(payload.get("error") or "FactCard worker failed")[:500])
+        return payload
+
+    @staticmethod
+    def _parse_fact_card_worker_payload(stdout: str) -> dict[str, Any]:
+        lines = [line.strip() for line in str(stdout or "").splitlines() if line.strip()]
+        for line in reversed(lines):
+            if not (line.startswith("{") and line.endswith("}")):
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+        raise RuntimeError("FactCard worker did not return JSON status")
 
     async def auto_build_topic_pack(
         self,
@@ -1924,6 +2352,202 @@ class YouTubeBridgeManager:
             if len(cards) >= card_count:
                 break
         return cards
+
+    def _ensure_fact_cards_pack(self, session_id: str, pack_id: int | None = None) -> int:
+        if pack_id is not None:
+            self.storage.link_topic_pack_to_session(session_id, int(pack_id))
+            return int(pack_id)
+        packs = self.storage.list_session_topic_packs(session_id)
+        for pack in packs:
+            if self._is_fact_cards_pack(pack):
+                return int(pack["id"])
+        for pack in self.storage.list_topic_packs(limit=500):
+            if self._is_fact_cards_pack(pack):
+                self.storage.link_topic_pack_to_session(session_id, int(pack["id"]))
+                return int(pack["id"])
+        pack = self.storage.create_topic_pack({
+            "title": FACT_CARDS_PACK_TITLE,
+            "description": FACT_CARDS_PACK_DESCRIPTION,
+        })
+        self.storage.link_topic_pack_to_session(session_id, int(pack["id"]))
+        return int(pack["id"])
+
+    @staticmethod
+    def _is_fact_cards_pack(pack: dict[str, Any]) -> bool:
+        return str(pack.get("title") or "").strip() == FACT_CARDS_PACK_TITLE
+
+    def import_fact_cards_folder(
+        self,
+        session_id: str,
+        *,
+        fact_cards_dir: str | Path | None = None,
+        pack_id: int | None = None,
+        max_files: int = 50,
+    ) -> dict[str, Any]:
+        paths = iter_fact_card_files(fact_cards_dir or DEFAULT_FACT_CARDS_DIR, max_files=max_files)
+        return self._import_fact_card_paths(session_id, paths, pack_id=pack_id)
+
+    def import_fact_cards_folder_to_pack(
+        self,
+        *,
+        fact_cards_dir: str | Path | None = None,
+        pack_id: int | None = None,
+        max_files: int = 50,
+    ) -> dict[str, Any]:
+        paths = iter_fact_card_files(fact_cards_dir or DEFAULT_FACT_CARDS_DIR, max_files=max_files)
+        target_pack_id = self._ensure_fact_cards_standalone_pack(pack_id)
+        return self._import_fact_card_paths_to_pack(paths, pack_id=target_pack_id)
+
+    def import_fact_card_file(
+        self,
+        session_id: str,
+        path: str | Path,
+        *,
+        pack_id: int | None = None,
+    ) -> dict[str, Any]:
+        return self._import_fact_card_paths(session_id, [Path(path)], pack_id=pack_id)
+
+    def _import_fact_card_paths(
+        self,
+        session_id: str,
+        paths: list[Path],
+        *,
+        pack_id: int | None = None,
+    ) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            raise ValueError("live session 不存在")
+        target_pack_id = self._ensure_fact_cards_pack(session_id, pack_id)
+        result = self._import_fact_card_paths_to_pack(paths, pack_id=target_pack_id)
+        result["session_id"] = session_id
+        return result
+
+    def _ensure_fact_cards_standalone_pack(self, pack_id: int | None = None) -> int:
+        if pack_id is not None:
+            if not self.storage.get_topic_pack(int(pack_id)):
+                raise ValueError("topic pack 不存在")
+            return int(pack_id)
+        pack = self.storage.create_topic_pack({
+            "title": FACT_CARDS_PACK_TITLE,
+            "description": FACT_CARDS_PACK_DESCRIPTION,
+        })
+        return int(pack["id"])
+
+    def _import_fact_card_paths_to_pack(
+        self,
+        paths: list[Path],
+        *,
+        pack_id: int,
+    ) -> dict[str, Any]:
+        target_pack_id = int(pack_id)
+        created_entries: list[dict[str, Any]] = []
+        embeddings: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        parsed_files = 0
+        for path in paths:
+            try:
+                document = parse_fact_card_markdown(path.read_text(encoding="utf-8"), source_name=path.name)
+                parsed_files += 1
+            except Exception as exc:
+                failures.append({"file": str(path), "error": str(exc)[:300]})
+                continue
+            for payload in document.to_topic_pack_entries():
+                try:
+                    entry = self.storage.create_topic_pack_entry(int(target_pack_id), payload)
+                    created_entries.append(entry)
+                    try:
+                        embeddings.append(self.index_topic_pack_entry(int(entry["id"])))
+                    except Exception as exc:
+                        failures.append({
+                            "file": str(path),
+                            "entry_id": entry["id"],
+                            "error": str(exc)[:300],
+                        })
+                except Exception as exc:
+                    failures.append({"file": str(path), "title": payload.get("title"), "error": str(exc)[:300]})
+        return {
+            "status": "completed",
+            "pack_id": int(target_pack_id),
+            "file_count": len(paths),
+            "parsed_file_count": parsed_files,
+            "created_count": len(created_entries),
+            "embedding_count": len(embeddings),
+            "failed_count": len(failures),
+            "entries": created_entries,
+            "embeddings": embeddings,
+            "failures": failures,
+        }
+
+    def generate_fact_cards_with_gemini(
+        self,
+        session_id: str,
+        *,
+        topic: str,
+        pack_id: int | None = None,
+        output_name: str | None = None,
+        timeout_seconds: int = 300,
+    ) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            raise ValueError("live session 不存在")
+        clean_topic = str(topic or "").strip() or "動畫新番最新一話細節討論"
+        generated = generate_fact_card_markdown_with_gemini(
+            topic=clean_topic,
+            output_dir=DEFAULT_FACT_CARDS_DIR,
+            output_name=output_name,
+            session_title=str(session.get("display_name") or session_id),
+            director_guidance=str(session.get("director_guidance") or "固定討論動畫新番。"),
+            timeout_seconds=timeout_seconds,
+        )
+        import_result = self.import_fact_card_file(
+            session_id,
+            generated["path"],
+            pack_id=pack_id,
+        )
+        return {
+            "status": "completed",
+            "session_id": session_id,
+            "topic": clean_topic,
+            "file_name": generated["file_name"],
+            "fallback_mode": generated.get("fallback_mode", ""),
+            "stdout_tail": generated.get("stdout_tail", ""),
+            "stderr_tail": generated.get("stderr_tail", ""),
+            "import": import_result,
+        }
+
+    def generate_fact_cards_with_gemini_to_pack(
+        self,
+        *,
+        topic: str,
+        pack_id: int | None = None,
+        output_name: str | None = None,
+        timeout_seconds: int = 300,
+    ) -> dict[str, Any]:
+        clean_topic = str(topic or "").strip()
+        if not clean_topic:
+            raise ValueError("Fact Cards 生成主題不可為空")
+        generated = generate_fact_card_markdown_with_gemini(
+            topic=clean_topic,
+            output_dir=DEFAULT_FACT_CARDS_DIR,
+            output_name=output_name,
+            session_title="動畫新番 FactCards",
+            director_guidance="固定討論動畫新番，補充最新話劇情細節、作畫品質、演出超展開與社群討論。",
+            timeout_seconds=timeout_seconds,
+        )
+        target_pack_id = self._ensure_fact_cards_standalone_pack(pack_id)
+        import_result = self._import_fact_card_paths_to_pack(
+            [Path(generated["path"])],
+            pack_id=target_pack_id,
+        )
+        return {
+            "status": "completed",
+            "topic": clean_topic,
+            "file_name": generated["file_name"],
+            "fallback_mode": generated.get("fallback_mode", ""),
+            "stdout_tail": generated.get("stdout_tail", ""),
+            "stderr_tail": generated.get("stderr_tail", ""),
+            "import": import_result,
+        }
 
     async def research_request(
         self,
@@ -2475,7 +3099,8 @@ class YouTubeBridgeManager:
         session = self.storage.get_session(session_id)
         if not session:
             raise ValueError("live session 不存在")
-        events = self.storage.list_events_pending_safety(session_id, limit=limit)
+        batch_limit = min(max(1, int(limit or SAFETY_CLASSIFIER_BATCH_LIMIT)), SAFETY_CLASSIFIER_BATCH_LIMIT)
+        events = self.storage.list_events_pending_safety(session_id, limit=batch_limit)
         if not events:
             return {"session_id": session_id, "classified_count": 0, "failed_count": 0, "events": []}
 
@@ -2781,19 +3406,25 @@ class YouTubeBridgeManager:
     ) -> list[dict[str, str]]:
         recent_events = self.storage.list_events(session["session_id"], limit=20)
         recent_interactions = self.storage.list_interactions(session["session_id"], limit=12)
-        event_lines = "\n".join(self._event_line(event) for event in recent_events[-20:]) or "（無近期留言）"
+        public_topic = self._public_test_topic(session, topic_hint)
+        event_lines = "\n".join(
+            line
+            for event in recent_events[-20:]
+            if (line := self._test_comment_event_line(event))
+        ) or "（無近期公開留言）"
         interaction_lines = "\n".join(
-            f"- {item.get('source')} [{item.get('status')}]: {str(item.get('reply_text') or item.get('closure_text') or '')[:180]}"
+            line
             for item in reversed(recent_interactions)
-        ) or "（無近期互動）"
+            if (line := self._test_comment_interaction_line(item))
+        ) or "（無近期公開互動）"
         if use_llm:
             try:
                 result = self._memoria_client().generate_prompt_json(
                     prompt_key="youtube_live_test_comment_generator_prompt",
                     variables={
                         "session_title": session.get("display_name") or session["session_id"],
-                        "director_guidance": session.get("director_guidance") or "（未設定）",
-                        "topic_hint": topic_hint or "（未設定）",
+                        "director_guidance": public_topic or "（未設定）",
+                        "topic_hint": public_topic or "（未設定）",
                         "count": str(count),
                         "recent_events": event_lines,
                         "recent_interactions": interaction_lines,
@@ -2840,26 +3471,26 @@ class YouTubeBridgeManager:
         focus = YouTubeBridgeManager._public_test_topic(session, topic_hint)
         templates = [
             "這段是在測試 {focus} 嗎？",
-            "剛剛那個回覆可以再講簡單一點嗎？",
-            "如果聊天室突然變多，AI 會怎麼排順序？",
-            "我覺得這裡可以順便示範一次完整流程。",
-            "現在看起來像是進入 debug 現場了。",
-            "導播會不會自己換話題？",
-            "這個摘要最後會記住直播的大方向嗎？",
+            "剛剛那段劇情可以再講簡單一點嗎？",
+            "如果只追一兩部新番，這季會先看哪幾部？",
+            "這集的節奏是不是比上一集快很多？",
+            "有沒有哪段分鏡是你們覺得特別有記憶點的？",
+            "這季哪部的角色衝突最適合拿來聊？",
+            "最新一話有沒有哪個轉折讓人意外？",
             "可以讓角色針對觀眾留言直接互動嗎？",
             "{focus} 有沒有適合新手的入門例子？",
             "剛剛可可的說法跟白蓮的角度有什麼差別？",
             "如果有人完全沒看過這個主題，要先知道什麼？",
-            "這題會不會其實跟美食也能連起來？",
+            "這部動畫如果只看最新一話，會不會看不懂？",
             "我比較想聽反面觀點，會有什麼限制？",
             "可以用一句話總結目前的討論嗎？",
-            "如果後面要切到 LLM，這裡可以怎麼接？",
-            "觀眾一直插話時，AI 會不會忘記主題？",
+            "如果要接下一部新番，哪個共通點最自然？",
+            "觀眾一直插話時，話題會不會偏離新番本身？",
             "這段可以請角色互相補充，不要只回答我嗎？",
-            "目前最值得延伸的是作品、技術還是生活感？",
+            "目前最值得延伸的是劇情、作畫還是角色關係？",
             "💖💖💖💖💖",
             "100 100 100 這段很有感。",
-            "🍜🍜🍜 看餓了，能不能接到美食話題？",
+            "這集有沒有哪個畫面適合拿來做短片？",
             "？？？？？？這段我有點跟不上。",
         ]
         authors = [
@@ -2955,6 +3586,7 @@ class YouTubeBridgeManager:
             session_id,
             "\n".join([*lines, str(session.get("director_guidance") or "")]),
             limit=6,
+            usage_source="external_context",
         )
         payload = {
             "source": "youtube_live",
@@ -2985,6 +3617,37 @@ class YouTubeBridgeManager:
             safe_label = YouTubeBridgeManager._safe_label_text(str(event.get("safety_label") or "unclassified"))
             return f"- [安全標記: {safe_label}] {author or '匿名觀眾'}: {text}"
         return f"- {author or '匿名觀眾'}: {text}"
+
+    @staticmethod
+    def _should_block_director_for_pending_inject(event: dict[str, Any]) -> bool:
+        """只有已通過安全檢查、可公開注入的留言會暫停 director idle。"""
+        return YouTubeBridgeManager._is_public_live_event_displayable(event)
+
+    @staticmethod
+    def _test_comment_event_line(event: dict[str, Any]) -> str:
+        if not YouTubeBridgeManager._is_public_live_event_displayable(event):
+            return ""
+        return YouTubeBridgeManager._visible_event_display_line(event)
+
+    @staticmethod
+    def _test_comment_interaction_line(item: dict[str, Any]) -> str:
+        if str(item.get("status") or "") != "completed":
+            return ""
+        text = YouTubeBridgeManager._single_line(item.get("reply_text") or item.get("closure_text") or "")
+        if not text:
+            return ""
+        source = str(item.get("source") or "")
+        labels = {
+            "director": "AI 回覆",
+            "youtube_injection": "AI 回覆",
+            "manual_inject": "AI 回覆",
+            "auto_inject": "AI 回覆",
+            "super_chat": "SC 回覆",
+            "closing_super_chat_thanks": "SC 感謝",
+        }
+        label = labels.get(source, "AI 回覆")
+        clean_text = YouTubeBridgeManager._sanitize_test_comment_text(text, "目前直播內容")
+        return f"- {label}: {clean_text[:180]}"
 
     @staticmethod
     def _display_content_from_external_context(external_context: dict[str, Any]) -> str:

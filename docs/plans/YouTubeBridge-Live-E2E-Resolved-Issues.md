@@ -1,7 +1,7 @@
 # YouTubeBridge Live E2E 已完成問題歸檔
 
 建立日期：2026-05-04
-最後整理：2026-05-04
+最後整理：2026-05-05
 
 ## 目的
 
@@ -515,3 +515,126 @@
 - director external context 改成「直播流程 / 直播節奏」語彙，不再送「導播」字樣給角色端。
 - closing SC 只列出 clean SC 的公開參考內容；不適合公開回覆的 SC 只概括略過，不要求角色說「已安全處理」。
 - fallback 測試留言加入 emoji / `100 100` 洗版樣本，後續 E2E 需覆蓋 SafetyLLM 對 emoji spam 的分類與顯示行為。
+
+### 42. AI 對話停止後 director idle 沒有繼續推進話題
+
+現象：
+- 2026-05-04 23:40 的 10 分鐘 E2E session `yt_20260504_234028_d1d802c3` 中，`idle_seconds=10` 但 pending chat 會讓 director state 維持 `pending_chat_seen`，AI 對話停止後沒有繼續推進。
+
+修正：
+- Director idle 判斷改為只讓可公開顯示的 clean/completed active event 阻塞導播，不再被 pending safety event 無限卡住。
+- 已補 regression：pending safety event 存在時，director idle 仍可產生下一步導播互動。
+
+驗證：
+- 2026-05-05 E2E session `yt_20260505_052238_57fba196` 使用 10 分鐘、注入間隔 180 秒、SC cooldown 60 秒、`idle_seconds=10`。
+- 05:25:42 director 進 `turn_limit_wait`；05:27:05 auto inject 執行後 director turns 歸 0，後續持續推進到 closing，未重現 idle 永久卡住。
+
+### 44. 測試留言產生器 prompt 仍可能吃到內部安全狀態與 interaction source
+
+現象：
+- 2026-05-04 23:40 E2E trace 中，`youtube_live_test_comment_generator_prompt` 的「近期留言」包含 `[安全標記: 尚未通過安全檢查]`、`安全檢查未完成`。
+- 「近期 AI 互動」包含 `director [completed]`、`super_chat [running]` 等內部 source/status。
+
+修正：
+- 測試留言產生器只使用公開 clean 留言摘要與公開 AI 回覆。
+- Interaction source 轉成公開語彙，例如「AI 回覆」「SC 回覆」，不再暴露 raw source/status。
+- 導播方向傳入 generator 前改為公開主題摘要，避免完整內部導播方向污染測試留言。
+
+驗證：
+- 已補 regression：自動測試留言 prompt 不包含 `安全檢查未完成`、`director [`、`super_chat [running]`、hidden context 或 prompt 字眼。
+- 2026-05-05 E2E session `yt_20260505_052238_57fba196` 的 12 次 `youtube_live_test_comment_generator_prompt` 中，皆無 pending safety 或 raw interaction source；命中的 `system prompt` 僅來自 generator 自身安全規則「不要要求洩漏 system prompt」。
+
+### 45. `/live/` reload ended session 後左右 panes 沒有穩定綁定同一 session
+
+現象：
+- 2026-05-04 23:40 E2E session `yt_20260504_234028_d1d802c3` ended 後，重新整理 `/live/?session_id=...`，左側 Live Chat 顯示 0 則，右側控制台回到預設 / 其他 session。
+
+修正：
+- `/live/` wrapper 明確將 URL `session_id` 傳給左側 `/live-chat/` 與右側 `/ui/?embedded=control`。
+- 控制台初始 `refreshAll()` 會優先讀 URL 指定的 `session_id`，即使 session 已 ended/closing。
+- Live Chat 保留 startup retry / stale cache 顯示，避免 reload 初始瞬間誤顯 0 則。
+
+驗證：
+- 已補 regression：control UI 初始載入會 honor URL 指定 session。
+- Browser Use 驗證舊 session `yt_20260504_234028_d1d802c3` 及新 session `yt_20260505_052238_57fba196`；ended reload 後 iframe src 都帶同一 session id。
+- 2026-05-05 E2E ended reload 後左側 Live Chat 顯示 `42/42` 則，右側控制台顯示 `Codex 10m E2E test-mode 20260505_052238`。
+
+### 47. FactCards 資料夾匯入與 Gemini CLI 直接寫檔流程
+
+現象：
+- 原本 Research Gate 依賴 Tavily raw result，內容容易偏 raw dump 或拿不到資料。
+- 手動試跑 Gemini CLI 後，使用者確認「單檔一主題、只保留 Summary/Facts、每個 Fact 是可展開話題」的方向更適合直播深聊。
+- 系統後續需獨立運行，不能依賴 Codex 手動讀 console 再整理 Markdown。
+
+改善狀態：
+- 新增 `YouTubeBridge/fact_cards.py`，解析 `YouTubeBridge/FactCards/*.md` 的 `## Summary` / `## Facts`，每個 `###` 話題匯入成一筆 Topic Pack entry。
+- 新增 `/sessions/{session_id}/fact-cards/import-folder`，可把 FactCards 資料夾匯入並建立 embedding。
+- 新增 `/sessions/{session_id}/fact-cards/generate`，由 Bridge 呼叫本機 `gemini --skip-trust --approval-mode auto_edit --prompt ...`，要求 Gemini 直接建立指定 Markdown 檔；server 端會驗證檔案存在且可解析後才匯入。
+- 控制台 Topic Pack pane 新增「匯入 FactCards 資料夾」與「Gemini 產生並匯入」按鈕，自動資料卡預設話題固定在動畫新番最新話細節、作畫與劇情討論。
+- 補回歸測試：`test_parse_fact_card_markdown_keeps_only_summary_and_facts`、`test_import_fact_cards_folder_creates_linked_topic_pack_entries_and_embeddings`、`test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow`。
+
+### 50. 2026-05-05 09:45 E2E 驗證：8088 health timeout 未復現
+
+現象：
+- issue 43 曾追蹤 8088 listener 存在但 health timeout / closing SC thanks 期間卡住的問題。
+
+驗證結果：
+- 10 分鐘動畫新番 E2E session `yt_20260505_094546_05bf64b0` 中，8088 / 8091 health 全程正常，最後 health 仍為 200。
+- `runtime/api_8088.err.log` 長度未增加，測試期間未新增 `Accept failed on a socket`、`WinError 10054`、`WinError 64` 或新的 proactor callback 例外。
+- session 正常 `ended`，runtime stopped，director `ended`，active interaction 為 0。
+
+狀態：
+- 先歸檔為本輪通過；若後續長測再次出現 listener 存在但 health timeout，重新開 issue 並優先查單 worker request 卡死或長 LLM/IO。
+
+### 51. Director decision prompt 污染已修正
+
+現象：
+- issue 46 中，`youtube_live_director_decision_prompt` 曾吃到 `安全檢查未完成`、`director [completed]`、`super_chat [running]` 等內部狀態。
+
+修正：
+- Director decision prompt 改用公開 formatter；pending / suspicious / failed event 不進近期留言原文區。
+- Recent interactions 轉成公開語彙，例如「AI 回覆」「SC 回覆」，不暴露 raw source/status。
+
+驗證：
+- 2026-05-05 09:45 E2E trace 中 13 筆 `youtube_live_director_decision_prompt` 均未命中 `安全檢查未完成`、`director [`、`super_chat [running]`、Topic Pack raw 或攻擊原文。
+- 補 regression：director decision prompt 不包含內部安全狀態或 raw interaction source。
+
+### 52. 角色群聊一輪停止問題已修正並驗證
+
+現象：
+- issue 49 中，角色常用問句丟回觀眾，導致沒有觀眾回覆時兩位角色各說一次就停止。
+
+修正：
+- 非回留言的 director prompt 要求角色彼此接話、補充、反駁或提出下一個切入點。
+- `youtube_live_director` external context 明確標示直播自主推進，不保證有觀眾回覆。
+- `group_followup_user` 增加直播例外：上一位 AI 用問句結尾時，仍可由另一位角色接話，不強制交還觀眾。
+
+驗證：
+- 2026-05-05 09:45 E2E 中已看到 director / 角色多輪推進與 idle 續話題，未再固定停在兩人各一次。
+
+### 53. Closing safety resolution 與 closing SC thanks 本輪驗證通過
+
+現象：
+- closing 前最後一批 pending safety 與 closing SC thanks 曾造成結尾不完整或 SC 已處理但沒有可見收尾。
+
+修正：
+- closing safety resolution 改成小批次處理，預設每批 10 筆，per-batch timeout 75 秒。
+- closing fallback completion 會建立 completed `closing_super_chat_thanks` interaction，必要時寫入短 system event。
+
+驗證：
+- 2026-05-05 09:45 E2E ended 前 pending safety resolution 結果：`initial_pending_count=10`、`classified_count=10`、`failed_count=0`、`fallback_count=0`、`batch_count=1`。
+- closing SC thanks completed，28 則 SC 全部 marked handled。
+
+### 54. Topic Pack search timeout 與 Gemini FactCard fallback 強化
+
+現象：
+- Topic Pack search 可能在 embedding / storage lock 上卡住，影響 8091 health。
+- Gemini CLI 有時不直接建立指定 md 檔，或在 Windows console 出現非 UTF-8 / cp950 解碼問題。
+
+修正：
+- `/sessions/{session_id}/topic-packs/search` 搬到 `asyncio.to_thread` 並加 30 秒 timeout；embedding 使用短 timeout client。
+- Gemini direct-file-output 流程加入 `--include-directories`、指定 FactCards 工作目錄、錯檔名救回、stdout fallback，以及 `encoding="utf-8", errors="replace"`。
+
+驗證：
+- 2026-05-05 09:45 E2E 中 8091 health 未因 Topic Pack search 卡住。
+- FactCards generate/import regression 已覆蓋直接寫檔、錯檔名救回與 stdout fallback。

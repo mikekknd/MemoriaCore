@@ -14,6 +14,7 @@ from core.system_logger import SystemLogger
 _onnx_session = None
 _tokenizer = None
 CHAT_JSON_MAX_TOKENS = 768
+YOUTUBE_SAFETY_JSON_MAX_TOKENS = 4096
 
 def get_bge_m3_onnx_instance():
     global _onnx_session, _tokenizer
@@ -554,6 +555,12 @@ class LLMRouter:
         """最終角色 JSON 回覆很短，限制輸出可避免模型發散時長篇續寫。"""
         if task_key == "chat" and response_format and log_context:
             return CHAT_JSON_MAX_TOKENS
+        if response_format and log_context:
+            if (
+                log_context.get("source") == "prompt_json"
+                and log_context.get("prompt_key") == "youtube_live_safety_classifier_prompt"
+            ):
+                return YOUTUBE_SAFETY_JSON_MAX_TOKENS
         return None
 
     @staticmethod
