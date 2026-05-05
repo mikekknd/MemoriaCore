@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import random
 import subprocess
@@ -18,6 +17,8 @@ from typing import Any
 import engine_public_events
 import engine_test_events
 from engine_director import DirectorManagerMixin
+from engine_injection import InjectionManagerMixin
+from engine_runtime_lifecycle import RuntimeLifecycleManagerMixin
 from engine_topic_packs import TopicPackManagerMixin
 from bridge_contracts import (
     AUDIENCE_QUERY_CLASSIFIER_SCHEMA,
@@ -61,7 +62,12 @@ def clear_llm_trace_log(path: Path | None = None) -> dict[str, Any]:
     return {"cleared": True, "path": str(target)}
 
 
-class YouTubeBridgeManager(DirectorManagerMixin, TopicPackManagerMixin):
+class YouTubeBridgeManager(
+    InjectionManagerMixin,
+    RuntimeLifecycleManagerMixin,
+    DirectorManagerMixin,
+    TopicPackManagerMixin,
+):
     def __init__(
         self,
         storage: BridgeStorage,
@@ -76,6 +82,10 @@ class YouTubeBridgeManager(DirectorManagerMixin, TopicPackManagerMixin):
 
     def _memoria_client(self):
         return self.memoria_client_factory()
+
+    @staticmethod
+    def _clear_llm_trace_log() -> dict[str, Any]:
+        return clear_llm_trace_log()
 
     @staticmethod
     def _public_decision(decision: dict[str, Any] | None) -> dict[str, Any]:
@@ -171,185 +181,6 @@ class YouTubeBridgeManager(DirectorManagerMixin, TopicPackManagerMixin):
             return f"{text[:800]}... [truncated {len(text)} chars]"
         return text
 
-    def get_status(self, session_id: str) -> dict[str, Any]:
-        runtime = self._runtimes.get(session_id)
-        session = self.storage.get_session(session_id)
-        mode = "youtube" if session and (session.get("live_chat_id") or session.get("video_id")) else "test"
-        if not runtime:
-            return {
-                "session_id": session_id,
-                "status": session.get("status", "stopped") if session else "missing",
-                "running": False,
-                "mode": mode,
-                "last_error": None,
-                "active_interaction": self._public_interaction_status(self.storage.get_active_interaction(session_id)),
-                "director": self._public_director_state(self.storage.get_director_state(session_id)),
-                "auto_test_events_running": False,
-            }
-        return {
-            "session_id": session_id,
-            "status": runtime.status,
-            "running": runtime.running,
-            "mode": runtime.mode,
-            "last_error": runtime.last_error,
-            "auto_inject_running": bool(runtime.running and runtime.inject_task and not runtime.inject_task.done()),
-            "last_auto_inject_at": runtime.last_auto_inject_at,
-            "last_auto_inject_error": runtime.last_auto_inject_error,
-            "auto_test_events_running": bool(runtime.running and runtime.test_event_task and not runtime.test_event_task.done()),
-            "last_auto_test_event_at": runtime.last_auto_test_event_at,
-            "last_auto_test_event_error": runtime.last_auto_test_event_error,
-            "active_interaction": self._public_interaction_status(self.storage.get_active_interaction(session_id)),
-            "director": self._public_director_state(self.storage.get_director_state(session_id)),
-        }
-
-    async def sync_autostart(self) -> None:
-        for session in self.storage.list_sessions():
-            status = session.get("status")
-            should_resume = (
-                session.get("auto_connect")
-                and status in {"starting", "running"}
-                and not self._session_is_finalized(session)
-            )
-            if should_resume:
-                try:
-                    self.storage.finalize_incomplete_interactions(
-                        session["session_id"],
-                        status="interrupted",
-                        reason="server_restarted",
-                        metadata={"finalized_by": "sync_autostart"},
-                    )
-                    await self.start_session(session["session_id"])
-                except Exception as exc:
-                    logger.warning("live session autostart failed: %s: %s", session["session_id"], exc)
-                    self.storage.update_session_fields(session["session_id"], status="stopped")
-            elif status in {"starting", "running"}:
-                self.storage.update_session_fields(session["session_id"], status="stopped")
-
-    async def start_session(self, session_id: str) -> dict[str, Any]:
-        async with self._lock:
-            session = self.storage.get_session(session_id)
-            if not session:
-                raise ValueError("live session 不存在")
-            if self._session_is_finalized(session):
-                raise ValueError("live session 已標記結束；請建立或更新為新的 video_id 後再啟動")
-            connector = self.storage.get_connector(session["connector_id"])
-            if not connector:
-                raise ValueError("connector 不存在")
-            if not connector.get("enabled"):
-                raise ValueError("connector 未啟用")
-            needs_youtube_polling = bool(session.get("live_chat_id") or session.get("video_id"))
-            if needs_youtube_polling and not connector.get("api_key"):
-                raise ValueError("connector 缺少 YouTube API key")
-            if needs_youtube_polling and not session.get("live_chat_id"):
-                live_chat_id = await asyncio.to_thread(
-                    self.youtube_client.resolve_live_chat_id,
-                    api_key=connector["api_key"],
-                    video_id=session["video_id"],
-                )
-                session = self.storage.update_session_fields(session_id, live_chat_id=live_chat_id) or session
-            if not needs_youtube_polling:
-                try:
-                    clear_llm_trace_log()
-                except OSError as exc:
-                    logger.warning("clear llm trace failed before test live session start: %s", exc)
-
-            existing = self._runtimes.get(session_id)
-            if existing and existing.running:
-                return self.get_status(session_id)
-
-            runtime = existing or LiveRuntime(session_id=session_id)
-            runtime.mode = "youtube" if session.get("live_chat_id") else "test"
-            runtime.status = "starting"
-            runtime.last_error = None
-            runtime.last_auto_inject_error = None
-            runtime.running = True
-            runtime.task = asyncio.create_task(self._poll_loop(runtime)) if runtime.mode == "youtube" else None
-            runtime.inject_task = asyncio.create_task(self._auto_inject_loop(runtime))
-            if session.get("auto_test_events_enabled"):
-                runtime.test_event_task = asyncio.create_task(self._auto_test_event_loop(runtime))
-            director_state = self.storage.get_director_state(session_id)
-            if director_state.get("director_enabled"):
-                runtime.director_task = asyncio.create_task(self._director_loop(runtime))
-            self._runtimes[session_id] = runtime
-            self.storage.update_session_fields(
-                session_id,
-                status="running",
-                started_at=session.get("started_at") or datetime.now().isoformat(),
-            )
-            runtime.status = "running"
-            await self._broadcast(session_id, {"type": "status", "status": "running", "mode": runtime.mode})
-            return self.get_status(session_id)
-
-    async def stop_session(self, session_id: str) -> dict[str, Any]:
-        async with self._lock:
-            runtime = self._runtimes.get(session_id)
-            if runtime:
-                runtime.running = False
-                for cancel_event in runtime.cancel_events.values():
-                    cancel_event.set()
-            if runtime and runtime.task:
-                runtime.task.cancel()
-                try:
-                    await runtime.task
-                except asyncio.CancelledError:
-                    pass
-            if runtime and runtime.inject_task:
-                runtime.inject_task.cancel()
-                try:
-                    await runtime.inject_task
-                except asyncio.CancelledError:
-                    pass
-            if runtime and runtime.director_task:
-                runtime.director_task.cancel()
-                try:
-                    await runtime.director_task
-                except asyncio.CancelledError:
-                    pass
-            if runtime and runtime.director_kickoff_task:
-                runtime.director_kickoff_task.cancel()
-                try:
-                    await runtime.director_kickoff_task
-                except asyncio.CancelledError:
-                    pass
-            if runtime and runtime.test_event_task:
-                runtime.test_event_task.cancel()
-                try:
-                    await runtime.test_event_task
-                except asyncio.CancelledError:
-                    pass
-            if runtime:
-                runtime.status = "stopped"
-                runtime.task = None
-                runtime.inject_task = None
-                runtime.director_task = None
-                runtime.director_kickoff_task = None
-                runtime.test_event_task = None
-                self.storage.update_director_state(session_id, status="stopped")
-            self.storage.finalize_incomplete_interactions(
-                session_id,
-                status="interrupted",
-                reason="session_stopped",
-                metadata={"finalized_by": "session_stop"},
-            )
-            self.storage.update_session_fields(session_id, status="stopped")
-            await self._broadcast(session_id, {"type": "status", "status": "stopped"})
-            return self.get_status(session_id)
-
-    async def stop_all(self) -> None:
-        for session_id in list(self._runtimes):
-            await self.stop_session(session_id)
-
-    async def subscribe(self, session_id: str) -> asyncio.Queue:
-        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
-        queue: asyncio.Queue = asyncio.Queue(maxsize=200)
-        runtime.subscribers.add(queue)
-        return queue
-
-    async def unsubscribe(self, session_id: str, queue: asyncio.Queue) -> None:
-        runtime = self._runtimes.get(session_id)
-        if runtime:
-            runtime.subscribers.discard(queue)
-
     async def _poll_loop(self, runtime: LiveRuntime) -> None:
         while runtime.running:
             session = self.storage.get_session(runtime.session_id)
@@ -424,70 +255,6 @@ class YouTubeBridgeManager(DirectorManagerMixin, TopicPackManagerMixin):
     def _is_live_chat_ended_error(exc: Exception) -> bool:
         message = str(exc).lower()
         return "livechatended" in message or "live chat is no longer live" in message
-
-    @staticmethod
-    def _session_is_finalized(session: dict[str, Any]) -> bool:
-        return bool(
-            session.get("finalized_at")
-            or session.get("status") == "ended"
-            or session.get("summary_status") in {"completed", "summarizing"}
-        )
-
-    @staticmethod
-    def _session_elapsed(session: dict[str, Any]) -> tuple[int, int, int]:
-        planned = max(0, int(session.get("planned_duration_minutes", 0) or 0))
-        created_at = str(session.get("started_at") or session.get("created_at") or "")
-        try:
-            started = datetime.fromisoformat(created_at)
-        except ValueError:
-            started = datetime.now()
-        elapsed = max(0, int((datetime.now() - started).total_seconds() // 60))
-        if planned <= 0:
-            return elapsed, 0, 0
-        percent = max(0, min(100, int(round((elapsed / planned) * 100))))
-        remaining = max(0, planned - elapsed)
-        return elapsed, percent, remaining
-
-    @staticmethod
-    def _parse_iso_datetime(value: Any) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(str(value))
-        except ValueError:
-            return None
-
-    def _duration_reached(self, session: dict[str, Any]) -> bool:
-        planned = max(0, int(session.get("planned_duration_minutes", 0) or 0))
-        if planned <= 0 or not session.get("auto_finalize_on_duration"):
-            return False
-        _elapsed, percent, _remaining = self._session_elapsed(session)
-        return percent >= 100
-
-    async def _cancel_runtime_task(self, runtime: LiveRuntime, attr: str) -> None:
-        task = getattr(runtime, attr)
-        if not task:
-            return
-        current = asyncio.current_task()
-        if task is current:
-            return
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        setattr(runtime, attr, None)
-
-    async def _stop_runtime_background_tasks_for_closing(self, runtime: LiveRuntime) -> None:
-        for cancel_event in runtime.cancel_events.values():
-            cancel_event.set()
-        await self._cancel_runtime_task(runtime, "task")
-        if not runtime.inject_lock.locked():
-            await self._cancel_runtime_task(runtime, "inject_task")
-        await self._cancel_runtime_task(runtime, "director_task")
-        await self._cancel_runtime_task(runtime, "director_kickoff_task")
-        await self._cancel_runtime_task(runtime, "test_event_task")
 
     async def _finalize_for_duration(self, runtime: LiveRuntime, session: dict[str, Any]) -> None:
         if not runtime.running or runtime.status in {"closing", "ended"}:
@@ -789,136 +556,6 @@ class YouTubeBridgeManager(DirectorManagerMixin, TopicPackManagerMixin):
             )
         return finalized or interrupted
 
-    @staticmethod
-    def _auto_inject_delay(session: dict[str, Any], pending_count: int, *, active_interaction: bool) -> float:
-        base = max(5, min(int(session.get("inject_interval_seconds", 30) or 30), 600))
-        if not session.get("dynamic_inject_enabled", True):
-            return float(base)
-        max_pending = max(
-            int(session.get("min_pending_events", 1) or 1),
-            int(session.get("max_pending_events", 12) or 12),
-        )
-        if active_interaction:
-            return float(base)
-        ratio = max(0.0, min(1.0, pending_count / max_pending))
-        acceleration = 1.0 - (0.68 * math.sqrt(ratio))
-        return float(max(5, int(round(base * acceleration))))
-
-    @staticmethod
-    def _select_pending_events_for_injection(
-        events: list[dict[str, Any]],
-        *,
-        max_events: int,
-        max_sc_per_batch: int = 5,
-    ) -> list[dict[str, Any]]:
-        active = [
-            event for event in events
-            if event.get("status") == "active" and str(event.get("message_text") or "").strip()
-        ]
-        super_chats = [event for event in active if event.get("priority_class") == "super_chat"]
-        normal = [event for event in active if event.get("priority_class") != "super_chat"]
-        super_chats.sort(key=lambda item: (-int(item.get("sc_tier", 0) or 0), int(item.get("id", 0) or 0)))
-        normal.sort(key=lambda item: int(item.get("id", 0) or 0))
-        selected = super_chats[:max(1, int(max_sc_per_batch or 5))]
-        remaining = max(0, int(max_events or 1) - len(selected))
-        selected.extend(normal[:remaining])
-        return selected[:max(1, int(max_events or 1))]
-
-    def _sc_interrupt_allowed(self, runtime: LiveRuntime, session: dict[str, Any]) -> bool:
-        cooldown = max(0, int(session.get("sc_interrupt_cooldown_seconds", 30) or 30))
-        last = self._parse_iso_datetime(runtime.last_sc_interrupt_at)
-        if not last:
-            return True
-        return (datetime.now() - last).total_seconds() >= cooldown
-
-    async def _auto_inject_loop(self, runtime: LiveRuntime) -> None:
-        while runtime.running:
-            session = self.storage.get_session(runtime.session_id)
-            if not session:
-                return
-            if self._duration_reached(session):
-                await self._finalize_for_duration(runtime, session)
-                return
-            interval = max(5, min(int(session.get("inject_interval_seconds", 30) or 30), 600))
-            sleep_seconds = float(interval)
-            try:
-                if session.get("auto_inject"):
-                    pending = self.storage.list_events(
-                        runtime.session_id,
-                        limit=int(session.get("max_context_messages", 50) or 50),
-                        uninjected_only=True,
-                    )
-                    active_pending = [
-                        event for event in pending
-                        if event.get("status") == "active" and event.get("message_text")
-                    ]
-                    min_pending = max(1, int(session.get("min_pending_events", 1) or 1))
-                    max_pending = max(min_pending, int(session.get("max_pending_events", 12) or 12))
-                    max_sc_per_batch = max(1, int(session.get("max_sc_per_batch", 5) or 5))
-                    selected = self._select_pending_events_for_injection(
-                        active_pending,
-                        max_events=max_pending,
-                        max_sc_per_batch=max_sc_per_batch,
-                    )
-                    selected_sc = [event for event in selected if event.get("priority_class") == "super_chat"]
-                    active_interaction = bool(self.storage.get_active_interaction(runtime.session_id))
-                    sleep_seconds = self._auto_inject_delay(
-                        session,
-                        len(active_pending),
-                        active_interaction=active_interaction,
-                    )
-                    if (selected_sc or len(active_pending) >= min_pending) and selected:
-                        sc_interrupt_allowed = bool(selected_sc and self._sc_interrupt_allowed(runtime, session))
-                        if active_interaction and not sc_interrupt_allowed and len(active_pending) < max_pending:
-                            await asyncio.sleep(sleep_seconds)
-                            continue
-                        forced_by_backlog = active_interaction and len(active_pending) >= max_pending
-                        if selected_sc:
-                            max_tier = max(int(event.get("sc_tier", 0) or 0) for event in selected_sc)
-                            priority = 320 if max_tier >= 3 else 260
-                            source = "super_chat"
-                            if active_interaction and sc_interrupt_allowed:
-                                runtime.last_sc_interrupt_at = datetime.now().isoformat()
-                        else:
-                            priority = 180 if forced_by_backlog else 100
-                            source = "auto_inject"
-                        result = await self.inject_recent(
-                            runtime.session_id,
-                            event_ids=[event["id"] for event in selected],
-                            max_events=session.get("max_context_messages", 50),
-                            content=CONTROLLED_CONTEXT_CONTENT,
-                            source=source,
-                            priority=priority,
-                        )
-                        runtime.last_auto_inject_at = result.get("injected_at")
-                        runtime.last_auto_inject_error = None
-                        if selected_sc:
-                            await self._broadcast(runtime.session_id, {
-                                "type": "super_chat_batch_injected",
-                                "event_ids": [event["id"] for event in selected_sc],
-                                "count": len(selected_sc),
-                            })
-                await asyncio.sleep(sleep_seconds)
-            except asyncio.CancelledError:
-                raise
-            except ValueError as exc:
-                expected_wait = "沒有可注入" in str(exc) or "觀眾查詢資料搜尋中" in str(exc)
-                if not expected_wait:
-                    runtime.last_auto_inject_error = str(exc)
-                    await self._broadcast(runtime.session_id, {
-                        "type": "auto_inject_error",
-                        "message": str(exc),
-                    })
-                await asyncio.sleep(sleep_seconds)
-            except Exception as exc:
-                runtime.last_auto_inject_error = str(exc)
-                logger.error("YouTube auto inject error session_id=%s error=%s", runtime.session_id, exc, exc_info=True)
-                await self._broadcast(runtime.session_id, {
-                    "type": "auto_inject_error",
-                    "message": str(exc),
-                })
-                await asyncio.sleep(sleep_seconds)
-
     async def _auto_test_event_loop(self, runtime: LiveRuntime) -> None:
         await self._broadcast(runtime.session_id, {"type": "test_event_auto_started", "session_id": runtime.session_id})
         while runtime.running:
@@ -984,72 +621,6 @@ class YouTubeBridgeManager(DirectorManagerMixin, TopicPackManagerMixin):
             runtime.test_event_task = None
         await self._broadcast(session_id, {"type": "test_event_auto_stopped", "session_id": session_id})
         return self.get_status(session_id)
-
-    async def interrupt_session(self, session_id: str, *, reason: str = "manual_interrupt") -> dict[str, Any]:
-        session = self.storage.get_session(session_id)
-        if not session:
-            raise ValueError("live session 不存在")
-        interactions = self.storage.request_interrupt(session_id, reason=reason)
-        runtime = self._runtimes.get(session_id)
-        if runtime:
-            for interaction in interactions:
-                cancel_event = runtime.cancel_events.get(interaction.get("job_id", ""))
-                if cancel_event:
-                    cancel_event.set()
-        closure_text = "先停在這裡，剛剛聊天室有新的問題，我們切過去看。"
-        await self._broadcast(session_id, {
-            "type": "interrupt_requested",
-            "reason": reason,
-            "closure_text": closure_text,
-            "interactions": interactions,
-        })
-        return {
-            "session_id": session_id,
-            "reason": reason,
-            "closure_text": closure_text,
-            "interrupted_count": len(interactions),
-            "interactions": interactions,
-        }
-
-    async def _claim_interaction_for_execution(
-        self,
-        runtime: LiveRuntime,
-        interaction: dict[str, Any],
-        *,
-        timeout_seconds: float = 30.0,
-    ) -> dict[str, Any] | None:
-        """等待 interaction 成為單一 running job。"""
-        job_id = str(interaction.get("job_id") or "")
-        deadline = datetime.now() + timedelta(seconds=max(1.0, timeout_seconds))
-        while True:
-            claimed = self.storage.claim_interaction(job_id)
-            if claimed and claimed.get("status") == "running":
-                await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": claimed})
-                return claimed
-            current = self.storage.get_interaction(job_id)
-            if not current or current.get("status") != "queued":
-                return current
-            if datetime.now() >= deadline:
-                updated = self.storage.update_interaction(
-                    job_id,
-                    status="interrupted",
-                    reason="claim_timeout_active_generation",
-                    completed_at=datetime.now().isoformat(),
-                    metadata={"claim_timeout": True},
-                )
-                await self._broadcast(runtime.session_id, {"type": "interaction_interrupted", "interaction": updated})
-                return updated
-            await asyncio.sleep(0.2)
-
-    @staticmethod
-    def _normalized_interrupt_reason(current: dict[str, Any] | None, exc: Exception) -> str:
-        existing = str((current or {}).get("reason") or "").strip()
-        if existing:
-            return existing[:500]
-        message = str(exc)
-        if "NoneType" in message and "read" in message:
-            return "interrupted_by_higher_priority"
-        return message[:500]
 
     async def start_director(
         self,
@@ -2076,202 +1647,6 @@ class YouTubeBridgeManager(DirectorManagerMixin, TopicPackManagerMixin):
                 stale.append(queue)
         for queue in stale:
             runtime.subscribers.discard(queue)
-
-    async def inject_recent(
-        self,
-        session_id: str,
-        *,
-        event_ids: list[int] | None = None,
-        max_events: int | None = None,
-        content: str = DEFAULT_INJECT_CONTENT,
-        memoria_session_id: str = "",
-        character_ids: list[str] | None = None,
-        source: str = "manual_inject",
-        priority: int = 200,
-    ) -> dict[str, Any]:
-        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
-        active = self.storage.get_active_interaction(session_id)
-        if active and active.get("status") == "running" and int(priority) > int(active.get("priority", 100)):
-            await self.interrupt_session(session_id, reason=f"higher_priority:{source}")
-        async with runtime.inject_lock:
-            session = self.storage.get_session(session_id)
-            if not session:
-                raise ValueError("live session 不存在")
-            if session.get("status") in {"closing", "ended"} and source != "director":
-                raise ValueError("live session closing/ended，不再接受一般注入")
-            await self.classify_pending_events(session_id)
-            external_context, summary = self.build_external_context(
-                session_id,
-                event_ids=event_ids,
-                max_events=max_events,
-            )
-            target_session_id = memoria_session_id or session.get("target_memoria_session_id", "")
-            target_character_ids = character_ids or session.get("character_ids", [])
-            interaction = self.storage.create_interaction(
-                {
-                    "session_id": session_id,
-                    "source": source,
-                    "priority": priority,
-                    "status": "queued",
-                    "event_ids": summary.get("event_ids", []),
-                    "memoria_session_id": target_session_id,
-                    "character_ids": target_character_ids,
-                    "content": content,
-                    "metadata": {
-                        "summary": summary,
-                    },
-                }
-            )
-            job_id = interaction["job_id"]
-            claimed = await self._claim_interaction_for_execution(runtime, interaction)
-            if not claimed or claimed.get("status") != "running":
-                return {
-                    "summary": summary,
-                    "marked_injected": 0,
-                    "memoria_result": {},
-                    "interaction": claimed or interaction,
-                    "injected_at": datetime.now().isoformat(),
-                }
-            interaction = claimed
-
-            client = self._memoria_client()
-            cancel_event = threading.Event()
-            runtime.cancel_events[job_id] = cancel_event
-
-            def should_cancel() -> bool:
-                current = self.storage.get_interaction(job_id)
-                return cancel_event.is_set() or bool(current and current.get("status") == "interrupt_requested")
-
-            try:
-                result = await asyncio.to_thread(
-                    client.chat_stream_sync,
-                    content=content,
-                    display_content=self._display_content_from_external_context(external_context),
-                    session_id=target_session_id,
-                    character_ids=target_character_ids,
-                    external_context=external_context,
-                    should_cancel=should_cancel,
-                    cancel_event=cancel_event,
-                )
-            except GenerationInterrupted:
-                closure_text = "先停在這裡，剛剛聊天室有新的問題，我們切過去看。"
-                interrupted = self.storage.update_interaction(
-                    job_id,
-                    status="interrupted",
-                    closure_text=closure_text,
-                    completed_at=datetime.now().isoformat(),
-                    metadata={"discarded": True},
-                )
-                await self._broadcast(session_id, {"type": "interaction_interrupted", "interaction": interrupted})
-                return {
-                    "summary": summary,
-                    "marked_injected": 0,
-                    "memoria_result": {},
-                    "interaction": interrupted,
-                    "injected_at": datetime.now().isoformat(),
-                }
-            except Exception as exc:
-                current = self.storage.get_interaction(job_id)
-                was_interrupted = cancel_event.is_set() or bool(current and current.get("status") == "interrupt_requested")
-                reason = self._normalized_interrupt_reason(current, exc)
-                updated = self.storage.update_interaction(
-                    job_id,
-                    status="interrupted" if was_interrupted else "failed",
-                    reason=reason,
-                    closure_text="先停在這裡，剛剛聊天室有新的問題，我們切過去看。" if was_interrupted else "",
-                    completed_at=datetime.now().isoformat(),
-                    metadata={
-                        "discarded": was_interrupted,
-                        "error": str(exc)[:500],
-                        "normalized_reason": reason,
-                    },
-                )
-                await self._broadcast(
-                    session_id,
-                    {
-                        "type": "interaction_interrupted" if was_interrupted else "interaction_failed",
-                        "interaction": updated,
-                    },
-                )
-                if was_interrupted:
-                    return {
-                        "summary": summary,
-                        "marked_injected": 0,
-                        "memoria_result": {},
-                        "interaction": updated,
-                        "injected_at": datetime.now().isoformat(),
-                    }
-                raise
-            finally:
-                runtime.cancel_events.pop(job_id, None)
-
-            current_after = self.storage.get_interaction(job_id)
-            interrupted_after_provider = bool(
-                current_after and current_after.get("status") in {"interrupt_requested", "interrupted", "discarded"}
-            )
-            marked_injected = self.storage.mark_events_injected(session_id, summary.get("event_ids", []))
-            result_session_id = result.get("session_id") if isinstance(result, dict) else ""
-            if result_session_id and result_session_id != session.get("target_memoria_session_id"):
-                self.storage.update_session_fields(session_id, target_memoria_session_id=result_session_id)
-            injected_at = datetime.now().isoformat()
-            if interrupted_after_provider:
-                interaction_status = "discarded"
-                closure_text = "先停在這裡，剛剛聊天室有新的問題，我們切過去看。"
-                reply_text = ""
-            else:
-                interaction_status = "completed"
-                closure_text = ""
-                reply_text = str(result.get("reply") or "") if isinstance(result, dict) else ""
-            updated_interaction = self.storage.update_interaction(
-                job_id,
-                status=interaction_status,
-                reply_text=reply_text,
-                closure_text=closure_text,
-                memoria_session_id=result_session_id or target_session_id,
-                completed_at=injected_at,
-                metadata={
-                    "result_message_id": result.get("message_id") if isinstance(result, dict) else None,
-                    "discarded_after_provider_return": interrupted_after_provider,
-                },
-            )
-            payload = {
-                "summary": summary,
-                "marked_injected": marked_injected,
-                "memoria_result": result,
-                "interaction": updated_interaction,
-                "injected_at": injected_at,
-            }
-            await self._broadcast(session_id, {
-                "type": "interaction_completed",
-                "interaction": updated_interaction,
-                "memoria_session_id": result_session_id or target_session_id,
-                "source": source,
-            })
-            await self._broadcast(session_id, {
-                "type": "memoria_injected",
-                "summary": summary,
-                "marked_injected": marked_injected,
-                "memoria_session_id": result_session_id or target_session_id,
-                "interaction": updated_interaction,
-            })
-            director_state = self.storage.get_director_state(session_id)
-            if source != "director" and director_state.get("director_enabled"):
-                metadata = dict(director_state.get("metadata") or {})
-                chat_batches = int(metadata.get("chat_batches_since_anchor", 0) or 0) + 1
-                metadata["chat_batches_since_anchor"] = chat_batches
-                max_batches = max(1, int(session.get("director_max_chat_batches_before_anchor", 2) or 2))
-                if chat_batches >= max_batches:
-                    metadata["anchor_requested_at"] = datetime.now().isoformat()
-                next_state = self.storage.update_director_state(
-                    session_id,
-                    status="running",
-                    consecutive_ai_turns=0,
-                    last_seen_event_id=max(summary.get("event_ids", [0]) or [0]),
-                    last_director_action_at=datetime.now().isoformat(),
-                    metadata=metadata,
-                )
-                await self._broadcast(session_id, {"type": "director_state", "director": next_state})
-            return payload
 
     async def generate_test_events(
         self,

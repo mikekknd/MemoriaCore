@@ -93,3 +93,17 @@ def test_bridge_manager_uses_director_mixin():
     from engine_director import DirectorManagerMixin
 
     assert issubclass(YouTubeBridgeManager, DirectorManagerMixin)
+
+
+def test_bridge_manager_uses_runtime_lifecycle_mixin():
+    from bridge_engine import YouTubeBridgeManager
+    from engine_runtime_lifecycle import RuntimeLifecycleManagerMixin
+
+    assert issubclass(YouTubeBridgeManager, RuntimeLifecycleManagerMixin)
+
+
+def test_bridge_manager_uses_injection_mixin():
+    from bridge_engine import YouTubeBridgeManager
+    from engine_injection import InjectionManagerMixin
+
+    assert issubclass(YouTubeBridgeManager, InjectionManagerMixin)
