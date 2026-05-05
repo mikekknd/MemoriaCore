@@ -107,3 +107,10 @@ def test_bridge_manager_uses_injection_mixin():
     from engine_injection import InjectionManagerMixin
 
     assert issubclass(YouTubeBridgeManager, InjectionManagerMixin)
+
+
+def test_bridge_manager_uses_closing_mixin():
+    from bridge_engine import YouTubeBridgeManager
+    from engine_closing import ClosingManagerMixin
+
+    assert issubclass(YouTubeBridgeManager, ClosingManagerMixin)
