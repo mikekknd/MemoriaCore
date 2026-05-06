@@ -8,6 +8,8 @@ cd /d "%~dp0"
 set API_PORT=8091
 set PARENT_VENV=%~dp0..\venv_ai_memory\Scripts\python.exe
 set LOCAL_VENV=%~dp0venv\Scripts\python.exe
+set "LOG_DIR=%~dp0..\runtime\log"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 if exist "%PARENT_VENV%" (
     set PYTHON=%PARENT_VENV%
@@ -34,8 +36,10 @@ if %errorlevel% neq 0 (
 
 echo [INFO] Starting uvicorn reload server...
 echo [INFO] Python: %PYTHON%
+echo [INFO] stdout: %LOG_DIR%\youtube_bridge_8091_hot_reload.out.log
+echo [INFO] stderr: %LOG_DIR%\youtube_bridge_8091_hot_reload.err.log
 echo.
 
-"%PYTHON%" run_server_hot_reload.py
+"%PYTHON%" run_server_hot_reload.py 1>>"%LOG_DIR%\youtube_bridge_8091_hot_reload.out.log" 2>>"%LOG_DIR%\youtube_bridge_8091_hot_reload.err.log"
 
 pause

@@ -54,23 +54,7 @@ class FakeEmbeddingMemoriaClient:
                 "risk_label": "clean",
                 "reason": "測試用查詢分類。",
             }
-        assert prompt_key == "youtube_live_topic_pack_auto_build_prompt"
-        return {
-            "cards": [
-                {
-                    "title": "四月新番入門",
-                    "query": "四月新番 作品 播出資訊",
-                    "draft_body": "整理四月新番作品、製作公司與播出資訊，供直播開場使用。",
-                    "tags": ["動畫", "四月新番"],
-                },
-                {
-                    "title": "觀眾常見問題",
-                    "query": "四月新番 常見問題 推薦",
-                    "draft_body": "整理觀眾常問的推薦方向與入門問題。",
-                    "tags": ["觀眾提問"],
-                },
-            ]
-        }
+        raise AssertionError(f"unexpected prompt_key: {prompt_key}")
 
 
 class FakeClosingMemoriaClient:
@@ -815,7 +799,7 @@ def test_topic_pack_usage_stats_counts_similarity_and_recent_repeats():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_maybe_replenish_fact_cards_generates_one_card_when_unused_entries_are_low(monkeypatch):
+def test_maybe_replenish_fact_cards_is_removed_and_never_generates(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
@@ -846,19 +830,15 @@ def test_maybe_replenish_fact_cards_generates_one_card_when_unused_entries_are_l
             usage_source="external_context",
         )
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
-        calls: list[dict] = []
 
-        def fake_generate(session_id: str, **kwargs):
-            calls.append({"session_id": session_id, **kwargs})
-            return {
-                "status": "completed",
-                "session_id": session_id,
-                "topic": kwargs["topic"],
-                "fallback_mode": "local_template",
-                "import": {"pack_id": kwargs["pack_id"], "created_count": 2, "embedding_count": 2},
-            }
+        def fail_generate(*_args, **_kwargs):
+            raise AssertionError("自動補卡已移除，不應呼叫 Gemini 產卡")
 
-        monkeypatch.setattr(manager, "generate_fact_cards_with_gemini", fake_generate)
+        def fail_worker(*_args, **_kwargs):
+            raise AssertionError("自動補卡已移除，不應排程 worker")
+
+        monkeypatch.setattr(manager, "generate_fact_cards_with_gemini", fail_generate)
+        monkeypatch.setattr(manager, "_run_fact_card_replenishment_worker_process", fail_worker)
 
         result = manager.maybe_replenish_fact_cards(
             "live-a",
@@ -866,24 +846,14 @@ def test_maybe_replenish_fact_cards_generates_one_card_when_unused_entries_are_l
             topic_hint="第 6 話作畫崩壞和社群討論",
         )
 
-        assert result["triggered"] is True
-        assert result["reason"] == "low_unused"
-        assert calls
-        assert calls[0]["pack_id"] == pack["id"]
-        assert calls[0]["output_name"].startswith("auto-replenish-")
-        assert calls[0]["output_name"].endswith(".md")
-        assert len(calls[0]["output_name"]) < 80
-        assert "動畫新番" in calls[0]["topic"]
-        assert "第 6 話作畫崩壞" in calls[0]["topic"]
-        state = storage.get_director_state("live-a")
-        assert state["metadata"]["fact_card_replenishment"]["last_reason"] == "low_unused"
-        assert state["metadata"]["fact_card_replenishment"]["last_status"] == "fallback"
-        assert state["metadata"]["fact_card_replenishment"]["last_fallback_mode"] == "local_template"
+        assert result["triggered"] is False
+        assert result["reason"] == "fact_card_replenishment_removed"
+        assert "fact_card_replenishment" not in storage.get_director_state("live-a")["metadata"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_maybe_replenish_fact_cards_respects_cooldown_after_recent_repeated_entry(monkeypatch):
+def test_topic_pack_context_usage_record_does_not_schedule_replenishment(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
@@ -900,110 +870,29 @@ def test_maybe_replenish_fact_cards_respects_cooldown_after_recent_repeated_entr
             "live_chat_id": "chat-a",
         })
         pack = storage.create_topic_pack({"title": "動畫新番資料包"})
-        entry = storage.create_topic_pack_entry(pack["id"], {
+        storage.create_topic_pack_entry(pack["id"], {
             "title": "最新話作畫爭議",
             "body": "第 6 話遠景人物線條簡化。",
             "source_type": "factcards_folder",
         })
         storage.link_topic_pack_to_session("live-a", pack["id"])
-        for _ in range(3):
-            storage.record_topic_pack_entry_usages(
-                "live-a",
-                [{"id": entry["id"], "pack_id": pack["id"], "similarity": 0.9}],
-                query_text="作畫爭議",
-                usage_source="director",
-            )
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
-        calls: list[dict] = []
 
-        def fake_generate(session_id: str, **kwargs):
-            calls.append({"session_id": session_id, **kwargs})
-            return {"status": "completed", "import": {"pack_id": kwargs["pack_id"]}}
+        def fail_replenish(*_args, **_kwargs):
+            raise AssertionError("usage 記錄不應觸發自動補卡")
 
-        monkeypatch.setattr(manager, "generate_fact_cards_with_gemini", fake_generate)
+        monkeypatch.setattr(manager, "maybe_replenish_fact_cards", fail_replenish)
 
-        first = manager.maybe_replenish_fact_cards("live-a", reason="repeated_entry", topic_hint="作畫爭議")
-        second = manager.maybe_replenish_fact_cards("live-a", reason="repeated_entry", topic_hint="作畫爭議")
-
-        assert first["triggered"] is True
-        assert second["triggered"] is False
-        assert second["reason"] == "cooldown"
-        assert len(calls) == 1
-        assert "最新話作畫爭議" in calls[0]["topic"]
-        assert calls[0]["output_name"].startswith("auto-replenish-")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def test_scheduled_fact_card_replenishment_queues_worker_process(monkeypatch):
-    tmp_dir = _tmp_dir()
-    try:
-        storage = BridgeStorage(tmp_dir / "youtube_live.db")
-        storage.upsert_connector({
-            "connector_id": "yt-main",
-            "display_name": "YouTube Main",
-            "api_key": "key",
-            "enabled": True,
-        })
-        storage.upsert_session({
-            "session_id": "live-a",
-            "connector_id": "yt-main",
-            "video_id": "video-a",
-            "live_chat_id": "chat-a",
-            "director_guidance": "本場只聊動畫新番。",
-        })
-        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
-        entry = storage.create_topic_pack_entry(pack["id"], {
-            "title": "最新話作畫爭議",
-            "body": "第 6 話遠景人物線條簡化。",
-            "source_type": "factcards_folder",
-        })
-        storage.link_topic_pack_to_session("live-a", pack["id"])
-        for _ in range(3):
-            storage.record_topic_pack_entry_usages(
-                "live-a",
-                [{"id": entry["id"], "pack_id": pack["id"], "similarity": 0.9}],
-                query_text="作畫爭議",
-                usage_source="director",
-            )
-        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
-        called = threading.Event()
-        release = threading.Event()
-
-        def fake_worker(*_args, **_kwargs):
-            called.set()
-            release.wait(1)
-            return {
-                "status": "completed",
-                "fallback_mode": "stdout",
-                "import": {"created_count": 1, "embedding_count": 1},
-            }
-
-        monkeypatch.setattr(manager, "_run_fact_card_replenishment_worker_process", fake_worker)
-
-        result = manager.maybe_replenish_fact_cards(
+        context = manager._topic_pack_context_for_query(
             "live-a",
-            reason="repeated_entry",
-            topic_hint="最新話作畫爭議",
-            run_inline=False,
+            "最新一話作畫爭議",
+            usage_source="external_context",
         )
 
-        assert result["triggered"] is True
-        assert result["scheduled"] is True
-        assert result["worker_status"] == "queued"
-        queued_state = storage.get_director_state("live-a")["metadata"]["fact_card_replenishment"]
-        assert queued_state["last_status"] in {"queued", "running"}
-        assert called.wait(1)
-        release.set()
-        replenishment = {}
-        for _ in range(20):
-            state = storage.get_director_state("live-a")
-            replenishment = state["metadata"]["fact_card_replenishment"]
-            if replenishment["last_status"] == "completed":
-                break
-            time.sleep(0.05)
-        assert replenishment["last_status"] == "completed"
-        assert replenishment["last_fallback_mode"] == "stdout"
+        assert "最新話作畫爭議" in context
+        stats = storage.get_topic_pack_usage_stats("live-a")
+        assert stats["used_entry_count"] == 1
+        assert stats["entries"][0]["usage_count"] == 1
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1279,37 +1168,13 @@ async def test_inject_recent_sends_hidden_prompt_and_visible_chat_lines_separate
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-@pytest.mark.asyncio
-async def test_auto_build_topic_pack_creates_draft_cards_and_embeddings_without_research():
+def test_auto_build_topic_pack_method_is_removed():
     tmp_dir = _tmp_dir()
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
-        storage.upsert_connector({
-            "connector_id": "yt-main",
-            "display_name": "YouTube Main",
-            "api_key": "key",
-            "enabled": True,
-        })
-        storage.upsert_session({
-            "session_id": "live-a",
-            "connector_id": "yt-main",
-            "display_name": "QA Live",
-            "director_guidance": "先聊四月新番。",
-            "research_enabled": True,
-        })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
 
-        result = await manager.auto_build_topic_pack(
-            "live-a",
-            topic="四月新番",
-            card_count=2,
-            use_research=False,
-        )
-
-        assert result["created_count"] == 2
-        entries = storage.list_session_topic_pack_entries("live-a")
-        assert [entry["source_type"] for entry in entries] == ["auto_draft", "auto_draft"]
-        assert all(storage.get_topic_pack_entry_embedding(entry["id"]) for entry in entries)
+        assert not hasattr(manager, "auto_build_topic_pack")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2882,6 +2747,51 @@ async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
         director_state = storage.get_director_state("live-a")
         assert director_state["director_enabled"] is False
         assert director_state["status"] == "ended"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_duration_finalize_runs_auto_archive_callback_after_ended():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "auto_sc_thanks_on_finalize": False,
+            "auto_finalize_on_duration": True,
+            "planned_duration_minutes": 1,
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        callback_calls: list[dict] = []
+
+        async def archive_callback(session_id: str, *, finalized_by: str, finalized: dict):
+            callback_calls.append({
+                "session_id": session_id,
+                "finalized_by": finalized_by,
+                "status": finalized.get("status"),
+                "stored_status": storage.get_session(session_id)["status"],
+            })
+            return {"memory_write": {"status": "completed"}}
+
+        manager.auto_finalize_archive_callback = archive_callback
+
+        await manager._finalize_for_duration(runtime, session)
+
+        assert callback_calls == [{
+            "session_id": "live-a",
+            "finalized_by": "duration_finalize",
+            "status": "ended",
+            "stored_status": "ended",
+        }]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

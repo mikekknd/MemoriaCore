@@ -114,6 +114,33 @@ def test_bridge_hot_reload_launcher_uses_full_process_tree_cleanup():
     assert "Stop-Process -Id $_ -Force" not in start_script
 
 
+def test_bridge_launchers_write_process_logs_under_runtime_log():
+    start_script = (BRIDGE_ROOT / "start.bat").read_text(encoding="utf-8")
+    hot_reload_script = (BRIDGE_ROOT / "start_hot_reload.bat").read_text(encoding="utf-8")
+
+    for source in (start_script, hot_reload_script):
+        assert r"runtime\log" in source
+        assert ".out.log" in source
+        assert ".err.log" in source
+        assert r"runtime\youtube_bridge" not in source.lower()
+
+
+def test_memoriacore_launchers_write_process_logs_under_runtime_log():
+    root = BRIDGE_ROOT.parent
+    scripts = [
+        root / "start.bat",
+        root / "start_full.bat",
+        root / "startServerHotReload.bat",
+    ]
+
+    for script in scripts:
+        source = script.read_text(encoding="utf-8")
+        assert r"runtime\log" in source
+        assert ".out.log" in source
+        assert ".err.log" in source
+        assert r"runtime\api_8088" not in source.lower()
+
+
 def test_bridge_launcher_is_api_only_without_streamlit():
     start_script = (BRIDGE_ROOT / "start.bat").read_text(encoding="utf-8")
     requirements = (BRIDGE_ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
@@ -215,7 +242,10 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
 
     assert 'id="importFactCardsFolder"' in index_html
     assert 'id="generateGeminiFactCards"' in index_html
-    assert 'id="topicAutoBuildControls"' in index_html
+    assert 'id="topicAutoBuildControls"' not in index_html
+    assert 'id="autoBuildTopicPack"' not in index_html
+    assert 'id="autoBuildCount"' not in index_html
+    assert 'id="autoBuildUseResearch"' not in index_html
     assert 'id="updateTopicPack"' in index_html
     assert 'id="deleteTopicPack"' in index_html
     assert 'id="deleteAllTopicPacks"' in index_html
@@ -227,7 +257,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert 'class="topic-panel topic-pack-panel"' in index_html
     assert 'class="topic-panel topic-entry-panel"' in index_html
     assert 'class="topic-panel topic-ops-panel"' in index_html
-    assert 'id="topicPackUsageState"' in index_html
+    assert 'id="topicPackUsageState"' not in index_html
     assert 'data-testid="director-idle-seconds"' in index_html
     assert "PUT" in index_html
     assert "DELETE" in index_html
@@ -237,12 +267,12 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert 'api("/topic-packs", { method: "DELETE" })' in index_html
     assert "/topic-packs/${packId}/entries/${entryId}" in index_html
     assert "/topic-packs/${packId}/search" in index_html
-    assert "/topic-packs/usage" in index_html
-    assert "Research Gate" in index_html
+    assert "/topic-packs/usage" not in index_html
+    assert "/topic-packs/auto-build" not in index_html
     assert "管理備註" in index_html
     assert "生成主題（執行時使用，不會自動儲存）" in index_html
-    assert "自動建立張數" in index_html
-    assert "依主題自動建立資料卡" in index_html
+    assert "自動建立張數" not in index_html
+    assert "依主題自動建立資料卡" not in index_html
     assert "依主題生成 Fact Cards" in index_html
     assert "匯入 FactCards 資料夾" in index_html
     assert "初始化預設 Fact Cards" not in index_html
@@ -250,15 +280,13 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert 'id="researchQuery"' not in index_html
     assert 'id="runResearch"' not in index_html
     assert "Research Gate 查詢" not in index_html
-    assert "degraded" in index_html
-    assert "可手動重試" in index_html
     topic_pack_delete_block = index_html[
         index_html.index("async function deleteTopicPack"):
         index_html.index("async function linkTopicPack")
     ]
     topic_entry_delete_block = index_html[
         index_html.index("async function deleteTopicEntry"):
-        index_html.index("async function autoBuildTopicPack")
+        index_html.index("async function importFactCardsFolder")
     ]
     assert "confirm(" not in topic_pack_delete_block
     assert "window.confirm" not in topic_pack_delete_block
@@ -271,9 +299,9 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "prompt(" not in delete_all_block
     assert "confirm(" not in topic_entry_delete_block
     assert "window.confirm" not in topic_entry_delete_block
-    assert "已召回" in index_html
-    assert "未使用" in index_html
-    assert "最近補卡" in index_html
+    assert "已召回" not in index_html
+    assert "未召回" not in index_html
+    assert "最近補卡" not in index_html
     assert "四月新番最新話細節、作畫與劇情討論" in index_html
     assert "LLM 基礎、美食直播話題" not in index_html
 
@@ -340,7 +368,8 @@ def test_control_ui_limits_character_selection_and_blocks_start_without_characte
 def test_events_pane_is_grouped_as_test_comment_tool():
     index_html = _control_ui_source()
 
-    assert '<button class="tab active" data-pane="eventsPane">留言測試</button>' in index_html
+    assert '<button class="tab active" data-pane="liveSessionPane">Live Session</button>' in index_html
+    assert '<button class="tab" data-pane="eventsPane">留言測試</button>' in index_html
     assert "Recent Events" not in index_html
     assert 'class="event-tool-group manual-events"' in index_html
     assert 'class="event-tool-group auto-events"' in index_html
@@ -391,9 +420,14 @@ def test_control_ui_checkbox_inputs_keep_native_compact_size():
 
 def test_topic_pack_buttons_are_contextual_in_control_ui():
     index_html = _control_ui_source()
+    visibility_block = index_html[
+        index_html.index("function updateTopicActionVisibility"):
+        index_html.index("function factCardActionsBlockedDuringLive")
+    ]
 
     assert ".is-hidden { display: none !important; }" in index_html
     assert "function updateTopicActionVisibility()" in index_html
+    assert "const hasSession = !!selectedSessionId();" in visibility_block
     assert 'setTopicActionVisible("createTopicPack", !hasPack);' in index_html
     assert 'setTopicActionVisible("updateTopicPack", hasPack);' in index_html
     assert 'setTopicActionVisible("deleteTopicPack", hasPack);' in index_html
@@ -404,11 +438,11 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert 'setTopicActionVisible("cancelTopicEntryEdit", hasPack && hasEntry);' in index_html
     assert 'setTopicActionVisible("deleteTopicEntry", hasPack && hasEntry);' not in index_html
     assert 'setTopicActionVisible("rebuildTopicEmbeddings", hasPack);' in index_html
-    assert 'setTopicActionVisible("topicAutoBuildControls", hasSession);' in index_html
-    assert 'setTopicActionVisible("autoBuildTopicPack", hasSession);' in index_html
-    assert 'setTopicActionVisible("generateGeminiFactCards", true);' in index_html
+    assert 'setTopicActionVisible("topicAutoBuildControls"' not in index_html
+    assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
+    assert 'setTopicActionVisible("generateGeminiFactCards", !liveLocked);' in index_html
     assert 'setTopicActionVisible("generateGeminiFactCards", hasSession);' not in index_html
-    assert 'setTopicActionVisible("importFactCardsFolder", true);' in index_html
+    assert 'setTopicActionVisible("importFactCardsFolder", !liveLocked);' in index_html
     assert 'setTopicActionVisible("importFactCardsFolder", hasSession);' not in index_html
     assert 'setTopicActionVisible("runResearch", hasSession);' not in index_html
     assert 'setTopicActionVisible("searchTopicPack", hasPack);' in index_html
@@ -425,12 +459,23 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert 'id="deleteTopicEntry"' not in index_html
     assert '<button id="searchTopicPack" class="is-hidden">測試向量檢索</button>' in index_html
     assert '<button id="restoreTopicEntries" class="is-hidden">顯示全部</button>' in index_html
-    assert '<button id="autoBuildTopicPack" class="primary is-hidden">依主題自動建立資料卡</button>' in index_html
+    assert '<button id="autoBuildTopicPack"' not in index_html
     assert '<button id="generateGeminiFactCards" class="primary is-hidden">依主題生成 Fact Cards</button>' in index_html
     assert '<button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>' in index_html
     init_start = index_html.index("installTestIds();")
     init_block = index_html[init_start:index_html.index("initBridgeKey()", init_start)]
     assert "updateTopicActionVisibility();" in init_block
+
+
+def test_install_test_ids_preserves_explicit_stable_testids():
+    index_html = _control_ui_source()
+
+    assert 'data-testid="director-idle-seconds"' in index_html
+    assert "if (element && !element.dataset.testid) element.dataset.testid = id;" in index_html
+    assert "element.dataset.testid = id;" not in index_html.replace(
+        "if (element && !element.dataset.testid) element.dataset.testid = id;",
+        "",
+    )
 
 
 def test_topic_pack_vector_search_can_restore_full_entry_list():
@@ -563,12 +608,16 @@ def test_topic_pack_entry_editor_hides_system_metadata_fields():
 def test_director_controls_are_integrated_into_live_session_panel():
     index_html = _control_ui_source()
     live_session_block = index_html[
-        index_html.index("<h2>Live Session</h2>"):
-        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
     ]
     tabs_block = index_html[
         index_html.index('<div class="tabs">'):
-        index_html.index('<div id="eventsPane"')
+        index_html.index('<div id="liveSessionPane"')
+    ]
+    director_block = index_html[
+        index_html.index('<div id="directorControls"'):
+        index_html.index('<div id="sessionActions"')
     ]
 
     assert 'data-pane="directorPane"' not in tabs_block
@@ -578,6 +627,8 @@ def test_director_controls_are_integrated_into_live_session_panel():
     assert "角色停頓後續話秒數" in live_session_block
     assert 'id="directorIdle"' in live_session_block
     assert 'data-testid="director-idle-seconds"' in live_session_block
+    assert 'id="directorGroupTurnLimit"' in director_block
+    assert live_session_block.index('id="directorGroupTurnLimit"') > live_session_block.index('id="directorControls"')
     assert 'id="directorGuidance"' in live_session_block
     assert 'id="updateDirectorGuidance"' in live_session_block
     assert "直播開始後會自動啟動導播與開場" in live_session_block
@@ -592,15 +643,53 @@ def test_director_controls_are_integrated_into_live_session_panel():
     assert "await setDirector(true, true);" in index_html
 
 
+def test_live_session_places_director_below_selected_roles_and_runtime_settings_on_right():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
+    ]
+    left_panel = live_session_block[
+        live_session_block.index('class="live-session-panel live-session-main-panel"'):
+        live_session_block.index('class="live-session-panel live-session-settings-panel"')
+    ]
+    right_panel = live_session_block[
+        live_session_block.index('class="live-session-panel live-session-settings-panel"'):
+        live_session_block.index('</div>\n        </div>', live_session_block.index('class="live-session-panel live-session-settings-panel"'))
+    ]
+    director_block = left_panel[
+        left_panel.index('id="directorControls"'):
+        left_panel.index('</div>\n            </div>', left_panel.index('id="directorControls"'))
+    ]
+
+    assert 'class="live-session-workspace"' in live_session_block
+    assert 'id="videoId"' in left_panel
+    assert 'id="characterSelect"' in left_panel
+    assert 'id="directorControls"' in left_panel
+    assert left_panel.index('id="characterLimitState"') < left_panel.index('id="directorControls"')
+    assert 'id="toggleSession"' in director_block
+    assert 'id="injectInterval"' not in left_panel
+    assert 'id="sessionTopicPackSelect"' not in left_panel
+    assert 'id="directorControls"' not in right_panel
+    assert 'id="injectInterval"' in right_panel
+    assert 'id="sessionTopicPackSelect"' in right_panel
+    assert 'id="autoInject"' in right_panel
+    assert 'id="sessionActions"' in right_panel
+    assert 'id="toggleSession"' not in right_panel
+    assert 'id="updateSession"' in right_panel
+    assert ".live-session-workspace" in index_html
+    assert ".live-session-panel + .live-session-panel" in index_html
+
+
 def test_connector_and_memoria_settings_are_in_system_settings_tab():
     index_html = _control_ui_source()
     live_session_block = index_html[
-        index_html.index("<h2>Live Session</h2>"):
-        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
     ]
     tabs_block = index_html[
         index_html.index('<div class="tabs">'):
-        index_html.index('<div id="eventsPane"')
+        index_html.index('<div id="liveSessionPane"')
     ]
     system_settings_block = index_html[
         index_html.index('<div id="systemSettingsPane"'):
@@ -620,8 +709,8 @@ def test_connector_and_memoria_settings_are_in_system_settings_tab():
 def test_live_session_automation_options_have_clear_labels_and_tooltips():
     index_html = _control_ui_source()
     live_session_block = index_html[
-        index_html.index("<h2>Live Session</h2>"):
-        index_html.index('<div id="directorControls"')
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
     ]
 
     expected_options = {
@@ -658,7 +747,7 @@ def test_live_session_automation_options_have_clear_labels_and_tooltips():
 def test_live_session_core_fields_have_detailed_tooltips():
     index_html = _control_ui_source()
     live_session_block = index_html[
-        index_html.index("<h2>Live Session</h2>"):
+        index_html.index('<div id="liveSessionPane"'):
         index_html.index('<div id="sessionActions"')
     ]
     expected_fields = {
@@ -671,6 +760,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "plannedDuration": "大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。",
         "scInterruptCooldown": "Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。",
         "maxScPerBatch": "每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。",
+        "sessionTopicPackSelect": "本場直播啟動或更新時要綁定的 Topic Pack；直播中只讀取已綁定資料，不執行 Fact Card 生成或匯入。",
         "directorGroupTurnLimit": "導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。",
         "directorMaxChatBatches": "連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。",
         "directorIdle": "角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。",
@@ -687,6 +777,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         ("角色", "characterSelect"),
         ("注入間隔秒數", "injectInterval"),
         ("動態注入最短秒數", "injectMinIntervalSeconds"),
+        ("話題資料包", "sessionTopicPackSelect"),
         ("導播回合上限", "directorGroupTurnLimit"),
         ("幾批留言後回主軸", "directorMaxChatBatches"),
         ("角色停頓後續話秒數", "directorIdle"),
@@ -703,8 +794,8 @@ def test_live_session_core_fields_have_detailed_tooltips():
 def test_control_ui_uses_single_live_session_flow():
     index_html = _control_ui_source()
     live_session_block = index_html[
-        index_html.index("<h2>Live Session</h2>"):
-        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
     ]
     summary_pane = index_html[
         index_html.index('id="summaryPane"'):
@@ -728,13 +819,15 @@ def test_control_ui_uses_single_live_session_flow():
     assert '$("deleteSession")' not in index_html
     assert '$("writeMemory")' not in index_html
     assert 'sessionAction("stop")' not in index_html
+    assert '<button class="tab active" data-pane="liveSessionPane">Live Session</button>' in index_html
+    assert 'id="liveSessionPane" class="pane active"' in index_html
 
 
 def test_control_ui_auto_creates_memoria_session_without_manual_picker():
     index_html = _control_ui_source()
     live_session_block = index_html[
-        index_html.index("<h2>Live Session</h2>"):
-        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
     ]
 
     assert "MemoriaCore session" not in live_session_block
@@ -748,7 +841,11 @@ def test_control_ui_auto_creates_memoria_session_without_manual_picker():
 def test_control_ui_uses_single_primary_start_or_finalize_action():
     index_html = _control_ui_source()
 
-    session_actions = index_html[
+    primary_action = index_html[
+        index_html.index('id="primarySessionAction"'):
+        index_html.index('id="sessionActions"')
+    ]
+    update_actions = index_html[
         index_html.index('id="sessionActions"'):
         index_html.index("</section>", index_html.index('id="sessionActions"'))
     ]
@@ -757,8 +854,11 @@ def test_control_ui_uses_single_primary_start_or_finalize_action():
         index_html.index('id="topicPackPane"')
     ]
 
-    assert 'id="toggleSession"' in session_actions
-    assert 'id="finalizeSession"' not in session_actions
+    assert 'id="toggleSession"' in primary_action
+    assert 'id="updateSession"' not in primary_action
+    assert 'id="toggleSession"' not in update_actions
+    assert 'id="updateSession"' in update_actions
+    assert 'id="finalizeSession"' not in primary_action
     assert "結束直播並收尾" in index_html
     assert 'id="finalizeSession"' not in summary_pane
     assert "標記結束" not in index_html
@@ -768,6 +868,56 @@ def test_control_ui_uses_single_primary_start_or_finalize_action():
     assert "finalizeCurrentSession" in index_html
     assert 'log("直播操作失敗", String(error))' in index_html
     assert 'log("直播收尾失敗", String(error))' not in index_html
+
+
+def test_live_session_can_bind_topic_pack_from_session_tab():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
+    ]
+
+    assert 'id="sessionTopicPackSelect"' in live_session_block
+    assert "話題資料包" in live_session_block
+    assert "bindSessionTopicPack" in index_html
+    assert "await bindSessionTopicPack(data.session_id);" in index_html
+    assert "/topic-packs/${packId}?replace=true" in index_html
+
+
+def test_session_topic_pack_selector_clears_when_session_has_no_pack():
+    index_html = _control_ui_source()
+    selection_block = index_html[
+        index_html.index("async function refreshSessionTopicPackSelection"):
+        index_html.index("async function refreshTopicEntries")
+    ]
+
+    assert "const hasLinkedPack = packId && state.topicPacks.some" in selection_block
+    assert 'selector.value = hasLinkedPack ? String(packId) : "";' in selection_block
+
+
+def test_live_session_can_unbind_topic_pack_from_session_tab():
+    index_html = _control_ui_source()
+    bind_block = index_html[
+        index_html.index("async function bindSessionTopicPack"):
+        index_html.index("async function addTopicEntry")
+    ]
+    routes_source = (BRIDGE_ROOT / "server_routes" / "topic_packs.py").read_text(encoding="utf-8")
+
+    assert 'api(`/sessions/${encodeURIComponent(sessionId)}/topic-packs`, {' in bind_block
+    assert 'method: "DELETE"' in bind_block
+    assert 'log("直播已解除話題資料包綁定", data);' in bind_block
+    assert '@router.delete("/sessions/{session_id}/topic-packs")' in routes_source
+
+
+def test_fact_card_generation_and_import_are_blocked_during_live_runtime():
+    index_html = _control_ui_source()
+
+    assert "function factCardActionsBlockedDuringLive" in index_html
+    assert "直播中不產生或匯入 Fact Cards" in index_html
+    assert 'id="topicFactCardLiveLockNotice"' in index_html
+    assert 'setTopicActionVisible("generateGeminiFactCards", !liveLocked);' in index_html
+    assert 'setTopicActionVisible("importFactCardsFolder", !liveLocked);' in index_html
+    assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
 
 
 def test_control_ui_restores_primary_action_after_start_or_finalize_failure():
@@ -1413,6 +1563,49 @@ async def test_fact_cards_generate_endpoint_initializes_pack_without_live_sessio
     }]
     assert result["import"]["pack_id"] == 77
     assert result["import"]["created_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_fact_card_generation_and_import_endpoints_reject_while_live_running(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "status": "running",
+        "started_at": "2026-05-06T10:00:00",
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    class FakeManager:
+        def get_status(self, session_id: str):
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        def import_fact_cards_folder_to_pack(self, **_kwargs):
+            raise AssertionError("import should not run during live")
+
+        def generate_fact_cards_with_gemini_to_pack(self, **_kwargs):
+            raise AssertionError("generation should not run during live")
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+
+    assert not hasattr(server_module, "auto_build_session_topic_pack")
+
+    with pytest.raises(HTTPException) as import_exc:
+        await server_module.import_fact_cards_folder_to_pack(server_module.FactCardImportRequest())
+    assert import_exc.value.status_code == 409
+    assert "直播中不產生或匯入 Fact Cards" in import_exc.value.detail
+
+    with pytest.raises(HTTPException) as generate_exc:
+        await server_module.generate_fact_cards_with_gemini_to_pack(
+            server_module.FactCardGenerateRequest(topic="動畫新番最新話")
+        )
+    assert generate_exc.value.status_code == 409
 
 
 def test_chat_preview_message_sanitizer_removes_debug_info():

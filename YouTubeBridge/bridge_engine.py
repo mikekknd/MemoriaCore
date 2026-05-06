@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -36,7 +37,6 @@ from bridge_contracts import (
     SAFETY_CLASSIFIER_BATCH_LIMIT,
     SAFETY_CLASSIFIER_SCHEMA,
     TEST_COMMENT_SCHEMA,
-    TOPIC_PACK_AUTO_BUILD_SCHEMA,
 )
 from bridge_runtime import LiveRuntime
 from fact_cards import (
@@ -84,11 +84,27 @@ class YouTubeBridgeManager(
         self.storage = storage
         self.youtube_client = youtube_client or YouTubeClient()
         self.memoria_client_factory = memoria_client_factory or MemoriaClient
+        self.auto_finalize_archive_callback = None
         self._runtimes: dict[str, LiveRuntime] = {}
         self._lock = asyncio.Lock()
 
     def _memoria_client(self):
         return self.memoria_client_factory()
+
+    async def _run_auto_finalize_archive_callback(
+        self,
+        session_id: str,
+        *,
+        finalized_by: str,
+        finalized: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        callback = self.auto_finalize_archive_callback
+        if not callback:
+            return None
+        result = callback(session_id, finalized_by=finalized_by, finalized=finalized)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     @staticmethod
     def _clear_llm_trace_log() -> dict[str, Any]:
@@ -247,6 +263,21 @@ class YouTubeBridgeManager(
                             "finalized_at": finalized_at,
                         },
                     )
+                    try:
+                        await self._run_auto_finalize_archive_callback(
+                            runtime.session_id,
+                            finalized_by="youtube_live_chat_ended",
+                            finalized={
+                                **(self.storage.get_session(runtime.session_id) or session),
+                                "runtime_status": self.get_status(runtime.session_id),
+                            },
+                        )
+                    except Exception as archive_exc:
+                        logger.warning(
+                            "auto finalize archive failed session_id=%s error=%s",
+                            runtime.session_id,
+                            archive_exc,
+                        )
                     return
                 runtime.status = "error"
                 runtime.last_error = str(exc)

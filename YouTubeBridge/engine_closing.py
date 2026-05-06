@@ -55,13 +55,21 @@ class ClosingManagerMixin:
     async def _finalize_for_duration(self, runtime: LiveRuntime, session: dict[str, Any]) -> None:
         if not runtime.running or runtime.status in {"closing", "ended"}:
             return
-        await self._finalize_live_session(
+        finalized = await self._finalize_live_session(
             runtime,
             session,
             finalized_by="duration_finalize",
             closing_message="planned duration reached; closing live session",
             ended_message="planned duration reached",
         )
+        try:
+            await self._run_auto_finalize_archive_callback(
+                runtime.session_id,
+                finalized_by="duration_finalize",
+                finalized=finalized,
+            )
+        except Exception as exc:
+            logger.warning("auto finalize archive failed session_id=%s error=%s", runtime.session_id, exc)
 
     async def finalize_session(self, session_id: str) -> dict[str, Any]:
         session = self.storage.get_session(session_id)

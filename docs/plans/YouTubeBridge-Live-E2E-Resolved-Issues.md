@@ -1,7 +1,7 @@
 # YouTubeBridge Live E2E 已完成問題歸檔
 
 建立日期：2026-05-04
-最後整理：2026-05-05
+最後整理：2026-05-06
 
 ## 目的
 
@@ -9,6 +9,20 @@
 目前仍需追蹤的工作請回到 `docs/plans/YouTubeBridge-Live-E2E-Workflow-Issues.md`。
 
 ## 已完成 / 已歸檔項目
+### 4. Director idle 欄位 id 與 Browser smoke selector 已穩定
+
+現象：
+- 測試腳本曾嘗試填 `#directorIdleSeconds`，實際 UI id 是 `#directorIdle`。
+- UI 補上 `data-testid="director-idle-seconds"` 後，又被 `installTestIds()` 覆寫成舊 id 導致 Browser smoke 找不到穩定 selector。
+
+影響：
+- Browser Use 腳本依賴 id 時容易脆弱，且欄位位置改到 Live Session panel 後更需要穩定 selector。
+
+改善狀態：
+- `installTestIds()` 已改為保留 HTML 內顯式宣告的 `data-testid`。
+- 已補回歸測試 `test_install_test_ids_preserves_explicit_stable_testids`。
+- 2026-05-06 Browser smoke 已確認 `[data-testid="director-idle-seconds"]` 存在並可被 in-app browser 找到。
+
 ### 1. 舊 ended session 會干擾新測試
 
 現象：

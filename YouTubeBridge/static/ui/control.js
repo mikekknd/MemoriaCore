@@ -1,6 +1,6 @@
 import { $, SINGLE_CONNECTOR_ID, state, api, clearLog, escapeHtml, log, summarizeSsePayload } from "./core.js";
 import { defaultLiveSession, isSelectedSessionRunning, selectedSessionId, selectedSessionInfo } from "./selectors.js";
-import { refreshTopicPacks } from "./topic-packs.js";
+import { bindSessionTopicPack, refreshTopicPacks } from "./topic-packs.js";
 
 function sessionIsFinalized(session = selectedSessionInfo()) {
   return !!(
@@ -44,6 +44,7 @@ export function updateLiveSessionControls() {
   $("updateSession").hidden = !hasSession || finalized || closing;
   $("updateSession").disabled = !$("updateSession").hidden && !characterValidation.ok;
   $("sessionActions").className = $("updateSession").hidden ? "session-actions single" : "session-actions";
+  $("sessionActions").hidden = $("updateSession").hidden;
   const autoTestRunning = !!session?.runtime_status?.auto_test_events_running;
   $("toggleAutoTestEvents").textContent = autoTestRunning ? "停止自動測試" : "啟動自動測試";
   $("toggleAutoTestEvents").className = autoTestRunning ? "danger" : "";
@@ -455,6 +456,7 @@ export function newSessionDraft() {
   $("testSuperChatCountPerTick").value = 0;
   $("testMaliciousSc").checked = false;
   $("testScBurst").checked = false;
+  $("sessionTopicPackSelect").value = "";
   $("directorState").textContent = "stopped";
   $("directorState").className = "status";
   $("directorJson").textContent = "{}";
@@ -533,6 +535,8 @@ export async function saveSession(createNew) {
   log(createNew ? "新直播已建立" : "直播設定已更新", data);
   await loadSessions(data.session_id);
   fillSessionForm(data);
+  await bindSessionTopicPack(data.session_id);
+  await refreshTopicPacks();
   subscribeEvents();
   updateLiveSessionControls();
 }
@@ -563,6 +567,7 @@ export async function startCurrentSession() {
     log("直播已開始", data);
     state.sessions = [data];
     fillSessionForm(data);
+    await bindSessionTopicPack(data.session_id);
     subscribeEvents();
     await setDirector(true, true);
     await refreshEvents();

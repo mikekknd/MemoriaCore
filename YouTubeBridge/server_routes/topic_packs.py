@@ -137,6 +137,14 @@ async def list_session_topic_packs(session_id: str):
     }
 
 
+@router.delete("/sessions/{session_id}/topic-packs")
+async def clear_session_topic_pack(session_id: str):
+    try:
+        return storage.clear_session_topic_pack(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.get("/sessions/{session_id}/topic-packs/usage")
 async def get_session_topic_pack_usage(session_id: str):
     if not storage.get_session(session_id):
@@ -157,12 +165,6 @@ async def search_session_topic_packs(session_id: str, query: str, limit: int = 6
             entries,
             query_text=query,
             usage_source="manual_search",
-        )
-        manager.maybe_replenish_fact_cards(
-            session_id,
-            reason="",
-            topic_hint=query,
-            run_inline=False,
         )
         return {
             "session_id": session_id,
@@ -217,8 +219,10 @@ async def rebuild_topic_pack_embeddings(pack_id: int):
 
 
 @router.post("/sessions/{session_id}/topic-packs/{pack_id}")
-async def link_topic_pack(session_id: str, pack_id: int):
+async def link_topic_pack(session_id: str, pack_id: int, replace: bool = False):
     try:
+        if replace:
+            return storage.set_session_topic_pack(session_id, pack_id)
         return storage.link_topic_pack_to_session(session_id, pack_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

@@ -406,6 +406,58 @@ def test_topic_pack_crud_and_session_linking():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_set_session_topic_pack_replaces_existing_pack_link():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+        })
+        first_pack = storage.create_topic_pack({"title": "第一包"})
+        second_pack = storage.create_topic_pack({"title": "第二包"})
+
+        storage.link_topic_pack_to_session("live-a", first_pack["id"])
+        result = storage.set_session_topic_pack("live-a", second_pack["id"])
+
+        assert result["mode"] == "replace"
+        assert [pack["id"] for pack in storage.list_session_topic_packs("live-a")] == [second_pack["id"]]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_clear_session_topic_pack_removes_existing_pack_link():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+        })
+        pack = storage.create_topic_pack({"title": "資料包"})
+
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        result = storage.clear_session_topic_pack("live-a")
+
+        assert result["mode"] == "clear"
+        assert result["deleted"] == 1
+        assert storage.list_session_topic_packs("live-a") == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_topic_pack_and_entry_can_be_edited_and_deleted():
     tmp_dir = _tmp_dir()
     try:

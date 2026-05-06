@@ -1,12 +1,59 @@
 # YouTubeBridge Live E2E 未完成問題追蹤
 
 建立日期：2026-05-04
-最後整理：2026-05-05
+最後整理：2026-05-06
 
 ## 目的
 
 這份文件只保留 YouTubeBridge 長時間直播 E2E 測試中「尚未完成、仍需追蹤或需要後續修正」的項目。
 已完成或已歸檔的歷史項目已移到 `docs/plans/YouTubeBridge-Live-E2E-Resolved-Issues.md`。
+
+## 目前剩餘測試目標（2026-05-06）
+
+目前 dashboard 與直播流程已改成「單一 Live Session」與「FactCards 只作為預先準備的資料庫」。後續測試以此為基準；舊測試計畫中出現的 `Recent Events`、獨立 `Director` tab、`Queue` tab、`Chat Preview`、手動選擇 MemoriaCore session、直播中 auto-build / 自動補卡等流程都不可再作為主要驗證路徑。
+
+1. Targeted regression
+   - 最新狀態：2026-05-06 已通過 `python -m pytest YouTubeBridge\tests\test_server_auth.py YouTubeBridge\tests\test_storage.py YouTubeBridge\tests\test_bridge_engine.py YouTubeBridge\tests\test_fact_cards.py YouTubeBridge\tests\test_summary_engine.py tests\test_chat_external_context.py --basetemp=.pyTestTemp\basetemp-targeted-regression-20260506 -q`，共 206 passed。
+   - 跑 YouTubeBridge UI / API 回歸，確認單一 Live Session、角色選擇限制、正式直播停用測試留言、Topic Pack CRUD、Fact Card 生成 / 匯入 live lock、runtime/log launcher 規則仍通過。
+   - 跑 Bridge engine / storage / summary / FactCards 回歸，確認導播 idle、SafetyLLM、Research worker、FactCards usage、summary factuality gate 與 closing SC thanks 沒被 UI 改動破壞。
+   - 跑 `tests/test_chat_external_context.py` 相關回歸，確認 YouTube live external context 仍是 public/transient，不寫 private memory，也不公開導播節奏提示。
+
+2. Browser smoke
+   - 最新狀態：2026-05-06 Browser smoke 已通過；測試 URL `http://localhost:8091/ui?smoke=full-*`，並補做 `/live/` reload 驗證。
+   - 已確認目前 tab 為 `Live Session`、`留言測試`、`Summary`、`Topic Pack`、`系統設定`、`規則說明`。
+   - 已確認 `data-testid="director-idle-seconds"` 可被 Browser Use 找到；正式 YouTube URL 會停用手動與自動測試留言；Topic Pack 頁面不顯示 usage 摘要、自動補卡、依主題自動建立資料卡或建立張數。
+   - 已確認 `/live/?session_id=yt_20260506_170833_2435497b` wrapper reload 後兩個 iframe 都綁定同一 session；直接 reload `/live-chat/?session_id=...` 顯示 `46/46` 則，沒有回到 0 則。
+   - 用目前 UI 驗證 6 個 tab：`Live Session`、`留言測試`、`Summary`、`Topic Pack`、`系統設定`、`規則說明`。
+   - Live Session 左右 panel 要符合新布局：左側 YouTube URL / 角色 / 導播設定 / 開始直播；右側注入、SC、Topic Pack 綁定、自動化與收尾設定。
+   - 沒有角色時禁止開始；角色數量上限需跟 MemoriaCore `max_session_characters` 同步。
+   - 真實 YouTube URL 模式下，手動與自動測試留言功能要灰階或阻擋。
+   - Topic Pack 頁面不得顯示 usage 摘要、自動補卡、依主題自動建立資料卡、建立張數等已移除功能。
+
+3. 10 分鐘動畫新番 E2E
+   - 最新狀態：2026-05-06 已完成 10 分鐘動畫新番 E2E，session `yt_20260506_170833_2435497b`，Topic Pack `49`。
+   - 測試設定：注入間隔 180 秒、動態最短 120 秒、SC 打斷 CD 120 秒、導播回合上限 10、idle 10 秒、啟用 Research Gate / LLM 測試留言 / 惡意留言與 SC；本輪為 post-test 稽核保留 runtime session，`auto_delete_after_processed=false`。
+   - 結果：session `ended`、runtime `ended`、director `ended`、active interaction `null`、未處理 SC `0`、summary `completed`，shared memory 寫入 `completed`，memory block `c62f8c50-0876-4024-af65-987f742097c4`。
+   - Browser / API 稽核：live chat reload 顯示 `46/46` 則；公開 chat-preview 沒有 `## Summary`、`## Facts`、`<external_chat_context>`、攻擊原文、`導播提醒` 或 `安全處理`。
+   - Health 稽核：測試期間每輪 8088 `/api/v1/health` 與 8091 `/health` 均回應，未觀察到 8 秒以上 timeout；`runtime/log/*.err.log` 未新增 `Accept failed on a socket`、`WinError 10054`、`WinError 64`、`proactor_events.py`、`Invalid argument` 或 `Traceback`。
+   - 觀察到的殘留風險：SC 打斷 director 時 interaction metadata 仍記錄 `error: "'NoneType' object has no attribute 'read'"`，流程未卡住也未寫入 err log；後續可視為 provider cancel metadata 清理問題另案追蹤。
+   - 測試前完整停止 8088 / 8091 hot reload wrapper、worker 與 listener，使用非 hot reload server 啟動。
+   - 清空 `runtime/llm_trace.jsonl`，確認 `runtime/` 根層沒有新散落 process log；stdout/stderr 只應出現在 `runtime/log/`。
+   - 預先建立或選擇動畫新番 Topic Pack，再從 Live Session 綁定；直播中不可產生或匯入 FactCards。
+   - 建議設定：注入間隔 180 秒、動態最短 120 秒、SC 打斷 CD 120 秒、導播回合上限 10、idle 10 秒、啟用安全搜尋、LLM 測試留言、惡意留言與 SC。
+   - 驗證 8088 / 8091 health 全程無 timeout，角色有多輪互相接話，Director idle 能續話題，SC closing thanks 完成，session ended 後 summary 自動完成並寫入 shared memory。
+   - 驗證 live chat 不顯示 hidden context、完整導播 prompt、攻擊原文、Topic Pack raw content、Fact Card markdown 或 embedding。
+   - 驗證 FactCards usage 在 API 中增加，但沒有觸發 Gemini 產卡、資料夾匯入、自動補卡 worker 或 auto-build route。
+
+4. Research / Query Resolver
+   - 觀眾資料型提問若 FactCards 可回答，應只召回相關資料，不把不相關卡片硬塞給角色。
+   - FactCards 不足且啟用 Research Gate 時，外部搜尋 fallback 必須走背景 worker，不可阻塞 live injection 主流程。
+   - `completed_no_results`、缺 key、cooldown、低品質來源必須可辨識為 degraded，不可被 UI 或 API 當作成功 fact card。
+
+5. 單一 Live Session 測試邊界
+   - 最新狀態：2026-05-06 起不再把 checkpoint / resume / 重跑既有 session 當作 E2E 主要驗證目標。
+   - 現行產品流程是單一 Live Session：啟動新直播會先收尾並清理舊 session，再建立全新 session。
+   - `runtime/youtube_bridge_e2e_checkpoint.json` 只保留為舊測試輔助或人工排錯線索；新一輪 E2E 不需要驗證從 checkpoint resume。
+   - 若長時間測試中斷，優先依單一 session 狀態做 post-mortem；需要重跑時從乾淨環境啟動新直播，不測「續跑同一 session」。
 
 ## 復發風險索引
 
@@ -50,21 +97,9 @@
 - 測試自動化若直接刪除，可能誤刪還需要分析的測試資料。
 
 改善方向：
-- UI 刪除文案已提示，但測試腳本應先取得使用者確認。
+- 目前 UI 依測試效率需求不跳確認；測試腳本只能對明確標記為 disposable 的 session 執行刪除。
+- 刪除前應先記錄 session id、summary 狀態與必要 debug probe，避免刪掉還需要分析的 E2E 現場。
 - 可考慮新增「封存 / 清空目前測試 session」與「永久刪除」分流。
-
-### 4. Director idle 欄位 id 與腳本預期不一致
-
-現象：
-- 測試腳本嘗試填 `#directorIdleSeconds`，實際 UI id 是 `#directorIdle`。
-
-影響：
-- 這類 id 命名不一致會讓 Browser Use 腳本容易脆弱。
-
-改善方向：
-- 統一欄位命名，例如 `directorIdleSeconds`。
-- 或在測試腳本中使用 label / data-testid。
-- 建議 UI 加上穩定 `data-testid`，不要讓測試依賴文字或臨時 id。
 
 ### 7. Research Gate 成功與「真的有外部資訊」需要分開驗證
 
@@ -80,22 +115,19 @@
 - UI 可在 fact card 上顯示 Research Gate 的 success / failed / degraded 狀態。
 - 若搜尋工具缺 key，應顯示明確警告，不應被誤認為成功補資料。
 
-### 9. 長時間 E2E 測試需要可恢復 checkpoint
+### 9. checkpoint / resume 不再是主要 E2E 目標
 
 現象：
-- 10 分鐘直播測試中途若遇到 selector、pane、Research Gate 或 LLM timeout，整個測試容易中斷。
+- 舊測試流程曾規劃用 checkpoint 續跑既有 session，避免中斷後重建 session 污染 DB。
+- 目前產品設計已改為單一 Live Session：新直播會自動收尾與清理舊 session，因此不再需要測「重跑同一 session」。
 
 影響：
-- 中斷後可能留下 running session、半建立 Topic Pack、部分 fact cards、正在執行的 Director job。
+- 若測試文件仍要求 checkpoint / resume，會和目前單一 session 流程互相矛盾。
+- 舊 `runtime/youtube_bridge_e2e_checkpoint.json` 可以保留作人工排錯線索，但不應成為新 E2E pass / fail 條件。
 
 改善方向：
-- Browser Use 測試腳本應保存 checkpoint：
-  - session_id
-  - started_at
-  - topic_pack_id
-  - expected end time
-  - last observed event count / SC count
-- 加入 resume 流程：若 session 已建立，從當前階段繼續，而不是重頭建立。
+- 新 E2E 只驗證乾淨環境啟動、單一 session 跑完、summary/shared memory 完成、live reload 綁定最新 session。
+- 中斷時記錄目前 session id 與 post-mortem 資料；真正重跑時重新清環境並開新直播。
 
 ### 25. Research Gate fact card 內容仍偏 raw search dump，且來源品質/來源欄位不夠乾淨
 
@@ -167,16 +199,16 @@
 - MemoriaCore 可提供 prompt reload endpoint，或在開發模式偵測 prompt 檔修改後自動重載。
 - Bridge UI 的 SafetyLLM 失敗原因若包含 missing prompt key，應顯示明確操作提示：「請重啟 / reload MemoriaCore prompts」。
 
-### 48. FactCards 消耗追蹤與自動補卡仍需 10 分鐘 E2E 驗證
+### 48. FactCards usage telemetry 仍需 10 分鐘 E2E 驗證
 
 現況：
 - 已新增 `topic_pack_entry_usages`，記錄 `entry_id`、相似度、使用時間、使用來源與 query 摘要。
 - Topic Pack search / live external context / director topic context 召回 fact card 後會記錄 usage。
-- 新增消耗狀態 API：`GET /sessions/{session_id}/topic-packs/usage`，控制台會顯示已召回、未使用與最近補卡狀態。
-- 已新增 `maybe_replenish_fact_cards()`：未使用卡少於 3、最近 8 次召回中同一 entry 出現 3 次以上，或 director `transition_topic` 且 120 秒內未補卡時，會用 Gemini CLI 背景補 1 份動畫新番 FactCard 並匯入同 pack。
+- `GET /sessions/{session_id}/topic-packs/usage` 保留為除錯 API；控制台不再顯示「已召回 / 未召回 / 最近補卡」摘要。
+- 直播中不再自動補卡，也不在 session 執行中呼叫依主題自動建立資料卡；FactCards 只作為預先準備與手動管理的向量資料庫。
 
 仍需驗證：
 - 新 10 分鐘動畫新番 E2E 中，FactCards usage 是否持續增加。
-- 自動補卡是否至少觸發一次，且不阻塞 director、SC thanks 或 live chat。
+- 直播中不應觸發 Gemini 產卡、資料夾匯入、自動補卡 worker 或 auto-build route。
 - usage API / 控制台不得顯示 raw FactCard markdown、embedding、hidden context 或 Topic Pack raw content。
 - 直播中被召回的 FactCards 應提供可展開討論的細節，而不是反覆召回同一批表面內容。

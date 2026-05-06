@@ -154,13 +154,6 @@ class TopicPackEntryUpdateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-class TopicPackAutoBuildRequest(BaseModel):
-    topic: str = Field(..., min_length=1, max_length=1200)
-    pack_id: int | None = None
-    card_count: int = Field(5, ge=1, le=10)
-    use_research: bool = True
-
-
 class FactCardImportRequest(BaseModel):
     pack_id: int | None = None
     max_files: int = Field(50, ge=1, le=200)

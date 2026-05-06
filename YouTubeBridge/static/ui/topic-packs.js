@@ -1,5 +1,5 @@
 import { $, state, api, escapeHtml, log } from "./core.js";
-import { currentTopicEntryId, selectedSessionId, selectedTopicEntry, selectedTopicPack, topicEntryById } from "./selectors.js";
+import { currentTopicEntryId, selectedSessionId, selectedSessionInfo, selectedTopicEntry, selectedTopicPack, topicEntryById } from "./selectors.js";
 
 export function setTopicActionVisible(id, visible) {
   const element = $(id);
@@ -14,6 +14,7 @@ export function updateTopicActionVisibility() {
   const hasEntry = currentTopicEntryId() > 0;
   const entryBusy = !!state.topicEntryEditorBusy;
   const factCardBusy = !!state.factCardGenerationBusy;
+  const liveLocked = factCardActionsBlockedDuringLive();
   const hasPackTitle = !!$("topicPackTitle").value.trim();
   const hasEntryContent = !!$("topicEntryTitle").value.trim() && !!$("topicEntryBody").value.trim();
 
@@ -26,21 +27,28 @@ export function updateTopicActionVisibility() {
   setTopicActionVisible("updateTopicEntry", hasPack && hasEntry);
   setTopicActionVisible("cancelTopicEntryEdit", hasPack && hasEntry);
   setTopicActionVisible("rebuildTopicEmbeddings", hasPack);
-  setTopicActionVisible("topicAutoBuildControls", hasSession);
-  setTopicActionVisible("autoBuildTopicPack", hasSession);
-  setTopicActionVisible("generateGeminiFactCards", true);
-  setTopicActionVisible("importFactCardsFolder", true);
+  setTopicActionVisible("generateGeminiFactCards", !liveLocked);
+  setTopicActionVisible("importFactCardsFolder", !liveLocked);
   setTopicActionVisible("searchTopicPack", hasPack);
   setTopicActionVisible("restoreTopicEntries", hasPack && state.topicEntrySearchActive);
+  $("topicFactCardLiveLockNotice").classList.toggle("is-hidden", !liveLocked);
 
   $("createTopicPack").disabled = hasPack || !hasPackTitle;
   $("updateTopicPack").disabled = !hasPack || !hasPackTitle;
   $("addTopicEntry").disabled = !hasPack || hasEntry || !hasEntryContent || entryBusy;
   $("updateTopicEntry").disabled = !hasPack || !hasEntry || !hasEntryContent || entryBusy;
   $("cancelTopicEntryEdit").disabled = !hasPack || !hasEntry || entryBusy;
-  $("autoBuildTopicPack").disabled = !hasSession || factCardBusy;
   $("generateGeminiFactCards").disabled = factCardBusy;
   $("importFactCardsFolder").disabled = factCardBusy;
+}
+
+export function factCardActionsBlockedDuringLive() {
+  const session = selectedSessionInfo();
+  const runtimeStatus = session?.runtime_status?.status || session?.status || "";
+  return !!(
+    session?.runtime_status?.running
+    || ["starting", "running", "closing"].includes(runtimeStatus)
+  );
 }
 
 export function setTopicEntryEditorBusy(isBusy) {
@@ -151,17 +159,39 @@ export function bindTopicEntryCardButtons() {
 
 export async function refreshTopicPacks() {
   const previousPackId = Number($("topicPackSelect").value || 0);
+  const previousSessionPackId = Number($("sessionTopicPackSelect")?.value || 0);
   state.topicPacks = await api("/topic-packs");
-  $("topicPackSelect").innerHTML = `<option value="">選擇資料包</option>` + state.topicPacks.map((pack) =>
+  const optionsHtml = state.topicPacks.map((pack) =>
     `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.title)}</option>`
   ).join("");
+  $("topicPackSelect").innerHTML = `<option value="">選擇資料包</option>` + optionsHtml;
+  $("sessionTopicPackSelect").innerHTML = `<option value="">不綁定資料包</option>` + optionsHtml;
   if (previousPackId && state.topicPacks.some((pack) => Number(pack.id) === previousPackId)) {
     $("topicPackSelect").value = String(previousPackId);
+  }
+  if (previousSessionPackId && state.topicPacks.some((pack) => Number(pack.id) === previousSessionPackId)) {
+    $("sessionTopicPackSelect").value = String(previousSessionPackId);
   }
   $("topicPackState").textContent = `${state.topicPacks.length} 個資料包`;
   $("topicPackState").className = "status good";
   fillTopicPackForm(selectedTopicPack());
+  await refreshSessionTopicPackSelection();
   await refreshTopicEntries();
+}
+
+export async function refreshSessionTopicPackSelection() {
+  const id = selectedSessionId();
+  const selector = $("sessionTopicPackSelect");
+  if (!selector || !id) return;
+  try {
+    const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs`);
+    const pack = (data.packs || [])[0];
+    const packId = pack ? Number(pack.id) : 0;
+    const hasLinkedPack = packId && state.topicPacks.some((item) => Number(item.id) === packId);
+    selector.value = hasLinkedPack ? String(packId) : "";
+  } catch {
+    // Session may not exist yet while editing a draft; keep the operator's current selection.
+  }
 }
 
 export async function refreshTopicEntries() {
@@ -191,41 +221,7 @@ export async function refreshTopicEntries() {
   }
   $("topicPackEntries").innerHTML = renderTopicEntries(entries) || `<div class="muted">尚無 fact card</div>`;
   bindTopicEntryCardButtons();
-  await refreshTopicPackUsage();
   updateTopicActionVisibility();
-}
-
-export async function refreshTopicPackUsage() {
-  const id = selectedSessionId();
-  updateTopicActionVisibility();
-  if (!id) {
-    $("topicPackUsageState").textContent = "已召回 0 / 未使用 0 / 最近補卡：尚無";
-    $("topicPackUsageState").className = "status";
-    return;
-  }
-  try {
-    const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs/usage`);
-    const recalled = Number(data.used_entry_count || 0);
-    const unused = Number(data.unused_entry_count || 0);
-    const total = Number(data.total_entries || 0);
-    const fallback = data.last_replenish_fallback_mode ? ` (${data.last_replenish_fallback_mode})` : "";
-    const research = data.research_gate || {};
-    const researchTotal = Number(research.total_count || 0);
-    const researchSuccess = Number(research.success_count || 0);
-    const researchDegraded = Number(research.degraded_count || 0);
-    const researchText = researchTotal
-      ? ` / Research Gate：成功 ${researchSuccess} / degraded ${researchDegraded}${researchDegraded > 0 ? "；可手動重試" : ""}`
-      : "";
-    const recent = data.replenishment_in_progress
-      ? "進行中"
-      : (data.last_replenished_at ? `${data.last_replenish_reason || "補卡"} ${data.last_replenish_status || ""}${fallback}`.trim() : "尚無");
-    const repeat = data.repeated_entry ? `；重複召回：${data.repeated_entry.title || data.repeated_entry.entry_id}` : "";
-    $("topicPackUsageState").textContent = `已召回 ${recalled}/${total} / 未使用 ${unused} / 最近補卡：${recent}${repeat}${researchText}`;
-    $("topicPackUsageState").className = (data.low_unused || researchDegraded > 0) ? "status warn" : "status good";
-  } catch (error) {
-    $("topicPackUsageState").textContent = `usage 狀態讀取失敗：${String(error).slice(0, 120)}`;
-    $("topicPackUsageState").className = "status warn";
-  }
 }
 
 export async function createTopicPack() {
@@ -303,6 +299,26 @@ export async function linkTopicPack() {
   await refreshTopicEntries();
 }
 
+export async function bindSessionTopicPack(sessionId = selectedSessionId()) {
+  const packId = Number($("sessionTopicPackSelect").value || 0);
+  if (!sessionId) return null;
+  if (!packId) {
+    const data = await api(`/sessions/${encodeURIComponent(sessionId)}/topic-packs`, {
+      method: "DELETE",
+    });
+    $("topicPackSelect").value = "";
+    log("直播已解除話題資料包綁定", data);
+    return data;
+  }
+  const data = await api(`/sessions/${encodeURIComponent(sessionId)}/topic-packs/${packId}?replace=true`, {
+    method: "POST",
+    body: "{}",
+  });
+  $("topicPackSelect").value = String(packId);
+  log("直播已綁定話題資料包", data);
+  return data;
+}
+
 export async function addTopicEntry() {
   const packId = Number($("topicPackSelect").value || 0);
   if (!packId) throw new Error("請先選擇資料包");
@@ -351,26 +367,8 @@ export async function deleteTopicEntry(entryId = null) {
   await refreshTopicEntries();
 }
 
-export async function autoBuildTopicPack() {
-  const id = selectedSessionId();
-  if (!id) throw new Error("請先建立或選擇 Live Session");
-  const packId = Number($("topicPackSelect").value || 0) || null;
-  const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs/auto-build`, {
-    method: "POST",
-    body: JSON.stringify({
-      topic: $("autoBuildTopic").value.trim(),
-      pack_id: packId,
-      card_count: Number($("autoBuildCount").value || 5),
-      use_research: $("autoBuildUseResearch").checked,
-    }),
-  });
-  log("自動資料卡已建立", data);
-  await refreshTopicPacks();
-  $("topicPackSelect").value = data.pack_id;
-  await refreshTopicEntries();
-}
-
 export async function importFactCardsFolder() {
+  if (factCardActionsBlockedDuringLive()) throw new Error("直播中不產生或匯入 Fact Cards");
   const packId = Number($("topicPackSelect").value || 0) || null;
   const data = await api("/topic-packs/fact-cards/import-folder", {
     method: "POST",
@@ -386,6 +384,7 @@ export async function importFactCardsFolder() {
 }
 
 export async function generateGeminiFactCards() {
+  if (factCardActionsBlockedDuringLive()) throw new Error("直播中不產生或匯入 Fact Cards");
   const packId = Number($("topicPackSelect").value || 0) || null;
   const topic = $("autoBuildTopic").value.trim();
   if (!topic) throw new Error("請先輸入生成主題");
@@ -439,7 +438,6 @@ export async function searchTopicPack() {
   ).join("");
   $("topicPackEntries").innerHTML = renderTopicEntries(entries) || `<div class="muted">沒有找到相關 fact card</div>`;
   bindTopicEntryCardButtons();
-  await refreshTopicPackUsage();
   updateTopicActionVisibility();
 }
 

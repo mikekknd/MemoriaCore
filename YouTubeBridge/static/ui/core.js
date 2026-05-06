@@ -102,19 +102,19 @@ export function summarizeSsePayload(payload) {
 export function installTestIds() {
   [
     "sessionId", "videoId", "characterSelect", "characterLimitState",
-    "injectInterval", "injectMinIntervalSeconds", "plannedDuration", "scInterruptCooldown", "autoInject", "autoFinalize",
+    "injectInterval", "injectMinIntervalSeconds", "plannedDuration", "scInterruptCooldown", "sessionTopicPackSelect", "autoInject", "autoFinalize",
     "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession",
     "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",
     "testSuperChatCountPerTick", "autoTestEvents", "generateTestEvents", "eventsList",
     "directorGuidance", "directorIdle", "topicPackSelect",
     "topicEntrySelect", "updateTopicPack", "deleteTopicPack", "deleteAllTopicPacks", "updateTopicEntry", "cancelTopicEntryEdit",
-    "topicAutoBuildControls", "autoBuildTopicPack", "importFactCardsFolder", "generateGeminiFactCards", "searchTopicPack", "restoreTopicEntries",
-    "topicPackUsageState", "eventsPane", "summaryPane", "topicPackPane", "systemSettingsPane",
+    "importFactCardsFolder", "generateGeminiFactCards", "searchTopicPack", "restoreTopicEntries",
+    "topicFactCardLiveLockNotice", "liveSessionPane", "eventsPane", "summaryPane", "topicPackPane", "systemSettingsPane",
     "runtimeRulesPane", "reloadRuntimeRules", "runtimeRulesContent",
     "log"
   ].forEach((id) => {
     const element = $(id);
-    if (element) element.dataset.testid = id;
+    if (element && !element.dataset.testid) element.dataset.testid = id;
   });
 }
 

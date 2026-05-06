@@ -29,160 +29,175 @@
   </div>
 
   <main>
-    <div class="stack">
-      <section>
-        <div class="section-heading">
-          <h2>Live Session</h2>
-        </div>
-        <div class="grid">
-          <input id="sessionId" type="hidden">
-          <label class="wide">
-            <span class="field-label">YouTube video_id 或 URL
-              <span class="help-tip" tabindex="0" aria-label="留空時使用測試直播；填入 YouTube video_id 或 URL 時會連到真實直播聊天室，並停用測試留言功能。" data-tooltip="留空時使用測試直播；填入 YouTube video_id 或 URL 時會連到真實直播聊天室，並停用測試留言功能。">?</span>
-            </span>
-            <input id="videoId" placeholder="真實直播才需要；測試留言可留空">
-          </label>
-          <label class="wide">
-            <span class="field-label">角色
-              <span class="help-tip" tabindex="0" aria-label="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。" data-tooltip="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。">?</span>
-            </span>
-            <select id="characterSelect" multiple size="5" aria-describedby="characterLimitState"></select>
-            <span id="characterLimitState" class="muted">請先載入角色清單</span>
-          </label>
-          <label>
-            <span class="field-label">注入間隔秒數
-              <span class="help-tip" tabindex="0" aria-label="自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。" data-tooltip="自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。">?</span>
-            </span>
-            <input id="injectInterval" type="number" min="5" max="600" value="30">
-          </label>
-          <label>
-            <span class="field-label">動態注入最短秒數
-              <span class="help-tip" tabindex="0" aria-label="pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。" data-tooltip="pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。">?</span>
-            </span>
-            <input id="injectMinIntervalSeconds" type="number" min="5" max="600" value="10">
-          </label>
-          <label>
-            <span class="field-label">最少 pending 留言
-              <span class="help-tip" tabindex="0" aria-label="pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。" data-tooltip="pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。">?</span>
-            </span>
-            <input id="minPending" type="number" min="1" max="100" value="1">
-          </label>
-          <label>
-            <span class="field-label">pending 強制注入上限
-              <span class="help-tip" tabindex="0" aria-label="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。" data-tooltip="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。">?</span>
-            </span>
-            <input id="maxPending" type="number" min="1" max="200" value="12">
-          </label>
-          <label>
-            <span class="field-label">預計直播分鐘
-              <span class="help-tip" tabindex="0" aria-label="大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。" data-tooltip="大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。">?</span>
-            </span>
-            <input id="plannedDuration" type="number" min="0" max="720" value="30">
-          </label>
-          <label>
-            <span class="field-label">SC 打斷冷卻秒數
-              <span class="help-tip" tabindex="0" aria-label="Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。" data-tooltip="Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。">?</span>
-            </span>
-            <input id="scInterruptCooldown" type="number" min="0" max="600" value="30">
-          </label>
-          <label>
-            <span class="field-label">每批 SC 上限
-              <span class="help-tip" tabindex="0" aria-label="每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。" data-tooltip="每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。">?</span>
-            </span>
-            <input id="maxScPerBatch" type="number" min="1" max="30" value="5">
-          </label>
-          <label>
-            <span class="field-label">導播回合上限
-              <span class="help-tip" tabindex="0" aria-label="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。" data-tooltip="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。">?</span>
-            </span>
-            <input id="directorGroupTurnLimit" type="number" min="1" max="12" value="3">
-          </label>
-          <label>
-            <span class="field-label">幾批留言後回主軸
-              <span class="help-tip" tabindex="0" aria-label="連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。" data-tooltip="連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。">?</span>
-            </span>
-            <input id="directorMaxChatBatches" type="number" min="1" max="10" value="2">
-          </label>
-        </div>
-        <div class="session-subsection live-automation-options">
-          <div>
-            <h3>直播自動化選項</h3>
-            <p class="muted">控制直播期間哪些流程由 Bridge 自動執行；滑過問號可查看詳細影響。</p>
-          </div>
-          <div class="checkbox-grid">
-            <label class="wide checkbox-row option-row">
-              <input id="autoInject" type="checkbox">
-              <span class="option-label">自動注入待處理留言</span>
-              <span class="help-tip" tabindex="0" aria-label="每隔一段時間把 pending 留言送進角色回應流程" data-tooltip="每隔一段時間把 pending 留言送進角色回應流程">?</span>
-            </label>
-            <label class="wide checkbox-row option-row">
-              <input id="autoFinalize" type="checkbox" checked>
-              <span class="option-label">到達預計直播時間後自動收尾</span>
-              <span class="help-tip" tabindex="0" aria-label="預計直播分鐘到達後執行結束與摘要收尾流程" data-tooltip="預計直播分鐘到達後執行結束與摘要收尾流程">?</span>
-            </label>
-            <label class="wide checkbox-row option-row">
-              <input id="autoScThanksOnFinalize" type="checkbox" checked>
-              <span class="option-label">收尾時逐一感謝未處理 SC</span>
-              <span class="help-tip" tabindex="0" aria-label="結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat" data-tooltip="結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat">?</span>
-            </label>
-            <label class="wide checkbox-row option-row">
-              <input id="autoDeleteProcessed" type="checkbox" checked>
-              <span class="option-label">摘要與記憶完成後清除 runtime session</span>
-              <span class="help-tip" tabindex="0" aria-label="摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session" data-tooltip="摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session">?</span>
-            </label>
-            <label class="wide checkbox-row option-row">
-              <input id="researchEnabled" type="checkbox">
-              <span class="option-label">觀眾提問啟用安全搜尋補充</span>
-              <span class="help-tip" tabindex="0" aria-label="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文" data-tooltip="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文">?</span>
-            </label>
-          </div>
-        </div>
-        <div id="directorControls" class="session-subsection director-controls">
-          <div class="section-heading">
-            <h3>導播設定</h3>
-            <span id="directorState" class="status">stopped</span>
-          </div>
-          <p class="muted">直播開始後會自動啟動導播與開場；此區只調整導播節奏與方向。</p>
-          <div class="grid">
-            <label>
-              <span class="field-label">角色停頓後續話秒數
-                <span class="help-tip" tabindex="0" aria-label="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。" data-tooltip="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。">?</span>
-              </span>
-              <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="10" max="3600" value="60">
-            </label>
-            <label class="wide">
-              <span class="field-label">本場直播方向
-                <span class="help-tip" tabindex="0" aria-label="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。" data-tooltip="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。">?</span>
-              </span>
-              <textarea id="directorGuidance" placeholder="例：本場只聊動畫新番，優先展開最新一話細節、作畫品質、社群討論與角色觀點。"></textarea>
-            </label>
-          </div>
-          <div class="toolbar" style="margin-top:10px">
-            <button id="updateDirectorGuidance">更新導播設定</button>
-          </div>
-          <details class="director-debug">
-            <summary>導播除錯資訊</summary>
-            <pre id="directorJson">{}</pre>
-          </details>
-        </div>
-        <div id="sessionActions" class="session-actions">
-          <button id="toggleSession" class="blue">開始直播</button>
-          <button id="updateSession">更新設定</button>
-        </div>
-      </section>
-    </div>
-
-    <div class="stack">
+    <div class="stack workspace-stack">
       <section>
         <div class="tabs">
-          <button class="tab active" data-pane="eventsPane">留言測試</button>
+          <button class="tab active" data-pane="liveSessionPane">Live Session</button>
+          <button class="tab" data-pane="eventsPane">留言測試</button>
           <button class="tab" data-pane="summaryPane">Summary</button>
           <button class="tab" data-pane="topicPackPane">Topic Pack</button>
           <button class="tab" data-pane="systemSettingsPane">系統設定</button>
           <button class="tab" data-pane="runtimeRulesPane">規則說明</button>
         </div>
 
-        <div id="eventsPane" class="pane active">
+        <div id="liveSessionPane" class="pane active">
+          <div class="section-heading">
+            <h2>Live Session</h2>
+          </div>
+          <div class="live-session-workspace">
+            <div class="live-session-panel live-session-main-panel">
+              <div class="grid">
+                <input id="sessionId" type="hidden">
+                <label class="wide">
+                  <span class="field-label">YouTube video_id 或 URL
+                    <span class="help-tip" tabindex="0" aria-label="留空時使用測試直播；填入 YouTube video_id 或 URL 時會連到真實直播聊天室，並停用測試留言功能。" data-tooltip="留空時使用測試直播；填入 YouTube video_id 或 URL 時會連到真實直播聊天室，並停用測試留言功能。">?</span>
+                  </span>
+                  <input id="videoId" placeholder="真實直播才需要；測試留言可留空">
+                </label>
+                <label class="wide">
+                  <span class="field-label">角色
+                    <span class="help-tip" tabindex="0" aria-label="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。" data-tooltip="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。">?</span>
+                  </span>
+                  <select id="characterSelect" multiple size="5" aria-describedby="characterLimitState"></select>
+                  <span id="characterLimitState" class="muted">請先載入角色清單</span>
+                </label>
+              </div>
+              <div id="directorControls" class="session-subsection director-controls">
+                <div class="section-heading">
+                  <h3>導播設定</h3>
+                  <span id="directorState" class="status">stopped</span>
+                </div>
+                <p class="muted">直播開始後會自動啟動導播與開場；此區只調整導播節奏與方向。</p>
+                <div class="grid">
+                  <label>
+                    <span class="field-label">角色停頓後續話秒數
+                      <span class="help-tip" tabindex="0" aria-label="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。" data-tooltip="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。">?</span>
+                    </span>
+                    <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="10" max="3600" value="60">
+                  </label>
+                  <label>
+                    <span class="field-label">導播回合上限
+                      <span class="help-tip" tabindex="0" aria-label="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。" data-tooltip="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。">?</span>
+                    </span>
+                    <input id="directorGroupTurnLimit" type="number" min="1" max="12" value="3">
+                  </label>
+                  <label class="wide">
+                    <span class="field-label">本場直播方向
+                      <span class="help-tip" tabindex="0" aria-label="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。" data-tooltip="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。">?</span>
+                    </span>
+                    <textarea id="directorGuidance" placeholder="例：本場只聊動畫新番，優先展開最新一話細節、作畫品質、社群討論與角色觀點。"></textarea>
+                  </label>
+                </div>
+                <div class="toolbar" style="margin-top:10px">
+                  <button id="updateDirectorGuidance">更新導播設定</button>
+                </div>
+                <details class="director-debug">
+                  <summary>導播除錯資訊</summary>
+                  <pre id="directorJson">{}</pre>
+                </details>
+                <div id="primarySessionAction" class="session-actions single">
+                  <button id="toggleSession" class="blue">開始直播</button>
+                </div>
+              </div>
+            </div>
+            <div class="live-session-panel live-session-settings-panel">
+              <div class="grid">
+                <label>
+                  <span class="field-label">注入間隔秒數
+                    <span class="help-tip" tabindex="0" aria-label="自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。" data-tooltip="自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。">?</span>
+                  </span>
+                  <input id="injectInterval" type="number" min="5" max="600" value="30">
+                </label>
+                <label>
+                  <span class="field-label">動態注入最短秒數
+                    <span class="help-tip" tabindex="0" aria-label="pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。" data-tooltip="pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。">?</span>
+                  </span>
+                  <input id="injectMinIntervalSeconds" type="number" min="5" max="600" value="10">
+                </label>
+                <label>
+                  <span class="field-label">最少 pending 留言
+                    <span class="help-tip" tabindex="0" aria-label="pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。" data-tooltip="pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。">?</span>
+                  </span>
+                  <input id="minPending" type="number" min="1" max="100" value="1">
+                </label>
+                <label>
+                  <span class="field-label">pending 強制注入上限
+                    <span class="help-tip" tabindex="0" aria-label="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。" data-tooltip="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。">?</span>
+                  </span>
+                  <input id="maxPending" type="number" min="1" max="200" value="12">
+                </label>
+                <label>
+                  <span class="field-label">預計直播分鐘
+                    <span class="help-tip" tabindex="0" aria-label="大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。" data-tooltip="大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。">?</span>
+                  </span>
+                  <input id="plannedDuration" type="number" min="0" max="720" value="30">
+                </label>
+                <label>
+                  <span class="field-label">SC 打斷冷卻秒數
+                    <span class="help-tip" tabindex="0" aria-label="Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。" data-tooltip="Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。">?</span>
+                  </span>
+                  <input id="scInterruptCooldown" type="number" min="0" max="600" value="30">
+                </label>
+                <label>
+                  <span class="field-label">每批 SC 上限
+                    <span class="help-tip" tabindex="0" aria-label="每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。" data-tooltip="每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。">?</span>
+                  </span>
+                  <input id="maxScPerBatch" type="number" min="1" max="30" value="5">
+                </label>
+                <label class="wide">
+                  <span class="field-label">話題資料包
+                    <span class="help-tip" tabindex="0" aria-label="本場直播啟動或更新時要綁定的 Topic Pack；直播中只讀取已綁定資料，不執行 Fact Card 生成或匯入。" data-tooltip="本場直播啟動或更新時要綁定的 Topic Pack；直播中只讀取已綁定資料，不執行 Fact Card 生成或匯入。">?</span>
+                  </span>
+                  <select id="sessionTopicPackSelect"></select>
+                </label>
+                <label>
+                  <span class="field-label">幾批留言後回主軸
+                    <span class="help-tip" tabindex="0" aria-label="連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。" data-tooltip="連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。">?</span>
+                  </span>
+                  <input id="directorMaxChatBatches" type="number" min="1" max="10" value="2">
+                </label>
+              </div>
+              <div class="session-subsection live-automation-options">
+                <div>
+                  <h3>直播自動化選項</h3>
+                  <p class="muted">控制直播期間哪些流程由 Bridge 自動執行；滑過問號可查看詳細影響。</p>
+                </div>
+                <div class="checkbox-grid">
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoInject" type="checkbox">
+                    <span class="option-label">自動注入待處理留言</span>
+                    <span class="help-tip" tabindex="0" aria-label="每隔一段時間把 pending 留言送進角色回應流程" data-tooltip="每隔一段時間把 pending 留言送進角色回應流程">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoFinalize" type="checkbox" checked>
+                    <span class="option-label">到達預計直播時間後自動收尾</span>
+                    <span class="help-tip" tabindex="0" aria-label="預計直播分鐘到達後執行結束與摘要收尾流程" data-tooltip="預計直播分鐘到達後執行結束與摘要收尾流程">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoScThanksOnFinalize" type="checkbox" checked>
+                    <span class="option-label">收尾時逐一感謝未處理 SC</span>
+                    <span class="help-tip" tabindex="0" aria-label="結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat" data-tooltip="結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoDeleteProcessed" type="checkbox" checked>
+                    <span class="option-label">摘要與記憶完成後清除 runtime session</span>
+                    <span class="help-tip" tabindex="0" aria-label="摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session" data-tooltip="摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="researchEnabled" type="checkbox">
+                    <span class="option-label">觀眾提問啟用安全搜尋補充</span>
+                    <span class="help-tip" tabindex="0" aria-label="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文" data-tooltip="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文">?</span>
+                  </label>
+                </div>
+              </div>
+              <div id="sessionActions" class="session-actions">
+                <button id="updateSession">更新設定</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="eventsPane" class="pane">
           <p id="testEventsModeNotice" class="muted"></p>
           <div class="event-tool-group manual-events">
             <div class="event-tool-header">
@@ -342,26 +357,13 @@
               <div class="topic-panel-header">
                 <h3>補卡與狀態</h3>
               </div>
-              <span id="topicPackUsageState" class="status">已召回 0 / 未使用 0 / 最近補卡：尚無</span>
               <label>生成主題（執行時使用，不會自動儲存）
                 <input id="autoBuildTopic" placeholder="例：四月新番最新話細節、作畫與劇情討論">
               </label>
+              <p id="topicFactCardLiveLockNotice" class="status warn is-hidden">直播中不產生或匯入 Fact Cards；本場只讀取已綁定資料包。</p>
               <div class="topic-form-actions single">
                 <button id="generateGeminiFactCards" class="primary is-hidden">依主題生成 Fact Cards</button>
                 <button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>
-              </div>
-              <div id="topicAutoBuildControls" class="topic-ops-group is-hidden">
-                <div class="grid">
-                  <label>自動建立張數
-                    <input id="autoBuildCount" type="number" min="1" max="10" value="5">
-                  </label>
-                  <label>
-                    <span><input id="autoBuildUseResearch" type="checkbox" checked style="width:auto;min-height:auto"> Research Gate</span>
-                  </label>
-                </div>
-                <div class="topic-form-actions single">
-                  <button id="autoBuildTopicPack" class="primary is-hidden">依主題自動建立資料卡</button>
-                </div>
               </div>
               <div class="topic-ops-group">
                 <label>向量檢索測試

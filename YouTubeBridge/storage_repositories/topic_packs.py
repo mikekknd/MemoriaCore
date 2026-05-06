@@ -613,6 +613,35 @@ class TopicPackRepositoryMixin:
             conn.commit()
         return {"session_id": session_id, "pack_id": int(pack_id), "created_at": now}
 
+    def set_session_topic_pack(self, session_id: str, pack_id: int) -> dict:
+        if not self.get_session(session_id):
+            raise ValueError("live session 不存在")
+        if not self.get_topic_pack(int(pack_id)):
+            raise ValueError("topic pack 不存在")
+        now = datetime.now().isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM live_session_topic_packs WHERE session_id = ?", (session_id,))
+            conn.execute(
+                """
+                INSERT INTO live_session_topic_packs (session_id, pack_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (session_id, int(pack_id), now),
+            )
+            conn.commit()
+        return {"session_id": session_id, "pack_id": int(pack_id), "created_at": now, "mode": "replace"}
+
+    def clear_session_topic_pack(self, session_id: str) -> dict:
+        if not self.get_session(session_id):
+            raise ValueError("live session 不存在")
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM live_session_topic_packs WHERE session_id = ?",
+                (session_id,),
+            )
+            conn.commit()
+        return {"session_id": session_id, "deleted": int(cursor.rowcount or 0), "mode": "clear"}
+
     def list_session_topic_packs(self, session_id: str) -> list[dict]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(

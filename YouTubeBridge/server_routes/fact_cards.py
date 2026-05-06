@@ -5,7 +5,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException
 
-from models import FactCardGenerateRequest, FactCardImportRequest, TopicPackAutoBuildRequest
+from models import FactCardGenerateRequest, FactCardImportRequest
 
 
 router = APIRouter()
@@ -38,8 +38,34 @@ def _require_state():
     return _state
 
 
+def _active_live_session_for_fact_cards() -> str:
+    for session in storage.list_sessions():
+        session_id = str(session.get("session_id") or "")
+        if not session_id:
+            continue
+        runtime_status = {}
+        try:
+            runtime_status = manager.get_status(session_id)
+        except Exception:
+            runtime_status = {}
+        status = str(runtime_status.get("status") or session.get("status") or "")
+        if runtime_status.get("running") or status in {"starting", "running", "closing"}:
+            return session_id
+    return ""
+
+
+def _ensure_fact_card_mutation_allowed() -> None:
+    active_session_id = _active_live_session_for_fact_cards()
+    if active_session_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"直播中不產生或匯入 Fact Cards；active session={active_session_id}",
+        )
+
+
 @router.post("/topic-packs/fact-cards/import-folder")
 async def import_fact_cards_folder_to_pack(body: FactCardImportRequest):
+    _ensure_fact_card_mutation_allowed()
     try:
         return await asyncio.to_thread(
             manager.import_fact_cards_folder_to_pack,
@@ -54,6 +80,7 @@ async def import_fact_cards_folder_to_pack(body: FactCardImportRequest):
 
 @router.post("/topic-packs/fact-cards/generate")
 async def generate_fact_cards_with_gemini_to_pack(body: FactCardGenerateRequest):
+    _ensure_fact_card_mutation_allowed()
     try:
         return await asyncio.to_thread(
             manager.generate_fact_cards_with_gemini_to_pack,
@@ -68,24 +95,9 @@ async def generate_fact_cards_with_gemini_to_pack(body: FactCardGenerateRequest)
         raise HTTPException(status_code=502, detail=str(exc))
 
 
-@router.post("/sessions/{session_id}/topic-packs/auto-build")
-async def auto_build_session_topic_pack(session_id: str, body: TopicPackAutoBuildRequest):
-    try:
-        return await manager.auto_build_topic_pack(
-            session_id,
-            topic=body.topic,
-            pack_id=body.pack_id,
-            card_count=body.card_count,
-            use_research=body.use_research,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-
 @router.post("/sessions/{session_id}/fact-cards/import-folder")
 async def import_fact_cards_folder(session_id: str, body: FactCardImportRequest):
+    _ensure_fact_card_mutation_allowed()
     try:
         return await asyncio.to_thread(
             manager.import_fact_cards_folder,
@@ -101,6 +113,7 @@ async def import_fact_cards_folder(session_id: str, body: FactCardImportRequest)
 
 @router.post("/sessions/{session_id}/fact-cards/generate")
 async def generate_fact_cards_with_gemini(session_id: str, body: FactCardGenerateRequest):
+    _ensure_fact_card_mutation_allowed()
     try:
         return await asyncio.to_thread(
             manager.generate_fact_cards_with_gemini,

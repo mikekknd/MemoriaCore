@@ -45,6 +45,8 @@ if %errorlevel% neq 0 (
 
 set API_PORT=8091
 set API_STARTED=0
+set "LOG_DIR=%~dp0..\runtime\log"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 :: Local dev default: if MemoriaCore has admin bypass enabled, let the bridge use it.
 :: MemoriaCore still enforces its own admin_bypass_enabled and loopback checks.
@@ -57,7 +59,9 @@ if %errorlevel% equ 0 (
 )
 
 echo [1/1] Starting YouTubeBridge API server on port %API_PORT% ...
-start /B "" "%PYTHON%" server.py
+echo      stdout: %LOG_DIR%\youtube_bridge_8091.out.log
+echo      stderr: %LOG_DIR%\youtube_bridge_8091.err.log
+start "YouTubeBridge API" /B cmd /c ""%PYTHON%" server.py 1>>"%LOG_DIR%\youtube_bridge_8091.out.log" 2>>"%LOG_DIR%\youtube_bridge_8091.err.log""
 set API_STARTED=1
 
 echo      Waiting for API server to be ready ...

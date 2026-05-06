@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from functools import wraps
 import json
+import logging
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -32,7 +33,7 @@ from models import (
     E2ECheckpointRequest, FactCardGenerateRequest, FactCardImportRequest, InterruptRequest,
     LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
     ResearchRequest, SummarizeRequest, TestChatGenerateRequest, TopicPackCreateRequest,
-    TopicPackAutoBuildRequest, TopicPackEntryCreateRequest, TopicPackEntryUpdateRequest,
+    TopicPackEntryCreateRequest, TopicPackEntryUpdateRequest,
     TopicPackUpdateRequest, WriteMemoryRequest,
 )
 from server_presenters import (
@@ -70,6 +71,7 @@ STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 UI_ASSETS_ROOT = Path(STATIC_ROOT) / "ui"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 E2E_CHECKPOINT_PATH = PROJECT_ROOT / "runtime" / "youtube_bridge_e2e_checkpoint.json"
+logger = logging.getLogger("youtube_bridge")
 
 
 storage = BridgeStorage()
@@ -235,6 +237,46 @@ def _sync_route_state() -> None:
     app_state.chat_preview_cache = chat_preview_cache
     for route_module in _ROUTE_MODULES_FOR_SYNC:
         route_module.configure(app_state)
+    _install_auto_finalize_callback()
+
+
+async def _auto_finalize_archive_session(session_id: str, *, finalized_by: str, finalized: dict[str, Any]) -> dict[str, Any]:
+    _sync_route_state()
+    session = storage.get_session(session_id)
+    if not session:
+        return {"session_id": session_id, "status": "missing", "memory_write": {"status": "skipped", "reason": "session_missing"}}
+    try:
+        return await _sessions_routes._finalize_summarize_write_and_maybe_delete(
+            session_id,
+            delete_after=bool(session.get("auto_delete_after_processed")),
+            reason=finalized_by,
+            already_finalized=finalized,
+        )
+    except Exception as exc:
+        logger.warning("auto summary/shared-memory archive failed session_id=%s error=%s", session_id, exc)
+        storage.update_session_summary_state(
+            session_id,
+            summary_status="failed",
+            summary_error=str(exc)[:1000],
+            finalized_at=session.get("finalized_at") or datetime.now().isoformat(),
+        )
+        return {
+            "session_id": session_id,
+            "status": "failed",
+            "error": str(exc)[:500],
+            "memory_write": {"status": "failed", "error": str(exc)[:500]},
+        }
+
+
+def _install_auto_finalize_callback() -> None:
+    if getattr(manager, "auto_finalize_archive_callback", None) is not _auto_finalize_archive_session:
+        try:
+            manager.auto_finalize_archive_callback = _auto_finalize_archive_session
+        except Exception:
+            pass
+
+
+_install_auto_finalize_callback()
 
 
 def _route_handler(func):
@@ -307,7 +349,6 @@ link_topic_pack = _route_handler(_topic_packs_routes.link_topic_pack)
 
 import_fact_cards_folder_to_pack = _route_handler(_fact_cards_routes.import_fact_cards_folder_to_pack)
 generate_fact_cards_with_gemini_to_pack = _route_handler(_fact_cards_routes.generate_fact_cards_with_gemini_to_pack)
-auto_build_session_topic_pack = _route_handler(_fact_cards_routes.auto_build_session_topic_pack)
 import_fact_cards_folder = _route_handler(_fact_cards_routes.import_fact_cards_folder)
 generate_fact_cards_with_gemini = _route_handler(_fact_cards_routes.generate_fact_cards_with_gemini)
 

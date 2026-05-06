@@ -33,24 +33,6 @@ TEST_COMMENT_SCHEMA = {
     },
 }
 
-TOPIC_PACK_AUTO_BUILD_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "cards": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "query": {"type": "string"},
-                    "draft_body": {"type": "string"},
-                    "tags": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        },
-    },
-}
-
 SAFETY_CLASSIFIER_SCHEMA = {
     "type": "object",
     "properties": {

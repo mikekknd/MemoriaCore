@@ -8,7 +8,7 @@ import {
   syncCharacterSelectionLimit, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
 } from "./control.js?v=character-limit-v1";
 import {
-  addTopicEntry, autoBuildTopicPack, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
+  addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, generateGeminiFactCards, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
   refreshTopicEntries, refreshTopicPacks, restoreTopicEntries, searchTopicPack, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
@@ -135,13 +135,16 @@ $("linkTopicPack").onclick = () => linkTopicPack().catch((error) => log("資料�
 $("addTopicEntry").onclick = () => addTopicEntry().catch((error) => log("fact card 新增失敗", String(error)));
 $("updateTopicEntry").onclick = () => updateTopicEntry().catch((error) => log("fact card 更新失敗", String(error)));
 $("cancelTopicEntryEdit").onclick = () => cancelTopicEntryEdit();
-$("autoBuildTopicPack").onclick = () => autoBuildTopicPack().catch((error) => log("自動資料卡建立失敗", String(error)));
 $("importFactCardsFolder").onclick = () => importFactCardsFolder().catch((error) => log("FactCards 資料夾匯入失敗", String(error)));
 $("generateGeminiFactCards").onclick = () => generateGeminiFactCards().catch((error) => log("Gemini FactCards 產生失敗", String(error)));
 $("rebuildTopicEmbeddings").onclick = () => rebuildTopicEmbeddings().catch((error) => log("向量索引重建失敗", String(error)));
 $("searchTopicPack").onclick = () => searchTopicPack().catch((error) => log("向量檢索失敗", String(error)));
 $("restoreTopicEntries").onclick = () => restoreTopicEntries().catch((error) => log("fact card 清單恢復失敗", String(error)));
 $("topicPackSelect").onchange = () => refreshTopicEntries().catch((error) => log("fact card 更新失敗", String(error)));
+$("sessionTopicPackSelect").onchange = () => {
+  $("topicPackSelect").value = $("sessionTopicPackSelect").value;
+  refreshTopicEntries().catch((error) => log("資料包預覽更新失敗", String(error)));
+};
 $("topicEntrySelect").onchange = () => {
   fillTopicEntryForm(selectedTopicEntry());
   updateTopicActionVisibility();

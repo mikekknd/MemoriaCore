@@ -36,6 +36,7 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
 
 **Runtime 資料與 Log**
 正式 / 開發用資料庫檔案目前統一放在 `runtime/` 底下；不要在 repo 根目錄新增或依賴 `.db` 檔（測試 DB 仍依 Tests 規則使用 `tmp_path` 隔離）。
+啟動腳本產生的 stdout/stderr process log 統一放在 `runtime/log/`，不要再散落於 `runtime/` 根層；舊散落 log 用 `scripts/cleanup_runtime_logs.bat` 搬到 `runtime/log/legacy-*` 或搭配 `-Delete` 刪除。
 當使用者提到「查一下 log」、「看 log」、「log 裡有什麼」、LLM trace 或其他 log 相關問題時，優先前往 `runtime/llm_trace.jsonl` 搜尋相關紀錄，再視需要查其他 runtime log 或 API log。
 
 **LLM Provider 介面**
