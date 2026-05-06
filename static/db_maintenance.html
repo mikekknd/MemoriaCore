@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoriaCore DB Maintenance</title>
+<link rel="stylesheet" href="/static/shared/theme.css">
+<style>
+body { min-height:100vh; overflow:hidden; }
+.page { height:100vh; display:grid; grid-template-rows:auto auto minmax(0, 1fr); }
+.topbar { display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); }
+.topbar h1 { font-size:18px; font-weight:650; margin:0; }
+.subtle { color:var(--text2); font-size:12px; line-height:1.5; }
+.top-actions { margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+button, input, select { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; color:var(--text); font-size:13px; }
+button { cursor:pointer; white-space:nowrap; }
+button:hover { border-color:var(--accent); color:var(--accent); opacity:1; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.danger { color:var(--error); border-color:var(--error); }
+button:disabled { color:var(--text2); border-color:var(--border); background:var(--surface2); }
+select, input { width:100%; min-width:0; }
+label { display:block; color:var(--text2); font-size:12px; margin-bottom:5px; }
+.modebar { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--bg); border-bottom:1px solid var(--border); min-width:0; }
+.switch-line { display:flex; align-items:center; gap:8px; white-space:nowrap; }
+.switch-line input { width:auto; }
+.db-path { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:'Cascadia Code','Fira Code',monospace; color:var(--text2); font-size:12px; }
+.pill { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:999px; padding:3px 8px; font-size:12px; color:var(--text2); }
+.pill.on { color:var(--accent2); border-color:var(--accent2); }
+.pill.off { color:var(--warn); border-color:var(--warn); }
+.workspace { min-height:0; display:grid; grid-template-columns:330px minmax(0, 1fr); }
+.sidebar { border-right:1px solid var(--border); background:var(--surface); overflow:auto; padding:14px; }
+.section { border:1px solid var(--border); border-radius:8px; background:var(--bg); margin-bottom:12px; overflow:hidden; }
+.section h2 { margin:0; padding:10px 12px; font-size:14px; border-bottom:1px solid var(--border); }
+.section-body { padding:12px; display:flex; flex-direction:column; gap:10px; }
+.field-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.check-row { display:flex; align-items:center; gap:8px; color:var(--text); font-size:13px; }
+.check-row input { width:auto; }
+.main { min-width:0; min-height:0; display:grid; grid-template-rows:auto auto minmax(0, 1fr); }
+.toolbar { display:flex; align-items:center; gap:8px; padding:12px 14px; background:var(--surface); border-bottom:1px solid var(--border); }
+.toolbar .search { flex:1; }
+.summary { display:flex; align-items:center; gap:12px; padding:8px 14px; border-bottom:1px solid var(--border); background:var(--bg); min-width:0; }
+.summary strong { font-size:13px; }
+.summary span { color:var(--text2); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.table-wrap { min-height:0; overflow:auto; }
+table { width:100%; border-collapse:collapse; }
+th, td { border-bottom:1px solid var(--border); padding:8px 10px; text-align:left; vertical-align:top; font-size:13px; }
+th { position:sticky; top:0; z-index:1; background:var(--surface2); color:var(--text2); font-weight:600; }
+td.mono { font-family:'Cascadia Code','Fira Code',monospace; font-size:12px; color:var(--text2); }
+td.text { line-height:1.5; max-width:520px; white-space:pre-wrap; word-break:break-word; }
+tr:hover td { background:rgba(88,166,255,.06); }
+.row-actions { display:flex; gap:6px; }
+.empty { color:var(--text2); text-align:center; padding:42px 18px; }
+.status-valid { color:var(--accent2); }
+.status-revoked { color:var(--error); font-weight:650; }
+.drop-row { display:grid; grid-template-columns:1fr; gap:8px; }
+.drop-row button { width:100%; }
+@media (max-width:900px) {
+  body { overflow:auto; }
+  .page { min-height:100vh; height:auto; }
+  .workspace { grid-template-columns:1fr; }
+  .sidebar { border-right:none; border-bottom:1px solid var(--border); }
+  .main { min-height:65vh; }
+  .modebar, .toolbar, .summary { flex-wrap:wrap; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="topbar">
+    <div>
+      <h1 data-i18n="db_maintenance.title">DB Maintenance</h1>
+      <div class="subtle" data-i18n="db_maintenance.subtitle">Fast admin-only runtime memory cleanup.</div>
+    </div>
+    <div class="top-actions">
+      <button onclick="loadAll()" data-i18n="db_maintenance.reload_all">Reload all</button>
+      <button class="primary" onclick="loadRows()" data-i18n="db_maintenance.load_rows">Load rows</button>
+    </div>
+  </header>
+
+  <section class="modebar">
+    <label class="switch-line" title="Pause normal writes">
+      <input id="maintenanceToggle" type="checkbox" onchange="setMaintenanceMode(this.checked)">
+      <span data-i18n="db_maintenance.edit_mode">Pause normal writes</span>
+    </label>
+    <span class="pill off" id="modePill" data-i18n="db_maintenance.mode_unknown">Unknown</span>
+    <span class="db-path" id="dbPath"></span>
+    <button onclick="refreshCache()" data-i18n="db_maintenance.refresh_cache">Refresh runtime cache</button>
+  </section>
+
+  <section class="workspace">
+    <aside class="sidebar">
+      <section class="section">
+        <h2 data-i18n="db_maintenance.filters">Scope filters</h2>
+        <div class="section-body">
+          <div>
+            <label for="tableSelect" data-i18n="db_maintenance.table">Table</label>
+            <select id="tableSelect" onchange="onTableChange()"></select>
+          </div>
+          <div>
+            <label for="userSelect" data-i18n="db_maintenance.user">User</label>
+            <select id="userSelect" onchange="onScopeChange()"></select>
+          </div>
+          <div>
+            <label for="characterSelect" data-i18n="db_maintenance.character">Character / topic scope</label>
+            <select id="characterSelect" onchange="onScopeChange()"></select>
+          </div>
+          <div class="field-grid">
+            <div>
+              <label for="visibilitySelect" data-i18n="db_maintenance.visibility">Visibility</label>
+              <select id="visibilitySelect"></select>
+            </div>
+            <div>
+              <label for="limitInput" data-i18n="db_maintenance.limit">Limit</label>
+              <input id="limitInput" type="number" min="1" max="1000" step="50" value="200">
+            </div>
+          </div>
+          <label class="check-row">
+            <input id="includeDialogues" type="checkbox">
+            <span data-i18n="db_maintenance.include_dialogues">Include raw dialogues</span>
+          </label>
+          <label class="check-row">
+            <input id="includeTombstones" type="checkbox" checked>
+            <span data-i18n="db_maintenance.include_tombstones">Include tombstones</span>
+          </label>
+          <label class="check-row">
+            <input id="includeGlobal" type="checkbox" checked>
+            <span data-i18n="db_maintenance.include_global">Include __global__ topics</span>
+          </label>
+          <label class="check-row">
+            <input id="onlyUnmentioned" type="checkbox">
+            <span data-i18n="db_maintenance.only_unmentioned">Only unmentioned topics</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2 data-i18n="db_maintenance.legacy_tables">Legacy table cleanup</h2>
+        <div class="section-body">
+          <div class="subtle" data-i18n="db_maintenance.legacy_hint">Only allowlisted legacy tables can be dropped.</div>
+          <div class="drop-row">
+            <select id="legacyTableSelect" onchange="renderDropState()"></select>
+            <input id="legacyConfirm" autocomplete="off" oninput="renderDropState()" data-i18n-placeholder="db_maintenance.drop_table_confirm" placeholder="Type table name to confirm">
+            <button id="dropTableButton" class="danger" onclick="dropLegacyTable()" disabled data-i18n="db_maintenance.drop_table">Drop table</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <section class="main">
+      <div class="toolbar">
+        <input id="searchInput" class="search" oninput="renderRows()" data-i18n-placeholder="db_maintenance.search" placeholder="Search loaded rows">
+      </div>
+      <div class="summary">
+        <strong id="rowCount">0</strong>
+        <span id="scopeSummary" data-i18n="db_maintenance.no_scope_loaded">No scope loaded.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead id="tableHead"></thead>
+          <tbody id="tableBody">
+            <tr><td class="empty" data-i18n="db_maintenance.loading">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+</main>
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="/static/shared/common.js"></script>
+<script src="/static/shared/i18n.js?v=db-maintenance"></script>
+<script>
+const TABLE_META = {
+  blocks: {
+    labelKey: 'db_maintenance.table_blocks',
+    endpoint: '/memory/inspect/blocks',
+    idField: 'block_id',
+    needsCharacter: true,
+    columns: ['block_id', 'overview', 'timestamp', 'encounter_count', 'visibility'],
+  },
+  core: {
+    labelKey: 'db_maintenance.table_core',
+    endpoint: '/memory/inspect/core',
+    idField: 'core_id',
+    needsCharacter: true,
+    columns: ['core_id', 'insight', 'timestamp', 'encounter_count', 'visibility'],
+  },
+  profile: {
+    labelKey: 'db_maintenance.table_profile',
+    endpoint: '/memory/inspect/profile',
+    idField: 'fact_key',
+    needsCharacter: false,
+    columns: ['fact_key', 'fact_value', 'category', 'confidence', 'timestamp', 'visibility'],
+  },
+  topics: {
+    labelKey: 'db_maintenance.table_topics',
+    endpoint: '/memory/inspect/topics',
+    idField: 'topic_id',
+    needsCharacter: true,
+    columns: ['topic_id', 'interest_keyword', 'summary_content', 'created_at', 'is_mentioned_to_user', 'character_id', 'visibility'],
+  },
+};
+
+let scopes = {users: [], character_ids: [], visibilities: []};
+let characters = [];
+let maintenanceStatus = {enabled: false, db_path: '', droppable_tables: []};
+let rows = [];
+let loadedTableKey = 'blocks';
+let loadedScopeText = '';
+let localRowSeq = 0;
+let scopeChangeSeq = 0;
+
+function tr(key, params = {}, fallback = key) {
+  return window.MCI18N ? MCI18N.t(key, params, fallback) : fallback;
+}
+
+function html(value) {
+  return escapeHtml(String(value ?? ''));
+}
+
+async function initPage() {
+  const ok = await requireAdmin();
+  if (!ok) return;
+  await MCI18N.init();
+  MCI18N.apply();
+  setupStaticControls();
+  await loadAll();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initPage);
+} else {
+  initPage();
+}
+
+async function requireAdmin() {
+  try {
+    const response = await fetch(`${API}/auth/me`);
+    if (!response.ok) throw new Error('auth');
+    const me = await response.json();
+    storeCsrf(me.csrf_token);
+    if (me.role !== 'admin') {
+      window.top.location.href = '/static/app.html';
+      return false;
+    }
+    return true;
+  } catch {
+    window.top.location.href = '/static/login.html';
+    return false;
+  }
+}
+
+function setupStaticControls() {
+  const tableSelect = document.getElementById('tableSelect');
+  tableSelect.innerHTML = Object.keys(TABLE_META).map(key =>
+    `<option value="${key}">${html(tr(TABLE_META[key].labelKey))}</option>`
+  ).join('');
+
+  document.getElementById('visibilitySelect').innerHTML = ['all', 'public', 'private'].map(value => {
+    const label = value === 'all' ? tr('db_maintenance.visibility_all') : value;
+    return `<option value="${value}">${html(label)}</option>`;
+  }).join('');
+}
+
+async function loadAll() {
+  await Promise.all([loadMaintenance(), loadScopes(), loadCharacters()]);
+  renderScopeControls();
+  renderMaintenance();
+  onTableChange(false);
+  await loadRows();
+}
+
+async function fetchJson(url, opts = {}) {
+  const response = await fetch(url, opts);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(apiErrorMessage(data, response.statusText || 'request failed'));
+  return data;
+}
+
+async function loadMaintenance() {
+  maintenanceStatus = await fetchJson(`${API}/memory/maintenance`);
+}
+
+async function loadScopes() {
+  scopes = await fetchJson(`${API}/memory/inspect/scopes`);
+}
+
+async function loadCharacters() {
+  try {
+    characters = await fetchJson(`${API}/character`);
+  } catch {
+    characters = [];
+  }
+}
+
+function renderMaintenance() {
+  document.getElementById('maintenanceToggle').checked = !!maintenanceStatus.enabled;
+  const pill = document.getElementById('modePill');
+  pill.className = `pill ${maintenanceStatus.enabled ? 'on' : 'off'}`;
+  pill.textContent = tr(maintenanceStatus.enabled ? 'db_maintenance.mode_on' : 'db_maintenance.mode_off');
+  document.getElementById('dbPath').textContent = maintenanceStatus.db_path || '';
+  renderDropOptions();
+}
+
+function renderDropOptions() {
+  const select = document.getElementById('legacyTableSelect');
+  const tables = (maintenanceStatus.droppable_tables || []).filter(row => row.exists);
+  if (!tables.length) {
+    select.innerHTML = `<option value="">${html(tr('db_maintenance.no_legacy_tables'))}</option>`;
+  } else {
+    select.innerHTML = tables.map(row =>
+      `<option value="${html(row.table_name)}">${html(row.table_name)} (${Number(row.count || 0)})</option>`
+    ).join('');
+  }
+  renderDropState();
+}
+
+function renderDropState() {
+  const selected = document.getElementById('legacyTableSelect').value;
+  const confirmed = document.getElementById('legacyConfirm').value;
+  document.getElementById('dropTableButton').disabled = !selected || selected !== confirmed;
+}
+
+function renderScopeControls() {
+  const userSelect = document.getElementById('userSelect');
+  const users = scopes.users && scopes.users.length ? scopes.users : (scopes.user_ids || []).map(user_id => ({user_id}));
+  userSelect.innerHTML = users.map(user =>
+    `<option value="${html(user.user_id)}">${html(userLabel(user))}</option>`
+  ).join('');
+
+  const ids = new Set([...(scopes.character_ids || []), 'default', '__global__']);
+  for (const character of characters) {
+    if (character.character_id) ids.add(String(character.character_id));
+  }
+  const sortedIds = Array.from(ids).sort((a, b) => {
+    const rank = id => id === 'default' ? 0 : (id === '__global__' ? 1 : 2);
+    return rank(a) - rank(b) || a.localeCompare(b);
+  });
+  document.getElementById('characterSelect').innerHTML = sortedIds.map(id =>
+    `<option value="${html(id)}">${html(characterLabel(id))}</option>`
+  ).join('');
+}
+
+function userLabel(user) {
+  const stats = user.stats || {};
+  const name = user.username || tr('db_maintenance.external_user');
+  const nickname = user.nickname ? ` / ${user.nickname}` : '';
+  const summary = `blocks ${stats.memory_blocks || 0}, core ${stats.core_memories || 0}, profile ${stats.profiles || 0}, topics ${stats.topics || 0}`;
+  return `${name}${nickname} / user_id=${user.user_id} / ${summary}`;
+}
+
+function characterLabel(id) {
+  if (id === '__global__') return tr('db_maintenance.global_character');
+  const found = characters.find(character => String(character.character_id) === String(id));
+  if (found && found.name && found.name !== id) return `${found.name} (${id})`;
+  return id;
+}
+
+function onTableChange(shouldLoad = true) {
+  const tableKey = document.getElementById('tableSelect').value || 'blocks';
+  const meta = TABLE_META[tableKey];
+  document.getElementById('characterSelect').disabled = !meta.needsCharacter;
+  document.getElementById('includeDialogues').disabled = tableKey !== 'blocks';
+  document.getElementById('includeTombstones').disabled = tableKey !== 'profile';
+  document.getElementById('includeGlobal').disabled = tableKey !== 'topics';
+  document.getElementById('onlyUnmentioned').disabled = tableKey !== 'topics';
+  if (shouldLoad) loadRows();
+}
+
+function currentParams(tableKey) {
+  const params = new URLSearchParams();
+  params.set('user_id', document.getElementById('userSelect').value || 'default');
+  params.set('visibility', document.getElementById('visibilitySelect').value || 'all');
+  params.set('limit', String(Math.max(1, Math.min(1000, Number(document.getElementById('limitInput').value || 200)))));
+  if (TABLE_META[tableKey].needsCharacter) {
+    params.set('character_id', document.getElementById('characterSelect').value || 'default');
+  }
+  if (tableKey === 'blocks') {
+    params.set('include_dialogues', document.getElementById('includeDialogues').checked ? 'true' : 'false');
+  } else if (tableKey === 'profile') {
+    params.set('include_tombstones', document.getElementById('includeTombstones').checked ? 'true' : 'false');
+  } else if (tableKey === 'topics') {
+    params.set('include_global', document.getElementById('includeGlobal').checked ? 'true' : 'false');
+    params.set('only_unmentioned', document.getElementById('onlyUnmentioned').checked ? 'true' : 'false');
+  }
+  return params;
+}
+
+async function loadRows() {
+  const tableKey = document.getElementById('tableSelect').value || 'blocks';
+  const meta = TABLE_META[tableKey];
+  const params = currentParams(tableKey);
+  setLoading();
+  try {
+    const data = await fetchJson(`${API}${meta.endpoint}?${params.toString()}`);
+    loadedTableKey = tableKey;
+    rows = data.map(row => ({...row, __localId: ++localRowSeq}));
+    loadedScopeText = scopeText(tableKey, params);
+    renderRows();
+  } catch (err) {
+    rows = [];
+    loadedScopeText = '';
+    renderError(err.message || tr('db_maintenance.load_failed'));
+  }
+}
+
+function scopeText(tableKey, params) {
+  const character = TABLE_META[tableKey].needsCharacter ? `, character_id=${params.get('character_id')}` : '';
+  return `${tr(TABLE_META[tableKey].labelKey)} / user_id=${params.get('user_id')}${character}, visibility=${params.get('visibility')}, limit=${params.get('limit')}`;
+}
+
+function setLoading() {
+  document.getElementById('tableHead').innerHTML = '';
+  document.getElementById('tableBody').innerHTML = `<tr><td class="empty">${html(tr('db_maintenance.loading'))}</td></tr>`;
+  document.getElementById('rowCount').textContent = '0';
+  document.getElementById('scopeSummary').textContent = tr('db_maintenance.loading');
+}
+
+function renderError(message) {
+  document.getElementById('tableHead').innerHTML = '';
+  document.getElementById('tableBody').innerHTML = `<tr><td class="empty">${html(message)}</td></tr>`;
+  document.getElementById('rowCount').textContent = '0';
+  document.getElementById('scopeSummary').textContent = message;
+}
+
+function renderRows() {
+  const meta = TABLE_META[loadedTableKey];
+  const search = document.getElementById('searchInput').value.trim().toLowerCase();
+  const filtered = search ? rows.filter(row => rowMatches(row, search)) : [...rows];
+
+  document.getElementById('rowCount').textContent = tr('db_maintenance.row_count', {count: filtered.length}, `${filtered.length} rows`);
+  document.getElementById('scopeSummary').textContent = loadedScopeText || tr('db_maintenance.no_scope_loaded');
+  document.getElementById('tableHead').innerHTML = renderHeader(meta);
+  if (!filtered.length) {
+    document.getElementById('tableBody').innerHTML = `<tr><td class="empty" colspan="${meta.columns.length + 1}">${html(tr('db_maintenance.no_rows'))}</td></tr>`;
+    return;
+  }
+  document.getElementById('tableBody').innerHTML = filtered.map(row => renderRow(row, meta)).join('');
+}
+
+function rowMatches(row, search) {
+  return Object.entries(row).some(([key, value]) => {
+    if (key === '__localId' || value === null || value === undefined) return false;
+    if (typeof value === 'object') return JSON.stringify(value).toLowerCase().includes(search);
+    return String(value).toLowerCase().includes(search);
+  });
+}
+
+function renderHeader(meta) {
+  return '<tr><th></th>' + meta.columns.map(col =>
+    `<th>${html(columnLabel(col))}</th>`
+  ).join('') + '</tr>';
+}
+
+function renderRow(row, meta) {
+  const cells = meta.columns.map(col => {
+    const value = cellValue(row, col);
+    const cls = textColumn(col) ? 'text' : (idColumn(col) ? 'mono' : '');
+    return `<td class="${cls}">${value}</td>`;
+  }).join('');
+  return `<tr>
+    <td>
+      <div class="row-actions">
+        <button class="danger" onclick="deleteRow(${row.__localId})">${html(tr('db_maintenance.delete'))}</button>
+      </div>
+    </td>
+    ${cells}
+  </tr>`;
+}
+
+function columnLabel(col) {
+  return tr(`db_maintenance.col.${col}`, {}, col);
+}
+
+function textColumn(col) {
+  return ['overview', 'insight', 'fact_value', 'source_context', 'summary_content'].includes(col);
+}
+
+function idColumn(col) {
+  return ['block_id', 'core_id', 'topic_id', 'user_id', 'character_id'].includes(col);
+}
+
+function cellValue(row, col) {
+  const value = row[col];
+  if (value === null || value === undefined || value === '') return '<span class="subtle">-</span>';
+  if (col === 'confidence') {
+    const num = Number(value);
+    const cls = num < 0 ? 'status-revoked' : 'status-valid';
+    const label = num < 0 ? ` ${tr('db_maintenance.revoked')}` : '';
+    return `<span class="${cls}">${html(Number.isFinite(num) ? num.toFixed(2) : value)}${html(label)}</span>`;
+  }
+  if (col === 'is_mentioned_to_user') {
+    return html(value ? tr('db_maintenance.mentioned') : tr('db_maintenance.unmentioned'));
+  }
+  if (Array.isArray(value) || typeof value === 'object') {
+    return html(JSON.stringify(value));
+  }
+  return html(value);
+}
+
+async function setMaintenanceMode(enabled) {
+  try {
+    maintenanceStatus = await fetchJson(`${API}/memory/maintenance`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled}),
+    });
+    toast(tr(enabled ? 'db_maintenance.mode_enabled' : 'db_maintenance.mode_disabled'), 'success');
+  } catch (err) {
+    toast(err.message || tr('db_maintenance.mode_update_failed'), 'error');
+  } finally {
+    await loadMaintenance();
+    renderMaintenance();
+  }
+}
+
+async function refreshCache() {
+  try {
+    await refreshRuntimeCache({showToast: true});
+    await loadRows();
+  } catch (err) {
+    toast(err.message || tr('db_maintenance.cache_refresh_failed'), 'error');
+  }
+}
+
+async function refreshRuntimeCache({showToast = false} = {}) {
+  await fetchJson(`${API}/memory/maintenance/refresh-cache`, {method: 'POST'});
+  if (showToast) {
+    toast(tr('db_maintenance.cache_refreshed'), 'success');
+  }
+}
+
+async function onScopeChange() {
+  const seq = ++scopeChangeSeq;
+  setLoading();
+  try {
+    await refreshRuntimeCache({showToast: false});
+    if (seq !== scopeChangeSeq) return;
+    await loadRows();
+  } catch (err) {
+    if (seq !== scopeChangeSeq) return;
+    const message = err.message || tr('db_maintenance.cache_refresh_failed');
+    renderError(message);
+    toast(message, 'error');
+  }
+}
+
+async function dropLegacyTable() {
+  const tableName = document.getElementById('legacyTableSelect').value;
+  const confirmName = document.getElementById('legacyConfirm').value;
+  if (!tableName || tableName !== confirmName) return;
+  if (!confirm(tr('db_maintenance.drop_confirm_message', {table: tableName}))) return;
+  try {
+    await fetchJson(`${API}/memory/maintenance/drop-table`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({table_name: tableName, confirm_table_name: confirmName}),
+    });
+    document.getElementById('legacyConfirm').value = '';
+    toast(tr('db_maintenance.table_dropped', {table: tableName}), 'success');
+    await loadMaintenance();
+    renderMaintenance();
+  } catch (err) {
+    toast(err.message || tr('db_maintenance.drop_failed'), 'error');
+  }
+}
+
+async function deleteRow(localId) {
+  const row = rows.find(item => item.__localId === localId);
+  if (!row) return;
+  try {
+    await fetchJson(deleteUrl(row), {method: 'DELETE'});
+    rows = rows.filter(item => item.__localId !== localId);
+    renderRows();
+    toast(tr('db_maintenance.deleted'), 'success');
+  } catch (err) {
+    toast(err.message || tr('db_maintenance.delete_failed'), 'error');
+  }
+}
+
+function deleteUrl(row) {
+  const params = new URLSearchParams();
+  params.set('user_id', row.user_id || '');
+  params.set('visibility', row.visibility || '');
+  if (loadedTableKey === 'blocks') {
+    params.set('character_id', row.character_id || '');
+    return `${API}/memory/maintenance/blocks/${encodeURIComponent(row.block_id)}?${params.toString()}`;
+  }
+  if (loadedTableKey === 'core') {
+    params.set('character_id', row.character_id || '');
+    return `${API}/memory/maintenance/core/${encodeURIComponent(row.core_id)}?${params.toString()}`;
+  }
+  if (loadedTableKey === 'profile') {
+    params.set('fact_key', row.fact_key || '');
+    params.set('fact_value', row.fact_value || '');
+    return `${API}/memory/maintenance/profile?${params.toString()}`;
+  }
+  params.set('character_id', row.character_id || '');
+  return `${API}/memory/maintenance/topics/${encodeURIComponent(row.topic_id)}?${params.toString()}`;
+}
+</script>
+</body>
+</html>
