@@ -241,11 +241,12 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     index_html = _control_ui_source()
 
     assert 'id="importFactCardsFolder"' in index_html
-    assert 'id="generateGeminiFactCards"' in index_html
+    assert 'id="generateGeminiFactCards"' not in index_html
     assert 'id="topicAutoBuildControls"' not in index_html
     assert 'id="autoBuildTopicPack"' not in index_html
     assert 'id="autoBuildCount"' not in index_html
     assert 'id="autoBuildUseResearch"' not in index_html
+    assert 'id="autoBuildTopic"' not in index_html
     assert 'id="updateTopicPack"' in index_html
     assert 'id="deleteTopicPack"' in index_html
     assert 'id="deleteAllTopicPacks"' in index_html
@@ -256,13 +257,13 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert 'class="topic-workspace"' in index_html
     assert 'class="topic-panel topic-pack-panel"' in index_html
     assert 'class="topic-panel topic-entry-panel"' in index_html
-    assert 'class="topic-panel topic-ops-panel"' in index_html
+    assert 'class="topic-panel topic-ops-panel"' not in index_html
     assert 'id="topicPackUsageState"' not in index_html
     assert 'data-testid="director-idle-seconds"' in index_html
     assert "PUT" in index_html
     assert "DELETE" in index_html
     assert "/topic-packs/fact-cards/import-folder" in index_html
-    assert "/topic-packs/fact-cards/generate" in index_html
+    assert "/topic-packs/fact-cards/generate" not in index_html
     assert "/topic-packs/${packId}" in index_html
     assert 'api("/topic-packs", { method: "DELETE" })' in index_html
     assert "/topic-packs/${packId}/entries/${entryId}" in index_html
@@ -270,10 +271,11 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "/topic-packs/usage" not in index_html
     assert "/topic-packs/auto-build" not in index_html
     assert "管理備註" in index_html
-    assert "生成主題（執行時使用，不會自動儲存）" in index_html
+    assert "生成主題（執行時使用，不會自動儲存）" not in index_html
     assert "自動建立張數" not in index_html
     assert "依主題自動建立資料卡" not in index_html
-    assert "依主題生成 Fact Cards" in index_html
+    assert "依主題生成 Fact Cards" not in index_html
+    assert "補卡與狀態" not in index_html
     assert "匯入 FactCards 資料夾" in index_html
     assert "初始化預設 Fact Cards" not in index_html
     assert "自動資料卡主題" not in index_html
@@ -302,7 +304,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "已召回" not in index_html
     assert "未召回" not in index_html
     assert "最近補卡" not in index_html
-    assert "四月新番最新話細節、作畫與劇情討論" in index_html
+    assert "四月新番最新話細節、作畫與劇情討論" not in index_html
     assert "LLM 基礎、美食直播話題" not in index_html
 
 
@@ -440,7 +442,7 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert 'setTopicActionVisible("rebuildTopicEmbeddings", hasPack);' in index_html
     assert 'setTopicActionVisible("topicAutoBuildControls"' not in index_html
     assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
-    assert 'setTopicActionVisible("generateGeminiFactCards", !liveLocked);' in index_html
+    assert 'setTopicActionVisible("generateGeminiFactCards"' not in index_html
     assert 'setTopicActionVisible("generateGeminiFactCards", hasSession);' not in index_html
     assert 'setTopicActionVisible("importFactCardsFolder", !liveLocked);' in index_html
     assert 'setTopicActionVisible("importFactCardsFolder", hasSession);' not in index_html
@@ -460,7 +462,7 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert '<button id="searchTopicPack" class="is-hidden">測試向量檢索</button>' in index_html
     assert '<button id="restoreTopicEntries" class="is-hidden">顯示全部</button>' in index_html
     assert '<button id="autoBuildTopicPack"' not in index_html
-    assert '<button id="generateGeminiFactCards" class="primary is-hidden">依主題生成 Fact Cards</button>' in index_html
+    assert '<button id="generateGeminiFactCards"' not in index_html
     assert '<button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>' in index_html
     init_start = index_html.index("installTestIds();")
     init_block = index_html[init_start:index_html.index("initBridgeKey()", init_start)]
@@ -501,11 +503,14 @@ def test_topic_pack_rebuild_embeddings_action_lives_with_pack_controls():
     ]
     entry_panel = index_html[
         index_html.index('<div class="topic-panel topic-entry-panel">'):
-        index_html.index('<div class="topic-panel topic-ops-panel">')
+        index_html.index('</div>\n        </div>\n\n        <div id="systemSettingsPane"')
     ]
 
     assert '<button id="rebuildTopicEmbeddings" class="is-hidden">重建向量</button>' in pack_panel
     assert 'id="rebuildTopicEmbeddings"' not in entry_panel
+    assert '<button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>' in entry_panel
+    assert 'class="topic-search-group"' in entry_panel
+    assert '<div class="topic-panel topic-ops-panel">' not in index_html
 
 
 def test_topic_pack_entry_list_drives_edit_and_delete_actions():
@@ -554,25 +559,17 @@ def test_topic_pack_entry_save_locks_editor_while_request_is_running():
     assert "setTopicEntryEditorBusy(false);" in update_block
 
 
-def test_fact_card_generation_shows_blocking_progress_and_clears_topic_on_success():
+def test_fact_card_gemini_generation_ui_is_not_exposed():
     index_html = _control_ui_source()
-    generate_block = index_html[
-        index_html.index("async function generateGeminiFactCards"):
-        index_html.index("async function rebuildTopicEmbeddings")
-    ]
 
-    assert 'id="factCardGenerationOverlay"' in index_html
-    assert 'id="factCardGenerationMessage"' in index_html
-    assert 'role="progressbar"' in index_html
-    assert "factCardGenerationBusy: false" in index_html
-    assert "function setFactCardGenerationBusy(isBusy" in index_html
-    assert '$("autoBuildTopic").disabled = busy;' in index_html
-    assert '$("generateGeminiFactCards").textContent = busy ? "生成中..." : "依主題生成 Fact Cards";' in index_html
-    assert "setFactCardGenerationBusy(true" in generate_block
-    assert 'log("Gemini FactCards 開始產生"' in generate_block
-    assert '$("autoBuildTopic").value = "";' in generate_block
-    assert "finally {" in generate_block
-    assert "setFactCardGenerationBusy(false);" in generate_block
+    assert 'id="factCardGenerationOverlay"' not in index_html
+    assert 'id="factCardGenerationMessage"' not in index_html
+    assert 'role="progressbar"' not in index_html
+    assert "factCardGenerationBusy" not in index_html
+    assert "function setFactCardGenerationBusy" not in index_html
+    assert "async function generateGeminiFactCards" not in index_html
+    assert 'log("Gemini FactCards 開始產生"' not in index_html
+    assert 'id="autoBuildTopic"' not in index_html
 
 
 def test_topic_pack_entry_save_clears_editor_after_success():
@@ -909,13 +906,13 @@ def test_live_session_can_unbind_topic_pack_from_session_tab():
     assert '@router.delete("/sessions/{session_id}/topic-packs")' in routes_source
 
 
-def test_fact_card_generation_and_import_are_blocked_during_live_runtime():
+def test_fact_cards_folder_import_is_blocked_during_live_runtime():
     index_html = _control_ui_source()
 
     assert "function factCardActionsBlockedDuringLive" in index_html
     assert "直播中不產生或匯入 Fact Cards" in index_html
     assert 'id="topicFactCardLiveLockNotice"' in index_html
-    assert 'setTopicActionVisible("generateGeminiFactCards", !liveLocked);' in index_html
+    assert 'setTopicActionVisible("generateGeminiFactCards"' not in index_html
     assert 'setTopicActionVisible("importFactCardsFolder", !liveLocked);' in index_html
     assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
 

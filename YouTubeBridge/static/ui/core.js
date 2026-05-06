@@ -14,7 +14,6 @@ export const state = {
   currentTopicEntryId: 0,
   topicEntryEditorBusy: false,
   topicEntrySearchActive: false,
-  factCardGenerationBusy: false,
   events: [],
   eventSource: null,
   chatPreviewRefreshTimer: null,
@@ -108,7 +107,7 @@ export function installTestIds() {
     "testSuperChatCountPerTick", "autoTestEvents", "generateTestEvents", "eventsList",
     "directorGuidance", "directorIdle", "topicPackSelect",
     "topicEntrySelect", "updateTopicPack", "deleteTopicPack", "deleteAllTopicPacks", "updateTopicEntry", "cancelTopicEntryEdit",
-    "importFactCardsFolder", "generateGeminiFactCards", "searchTopicPack", "restoreTopicEntries",
+    "importFactCardsFolder", "searchTopicPack", "restoreTopicEntries",
     "topicFactCardLiveLockNotice", "liveSessionPane", "eventsPane", "summaryPane", "topicPackPane", "systemSettingsPane",
     "runtimeRulesPane", "reloadRuntimeRules", "runtimeRulesContent",
     "log"

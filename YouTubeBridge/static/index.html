@@ -18,16 +18,6 @@
     </div>
   </header>
 
-  <div id="factCardGenerationOverlay" class="blocking-overlay is-hidden" aria-hidden="true">
-    <div class="blocking-dialog" role="dialog" aria-modal="true" aria-labelledby="factCardGenerationTitle">
-      <h3 id="factCardGenerationTitle">正在產生 Fact Cards</h3>
-      <p id="factCardGenerationMessage" class="muted" aria-live="polite">Gemini 正在搜尋並寫入資料卡，請稍候。</p>
-      <div class="progress-track" role="progressbar" aria-label="Fact Cards 產生進度">
-        <span></span>
-      </div>
-    </div>
-  </div>
-
   <main>
     <div class="stack workspace-stack">
       <section>
@@ -350,28 +340,20 @@
                 <button id="updateTopicEntry" class="is-hidden">儲存</button>
                 <button id="cancelTopicEntryEdit" class="is-hidden">取消</button>
               </div>
-              <div id="topicPackEntries" class="list topic-entry-list"></div>
-            </div>
-
-            <div class="topic-panel topic-ops-panel">
-              <div class="topic-panel-header">
-                <h3>補卡與狀態</h3>
-              </div>
-              <label>生成主題（執行時使用，不會自動儲存）
-                <input id="autoBuildTopic" placeholder="例：四月新番最新話細節、作畫與劇情討論">
-              </label>
-              <p id="topicFactCardLiveLockNotice" class="status warn is-hidden">直播中不產生或匯入 Fact Cards；本場只讀取已綁定資料包。</p>
               <div class="topic-form-actions single">
-                <button id="generateGeminiFactCards" class="primary is-hidden">依主題生成 Fact Cards</button>
                 <button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>
               </div>
-              <div class="topic-ops-group">
+              <p id="topicFactCardLiveLockNotice" class="status warn is-hidden">直播中不產生或匯入 Fact Cards；本場只讀取已綁定資料包。</p>
+              <div class="topic-search-group">
                 <label>向量檢索測試
                   <input id="topicSearchQuery" placeholder="例：觀眾問四月新番作品資訊時應該召回什麼">
                 </label>
-                <button id="searchTopicPack" class="is-hidden">測試向量檢索</button>
-                <button id="restoreTopicEntries" class="is-hidden">顯示全部</button>
+                <div class="topic-form-actions">
+                  <button id="searchTopicPack" class="is-hidden">測試向量檢索</button>
+                  <button id="restoreTopicEntries" class="is-hidden">顯示全部</button>
+                </div>
               </div>
+              <div id="topicPackEntries" class="list topic-entry-list"></div>
             </div>
           </div>
         </div>

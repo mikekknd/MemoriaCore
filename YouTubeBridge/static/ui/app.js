@@ -9,7 +9,7 @@ import {
 } from "./control.js?v=character-limit-v1";
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
-  fillTopicEntryForm, generateGeminiFactCards, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
+  fillTopicEntryForm, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
   refreshTopicEntries, refreshTopicPacks, restoreTopicEntries, searchTopicPack, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
 } from "./topic-packs.js";
@@ -136,7 +136,6 @@ $("addTopicEntry").onclick = () => addTopicEntry().catch((error) => log("fact ca
 $("updateTopicEntry").onclick = () => updateTopicEntry().catch((error) => log("fact card 更新失敗", String(error)));
 $("cancelTopicEntryEdit").onclick = () => cancelTopicEntryEdit();
 $("importFactCardsFolder").onclick = () => importFactCardsFolder().catch((error) => log("FactCards 資料夾匯入失敗", String(error)));
-$("generateGeminiFactCards").onclick = () => generateGeminiFactCards().catch((error) => log("Gemini FactCards 產生失敗", String(error)));
 $("rebuildTopicEmbeddings").onclick = () => rebuildTopicEmbeddings().catch((error) => log("向量索引重建失敗", String(error)));
 $("searchTopicPack").onclick = () => searchTopicPack().catch((error) => log("向量檢索失敗", String(error)));
 $("restoreTopicEntries").onclick = () => restoreTopicEntries().catch((error) => log("fact card 清單恢復失敗", String(error)));

@@ -13,7 +13,6 @@ export function updateTopicActionVisibility() {
   const hasPack = Number($("topicPackSelect").value || 0) > 0;
   const hasEntry = currentTopicEntryId() > 0;
   const entryBusy = !!state.topicEntryEditorBusy;
-  const factCardBusy = !!state.factCardGenerationBusy;
   const liveLocked = factCardActionsBlockedDuringLive();
   const hasPackTitle = !!$("topicPackTitle").value.trim();
   const hasEntryContent = !!$("topicEntryTitle").value.trim() && !!$("topicEntryBody").value.trim();
@@ -27,7 +26,6 @@ export function updateTopicActionVisibility() {
   setTopicActionVisible("updateTopicEntry", hasPack && hasEntry);
   setTopicActionVisible("cancelTopicEntryEdit", hasPack && hasEntry);
   setTopicActionVisible("rebuildTopicEmbeddings", hasPack);
-  setTopicActionVisible("generateGeminiFactCards", !liveLocked);
   setTopicActionVisible("importFactCardsFolder", !liveLocked);
   setTopicActionVisible("searchTopicPack", hasPack);
   setTopicActionVisible("restoreTopicEntries", hasPack && state.topicEntrySearchActive);
@@ -38,8 +36,6 @@ export function updateTopicActionVisibility() {
   $("addTopicEntry").disabled = !hasPack || hasEntry || !hasEntryContent || entryBusy;
   $("updateTopicEntry").disabled = !hasPack || !hasEntry || !hasEntryContent || entryBusy;
   $("cancelTopicEntryEdit").disabled = !hasPack || !hasEntry || entryBusy;
-  $("generateGeminiFactCards").disabled = factCardBusy;
-  $("importFactCardsFolder").disabled = factCardBusy;
 }
 
 export function factCardActionsBlockedDuringLive() {
@@ -57,17 +53,6 @@ export function setTopicEntryEditorBusy(isBusy) {
   $("topicEntryTitle").disabled = busy;
   $("topicEntryBody").disabled = busy;
   $("updateTopicEntry").textContent = busy ? "儲存中..." : "儲存";
-  updateTopicActionVisibility();
-}
-
-export function setFactCardGenerationBusy(isBusy, message = "Gemini 正在搜尋並寫入資料卡，請稍候。") {
-  const busy = !!isBusy;
-  state.factCardGenerationBusy = busy;
-  $("factCardGenerationMessage").textContent = message;
-  $("factCardGenerationOverlay").classList.toggle("is-hidden", !busy);
-  $("factCardGenerationOverlay").setAttribute("aria-hidden", busy ? "false" : "true");
-  $("autoBuildTopic").disabled = busy;
-  $("generateGeminiFactCards").textContent = busy ? "生成中..." : "依主題生成 Fact Cards";
   updateTopicActionVisibility();
 }
 
@@ -381,32 +366,6 @@ export async function importFactCardsFolder() {
   await refreshTopicPacks();
   $("topicPackSelect").value = data.pack_id;
   await refreshTopicEntries();
-}
-
-export async function generateGeminiFactCards() {
-  if (factCardActionsBlockedDuringLive()) throw new Error("直播中不產生或匯入 Fact Cards");
-  const packId = Number($("topicPackSelect").value || 0) || null;
-  const topic = $("autoBuildTopic").value.trim();
-  if (!topic) throw new Error("請先輸入生成主題");
-  setFactCardGenerationBusy(true, "Gemini 正在依主題產生 Fact Cards，可能需要數分鐘。");
-  log("Gemini FactCards 開始產生", { topic, pack_id: packId || "auto" });
-  try {
-    const data = await api("/topic-packs/fact-cards/generate", {
-      method: "POST",
-      body: JSON.stringify({
-        topic,
-        pack_id: packId,
-        timeout_seconds: 300,
-      }),
-    });
-    log("Gemini FactCards 已產生並匯入", data);
-    await refreshTopicPacks();
-    $("topicPackSelect").value = data.import?.pack_id || packId || $("topicPackSelect").value;
-    await refreshTopicEntries();
-    $("autoBuildTopic").value = "";
-  } finally {
-    setFactCardGenerationBusy(false);
-  }
 }
 
 export async function rebuildTopicEmbeddings() {
