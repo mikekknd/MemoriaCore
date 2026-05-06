@@ -128,3 +128,10 @@ def test_bridge_manager_uses_event_safety_mixin():
     from engine_event_safety import EventSafetyManagerMixin
 
     assert issubclass(YouTubeBridgeManager, EventSafetyManagerMixin)
+
+
+def test_bridge_manager_uses_test_runtime_mixin():
+    from bridge_engine import YouTubeBridgeManager
+    from engine_test_runtime import TestRuntimeManagerMixin
+
+    assert issubclass(YouTubeBridgeManager, TestRuntimeManagerMixin)
