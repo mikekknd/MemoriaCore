@@ -33,6 +33,34 @@ class ResolveLiveChatFailedClient:
         raise RuntimeError("指定影片目前沒有 activeLiveChatId，可能尚未開播或已結束")
 
 
+class OneMessagePollingClient:
+    def __init__(self):
+        self.calls = 0
+
+    def fetch_live_chat_messages(self, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "nextPageToken": "next-1",
+                "pollingIntervalMillis": 2000,
+                "items": [
+                    {
+                        "id": "yt-msg-1",
+                        "snippet": {
+                            "type": "textMessageEvent",
+                            "displayMessage": "即時測試留言",
+                            "publishedAt": "2026-05-07T06:55:00Z",
+                        },
+                        "authorDetails": {
+                            "channelId": "viewer-a",
+                            "displayName": "觀眾A",
+                        },
+                    }
+                ],
+            }
+        return {"nextPageToken": "next-2", "pollingIntervalMillis": 2000, "items": []}
+
+
 class FakeEmbeddingMemoriaClient:
     def embed_text(self, text: str, model: str = ""):
         if any(term in text for term in ("動畫", "新番", "作品")):
@@ -2184,6 +2212,47 @@ async def test_poll_loop_marks_live_chat_ended():
         assert session["finalized_at"]
         assert session["summary_status"] == "pending"
         assert manager.get_status("live-a")["running"] is False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_classifies_and_broadcasts_clean_live_event(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "auto_connect": True,
+        })
+        manager = YouTubeBridgeManager(storage, youtube_client=OneMessagePollingClient())
+        monkeypatch.setattr(manager, "_memoria_client", lambda: FakeSafetyMemoriaClient())
+        queue = await manager.subscribe("live-a")
+
+        await manager.start_session("live-a")
+        payloads = []
+        for _ in range(40):
+            while not queue.empty():
+                payloads.append(await queue.get())
+            if any(payload.get("type") == "youtube_live_event" for payload in payloads):
+                break
+            await asyncio.sleep(0.05)
+        await manager.stop_session("live-a")
+
+        live_events = [payload["event"] for payload in payloads if payload.get("type") == "youtube_live_event"]
+        assert live_events
+        assert live_events[0]["message_text"] == "即時測試留言"
+        assert live_events[0]["safety_status"] == "completed"
+        assert live_events[0]["safety_label"] == "clean"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -272,15 +272,19 @@ class YouTubeBridgeManager(
                 runtime.next_page_token = data.get("nextPageToken") or runtime.next_page_token
                 runtime.status = "running"
                 runtime.last_error = None
+                saved_any = False
                 for item in data.get("items") or []:
                     event = normalize_message(item, session=session, connector=connector)
                     if not event.get("youtube_message_id"):
                         continue
                     saved = self.storage.save_event(event)
                     if saved:
+                        saved_any = True
                         public_event = self._public_live_event(saved)
                         if public_event:
                             await self._broadcast(runtime.session_id, {"type": "youtube_live_event", "event": public_event})
+                if saved_any:
+                    self._schedule_pending_event_classification(runtime)
                 interval_ms = int(data.get("pollingIntervalMillis") or 5000)
                 await asyncio.sleep(max(2.0, min(interval_ms / 1000, 30.0)))
             except asyncio.CancelledError:

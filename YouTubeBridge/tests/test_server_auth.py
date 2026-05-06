@@ -198,6 +198,16 @@ def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     assert "setInterval(() => refreshChat({ silent: true }), 8000)" not in live_chat_html
 
 
+def test_live_chat_polls_memoria_history_while_sse_is_connected():
+    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+
+    assert "historyRefreshTimer" in live_chat_html
+    assert "function startHistoryRefresh()" in live_chat_html
+    assert "startHistoryRefresh();" in live_chat_html
+    assert "setInterval(async () => {" in live_chat_html
+    assert "await refreshChat({ silent: true })" in live_chat_html
+
+
 def test_live_chat_assigns_stable_assistant_bubble_colors():
     live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
 

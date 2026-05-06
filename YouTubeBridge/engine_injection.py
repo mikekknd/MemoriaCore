@@ -242,7 +242,7 @@ class InjectionManagerMixin:
                 raise ValueError("live session 不存在")
             if session.get("status") in {"closing", "ended"} and source != "director":
                 raise ValueError("live session closing/ended，不再接受一般注入")
-            await self.classify_pending_events(session_id)
+            await self.classify_pending_events_serialized(session_id)
             external_context, summary = self.build_external_context(
                 session_id,
                 event_ids=event_ids,

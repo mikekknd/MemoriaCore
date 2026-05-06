@@ -3,13 +3,37 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from bridge_contracts import SAFETY_CLASSIFIER_BATCH_LIMIT, SAFETY_CLASSIFIER_SCHEMA
+from bridge_runtime import LiveRuntime
 from engine_public_events import single_line
 
 
+logger = logging.getLogger("youtube_bridge")
+
+
 class EventSafetyManagerMixin:
+    async def classify_pending_events_serialized(self, session_id: str, *, limit: int = 50) -> dict[str, Any]:
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        async with runtime.safety_lock:
+            return await self.classify_pending_events(session_id, limit=limit)
+
+    def _schedule_pending_event_classification(self, runtime: LiveRuntime, *, limit: int = 50) -> None:
+        if runtime.safety_task and not runtime.safety_task.done():
+            return
+
+        async def _run() -> None:
+            try:
+                await self.classify_pending_events_serialized(runtime.session_id, limit=limit)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("live event safety classification failed session_id=%s error=%s", runtime.session_id, exc)
+
+        runtime.safety_task = asyncio.create_task(_run())
+
     async def classify_pending_events(self, session_id: str, *, limit: int = 50) -> dict[str, Any]:
         session = self.storage.get_session(session_id)
         if not session:

@@ -176,6 +176,8 @@
       newestBottom: true,
       refreshTimer: null,
       fallbackRefreshTimer: null,
+      historyRefreshTimer: null,
+      historyRefreshInFlight: false,
       startupRetryTimers: [],
       liveEventMessages: [],
       displayMessages: [],
@@ -386,6 +388,7 @@
       if (!selected) {
         state.sessionId = "";
         state.subscribedSessionId = "";
+        stopHistoryRefresh();
         $("sessionBadge").textContent = "尚無 live session";
         return null;
       }
@@ -397,6 +400,7 @@
           state.eventSource.close();
           state.eventSource = null;
         }
+        stopHistoryRefresh();
         state.subscribedSessionId = "";
         setCharacterColorMap(selected.character_ids || []);
         scheduleStartupRetries();
@@ -417,6 +421,7 @@
           return;
         }
         ensureSubscription();
+        startHistoryRefresh();
         const [data, recent] = await Promise.all([
           api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`),
           api(`/sessions/${encodeURIComponent(state.sessionId)}/recent?limit=120`),
@@ -472,6 +477,24 @@
       if (!state.fallbackRefreshTimer) return;
       clearInterval(state.fallbackRefreshTimer);
       state.fallbackRefreshTimer = null;
+    }
+    function startHistoryRefresh() {
+      if (!state.sessionId || state.historyRefreshTimer) return;
+      state.historyRefreshTimer = setInterval(async () => {
+        if (!state.sessionId || state.historyRefreshInFlight) return;
+        state.historyRefreshInFlight = true;
+        try {
+          await refreshChat({ silent: true });
+        } finally {
+          state.historyRefreshInFlight = false;
+        }
+      }, 2500);
+    }
+    function stopHistoryRefresh() {
+      if (!state.historyRefreshTimer) return;
+      clearInterval(state.historyRefreshTimer);
+      state.historyRefreshTimer = null;
+      state.historyRefreshInFlight = false;
     }
     function subscribe(sessionId) {
       if (state.eventSource) state.eventSource.close();

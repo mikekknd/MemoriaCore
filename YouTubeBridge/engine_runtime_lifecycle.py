@@ -165,6 +165,12 @@ class RuntimeLifecycleManagerMixin:
                     await runtime.test_event_task
                 except asyncio.CancelledError:
                     pass
+            if runtime and runtime.safety_task:
+                runtime.safety_task.cancel()
+                try:
+                    await runtime.safety_task
+                except asyncio.CancelledError:
+                    pass
             if runtime:
                 runtime.status = "stopped"
                 runtime.task = None
@@ -172,6 +178,7 @@ class RuntimeLifecycleManagerMixin:
                 runtime.director_task = None
                 runtime.director_kickoff_task = None
                 runtime.test_event_task = None
+                runtime.safety_task = None
                 self.storage.update_director_state(session_id, status="stopped")
             self.storage.finalize_incomplete_interactions(
                 session_id,
