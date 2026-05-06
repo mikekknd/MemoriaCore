@@ -280,10 +280,14 @@ class InjectionManagerMixin:
             client = self._memoria_client()
             cancel_event = threading.Event()
             runtime.cancel_events[job_id] = cancel_event
+            loop = asyncio.get_running_loop()
 
             def should_cancel() -> bool:
                 current = self.storage.get_interaction(job_id)
                 return cancel_event.is_set() or bool(current and current.get("status") == "interrupt_requested")
+
+            def on_stream_result(event: dict[str, Any]) -> None:
+                self._broadcast_stream_chat_message(loop, session_id, event, source=source)
 
             try:
                 result = await asyncio.to_thread(
@@ -295,6 +299,7 @@ class InjectionManagerMixin:
                     external_context=external_context,
                     should_cancel=should_cancel,
                     cancel_event=cancel_event,
+                    on_result=on_stream_result,
                 )
             except GenerationInterrupted:
                 closure_text = "先停在這裡，剛剛聊天室有新的問題，我們切過去看。"

@@ -204,6 +204,49 @@ class YouTubeBridgeManager(
             return f"{text[:800]}... [truncated {len(text)} chars]"
         return text
 
+    @staticmethod
+    def _chat_message_from_stream_result(event: dict[str, Any], *, source: str) -> dict[str, Any] | None:
+        if not isinstance(event, dict):
+            return None
+        content = str(event.get("reply") or event.get("content") or "").strip()
+        if not content:
+            return None
+        now = datetime.now().isoformat()
+        return {
+            "message_id": event.get("message_id"),
+            "role": "assistant",
+            "content": YouTubeBridgeManager._public_interaction_text(content),
+            "created_at": event.get("created_at") or event.get("timestamp") or now,
+            "timestamp": event.get("timestamp") or event.get("created_at") or now,
+            "character_id": event.get("character_id"),
+            "character_name": event.get("character_name"),
+            "turn_index": event.get("turn_index"),
+            "source": source,
+        }
+
+    def _broadcast_stream_chat_message(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        source: str,
+    ) -> None:
+        message = self._chat_message_from_stream_result(event, source=source)
+        if not message:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._broadcast(
+                session_id,
+                {
+                    "type": "chat_message",
+                    "message": message,
+                    "source": source,
+                },
+            ),
+            loop,
+        )
+
     async def _poll_loop(self, runtime: LiveRuntime) -> None:
         while runtime.running:
             session = self.storage.get_session(runtime.session_id)

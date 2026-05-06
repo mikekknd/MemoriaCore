@@ -1285,6 +1285,80 @@ async def test_inject_recent_sends_hidden_prompt_and_visible_chat_lines_separate
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+@pytest.mark.asyncio
+async def test_inject_recent_streams_each_assistant_turn_to_live_chat():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a", "char-b"],
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "請聊動畫新番",
+            "author_display_name": "viewer",
+            "author_channel_id": "channel-a",
+            "message_type": "textMessageEvent",
+        })
+        _mark_event_clean(storage, event)
+
+        class StreamingClient:
+            def chat_stream_sync(self, **kwargs):
+                kwargs["on_result"]({
+                    "type": "result",
+                    "session_id": "mem-a",
+                    "message_id": 101,
+                    "reply": "可可先接話。",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                    "turn_index": 0,
+                })
+                kwargs["on_result"]({
+                    "type": "result",
+                    "session_id": "mem-a",
+                    "message_id": 102,
+                    "reply": "白蓮補充觀點。",
+                    "character_id": "char-b",
+                    "character_name": "白蓮",
+                    "turn_index": 1,
+                })
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 102,
+                    "reply": "白蓮補充觀點。",
+                    "character_id": "char-b",
+                    "character_name": "白蓮",
+                }
+
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=StreamingClient)
+        queue = await manager.subscribe("live-a")
+
+        await manager.inject_recent("live-a", content="請回應直播留言。")
+
+        chat_messages = []
+        while not queue.empty():
+            payload = await queue.get()
+            if payload.get("type") == "chat_message":
+                chat_messages.append(payload["message"])
+
+        assert [message["content"] for message in chat_messages] == ["可可先接話。", "白蓮補充觀點。"]
+        assert [message["character_id"] for message in chat_messages] == ["char-a", "char-b"]
+        assert all(message["role"] == "assistant" for message in chat_messages)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_auto_build_topic_pack_method_is_removed():
     tmp_dir = _tmp_dir()
     try:

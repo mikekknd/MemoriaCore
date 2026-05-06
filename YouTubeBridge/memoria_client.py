@@ -139,6 +139,7 @@ class MemoriaClient:
         include_speech: bool = False,
         should_cancel=None,
         cancel_event: threading.Event | None = None,
+        on_result=None,
     ) -> dict[str, Any]:
         """使用 MemoriaCore SSE 路徑取得最終回應。
 
@@ -195,6 +196,8 @@ class MemoriaClient:
                         raise RuntimeError(str(event.get("message") or "MemoriaCore stream chat failed"))
                     if event.get("type") == "result":
                         last_result = event
+                        if callable(on_result):
+                            on_result(event)
             finally:
                 watcher_done.set()
                 if watcher:

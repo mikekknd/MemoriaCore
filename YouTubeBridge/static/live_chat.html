@@ -16,6 +16,8 @@
       --system: #edf2f7;
       --user: #eef6ff;
       --ai: #ecfdf3;
+      --character-color: var(--accent);
+      --character-bg: var(--ai);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -103,7 +105,13 @@
     }
     .msg.system_event { background: var(--system); border-left: 4px solid #8b96a8; }
     .msg.user { background: var(--user); border-left: 4px solid var(--blue); }
-    .msg.assistant { background: var(--ai); border-left: 4px solid var(--accent); }
+    .msg.assistant { background: var(--character-bg); border-left: 4px solid var(--character-color); }
+    .msg.assistant.character-color-0 { --character-color: #0f766e; --character-bg: #ecfdf5; }
+    .msg.assistant.character-color-1 { --character-color: #2563eb; --character-bg: #eff6ff; }
+    .msg.assistant.character-color-2 { --character-color: #c2410c; --character-bg: #fff7ed; }
+    .msg.assistant.character-color-3 { --character-color: #7c3aed; --character-bg: #f5f3ff; }
+    .msg.assistant.character-color-4 { --character-color: #be123c; --character-bg: #fff1f2; }
+    .msg.assistant.character-color-5 { --character-color: #047857; --character-bg: #ecfdf5; }
     .meta {
       display: flex;
       justify-content: space-between;
@@ -163,11 +171,42 @@
   <script>
     const state = {
       sessionId: "",
+      subscribedSessionId: "",
       eventSource: null,
       newestBottom: true,
       refreshTimer: null,
+      fallbackRefreshTimer: null,
       startupRetryTimers: [],
+      liveEventMessages: [],
+      displayMessages: [],
+      characterColorMap: {},
+      nextColorIndex: 0,
     };
+    const LIVE_CHAT_REFRESH_TYPES = new Set([
+      "chat_message",
+      "youtube_live_event",
+      "safety_classified",
+      "test_events_generated",
+      "test_events_auto_generated",
+      "super_chat_batch_injected",
+      "interaction_started",
+      "interaction_completed",
+      "interaction_interrupted",
+      "interaction_failed",
+      "memoria_injected",
+      "director_injected",
+      "closing_super_chat_thanks_completed",
+      "status",
+    ]);
+    const ASSISTANT_COLOR_PALETTE = [
+      { color: "#0f766e", bg: "#ecfdf5" },
+      { color: "#2563eb", bg: "#eff6ff" },
+      { color: "#c2410c", bg: "#fff7ed" },
+      { color: "#7c3aed", bg: "#f5f3ff" },
+      { color: "#be123c", bg: "#fff1f2" },
+      { color: "#047857", bg: "#ecfdf5" },
+    ];
+    const ASSISTANT_COLOR_CLASSES = ASSISTANT_COLOR_PALETTE.map((_item, index) => `character-color-${index}`);
     const $ = (id) => document.getElementById(id);
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
       "&": "&amp;",
@@ -209,6 +248,74 @@
       if (Number.isNaN(date.getTime())) return "";
       return date.toLocaleTimeString("zh-TW", { hour12: false });
     }
+    function setCharacterColorMap(characterIds) {
+      state.characterColorMap = {};
+      state.nextColorIndex = 0;
+      (characterIds || []).forEach((characterId) => {
+        const colorKey = String(characterId || "").trim();
+        if (!colorKey || state.characterColorMap[colorKey] !== undefined) return;
+        state.characterColorMap[colorKey] = state.nextColorIndex % ASSISTANT_COLOR_CLASSES.length;
+        state.nextColorIndex += 1;
+      });
+    }
+    function characterColorIndex(message) {
+      if (message.role !== "assistant") return -1;
+      const colorKey = message.character_id || message.character_name || roleLabel(message);
+      if (state.characterColorMap[colorKey] !== undefined) {
+        return state.characterColorMap[colorKey];
+      }
+      state.characterColorMap[colorKey] = state.nextColorIndex % ASSISTANT_COLOR_CLASSES.length;
+      state.nextColorIndex += 1;
+      return state.characterColorMap[colorKey];
+    }
+    function characterColorClass(message) {
+      const index = characterColorIndex(message);
+      return index >= 0 ? ASSISTANT_COLOR_CLASSES[index] : "";
+    }
+    function characterColorStyle(message) {
+      const index = characterColorIndex(message);
+      if (index < 0) return "";
+      const palette = ASSISTANT_COLOR_PALETTE[index];
+      return ` style="--character-color: ${palette.color}; --character-bg: ${palette.bg};"`;
+    }
+    function eventMessageId(event) {
+      return `yt-${event.id || event.event_id || event.youtube_message_id || `${event.author_display_name || "anon"}-${event.published_at || event.received_at || event.message_text || ""}`}`;
+    }
+    function liveEventToMessage(event) {
+      const author = String(event.author_display_name || "匿名觀眾").trim() || "匿名觀眾";
+      const amount = String(event.amount_display_string || "").trim();
+      const prefix = String(event.priority_class || "") === "super_chat"
+        ? (amount ? `[SC ${amount}] ` : "[SC] ")
+        : "";
+      return {
+        message_id: eventMessageId(event),
+        role: "user",
+        content: `${prefix}${author}: ${event.message_text || ""}`.trim(),
+        created_at: event.published_at || event.received_at || event.created_at || "",
+        timestamp: event.published_at || event.received_at || event.created_at || "",
+        source: "youtube_live_event",
+      };
+    }
+    function mergeMessages(...groups) {
+      const seen = new Set();
+      const merged = [];
+      groups.flat().forEach((message) => {
+        if (!message || !String(message.content || "").trim()) return;
+        const messageId = message.message_id || "";
+        const key = messageId
+          ? `${message.role || "message"}:${messageId}`
+          : `${message.source || message.role}:${message.created_at || message.timestamp || ""}:${message.content || ""}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push(message);
+      });
+      return merged.sort((left, right) => {
+        const leftTime = new Date(left.created_at || left.timestamp || 0).getTime() || 0;
+        const rightTime = new Date(right.created_at || right.timestamp || 0).getTime() || 0;
+        if (leftTime !== rightTime) return leftTime - rightTime;
+        return String(left.message_id || "").localeCompare(String(right.message_id || ""));
+      });
+    }
     function visibleMessages(messages) {
       return (messages || []).filter((message) => {
         const role = String(message.role || "");
@@ -223,7 +330,8 @@
       list.className = `list ${state.newestBottom ? "newest-bottom" : "newest-top"}`;
       list.innerHTML = ordered.map((message) => {
         const role = ["assistant", "system_event", "user"].includes(message.role) ? message.role : "system_event";
-        return `<article class="msg ${escapeHtml(role)}">
+        const colorClass = role === "assistant" ? ` ${escapeHtml(characterColorClass(message))}` : "";
+        return `<article class="msg ${escapeHtml(role)}${colorClass}"${characterColorStyle(message)}>
           <div class="meta"><span class="name">${escapeHtml(roleLabel(message))}</span><span>${escapeHtml(timeLabel(message))}</span></div>
           <div class="content">${escapeHtml(message.content || "")}</div>
         </article>`;
@@ -254,6 +362,10 @@
         state.startupRetryTimers.push(timer);
       });
     }
+    function cacheLiveEvents(events) {
+      const messages = (events || []).map(liveEventToMessage).filter((message) => message.content);
+      state.liveEventMessages = mergeMessages(state.liveEventMessages, messages).slice(-120);
+    }
     async function pickSession() {
       const sessions = await api("/sessions");
       const params = new URLSearchParams(location.search);
@@ -273,16 +385,29 @@
       const selected = await pickSession();
       if (!selected) {
         state.sessionId = "";
+        state.subscribedSessionId = "";
         $("sessionBadge").textContent = "尚無 live session";
         return null;
       }
       if (selected.session_id !== state.sessionId) {
         state.sessionId = selected.session_id;
-        subscribe(selected.session_id);
+        state.liveEventMessages = [];
+        state.displayMessages = [];
+        if (state.eventSource) {
+          state.eventSource.close();
+          state.eventSource = null;
+        }
+        state.subscribedSessionId = "";
+        setCharacterColorMap(selected.character_ids || []);
         scheduleStartupRetries();
       }
       $("sessionBadge").textContent = `${selected.display_name || "YT Live"} / ${selected.session_id.slice(0, 10)}...`;
       return selected;
+    }
+    function ensureSubscription() {
+      if (!state.sessionId || state.subscribedSessionId === state.sessionId) return;
+      subscribe(state.sessionId);
+      state.subscribedSessionId = state.sessionId;
     }
     async function refreshChat({ silent = false } = {}) {
       try {
@@ -291,8 +416,14 @@
           render([]);
           return;
         }
-        const data = await api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`);
-        const messages = visibleMessages(data.messages || []);
+        ensureSubscription();
+        const [data, recent] = await Promise.all([
+          api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`),
+          api(`/sessions/${encodeURIComponent(state.sessionId)}/recent?limit=120`),
+        ]);
+        cacheLiveEvents(recent.events || []);
+        const messages = visibleMessages(mergeMessages(state.displayMessages, state.liveEventMessages, data.messages || []));
+        state.displayMessages = messages;
         render(messages);
         $("countBadge").textContent = `${messages.length}/${data.message_count || 0} 則`;
         if (!messages.length && !data.message_count) {
@@ -309,40 +440,77 @@
         }
       }
     }
-    function scheduleRefresh() {
+    function scheduleRefresh(delay = 0) {
       if (state.refreshTimer) clearTimeout(state.refreshTimer);
       state.refreshTimer = setTimeout(() => {
         state.refreshTimer = null;
         refreshChat({ silent: true });
-      }, 200);
+      }, Math.max(0, Number(delay) || 0));
+    }
+    function appendLiveEvent(event) {
+      if (!event) return;
+      cacheLiveEvents([event]);
+      const messages = visibleMessages(mergeMessages(state.displayMessages, state.liveEventMessages));
+      state.displayMessages = messages;
+      render(messages);
+      $("countBadge").textContent = `${messages.length}+ 則`;
+      $("updatedBadge").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+    }
+    function appendChatMessage(message) {
+      if (!message) return;
+      const messages = visibleMessages(mergeMessages(state.displayMessages, [message]));
+      state.displayMessages = messages;
+      render(messages);
+      $("countBadge").textContent = `${messages.length}+ 則`;
+      $("updatedBadge").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+    }
+    function startFallbackRefresh() {
+      if (state.fallbackRefreshTimer) return;
+      state.fallbackRefreshTimer = setInterval(() => refreshChat({ silent: true }), 4000);
+    }
+    function stopFallbackRefresh() {
+      if (!state.fallbackRefreshTimer) return;
+      clearInterval(state.fallbackRefreshTimer);
+      state.fallbackRefreshTimer = null;
     }
     function subscribe(sessionId) {
       if (state.eventSource) state.eventSource.close();
       if (!sessionId) return;
       state.eventSource = new EventSource(`/sessions/${encodeURIComponent(sessionId)}/events`);
+      state.eventSource.onopen = () => {
+        stopFallbackRefresh();
+        $("updatedBadge").textContent = "即時連線中";
+      };
       state.eventSource.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
-          if ([
-            "interaction_completed",
-            "memoria_injected",
-            "director_injected",
-            "closing_super_chat_thanks_completed",
-            "safety_classified",
-            "status",
-          ].includes(payload.type)) {
-            scheduleRefresh();
+          if (payload.type === "youtube_live_event" && payload.event) {
+            appendLiveEvent(payload.event);
+            scheduleRefresh(1000);
+            return;
+          }
+          if (payload.type === "chat_message" && payload.message) {
+            appendChatMessage(payload.message);
+            scheduleRefresh(1000);
+            return;
+          }
+          if (LIVE_CHAT_REFRESH_TYPES.has(payload.type)) {
+            scheduleRefresh(0);
           }
         } catch {
-          scheduleRefresh();
+          scheduleRefresh(0);
         }
       };
-      state.eventSource.onerror = () => scheduleRefresh();
+      state.eventSource.onerror = () => {
+        $("updatedBadge").textContent = "即時連線中斷，使用 fallback";
+        startFallbackRefresh();
+        scheduleRefresh(0);
+      };
     }
     $("orderBottom").onclick = () => setOrder(true);
     $("orderTop").onclick = () => setOrder(false);
     $("refresh").onclick = () => refreshChat();
-    initBridgeKey().then(() => { refreshChat(); setInterval(() => refreshChat({ silent: true }), 8000); });
+    initBridgeKey().then(() => refreshChat());
   </script>
 </body>
 </html>

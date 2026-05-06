@@ -178,6 +178,40 @@ def test_live_page_propagates_requested_session_id_to_live_chat_frame():
     assert "session_id" in live_html
 
 
+def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
+    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+
+    assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
+    assert '"chat_message"' in live_chat_html
+    assert '"youtube_live_event"' in live_chat_html
+    assert '"interaction_completed"' in live_chat_html
+    assert '"director_injected"' in live_chat_html
+    assert "appendChatMessage(payload.message)" in live_chat_html
+    assert "function ensureSubscription()" in live_chat_html
+    assert "state.subscribedSessionId === state.sessionId" in live_chat_html
+    assert live_chat_html.index("ensureSubscription();") < live_chat_html.index(
+        'api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`)'
+    )
+    assert "state.displayMessages, state.liveEventMessages, data.messages || []" in live_chat_html
+    assert '${message.role || "message"}:${messageId}' in live_chat_html
+    assert "scheduleRefresh(0)" in live_chat_html
+    assert "setInterval(() => refreshChat({ silent: true }), 8000)" not in live_chat_html
+
+
+def test_live_chat_assigns_stable_assistant_bubble_colors():
+    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+
+    assert "ASSISTANT_COLOR_CLASSES" in live_chat_html
+    assert "characterColorMap" in live_chat_html
+    assert "function setCharacterColorMap(characterIds)" in live_chat_html
+    assert "function characterColorClass(message)" in live_chat_html
+    assert "state.characterColorMap[colorKey]" in live_chat_html
+    assert "setCharacterColorMap(selected.character_ids || [])" in live_chat_html
+    assert "style=\"--character-color:" in live_chat_html
+    assert ".msg.assistant.character-color-0" in live_chat_html
+    assert ".msg.assistant.character-color-5" in live_chat_html
+
+
 def test_control_ui_honors_requested_session_id_on_initial_load():
     index_html = _control_ui_source()
 

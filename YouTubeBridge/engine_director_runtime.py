@@ -300,10 +300,14 @@ class DirectorRuntimeManagerMixin:
         interaction = claimed
         cancel_event = threading.Event()
         runtime.cancel_events[interaction["job_id"]] = cancel_event
+        loop = asyncio.get_running_loop()
 
         def should_cancel() -> bool:
             current = self.storage.get_interaction(interaction["job_id"])
             return cancel_event.is_set() or bool(current and current.get("status") == "interrupt_requested")
+
+        def on_stream_result(event: dict[str, Any]) -> None:
+            self._broadcast_stream_chat_message(loop, session_id, event, source="director")
 
         try:
             result = await asyncio.to_thread(
@@ -315,6 +319,7 @@ class DirectorRuntimeManagerMixin:
                 external_context=external_context,
                 should_cancel=should_cancel,
                 cancel_event=cancel_event,
+                on_result=on_stream_result,
             )
         except GenerationInterrupted:
             updated = self.storage.update_interaction(
