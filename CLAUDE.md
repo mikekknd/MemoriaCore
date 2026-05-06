@@ -103,3 +103,40 @@ _recent_for_router = session_messages[-context_window:-1]   # 切掉最後一筆
 
 **Tests**
 使用 `tmp_path` 隔離 SQLite DB，禁止讀寫根目錄 `.db` 檔；不 mock `StorageManager` async lock。
+所有測試產生的暫存目錄、cache、輸出檔與臨時 DB 必須集中在 `.pyTestTemp/` 底下（例如 `.pyTestTemp/basetemp`、`.pyTestTemp/temp`、`.pyTestTemp/pytest-*`）；禁止在 repo 根目錄、`tests/` 或其他未指定位置建立 `tmp*`、`.basetemp-*`、臨時 `.db`、測試輸出資料夾。若測試或驗證腳本需要自建暫存檔，必須明確指定 `.pyTestTemp/` 內的子路徑，並在結束時清理。
+若 Windows 上 pytest 產生的暫存資料夾（如 `.pyTestTemp/`、`.pyTestTemp/basetemp`、`tests/.basetemp-*`）發生任何權限 / ACL 相關問題，包含但不限於 `PermissionError`、Access denied、無法列舉 `.pyTestTemp\basetemp`、fixture setup 階段清不掉 basetemp、或 `pytest_sessionfinish` / `cleanup_dead_symlinks` 清理失敗，一律先使用 `scripts/cleanup_pytest_temp.bat` 清理；該腳本會要求 UAC 管理員權限並只處理 pytest 暫存資料夾。不要手動改用其他 `--basetemp` 位置，也不要用其他刪除指令繞過此流程。
+
+**Git / PR 發佈流程（Codex 工作流）**
+本機 `gh` token 可能失效（`gh auth status` 顯示 token invalid），不要把 GitHub CLI 視為可靠依賴。
+需要開 PR 時採用以下流程：
+- 先用 `git status -sb` 確認工作樹，若有非本次任務檔案（例如 `.gitignore`）不得納入 stage。
+- 從 `origin/main` 建立任務分支：`git switch -c codex/<task-name> origin/main`，避免把其他既有分支的變更混進 PR。
+- 僅 stage 本次任務檔案，例如：`git add static/dashboard.html static/chat.html`。
+- commit 後用 `git push -u origin <branch>` 推送分支；若 sandbox 因網路阻擋失敗，改用 escalated push。
+- PR 建立優先使用 GitHub connector / app tool，不依賴 `gh pr create`。
+- PR 預設開 ready for review；只有使用者明確要求 draft 時才開 draft。
+- final 回覆需標明 branch、commit、PR URL，以及是否有未納入的本地變更。
+
+<!-- semble-codex:start -->
+## Code Search
+
+Use `semble search` as a first-pass filter when exploring unfamiliar code, finding implementations by intent, or locating likely files before reading them:
+
+```bash
+semble search "authentication flow"
+semble search "save_pretrained" .
+semble search "save model to disk" . --top-k 10
+```
+
+Use `semble find-related` to discover code similar to a known location. Pass the `file_path` and `line` from a prior search result:
+
+```bash
+semble find-related src/auth.py 42 .
+```
+
+Treat Semble results as candidates, not final truth. Before explaining behavior or editing code, read the returned files from disk and verify the surrounding context. Use `rg` for exact symbols, config keys, error strings, call sites, and any exhaustive search.
+
+Prefer direct `Read`/`rg` over Semble for files edited in the current session, for exhaustive checks, or when the exact file and symbol are already known.
+
+If `semble` is not on `PATH`, use `uvx --from "semble[mcp]" semble` in its place.
+<!-- semble-codex:end -->

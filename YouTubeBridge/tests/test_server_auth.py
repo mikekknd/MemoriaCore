@@ -113,6 +113,17 @@ def test_bridge_hot_reload_launcher_uses_full_process_tree_cleanup():
     assert "Stop-Process -Id $_ -Force" not in start_script
 
 
+def test_bridge_launcher_is_api_only_without_streamlit():
+    start_script = (BRIDGE_ROOT / "start.bat").read_text(encoding="utf-8")
+    requirements = (BRIDGE_ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
+
+    assert not (BRIDGE_ROOT / "app.py").exists()
+    assert "streamlit" not in start_script.lower()
+    assert "streamlit" not in requirements
+    assert "8503" not in start_script
+    assert "server.py" in start_script
+
+
 def test_stop_8091_script_kills_listener_wrappers_and_worker_tree():
     batch_source = (BRIDGE_ROOT / "stop_8091.bat").read_text(encoding="utf-8")
     source = (BRIDGE_ROOT / "stop_8091.ps1").read_text(encoding="utf-8")

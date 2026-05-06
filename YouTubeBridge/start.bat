@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul 2>&1
-title YouTubeBridge Launcher
+title YouTubeBridge API Launcher
 color 0B
 
 echo ============================================
-echo   YouTubeBridge - One-Click Launcher
+echo   YouTubeBridge - API Launcher
 echo ============================================
 echo.
 
@@ -31,7 +31,7 @@ if exist "%PARENT_VENV%" (
     set PYTHON=python
 )
 
-"%PYTHON%" -c "import fastapi, streamlit, requests" >nul 2>&1
+"%PYTHON%" -c "import fastapi, pydantic, requests, uvicorn" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [INFO] Installing dependencies from requirements.txt ...
     "%PYTHON%" -m pip install -r requirements.txt
@@ -44,9 +44,7 @@ if %errorlevel% neq 0 (
 )
 
 set API_PORT=8091
-set STREAMLIT_PORT=8503
 set API_STARTED=0
-set STREAMLIT_STARTED=0
 
 :: Local dev default: if MemoriaCore has admin bypass enabled, let the bridge use it.
 :: MemoriaCore still enforces its own admin_bypass_enabled and loopback checks.
@@ -55,10 +53,10 @@ if "%MEMORIACORE_ADMIN_BYPASS%"=="" set MEMORIACORE_ADMIN_BYPASS=1
 netstat -ano | findstr ":%API_PORT% " | findstr "LISTENING" >nul 2>&1
 if %errorlevel% equ 0 (
     echo [WARN] Port %API_PORT% is already in use. Skipping API server start.
-    goto :start_streamlit
+    goto :after_api
 )
 
-echo [1/2] Starting YouTubeBridge API server on port %API_PORT% ...
+echo [1/1] Starting YouTubeBridge API server on port %API_PORT% ...
 start /B "" "%PYTHON%" server.py
 set API_STARTED=1
 
@@ -68,7 +66,7 @@ set RETRIES=0
 if %RETRIES% geq 20 (
     color 0E
     echo [WARN] API server did not respond within 20 seconds.
-    goto :start_streamlit
+    goto :after_api
 )
 timeout /t 1 /nobreak >nul
 "%PYTHON%" -c "import requests; r=requests.get('http://localhost:%API_PORT%/health',timeout=2); exit(0 if r.ok else 1)" >nul 2>&1
@@ -77,39 +75,25 @@ if %errorlevel% neq 0 (
     goto :wait_loop
 )
 echo      API server is ready!
-echo.
 
-:start_streamlit
-netstat -ano | findstr ":%STREAMLIT_PORT% " | findstr "LISTENING" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [WARN] Port %STREAMLIT_PORT% is already in use. Skipping Streamlit UI start.
-    goto :after_streamlit
-)
-
-echo [2/2] Starting Streamlit UI on port %STREAMLIT_PORT% ...
-start /B "" "%PYTHON%" -m streamlit run app.py --server.port %STREAMLIT_PORT% --server.headless true
-set STREAMLIT_STARTED=1
-
-timeout /t 3 /nobreak >nul
-
-:after_streamlit
+:after_api
 
 echo.
 echo ============================================
 echo   YouTubeBridge started!
 echo.
-echo   Streamlit UI : http://localhost:%STREAMLIT_PORT%
+echo   Control UI   : http://localhost:%API_PORT%/ui/
+echo   Live page    : http://localhost:%API_PORT%/live/
 echo   API server   : http://localhost:%API_PORT%
 echo   API docs     : http://localhost:%API_PORT%/docs
 echo ============================================
 echo.
-start "" "http://localhost:%STREAMLIT_PORT%"
+start "" "http://localhost:%API_PORT%/ui/"
 
-echo Press any key to stop all services ...
+echo Press any key to stop services started by this launcher ...
 pause >nul
 
 echo Stopping services...
-if "%STREAMLIT_STARTED%"=="1" call :stop_port %STREAMLIT_PORT%
 if "%API_STARTED%"=="1" call :stop_port %API_PORT%
 exit /b 0
 
