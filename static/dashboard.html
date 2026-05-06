@@ -66,6 +66,7 @@ body { height:100vh; overflow:hidden; }
   <div class="panel-right">
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="viewer" onclick="switchTab(this)" data-i18n="dashboard.tab.viewer">Log / DB</button>
+      <button class="tab-btn" data-tab="maintenance" onclick="switchTab(this)" data-i18n="dashboard.tab.maintenance">Maintenance</button>
       <button class="tab-btn" data-tab="routing" onclick="switchTab(this)" data-i18n="dashboard.tab.routing">routing</button>
       <button class="tab-btn" data-tab="prompts" onclick="switchTab(this)" data-i18n="dashboard.tab.prompts">Prompts</button>
       <button class="tab-btn" data-tab="bots" onclick="switchTab(this)" data-i18n="dashboard.tab.bots">Bots</button>
@@ -85,6 +86,10 @@ body { height:100vh; overflow:hidden; }
           <iframe id="logFrame" src="/static/log_viewer.html?api=true" title="Log Viewer" data-i18n-title="dashboard.iframe.log"></iframe>
           <iframe id="dbFrame" src="/static/db_viewer.html?v=column-visibility" title="DB Viewer" data-i18n-title="dashboard.iframe.db"></iframe>
         </div>
+      </div>
+
+      <div class="tab-pane" data-pane="maintenance">
+        <iframe src="/static/db_maintenance.html?v=fast-maintenance" title="DB Maintenance" data-i18n-title="dashboard.iframe.maintenance"></iframe>
       </div>
 
       <div class="tab-pane" data-pane="routing">
@@ -214,7 +219,7 @@ async function logout() {
 
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && !e.shiftKey && !e.altKey) {
-    const map = {'1':'viewer','2':'routing','3':'prompts','4':'persona','5':'users'};
+    const map = {'1':'viewer','2':'maintenance','3':'routing','4':'prompts','5':'bots','6':'persona','7':'users'};
     const tab = map[e.key];
     if (tab) {
       e.preventDefault();
