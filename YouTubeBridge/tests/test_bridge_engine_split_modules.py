@@ -114,3 +114,10 @@ def test_bridge_manager_uses_closing_mixin():
     from engine_closing import ClosingManagerMixin
 
     assert issubclass(YouTubeBridgeManager, ClosingManagerMixin)
+
+
+def test_bridge_manager_uses_director_runtime_mixin():
+    from bridge_engine import YouTubeBridgeManager
+    from engine_director_runtime import DirectorRuntimeManagerMixin
+
+    assert issubclass(YouTubeBridgeManager, DirectorRuntimeManagerMixin)
