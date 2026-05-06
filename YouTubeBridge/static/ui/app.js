@@ -10,7 +10,7 @@ import {
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
-  refreshTopicEntries, refreshTopicPacks, restoreTopicEntries, searchTopicPack, updateTopicActionVisibility,
+  refreshTopicEntries, refreshTopicPacks, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
 } from "./topic-packs.js";
 
@@ -137,8 +137,6 @@ $("updateTopicEntry").onclick = () => updateTopicEntry().catch((error) => log("f
 $("cancelTopicEntryEdit").onclick = () => cancelTopicEntryEdit();
 $("importFactCardsFolder").onclick = () => importFactCardsFolder().catch((error) => log("FactCards 資料夾匯入失敗", String(error)));
 $("rebuildTopicEmbeddings").onclick = () => rebuildTopicEmbeddings().catch((error) => log("向量索引重建失敗", String(error)));
-$("searchTopicPack").onclick = () => searchTopicPack().catch((error) => log("向量檢索失敗", String(error)));
-$("restoreTopicEntries").onclick = () => restoreTopicEntries().catch((error) => log("fact card 清單恢復失敗", String(error)));
 $("topicPackSelect").onchange = () => refreshTopicEntries().catch((error) => log("fact card 更新失敗", String(error)));
 $("sessionTopicPackSelect").onchange = () => {
   $("topicPackSelect").value = $("sessionTopicPackSelect").value;

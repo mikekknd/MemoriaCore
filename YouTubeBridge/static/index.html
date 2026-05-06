@@ -18,6 +18,16 @@
     </div>
   </header>
 
+  <div id="factCardImportOverlay" class="blocking-overlay is-hidden" aria-hidden="true">
+    <div class="blocking-dialog" role="dialog" aria-modal="true" aria-labelledby="factCardImportTitle">
+      <h3 id="factCardImportTitle">正在匯入 FactCards</h3>
+      <p id="factCardImportMessage" class="muted" aria-live="polite">正在讀取 FactCards 資料夾、建立資料卡並重建向量，請稍候。</p>
+      <div class="progress-track" role="progressbar" aria-label="FactCards 匯入進度">
+        <span></span>
+      </div>
+    </div>
+  </div>
+
   <main>
     <div class="stack workspace-stack">
       <section>
@@ -315,11 +325,15 @@
               </div>
             </div>
 
-            <div class="topic-panel topic-entry-panel">
+            <div id="topicEntryPanel" class="topic-panel topic-entry-panel is-hidden">
               <div class="topic-panel-header">
                 <h3>Fact Cards</h3>
                 <span class="status">可編輯</span>
               </div>
+              <div class="topic-form-actions single">
+                <button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>
+              </div>
+              <p id="topicFactCardLiveLockNotice" class="status warn is-hidden">直播中不產生或匯入 Fact Cards；本場只讀取已綁定資料包。</p>
               <label id="topicEntrySelectorRow" class="is-hidden">選擇 fact card
                 <select id="topicEntrySelect"></select>
               </label>
@@ -339,19 +353,6 @@
                 <button id="addTopicEntry" class="primary is-hidden">新增</button>
                 <button id="updateTopicEntry" class="is-hidden">儲存</button>
                 <button id="cancelTopicEntryEdit" class="is-hidden">取消</button>
-              </div>
-              <div class="topic-form-actions single">
-                <button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>
-              </div>
-              <p id="topicFactCardLiveLockNotice" class="status warn is-hidden">直播中不產生或匯入 Fact Cards；本場只讀取已綁定資料包。</p>
-              <div class="topic-search-group">
-                <label>向量檢索測試
-                  <input id="topicSearchQuery" placeholder="例：觀眾問四月新番作品資訊時應該召回什麼">
-                </label>
-                <div class="topic-form-actions">
-                  <button id="searchTopicPack" class="is-hidden">測試向量檢索</button>
-                  <button id="restoreTopicEntries" class="is-hidden">顯示全部</button>
-                </div>
               </div>
               <div id="topicPackEntries" class="list topic-entry-list"></div>
             </div>

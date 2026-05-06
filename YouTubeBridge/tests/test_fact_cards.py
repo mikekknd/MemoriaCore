@@ -99,9 +99,12 @@ def test_parse_fact_card_markdown_keeps_only_summary_and_facts():
     assert entries[0]["source_url"] == ""
     assert entries[0]["source_type"] == "factcards_folder"
     assert "anime_new_release" in entries[0]["tags"]
-    assert "## Summary" in entries[0]["body"]
-    assert "## Facts" in entries[0]["body"]
+    assert "## Summary" not in entries[0]["body"]
+    assert "## Facts" not in entries[0]["body"]
     assert "耐熱陶瓷內襯" in entries[0]["body"]
+    assert "跑動 cut 的手部比例" not in entries[0]["body"]
+    assert "跑動 cut 的手部比例" in entries[1]["body"]
+    assert entries[0]["body"] != entries[1]["body"]
     assert "Live Usage" not in entries[0]["body"]
     assert "Keywords" not in entries[0]["body"]
 

@@ -357,6 +357,123 @@ def test_build_external_context_retrieves_relevant_topic_pack_fact_cards():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_build_external_context_uses_one_sequential_topic_when_no_audience_question():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "director_guidance": "本場只聊動畫新番。",
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        first = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話開場演出",
+            "body": "第一話用長鏡頭建立舞台與角色關係。",
+            "source_type": "factcards_folder",
+        })
+        second = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第二話作畫變化",
+            "body": "第二話戰鬥段落的遠景線條簡化。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        for entry in (first, second):
+            storage.upsert_topic_pack_entry_embedding(entry["id"], [1.0, 0.0], model="fake-embed", content_hash=str(entry["id"]))
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "想聽你們聊剛剛的新番節奏",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+
+        payload, _summary = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient).build_external_context("live-a")
+
+        assert "第一話用長鏡頭" in payload["context_text"]
+        assert "第二話戰鬥段落" not in payload["context_text"]
+        stats = storage.get_topic_pack_usage_stats("live-a")
+        first_stat = next(item for item in stats["entries"] if item["entry_id"] == first["id"])
+        second_stat = next(item for item in stats["entries"] if item["entry_id"] == second["id"])
+        assert first_stat["usage_count"] == 1
+        assert second_stat["usage_count"] == 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_sequential_topic_context_advances_after_three_recalls():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "director_guidance": "本場只聊動畫新番。",
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        first = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話開場演出",
+            "body": "第一話用長鏡頭建立舞台與角色關係。",
+            "source_type": "factcards_folder",
+        })
+        second = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第二話作畫變化",
+            "body": "第二話戰鬥段落的遠景線條簡化。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.record_topic_pack_entry_usages(
+            "live-a",
+            [{"id": first["id"], "pack_id": pack["id"], "similarity": 0.0}],
+            query_text="topic sequence",
+            usage_source="external_context",
+        )
+        storage.record_topic_pack_entry_usages(
+            "live-a",
+            [{"id": first["id"], "pack_id": pack["id"], "similarity": 0.0}],
+            query_text="topic sequence",
+            usage_source="external_context",
+        )
+        storage.record_topic_pack_entry_usages(
+            "live-a",
+            [{"id": first["id"], "pack_id": pack["id"], "similarity": 0.0}],
+            query_text="topic sequence",
+            usage_source="external_context",
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "這段討論可以繼續延伸",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+
+        payload, _summary = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient).build_external_context("live-a")
+
+        assert "第一話用長鏡頭" not in payload["context_text"]
+        assert "第二話戰鬥段落" in payload["context_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 class OffTopicEmbeddingMemoriaClient:
     def embed_text(self, text: str, model: str = ""):
         if "拉麵" in text or "豚骨" in text:
@@ -2354,6 +2471,18 @@ async def test_director_turn_sends_simple_display_content_to_chat(monkeypatch):
             "character_ids": ["default"],
             "director_guidance": "先聊四月新番，再聊 LLM。",
         })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話開場演出",
+            "body": "第一話用長鏡頭建立舞台與角色關係。",
+            "source_type": "factcards_folder",
+        })
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "第二話作畫變化",
+            "body": "第二話戰鬥段落的遠景線條簡化。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
         captured = {}
 
         class CaptureStreamClient:
@@ -2387,6 +2516,8 @@ async def test_director_turn_sends_simple_display_content_to_chat(monkeypatch):
         assert "fact card" not in captured["display_content"]
         assert "導播" not in captured["external_context"]["context_text"]
         assert "直播流程 action=transition_topic" in captured["external_context"]["context_text"]
+        assert "第一話用長鏡頭" in captured["external_context"]["context_text"]
+        assert "第二話戰鬥段落" not in captured["external_context"]["context_text"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

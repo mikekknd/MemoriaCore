@@ -49,12 +49,7 @@ class FactCardDocument:
             tags.append(source_tag)
         entries: list[dict[str, Any]] = []
         for fact in self.facts:
-            body = (
-                f"## Summary\n{self.summary}\n\n"
-                f"## Facts\n"
-                f"### {fact.title}\n"
-                f"{fact.body}"
-            ).strip()
+            body = fact.body.strip()
             entries.append({
                 "title": fact.title[:200],
                 "body": body[:4000],

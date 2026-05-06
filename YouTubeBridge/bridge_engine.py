@@ -314,10 +314,9 @@ class YouTubeBridgeManager(
         }
         base_query = "\n".join([*lines, str(session.get("director_guidance") or "")])
         if not query_text:
-            context = self._topic_pack_context_for_query(
+            context = self._topic_pack_sequence_context_for_session(
                 session_id,
                 base_query,
-                limit=6,
                 usage_source="external_context",
             )
             return context, resolution
@@ -334,8 +333,9 @@ class YouTubeBridgeManager(
         if self._topic_pack_entries_can_answer(entries):
             resolution["local_answerable"] = True
             resolution["research_status"] = "not_needed"
-            self._record_topic_pack_usage(session_id, entries, query_text, "external_context")
-            return self._topic_pack_context_text(entries), resolution
+            context_entries = entries[:1]
+            self._record_topic_pack_usage(session_id, context_entries, query_text, "external_context")
+            return self._topic_pack_context_text(context_entries), resolution
 
         if not session.get("research_enabled"):
             resolution["research_status"] = "disabled"

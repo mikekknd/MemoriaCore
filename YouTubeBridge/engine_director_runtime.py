@@ -237,16 +237,14 @@ class DirectorRuntimeManagerMixin:
         group_turn_limit = max(1, min(group_turn_limit, 12))
         if not prompt:
             prompt = f"目前適合執行 {action}，請自然延續直播對話，不要提到幕後流程。"
-        topic_context = self._topic_pack_context_for_query(
+        topic_context = self._topic_pack_sequence_context_for_session(
             session_id,
             "\n".join([
                 str(public_topic or ""),
                 str(public_prompt or ""),
                 str(state.get("current_topic") or ""),
             ]),
-            limit=6,
             usage_source="director",
-            replenish_reason="transition_topic" if action == "transition_topic" else "",
         )
         context_parts = [
             f"直播流程 action={action}",

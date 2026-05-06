@@ -13,6 +13,7 @@ export function updateTopicActionVisibility() {
   const hasPack = Number($("topicPackSelect").value || 0) > 0;
   const hasEntry = currentTopicEntryId() > 0;
   const entryBusy = !!state.topicEntryEditorBusy;
+  const importBusy = !!state.factCardImportBusy;
   const liveLocked = factCardActionsBlockedDuringLive();
   const hasPackTitle = !!$("topicPackTitle").value.trim();
   const hasEntryContent = !!$("topicEntryTitle").value.trim() && !!$("topicEntryBody").value.trim();
@@ -26,16 +27,17 @@ export function updateTopicActionVisibility() {
   setTopicActionVisible("updateTopicEntry", hasPack && hasEntry);
   setTopicActionVisible("cancelTopicEntryEdit", hasPack && hasEntry);
   setTopicActionVisible("rebuildTopicEmbeddings", hasPack);
-  setTopicActionVisible("importFactCardsFolder", !liveLocked);
-  setTopicActionVisible("searchTopicPack", hasPack);
-  setTopicActionVisible("restoreTopicEntries", hasPack && state.topicEntrySearchActive);
-  $("topicFactCardLiveLockNotice").classList.toggle("is-hidden", !liveLocked);
+  setTopicActionVisible("importFactCardsFolder", hasPack && !liveLocked);
+  $("topicEntryPanel").classList.toggle("is-hidden", !hasPack);
+  $("topicFactCardLiveLockNotice").classList.toggle("is-hidden", !(hasPack && liveLocked));
 
   $("createTopicPack").disabled = hasPack || !hasPackTitle;
   $("updateTopicPack").disabled = !hasPack || !hasPackTitle;
   $("addTopicEntry").disabled = !hasPack || hasEntry || !hasEntryContent || entryBusy;
   $("updateTopicEntry").disabled = !hasPack || !hasEntry || !hasEntryContent || entryBusy;
   $("cancelTopicEntryEdit").disabled = !hasPack || !hasEntry || entryBusy;
+  $("importFactCardsFolder").disabled = !hasPack || liveLocked || importBusy;
+  $("importFactCardsFolder").textContent = importBusy ? "匯入中..." : "匯入 FactCards 資料夾";
 }
 
 export function factCardActionsBlockedDuringLive() {
@@ -53,6 +55,15 @@ export function setTopicEntryEditorBusy(isBusy) {
   $("topicEntryTitle").disabled = busy;
   $("topicEntryBody").disabled = busy;
   $("updateTopicEntry").textContent = busy ? "儲存中..." : "儲存";
+  updateTopicActionVisibility();
+}
+
+export function setFactCardImportBusy(isBusy, message = "正在讀取 FactCards 資料夾、建立資料卡並重建向量，請稍候。") {
+  const busy = !!isBusy;
+  state.factCardImportBusy = busy;
+  $("factCardImportMessage").textContent = message;
+  $("factCardImportOverlay").classList.toggle("is-hidden", !busy);
+  $("factCardImportOverlay").setAttribute("aria-hidden", busy ? "false" : "true");
   updateTopicActionVisibility();
 }
 
@@ -149,7 +160,7 @@ export async function refreshTopicPacks() {
   const optionsHtml = state.topicPacks.map((pack) =>
     `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.title)}</option>`
   ).join("");
-  $("topicPackSelect").innerHTML = `<option value="">選擇資料包</option>` + optionsHtml;
+  $("topicPackSelect").innerHTML = `<option value="">新建資料包</option>` + optionsHtml;
   $("sessionTopicPackSelect").innerHTML = `<option value="">不綁定資料包</option>` + optionsHtml;
   if (previousPackId && state.topicPacks.some((pack) => Number(pack.id) === previousPackId)) {
     $("topicPackSelect").value = String(previousPackId);
@@ -180,18 +191,13 @@ export async function refreshSessionTopicPackSelection() {
 }
 
 export async function refreshTopicEntries() {
-  const id = selectedSessionId();
   const packId = Number($("topicPackSelect").value || 0);
   const previousEntryId = currentTopicEntryId();
   let entries = [];
-  state.topicEntrySearchActive = false;
   if (packId) {
     const data = await api(`/topic-packs/${packId}/entries?limit=80`);
     entries = data.entries || [];
     fillTopicPackForm(selectedTopicPack());
-  } else if (id) {
-    const data = await api(`/sessions/${encodeURIComponent(id)}/topic-packs`);
-    entries = data.entries || [];
   }
   state.topicEntries = entries;
   $("topicEntrySelect").innerHTML = `<option value="">選擇 fact card</option>` + entries.map((entry) =>
@@ -355,17 +361,22 @@ export async function deleteTopicEntry(entryId = null) {
 export async function importFactCardsFolder() {
   if (factCardActionsBlockedDuringLive()) throw new Error("直播中不產生或匯入 Fact Cards");
   const packId = Number($("topicPackSelect").value || 0) || null;
-  const data = await api("/topic-packs/fact-cards/import-folder", {
-    method: "POST",
-    body: JSON.stringify({
-      pack_id: packId,
-      max_files: 50,
-    }),
-  });
-  log("FactCards 資料夾已匯入", data);
-  await refreshTopicPacks();
-  $("topicPackSelect").value = data.pack_id;
-  await refreshTopicEntries();
+  setFactCardImportBusy(true);
+  try {
+    const data = await api("/topic-packs/fact-cards/import-folder", {
+      method: "POST",
+      body: JSON.stringify({
+        pack_id: packId,
+        max_files: 50,
+      }),
+    });
+    log("FactCards 資料夾已匯入", data);
+    await refreshTopicPacks();
+    $("topicPackSelect").value = data.pack_id;
+    await refreshTopicEntries();
+  } finally {
+    setFactCardImportBusy(false);
+  }
 }
 
 export async function rebuildTopicEmbeddings() {
@@ -376,32 +387,5 @@ export async function rebuildTopicEmbeddings() {
     body: "{}",
   });
   log("向量索引已重建", data);
-  await refreshTopicEntries();
-}
-
-export async function searchTopicPack() {
-  const packId = Number($("topicPackSelect").value || 0);
-  if (!packId) throw new Error("請先選擇資料包");
-  const query = $("topicSearchQuery").value.trim();
-  if (!query) {
-    await restoreTopicEntries();
-    return;
-  }
-  const data = await api(`/topic-packs/${packId}/search?query=${encodeURIComponent(query)}&limit=8`);
-  log("向量檢索完成", data);
-  const entries = data.entries || [];
-  state.topicEntrySearchActive = true;
-  state.topicEntries = entries;
-  $("topicEntrySelect").innerHTML = `<option value="">選擇 fact card</option>` + entries.map((entry) =>
-    `<option value="${escapeHtml(entry.id)}">${escapeHtml(entry.title)}</option>`
-  ).join("");
-  $("topicPackEntries").innerHTML = renderTopicEntries(entries) || `<div class="muted">沒有找到相關 fact card</div>`;
-  bindTopicEntryCardButtons();
-  updateTopicActionVisibility();
-}
-
-export async function restoreTopicEntries() {
-  state.topicEntrySearchActive = false;
-  $("topicSearchQuery").value = "";
   await refreshTopicEntries();
 }

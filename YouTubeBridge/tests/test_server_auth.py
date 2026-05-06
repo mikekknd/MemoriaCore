@@ -256,7 +256,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert 'id="topicEntrySelect"' in index_html
     assert 'class="topic-workspace"' in index_html
     assert 'class="topic-panel topic-pack-panel"' in index_html
-    assert 'class="topic-panel topic-entry-panel"' in index_html
+    assert 'id="topicEntryPanel" class="topic-panel topic-entry-panel is-hidden"' in index_html
     assert 'class="topic-panel topic-ops-panel"' not in index_html
     assert 'id="topicPackUsageState"' not in index_html
     assert 'data-testid="director-idle-seconds"' in index_html
@@ -267,7 +267,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "/topic-packs/${packId}" in index_html
     assert 'api("/topic-packs", { method: "DELETE" })' in index_html
     assert "/topic-packs/${packId}/entries/${entryId}" in index_html
-    assert "/topic-packs/${packId}/search" in index_html
+    assert "/topic-packs/${packId}/search" not in index_html
     assert "/topic-packs/usage" not in index_html
     assert "/topic-packs/auto-build" not in index_html
     assert "管理備註" in index_html
@@ -277,6 +277,9 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "依主題生成 Fact Cards" not in index_html
     assert "補卡與狀態" not in index_html
     assert "匯入 FactCards 資料夾" in index_html
+    assert 'id="factCardImportOverlay"' in index_html
+    assert 'id="factCardImportMessage"' in index_html
+    assert 'role="progressbar"' in index_html
     assert "初始化預設 Fact Cards" not in index_html
     assert "自動資料卡主題" not in index_html
     assert 'id="researchQuery"' not in index_html
@@ -444,11 +447,14 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
     assert 'setTopicActionVisible("generateGeminiFactCards"' not in index_html
     assert 'setTopicActionVisible("generateGeminiFactCards", hasSession);' not in index_html
-    assert 'setTopicActionVisible("importFactCardsFolder", !liveLocked);' in index_html
+    assert 'setTopicActionVisible("importFactCardsFolder", hasPack && !liveLocked);' in index_html
+    assert '$("importFactCardsFolder").disabled = !hasPack || liveLocked || importBusy;' in index_html
+    assert '$("importFactCardsFolder").textContent = importBusy ? "匯入中..." : "匯入 FactCards 資料夾";' in index_html
     assert 'setTopicActionVisible("importFactCardsFolder", hasSession);' not in index_html
     assert 'setTopicActionVisible("runResearch", hasSession);' not in index_html
-    assert 'setTopicActionVisible("searchTopicPack", hasPack);' in index_html
-    assert 'setTopicActionVisible("restoreTopicEntries", hasPack && state.topicEntrySearchActive);' in index_html
+    assert 'setTopicActionVisible("searchTopicPack"' not in index_html
+    assert 'setTopicActionVisible("restoreTopicEntries"' not in index_html
+    assert '$("topicEntryPanel").classList.toggle("is-hidden", !hasPack);' in index_html
     assert '$("topicPackTitle").addEventListener("input", updateTopicActionVisibility);' in index_html
     assert '$("topicEntryTitle").addEventListener("input", updateTopicActionVisibility);' in index_html
     assert '$("topicEntryBody").addEventListener("input", updateTopicActionVisibility);' in index_html
@@ -459,8 +465,8 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert '<button id="addTopicEntry" class="primary is-hidden">新增</button>' in index_html
     assert '<button id="cancelTopicEntryEdit" class="is-hidden">取消</button>' in index_html
     assert 'id="deleteTopicEntry"' not in index_html
-    assert '<button id="searchTopicPack" class="is-hidden">測試向量檢索</button>' in index_html
-    assert '<button id="restoreTopicEntries" class="is-hidden">顯示全部</button>' in index_html
+    assert '<button id="searchTopicPack"' not in index_html
+    assert '<button id="restoreTopicEntries"' not in index_html
     assert '<button id="autoBuildTopicPack"' not in index_html
     assert '<button id="generateGeminiFactCards"' not in index_html
     assert '<button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>' in index_html
@@ -480,36 +486,33 @@ def test_install_test_ids_preserves_explicit_stable_testids():
     )
 
 
-def test_topic_pack_vector_search_can_restore_full_entry_list():
+def test_topic_pack_vector_search_controls_are_not_exposed_in_control_ui():
     index_html = _control_ui_source()
-    search_block = index_html[
-        index_html.index("async function searchTopicPack"):
-        index_html.index("function subscribeEvents")
-    ]
 
-    assert "topicEntrySearchActive: false" in index_html
-    assert "async function restoreTopicEntries()" in index_html
-    assert "state.topicEntrySearchActive = true;" in search_block
-    assert "state.topicEntrySearchActive = false;" in search_block
-    assert "await refreshTopicEntries();" in search_block
-    assert '$("restoreTopicEntries").onclick = () => restoreTopicEntries()' in index_html
+    assert 'id="topicSearchQuery"' not in index_html
+    assert 'id="searchTopicPack"' not in index_html
+    assert 'id="restoreTopicEntries"' not in index_html
+    assert "async function searchTopicPack" not in index_html
+    assert "async function restoreTopicEntries" not in index_html
+    assert "topicEntrySearchActive" not in index_html
 
 
 def test_topic_pack_rebuild_embeddings_action_lives_with_pack_controls():
     index_html = _control_ui_source()
     pack_panel = index_html[
         index_html.index('<div class="topic-panel topic-pack-panel">'):
-        index_html.index('<div class="topic-panel topic-entry-panel">')
+        index_html.index('<div id="topicEntryPanel"')
     ]
     entry_panel = index_html[
-        index_html.index('<div class="topic-panel topic-entry-panel">'):
+        index_html.index('<div id="topicEntryPanel"'):
         index_html.index('</div>\n        </div>\n\n        <div id="systemSettingsPane"')
     ]
 
     assert '<button id="rebuildTopicEmbeddings" class="is-hidden">重建向量</button>' in pack_panel
     assert 'id="rebuildTopicEmbeddings"' not in entry_panel
     assert '<button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>' in entry_panel
-    assert 'class="topic-search-group"' in entry_panel
+    assert entry_panel.index('id="importFactCardsFolder"') < entry_panel.index('<label>標題')
+    assert 'class="topic-search-group"' not in entry_panel
     assert '<div class="topic-panel topic-ops-panel">' not in index_html
 
 
@@ -564,12 +567,30 @@ def test_fact_card_gemini_generation_ui_is_not_exposed():
 
     assert 'id="factCardGenerationOverlay"' not in index_html
     assert 'id="factCardGenerationMessage"' not in index_html
-    assert 'role="progressbar"' not in index_html
     assert "factCardGenerationBusy" not in index_html
     assert "function setFactCardGenerationBusy" not in index_html
     assert "async function generateGeminiFactCards" not in index_html
     assert 'log("Gemini FactCards 開始產生"' not in index_html
     assert 'id="autoBuildTopic"' not in index_html
+
+
+def test_fact_cards_folder_import_shows_blocking_progress_feedback():
+    index_html = _control_ui_source()
+    import_block = index_html[
+        index_html.index("async function importFactCardsFolder"):
+        index_html.index("async function rebuildTopicEmbeddings")
+    ]
+
+    assert 'id="factCardImportOverlay"' in index_html
+    assert 'id="factCardImportMessage"' in index_html
+    assert 'aria-labelledby="factCardImportTitle"' in index_html
+    assert 'role="progressbar"' in index_html
+    assert "factCardImportBusy: false" in index_html
+    assert "function setFactCardImportBusy(isBusy" in index_html
+    assert '$("factCardImportOverlay").classList.toggle("is-hidden", !busy);' in index_html
+    assert "setFactCardImportBusy(true);" in import_block
+    assert "finally {" in import_block
+    assert "setFactCardImportBusy(false);" in import_block
 
 
 def test_topic_pack_entry_save_clears_editor_after_success():
@@ -913,7 +934,7 @@ def test_fact_cards_folder_import_is_blocked_during_live_runtime():
     assert "直播中不產生或匯入 Fact Cards" in index_html
     assert 'id="topicFactCardLiveLockNotice"' in index_html
     assert 'setTopicActionVisible("generateGeminiFactCards"' not in index_html
-    assert 'setTopicActionVisible("importFactCardsFolder", !liveLocked);' in index_html
+    assert 'setTopicActionVisible("importFactCardsFolder", hasPack && !liveLocked);' in index_html
     assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
 
 

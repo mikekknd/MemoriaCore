@@ -22,6 +22,7 @@ from fact_cards import (
 
 logger = logging.getLogger("youtube_bridge")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TOPIC_SEQUENCE_TURNS_PER_ENTRY = 3
 
 
 def _generate_fact_card_markdown(**kwargs):
@@ -115,6 +116,46 @@ class TopicPackManagerMixin:
         )
         self._record_topic_pack_usage(session_id, entries, query_text, usage_source, replenish_reason)
         return self._topic_pack_context_text(entries)
+
+    def _topic_pack_sequence_context_for_session(
+        self,
+        session_id: str,
+        query_text: str,
+        *,
+        usage_source: str,
+        turns_per_entry: int = TOPIC_SEQUENCE_TURNS_PER_ENTRY,
+    ) -> str:
+        entries = self._topic_pack_sequence_entries_for_session(
+            session_id,
+            turns_per_entry=turns_per_entry,
+        )
+        self._record_topic_pack_usage(session_id, entries, query_text, usage_source)
+        return self._topic_pack_context_text(entries)
+
+    def _topic_pack_sequence_entries_for_session(
+        self,
+        session_id: str,
+        *,
+        turns_per_entry: int = TOPIC_SEQUENCE_TURNS_PER_ENTRY,
+    ) -> list[dict[str, Any]]:
+        entries = self.storage.list_session_topic_pack_entries(session_id, limit=200)
+        if not entries:
+            return []
+        threshold = max(1, int(turns_per_entry or TOPIC_SEQUENCE_TURNS_PER_ENTRY))
+        stats = self.storage.get_topic_pack_usage_stats(session_id, recent_limit=50)
+        usage_counts = {
+            int(item["entry_id"]): int(item.get("usage_count") or 0)
+            for item in stats.get("entries", [])
+            if isinstance(item, dict) and item.get("entry_id")
+        }
+        for entry in entries:
+            if usage_counts.get(int(entry["id"]), 0) < threshold:
+                return [entry]
+        min_usage = min(usage_counts.get(int(entry["id"]), 0) for entry in entries)
+        for entry in entries:
+            if usage_counts.get(int(entry["id"]), 0) == min_usage:
+                return [entry]
+        return [entries[0]]
 
     def _topic_pack_entries_for_query(
         self,
