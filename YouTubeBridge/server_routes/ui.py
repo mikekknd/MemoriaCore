@@ -56,7 +56,7 @@ async def bridge_ui_asset(asset_path: str):
         resolved.relative_to(asset_root)
     except ValueError:
         raise HTTPException(status_code=404, detail="asset not found")
-    if not resolved.is_file() or resolved.suffix not in {".css", ".js"}:
+    if not resolved.is_file() or resolved.suffix not in {".css", ".js", ".md"}:
         raise HTTPException(status_code=404, detail="asset not found")
     return FileResponse(resolved)
 

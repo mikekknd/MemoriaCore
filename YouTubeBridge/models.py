@@ -31,6 +31,8 @@ class LiveSessionConfig(BaseModel):
     auto_connect: bool = True
     auto_inject: bool = False
     inject_interval_seconds: int = Field(30, ge=5, le=600)
+    inject_min_interval_seconds: int = Field(10, ge=5, le=600)
+    inject_min_interval_ratio: float = Field(0.32, ge=0.05, le=1.0)
     min_pending_events: int = Field(1, ge=1, le=100)
     max_pending_events: int = Field(12, ge=1, le=200)
     dynamic_inject_enabled: bool = True

@@ -74,6 +74,9 @@ class RuntimeLifecycleManagerMixin:
                 raise ValueError("live session 不存在")
             if self._session_is_finalized(session):
                 raise ValueError("live session 已標記結束；請建立或更新為新的 video_id 後再啟動")
+            if hasattr(self.storage, "ensure_single_connector"):
+                self.storage.ensure_single_connector()
+                session = self.storage.get_session(session_id) or session
             connector = self.storage.get_connector(session["connector_id"])
             if not connector:
                 raise ValueError("connector 不存在")
@@ -89,6 +92,9 @@ class RuntimeLifecycleManagerMixin:
                     video_id=session["video_id"],
                 )
                 session = self.storage.update_session_fields(session_id, live_chat_id=live_chat_id) or session
+            if needs_youtube_polling:
+                self._disable_test_events_for_real_youtube_session(session_id, session)
+                session = self.storage.get_session(session_id) or session
             if not needs_youtube_polling:
                 try:
                     self._clear_llm_trace_log()

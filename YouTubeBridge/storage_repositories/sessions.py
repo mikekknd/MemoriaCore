@@ -25,6 +25,7 @@ class SessionRepositoryMixin:
             created_at = existing["created_at"] if existing else now
             video_id = str(config.get("video_id", "") or "")
             live_chat_id = str(config.get("live_chat_id", "") or "")
+            is_real_youtube_session = bool(video_id or live_chat_id)
             source_changed = bool(
                 existing
                 and (
@@ -58,6 +59,8 @@ class SessionRepositoryMixin:
                 "auto_connect": 1 if config.get("auto_connect", True) else 0,
                 "auto_inject": 1 if config.get("auto_inject", False) else 0,
                 "inject_interval_seconds": int(config.get("inject_interval_seconds", 30) or 30),
+                "inject_min_interval_seconds": int(config.get("inject_min_interval_seconds", 10) or 10),
+                "inject_min_interval_ratio": float(config.get("inject_min_interval_ratio", 0.32) or 0.32),
                 "min_pending_events": int(config.get("min_pending_events", 1) or 1),
                 "max_pending_events": int(config.get("max_pending_events", 12) or 12),
                 "dynamic_inject_enabled": 1 if config.get("dynamic_inject_enabled", True) else 0,
@@ -68,7 +71,7 @@ class SessionRepositoryMixin:
                 "auto_finalize_on_duration": 1 if config.get("auto_finalize_on_duration", True) else 0,
                 "auto_delete_after_processed": 1 if config.get("auto_delete_after_processed", True) else 0,
                 "director_guidance": str(config.get("director_guidance", "") or ""),
-                "auto_test_events_enabled": 1 if config.get("auto_test_events_enabled", False) else 0,
+                "auto_test_events_enabled": 0 if is_real_youtube_session else (1 if config.get("auto_test_events_enabled", False) else 0),
                 "test_event_min_seconds": int(config.get("test_event_min_seconds", 20) or 20),
                 "test_event_max_seconds": int(config.get("test_event_max_seconds", 45) or 45),
                 "test_event_count_per_tick": int(config.get("test_event_count_per_tick", 3) or 3),

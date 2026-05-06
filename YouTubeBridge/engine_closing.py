@@ -14,9 +14,92 @@ logger = logging.getLogger("youtube_bridge")
 
 
 class ClosingManagerMixin:
+    def _list_unhandled_super_chats_for_closing(
+        self,
+        session_id: str,
+        *,
+        batch_size: int = 100,
+    ) -> list[dict[str, Any]]:
+        batch_size = max(1, min(int(batch_size or 100), 500))
+        offset = 0
+        super_chats: list[dict[str, Any]] = []
+        while True:
+            batch = self.storage.list_super_chats(
+                session_id,
+                unhandled_only=True,
+                limit=batch_size,
+                offset=offset,
+            )
+            if not batch:
+                break
+            super_chats.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += len(batch)
+        return super_chats
+
+    def _closing_super_chat_credit_lines(self, super_chats: list[dict[str, Any]]) -> list[str]:
+        lines: list[str] = []
+        for event in super_chats:
+            author = str(event.get("author_display_name") or "匿名觀眾").strip() or "匿名觀眾"
+            amount = str(event.get("amount_display_string") or "").strip()
+            amount_text = f"{amount} " if amount else ""
+            if self._is_public_live_event_displayable(event):
+                summary = self._single_line(self._event_safe_text(event))[:120]
+                suffix = f"：{summary}" if summary else "。"
+            else:
+                suffix = "（內容不公開）。"
+            lines.append(f"感謝 {author} 的 {amount_text}SC{suffix}")
+        return lines
+
     async def _finalize_for_duration(self, runtime: LiveRuntime, session: dict[str, Any]) -> None:
         if not runtime.running or runtime.status in {"closing", "ended"}:
             return
+        await self._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="duration_finalize",
+            closing_message="planned duration reached; closing live session",
+            ended_message="planned duration reached",
+        )
+
+    async def finalize_session(self, session_id: str) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            raise ValueError("live session 不存在")
+        runtime = self._runtimes.get(session_id)
+        if runtime is None:
+            runtime = LiveRuntime(
+                session_id=session_id,
+                running=False,
+                status=str(session.get("status") or "stopped"),
+            )
+            self._runtimes[session_id] = runtime
+        return await self._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="manual finalize requested; closing live session",
+            ended_message="manual finalize requested",
+        )
+
+    async def _finalize_live_session(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        finalized_by: str,
+        closing_message: str,
+        ended_message: str,
+    ) -> dict[str, Any]:
+        if runtime.status == "ended" and session.get("status") == "ended":
+            director_metadata = self.storage.get_director_state(runtime.session_id).get("metadata") or {}
+            return {
+                **(self.storage.get_session(runtime.session_id) or session),
+                "runtime_status": self.get_status(runtime.session_id),
+                "closing_super_chat_thanks": director_metadata.get("closing_super_chat_thanks"),
+                "closing_safety_resolution": director_metadata.get("closing_safety_resolution"),
+            }
         runtime.status = "closing"
         runtime.running = False
         self.storage.update_session_fields(
@@ -31,7 +114,7 @@ class ClosingManagerMixin:
             {
                 "type": "status",
                 "status": "closing",
-                "message": "planned duration reached; closing live session",
+                "message": closing_message,
             },
         )
         await self._interrupt_active_generation_for_closing(runtime)
@@ -57,7 +140,7 @@ class ClosingManagerMixin:
             runtime.session_id,
             status="interrupted",
             reason="live_session_ended",
-            metadata={"finalized_by": "duration_finalize"},
+            metadata={"finalized_by": finalized_by},
         )
         self.storage.update_session_summary_state(
             runtime.session_id,
@@ -72,6 +155,7 @@ class ClosingManagerMixin:
             status="ended",
             consecutive_ai_turns=0,
             metadata={
+                "finalized_by": finalized_by,
                 "closing_super_chat_thanks": closing_result,
                 "closing_safety_resolution": safety_closing_result,
             },
@@ -82,12 +166,18 @@ class ClosingManagerMixin:
             {
                 "type": "status",
                 "status": "ended",
-                "message": "planned duration reached",
+                "message": ended_message,
                 "finalized_at": finalized_at,
                 "closing_super_chat_thanks": closing_result,
                 "closing_safety_resolution": safety_closing_result,
             },
         )
+        return {
+            **(self.storage.get_session(runtime.session_id) or session),
+            "runtime_status": self.get_status(runtime.session_id),
+            "closing_super_chat_thanks": closing_result,
+            "closing_safety_resolution": safety_closing_result,
+        }
 
     async def _complete_closing_super_chat_thanks_fallback(
         self,
@@ -98,26 +188,12 @@ class ClosingManagerMixin:
         session = self.storage.get_session(session_id)
         if not session:
             return {"status": "failed", "error": "live session 不存在", "super_chat_count": 0}
-        super_chats = self.storage.list_super_chats(session_id, unhandled_only=True, limit=500)
+        super_chats = self._list_unhandled_super_chats_for_closing(session_id, batch_size=500)
         if not super_chats:
             return {"status": "skipped", "reason": "no_unhandled_super_chats", "super_chat_count": 0}
 
-        authors = []
-        for event in super_chats:
-            author = str(event.get("author_display_name") or "").strip()
-            if author and author not in authors:
-                authors.append(author)
-            if len(authors) >= 5:
-                break
-        representative = "、".join(authors)
-        if len(super_chats) > len(authors):
-            representative += f" 等 {len(super_chats)} 則" if representative else f"{len(super_chats)} 則"
-        reply_text = (
-            "感謝本場 Super Chat 支持。"
-            f"本場共收到 {len(super_chats)} 則 SC"
-            + (f"，包含 {representative}" if representative else "")
-            + "；代表性問題已在直播中回應，其餘不適合公開回覆或重複內容已略過。"
-        )
+        credit_lines = self._closing_super_chat_credit_lines(super_chats)
+        reply_text = "感謝本場 Super Chat 支持。\n" + "\n".join(credit_lines)
         target_session_id = str(session.get("target_memoria_session_id") or "")
         message_result: dict[str, Any] = {}
         if target_session_id:
@@ -320,29 +396,15 @@ class ClosingManagerMixin:
             raise ValueError("live session 不存在")
         if not session.get("auto_sc_thanks_on_finalize", True):
             return {"status": "skipped", "reason": "auto_sc_thanks_disabled", "super_chat_count": 0}
-        super_chats = self.storage.list_super_chats(session_id, unhandled_only=True, limit=100)
+        super_chats = self._list_unhandled_super_chats_for_closing(session_id, batch_size=100)
         if not super_chats:
             return {"status": "skipped", "reason": "no_unhandled_super_chats", "super_chat_count": 0}
-        clean_super_chats = [
-            event for event in super_chats
-            if self._is_public_live_event_displayable(event)
-        ]
-        safe_lines = [self._event_line(event).lstrip("- ") for event in clean_super_chats[:20]]
-        if len(clean_super_chats) > 20:
-            safe_lines.append(f"另有 {len(clean_super_chats) - 20} 則 SC 以分組方式感謝。")
-        hidden_sc_count = max(0, len(super_chats) - len(clean_super_chats))
-        if not safe_lines and hidden_sc_count:
-            safe_lines.append("本場另有部分 SC 不適合公開逐條回覆，請概括感謝支持即可。")
-        if len(super_chats) <= 8:
-            closing_instruction = (
-                "本場可公開逐條回覆的 SC 數量不多，請逐條感謝。每則最多 1 句，需包含暱稱與問題/支持內容的短摘要；"
-                "不要逐字照抄留言。不適合公開回覆的內容不要提起。"
-            )
-        else:
-            closing_instruction = (
-                "本場可公開回覆的 SC 數量較多，請先點名高 tier 或代表性 SC，再按主題分組感謝；"
-                "不要逐字念完全部留言。不適合公開回覆的內容不要提起。"
-            )
+        credit_lines = self._closing_super_chat_credit_lines(super_chats)
+        closing_instruction = (
+            "請像片尾名單一樣逐一點名所有 SC，每則獨立一句，語氣接近「感謝 XXX 的 SC」。"
+            "可以簡短帶過乾淨留言內容；不適合公開回覆的內容只感謝支持，不要重述原文。"
+            "不可只挑高 tier、不可只挑部分留言、不可省略名單。"
+        )
         state = self.storage.get_director_state(session_id)
         decision = {
             "action": "closing_super_chat_thanks",
@@ -350,7 +412,7 @@ class ClosingManagerMixin:
             "prompt": (
                 "直播即將收尾，請感謝本場 Super Chat 支持。\n"
                 f"{closing_instruction}\n\n"
-                "本場 SC：\n" + "\n".join(f"- {line}" for line in safe_lines)
+                "本場 SC 片尾名單：\n" + "\n".join(f"- {line}" for line in credit_lines)
             ),
             "current_topic": state.get("current_topic") or session.get("director_guidance") or "直播收尾",
         }

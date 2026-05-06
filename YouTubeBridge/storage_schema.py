@@ -39,6 +39,8 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             auto_connect INTEGER NOT NULL DEFAULT 1,
             auto_inject INTEGER NOT NULL DEFAULT 0,
             inject_interval_seconds INTEGER NOT NULL DEFAULT 30,
+            inject_min_interval_seconds INTEGER NOT NULL DEFAULT 10,
+            inject_min_interval_ratio REAL NOT NULL DEFAULT 0.32,
             min_pending_events INTEGER NOT NULL DEFAULT 1,
             max_pending_events INTEGER NOT NULL DEFAULT 12,
             dynamic_inject_enabled INTEGER NOT NULL DEFAULT 1,
@@ -265,6 +267,8 @@ def ensure_live_session_columns(conn: sqlite3.Connection) -> None:
     columns = {
         "auto_inject": "auto_inject INTEGER NOT NULL DEFAULT 0",
         "inject_interval_seconds": "inject_interval_seconds INTEGER NOT NULL DEFAULT 30",
+        "inject_min_interval_seconds": "inject_min_interval_seconds INTEGER NOT NULL DEFAULT 10",
+        "inject_min_interval_ratio": "inject_min_interval_ratio REAL NOT NULL DEFAULT 0.32",
         "min_pending_events": "min_pending_events INTEGER NOT NULL DEFAULT 1",
         "max_pending_events": "max_pending_events INTEGER NOT NULL DEFAULT 12",
         "dynamic_inject_enabled": "dynamic_inject_enabled INTEGER NOT NULL DEFAULT 1",

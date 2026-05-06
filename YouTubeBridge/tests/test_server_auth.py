@@ -1,5 +1,6 @@
-import sys
 import importlib.util
+import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -160,8 +161,8 @@ def test_control_ui_honors_requested_session_id_on_initial_load():
 def test_control_ui_loads_external_css_and_module_script():
     index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
 
-    assert '<link rel="stylesheet" href="/ui-assets/index.css">' in index_html
-    assert '<script type="module" src="/ui-assets/app.js"></script>' in index_html
+    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=character-limit-v1">' in index_html
+    assert '<script type="module" src="/ui-assets/app.js?v=character-limit-v1"></script>' in index_html
     assert "<style>" not in index_html
     assert "<script>\n" not in index_html
 
@@ -170,9 +171,11 @@ def test_control_ui_loads_external_css_and_module_script():
 async def test_ui_asset_route_serves_split_css_and_js():
     css_response = await server_module.bridge_ui_asset("index.css")
     js_response = await server_module.bridge_ui_asset("app.js")
+    rules_response = await server_module.bridge_ui_asset("live_runtime_rules.md")
 
     assert Path(css_response.path).name == "index.css"
     assert Path(js_response.path).name == "app.js"
+    assert Path(rules_response.path).name == "live_runtime_rules.md"
 
 
 @pytest.mark.asyncio
@@ -187,23 +190,22 @@ async def test_ui_asset_route_rejects_traversal_and_non_assets():
     assert html_exc.value.status_code == 404
 
 
-def test_control_ui_delete_session_clears_selection_instead_of_auto_selecting_next_session():
+def test_control_ui_removes_manual_session_picker_and_delete_flow():
     index_html = _control_ui_source()
 
     assert 'async function loadSessions(preferredId = "", options = {})' in index_html
     assert "const selectDefault = options.selectDefault !== false" in index_html
-    assert 'await loadSessions("", { selectDefault: false })' in index_html
-    delete_block = index_html[index_html.index("async function deleteSession"):index_html.index("async function updateSessionSettings")]
     chat_preview_block = index_html[index_html.index("async function refreshChatPreview"):index_html.index("function scheduleChatPreviewRefresh")]
     assert 'id="deleteSessionConfirmText"' not in index_html
     assert 'id="confirmDeleteSession"' not in index_html
+    assert 'id="sessionSelect"' not in index_html
+    assert 'id="deleteSession"' not in index_html
     assert "requestDeleteSessionConfirmation" not in index_html
-    assert "confirm(" not in delete_block
-    assert "prompt(" not in delete_block
-    assert "session_id_confirm_mismatch" not in delete_block
-    assert "deleteSessionConfirmText" not in delete_block
-    assert "newSessionDraft()" in index_html[index_html.index("async function deleteSession"):index_html.index("async function updateSessionSettings")]
-    assert '$("deleteSession").onclick = () => deleteSession().catch((error) => log("刪除失敗", String(error)));' in index_html
+    assert "async function deleteSession" not in index_html
+    assert "session_id_confirm_mismatch" not in index_html
+    assert '$("deleteSession")' not in index_html
+    assert "startCurrentSession" in index_html
+    assert "/sessions/current/start" in index_html
     assert "defaultLiveSession()" not in chat_preview_block
     assert "fallback.session_id" not in chat_preview_block
 
@@ -274,6 +276,117 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "最近補卡" in index_html
     assert "四月新番最新話細節、作畫與劇情討論" in index_html
     assert "LLM 基礎、美食直播話題" not in index_html
+
+
+def test_control_ui_exposes_runtime_rules_reference_tab():
+    index_html = _control_ui_source()
+    rules_doc = Path(server_module.UI_ASSETS_ROOT) / "live_runtime_rules.md"
+
+    assert rules_doc.exists()
+    rules_text = rules_doc.read_text(encoding="utf-8")
+    assert "# YouTubeBridge 直播底層規則" in rules_text
+    assert "SC 打斷冷卻秒數" in rules_text
+    assert "注入間隔秒數" in rules_text
+    assert "導播回合上限" in rules_text
+    assert "幾批留言後回主軸" in rules_text
+    assert "Research Gate" in rules_text
+
+    assert '<button class="tab" data-pane="runtimeRulesPane">規則說明</button>' in index_html
+    assert 'id="runtimeRulesPane"' in index_html
+    assert 'id="runtimeRulesContent"' in index_html
+    assert 'id="reloadRuntimeRules"' in index_html
+    assert 'fetch("/ui-assets/live_runtime_rules.md"' in index_html
+    assert "renderRuntimeRulesMarkdown" in index_html
+    assert "loadRuntimeRules" in index_html
+
+
+@pytest.mark.asyncio
+async def test_memoria_refs_exposes_backend_character_limit(monkeypatch):
+    class FakeClient:
+        def list_characters(self):
+            return [{"character_id": f"char-{idx}", "name": f"角色 {idx}"} for idx in range(8)]
+
+        def get_system_config(self):
+            return {"max_session_characters": 6}
+
+    monkeypatch.setattr(server_module._memoria_routes, "MemoriaClient", lambda *args, **kwargs: FakeClient())
+
+    result = await server_module.memoria_refs()
+
+    assert result["max_session_characters"] == 6
+    assert len(result["characters"]) == 8
+
+
+def test_control_ui_limits_character_selection_and_blocks_start_without_character():
+    index_html = _control_ui_source()
+
+    assert "maxSessionCharacters: 6" in index_html
+    assert 'id="characterLimitState"' in index_html
+    assert 'aria-describedby="characterLimitState"' in index_html
+    assert "function maxSessionCharacters" in index_html
+    assert "function syncCharacterSelectionLimit" in index_html
+    assert "function validateSelectedCharacters" in index_html
+    assert "state.maxSessionCharacters = Number(data.max_session_characters || 6);" in index_html
+    assert 'state.characters = data.characters || [];' in index_html
+    assert 'await api("/memoria/refs")' in index_html
+    assert '$("characterSelect").addEventListener("change", () => {' in index_html
+    assert 'syncCharacterSelectionLimit();' in index_html
+    assert 'if (!closing && isStartAction) {' in index_html
+    assert '$("toggleSession").disabled = !characterValidation.ok;' in index_html
+    assert "請先選擇至少 1 位角色" in index_html
+    assert "最多只能選擇" in index_html
+
+
+def test_events_pane_is_grouped_as_test_comment_tool():
+    index_html = _control_ui_source()
+
+    assert '<button class="tab active" data-pane="eventsPane">留言測試</button>' in index_html
+    assert "Recent Events" not in index_html
+    assert 'class="event-tool-group manual-events"' in index_html
+    assert 'class="event-tool-group auto-events"' in index_html
+    assert 'class="event-tool-group pending-events"' in index_html
+
+    manual_block = index_html[
+        index_html.index('<div class="event-tool-group manual-events">'):
+        index_html.index('<div class="event-tool-group auto-events">')
+    ]
+    auto_block = index_html[
+        index_html.index('<div class="event-tool-group auto-events">'):
+        index_html.index('<div class="event-tool-group pending-events">')
+    ]
+    pending_block = index_html[
+        index_html.index('<div class="event-tool-group pending-events">'):
+        index_html.index('<div id="summaryPane"')
+    ]
+
+    assert "手動生成" in manual_block
+    assert 'id="generateTestEvents"' in manual_block
+    assert 'id="injectPending"' not in manual_block
+    assert "自動測試" in auto_block
+    assert 'id="toggleAutoTestEvents"' in auto_block
+    assert 'id="injectSelected"' not in auto_block
+    assert "待處理留言" in pending_block
+    assert 'id="eventsList"' in pending_block
+    assert 'id="injectSelected"' in pending_block
+    assert 'id="injectPending"' in pending_block
+    assert 'id="injectContent"' in pending_block
+    assert "<summary>進階注入提示</summary>" in pending_block
+
+
+def test_control_ui_checkbox_inputs_keep_native_compact_size():
+    index_html = _control_ui_source()
+
+    assert 'href="/ui-assets/index.css?v=character-limit-v1"' in index_html
+    assert '\ninput[type="checkbox"] {' in index_html
+    checkbox_block = index_html[
+        index_html.index('\ninput[type="checkbox"] {'):
+        index_html.index('\ntextarea {', index_html.index('\ninput[type="checkbox"] {'))
+    ]
+    assert "width: 16px;" in checkbox_block
+    assert "height: 16px;" in checkbox_block
+    assert "min-height: 16px;" in checkbox_block
+    assert "padding: 0;" in checkbox_block
+    assert "accent-color: var(--accent);" in checkbox_block
 
 
 def test_topic_pack_buttons_are_contextual_in_control_ui():
@@ -447,6 +560,302 @@ def test_topic_pack_entry_editor_hides_system_metadata_fields():
     assert "topicEntryPreviewText(entry)" in index_html
 
 
+def test_director_controls_are_integrated_into_live_session_panel():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index("<h2>Live Session</h2>"):
+        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+    ]
+    tabs_block = index_html[
+        index_html.index('<div class="tabs">'):
+        index_html.index('<div id="eventsPane"')
+    ]
+
+    assert 'data-pane="directorPane"' not in tabs_block
+    assert 'id="directorPane"' not in index_html
+    assert 'id="directorControls"' in live_session_block
+    assert "導播設定" in live_session_block
+    assert "角色停頓後續話秒數" in live_session_block
+    assert 'id="directorIdle"' in live_session_block
+    assert 'data-testid="director-idle-seconds"' in live_session_block
+    assert 'id="directorGuidance"' in live_session_block
+    assert 'id="updateDirectorGuidance"' in live_session_block
+    assert "直播開始後會自動啟動導播與開場" in live_session_block
+    assert 'id="autoDirector"' not in live_session_block
+    assert 'id="toggleDirector"' not in live_session_block
+    assert 'id="directorState"' in live_session_block
+    assert '<details class="director-debug">' in live_session_block
+    assert "<summary>導播除錯資訊</summary>" in live_session_block
+    assert 'id="directorJson"' in live_session_block
+    assert "toggleDirector" not in index_html
+    assert '$("autoDirector")' not in index_html
+    assert "await setDirector(true, true);" in index_html
+
+
+def test_connector_and_memoria_settings_are_in_system_settings_tab():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index("<h2>Live Session</h2>"):
+        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+    ]
+    tabs_block = index_html[
+        index_html.index('<div class="tabs">'):
+        index_html.index('<div id="eventsPane"')
+    ]
+    system_settings_block = index_html[
+        index_html.index('<div id="systemSettingsPane"'):
+        index_html.index('\n\n      </section>', index_html.index('<div id="systemSettingsPane"'))
+    ]
+
+    assert '<button class="tab" data-pane="systemSettingsPane">系統設定</button>' in tabs_block
+    assert 'id="systemSettingsPane"' in index_html
+    assert "<h2>Connector</h2>" not in live_session_block
+    assert "<h2>MemoriaCore Auth</h2>" not in live_session_block
+    assert "<h2>Connector</h2>" in system_settings_block
+    assert "<h2>MemoriaCore Auth</h2>" in system_settings_block
+    assert 'id="saveConnector"' in system_settings_block
+    assert 'id="testMemoriaAuth"' in system_settings_block
+
+
+def test_live_session_automation_options_have_clear_labels_and_tooltips():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index("<h2>Live Session</h2>"):
+        index_html.index('<div id="directorControls"')
+    ]
+
+    expected_options = {
+        "autoInject": ("自動注入待處理留言", "每隔一段時間把 pending 留言送進角色回應流程"),
+        "autoFinalize": ("到達預計直播時間後自動收尾", "預計直播分鐘到達後執行結束與摘要收尾流程"),
+        "autoScThanksOnFinalize": ("收尾時逐一感謝未處理 SC", "結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat"),
+        "autoDeleteProcessed": ("摘要與記憶完成後清除 runtime session", "摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session"),
+        "researchEnabled": ("觀眾提問啟用安全搜尋補充", "觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文"),
+    }
+
+    assert "<h3>直播自動化選項</h3>" in live_session_block
+    assert 'id="dynamicInject"' not in live_session_block
+    assert 'id="injectMinIntervalSeconds"' in live_session_block
+    assert 'id="injectMinIntervalPercent"' not in live_session_block
+    assert "動態注入最短秒數" in live_session_block
+    assert "pending 接近上限時允許縮短到的最快注入間隔" not in live_session_block
+    assert "最低間隔比例" not in live_session_block
+    for field_id, (label, tooltip) in expected_options.items():
+        assert f'id="{field_id}"' in live_session_block
+        assert label in live_session_block
+        assert f'data-tooltip="{tooltip}"' in live_session_block
+        assert f'aria-label="{tooltip}"' in live_session_block
+
+    assert 'class="help-tip"' in live_session_block
+    assert ".help-tip::after" in index_html
+    assert "left: calc(100% + 8px);" in index_html
+    assert ".help-tip.tooltip-left::after" in index_html
+    assert "positionHelpTooltip" in index_html
+    assert ".help-tip:hover::after" in index_html
+    assert ".help-tip:focus::after" in index_html
+    assert 'style="width:auto;min-height:auto"' not in live_session_block
+
+
+def test_live_session_core_fields_have_detailed_tooltips():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index("<h2>Live Session</h2>"):
+        index_html.index('<div id="sessionActions"')
+    ]
+    expected_fields = {
+        "videoId": "留空時使用測試直播；填入 YouTube video_id 或 URL 時會連到真實直播聊天室，並停用測試留言功能。",
+        "characterSelect": "選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。",
+        "injectInterval": "自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。",
+        "injectMinIntervalSeconds": "pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。",
+        "minPending": "pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。",
+        "maxPending": "單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。",
+        "plannedDuration": "大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。",
+        "scInterruptCooldown": "Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。",
+        "maxScPerBatch": "每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。",
+        "directorGroupTurnLimit": "導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。",
+        "directorMaxChatBatches": "連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。",
+        "directorIdle": "角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。",
+        "directorGuidance": "本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。",
+    }
+
+    for field_id, tooltip in expected_fields.items():
+        assert f'id="{field_id}"' in live_session_block
+        assert f'data-tooltip="{tooltip}"' in live_session_block
+        assert f'aria-label="{tooltip}"' in live_session_block
+
+    for label_text, field_id in [
+        ("YouTube video_id 或 URL", "videoId"),
+        ("角色", "characterSelect"),
+        ("注入間隔秒數", "injectInterval"),
+        ("動態注入最短秒數", "injectMinIntervalSeconds"),
+        ("導播回合上限", "directorGroupTurnLimit"),
+        ("幾批留言後回主軸", "directorMaxChatBatches"),
+        ("角色停頓後續話秒數", "directorIdle"),
+        ("本場直播方向", "directorGuidance"),
+    ]:
+        pattern = (
+            rf'<label[^>]*>\s*<span class="field-label">{re.escape(label_text)}\s*'
+            rf'<span class="help-tip"[^>]*>\?</span>\s*</span>\s*'
+            rf'<(?:input|select|textarea)[^>]*id="{field_id}"'
+        )
+        assert re.search(pattern, live_session_block, flags=re.DOTALL), field_id
+
+
+def test_control_ui_uses_single_live_session_flow():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index("<h2>Live Session</h2>"):
+        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+    ]
+    summary_pane = index_html[
+        index_html.index('id="summaryPane"'):
+        index_html.index('id="topicPackPane"')
+    ]
+
+    assert 'id="sessionName"' not in live_session_block
+    assert 'id="newSession"' not in live_session_block
+    assert 'class="advanced-session-picker"' not in live_session_block
+    assert 'id="sessionSelect"' not in live_session_block
+    assert 'id="deleteSession"' not in live_session_block
+    assert 'id="finalizeSession"' not in live_session_block
+    assert 'id="writeMemory"' not in summary_pane
+    assert "startCurrentSession" in index_html
+    assert "/sessions/current/start" in index_html
+    assert "結束直播並收尾" in index_html
+    assert "開始全新直播" in index_html
+    assert "暫停" not in index_html
+    assert '$("newSession")' not in index_html
+    assert '$("sessionSelect")' not in index_html
+    assert '$("deleteSession")' not in index_html
+    assert '$("writeMemory")' not in index_html
+    assert 'sessionAction("stop")' not in index_html
+
+
+def test_control_ui_auto_creates_memoria_session_without_manual_picker():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index("<h2>Live Session</h2>"):
+        index_html.index('<div class="stack">', index_html.index("<h2>Live Session</h2>") + 1)
+    ]
+
+    assert "MemoriaCore session" not in live_session_block
+    assert 'id="memoriaSession"' not in live_session_block
+    assert '$("memoriaSession")' not in index_html
+    assert "/memoria/sessions?limit=200" not in index_html
+    assert "memoriaSessions" not in index_html
+    assert 'target_memoria_session_id: ""' in index_html
+
+
+def test_control_ui_uses_single_primary_start_or_finalize_action():
+    index_html = _control_ui_source()
+
+    session_actions = index_html[
+        index_html.index('id="sessionActions"'):
+        index_html.index("</section>", index_html.index('id="sessionActions"'))
+    ]
+    summary_pane = index_html[
+        index_html.index('id="summaryPane"'):
+        index_html.index('id="topicPackPane"')
+    ]
+
+    assert 'id="toggleSession"' in session_actions
+    assert 'id="finalizeSession"' not in session_actions
+    assert "結束直播並收尾" in index_html
+    assert 'id="finalizeSession"' not in summary_pane
+    assert "標記結束" not in index_html
+    assert "收尾中" in index_html
+    assert "開始全新直播" in index_html
+    assert "startCurrentSession" in index_html
+    assert "finalizeCurrentSession" in index_html
+    assert 'log("直播操作失敗", String(error))' in index_html
+    assert 'log("直播收尾失敗", String(error))' not in index_html
+
+
+def test_control_ui_restores_primary_action_after_start_or_finalize_failure():
+    index_html = _control_ui_source()
+    start_block = index_html[
+        index_html.index("async function startCurrentSession"):
+        index_html.index("async function finalizeCurrentSession")
+    ]
+    finalize_block = index_html[
+        index_html.index("async function finalizeCurrentSession"):
+        index_html.index("async function toggleSession")
+    ]
+
+    assert "try {" in start_block
+    assert "finally {" in start_block
+    assert "updateLiveSessionControls();" in start_block[start_block.index("finally {"):]
+    assert "try {" in finalize_block
+    assert "finally {" in finalize_block
+    assert "updateLiveSessionControls();" in finalize_block[finalize_block.index("finally {"):]
+
+
+def test_control_ui_disables_test_event_controls_for_real_youtube_sessions():
+    index_html = _control_ui_source()
+
+    assert 'id="testEventsModeNotice"' in index_html
+    assert "真實 YouTube 直播會停用測試留言" in index_html
+    assert "function isRealYoutubeLiveSession" in index_html
+    assert "function updateTestEventControls" in index_html
+    assert 'testEventControlsDisabled' in index_html
+    assert 'manualGroup.classList.toggle("is-disabled", blocked);' in index_html
+    assert 'autoGroup.classList.toggle("is-disabled", blocked);' in index_html
+    assert '$("generateTestEvents").disabled = blocked || !hasSession;' in index_html
+    assert '$("toggleAutoTestEvents").disabled = blocked || !hasSession;' in index_html
+    assert '$("autoTestEvents").checked = false;' in index_html
+    assert '$("autoTestEvents").disabled = blocked;' in index_html
+    assert '$("videoId").addEventListener("input", updateLiveSessionControls);' in index_html
+    assert "真實 YouTube 直播不允許插入測試留言" in index_html
+
+
+def test_single_connector_ui_only_collects_api_key_and_auto_enables_connector():
+    index_html = _control_ui_source()
+    connector_block = index_html[
+        index_html.index("<h2>Connector</h2>"):
+        index_html.index("<h2>MemoriaCore Auth</h2>")
+    ]
+    save_block = index_html[
+        index_html.index("async function saveConnector"):
+        index_html.index("async function saveSession")
+    ]
+
+    assert 'id="apiKey"' in connector_block
+    assert "只要 API key 正確，connector 會自動啟用" in connector_block
+    assert 'id="connectorName"' not in connector_block
+    assert 'id="connectorEnabled"' not in connector_block
+    assert '$("connectorName")' not in save_block
+    assert '$("connectorEnabled")' not in save_block
+    assert 'display_name: "YouTube Main"' in save_block
+    assert "enabled: true" in save_block
+
+
+def test_memoria_auth_refresh_button_names_updated_resources():
+    index_html = _control_ui_source()
+    memoria_block = index_html[
+        index_html.index("<h2>MemoriaCore Auth</h2>"):
+        index_html.index('<div class="stack right-rail">', index_html.index("<h2>MemoriaCore Auth</h2>"))
+    ]
+
+    assert 'id="testMemoriaAuth"' in memoria_block
+    assert "測試連線並更新角色與 Session 清單" in memoria_block
+    assert "測試連線並更新下拉" not in memoria_block
+
+
+def test_single_connector_storage_auto_enables_legacy_disabled_connector(tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": False,
+    })
+
+    connector = storage.ensure_single_connector()
+
+    assert connector["connector_id"] == "youtube-main"
+    assert connector["api_key"] == "key"
+    assert connector["enabled"] is True
+
+
 @pytest.mark.asyncio
 async def test_delete_session_endpoint_returns_deleted_session_id(monkeypatch, tmp_path):
     storage = server_module.BridgeStorage(tmp_path / "bridge.db")
@@ -475,6 +884,257 @@ async def test_delete_session_endpoint_returns_deleted_session_id(monkeypatch, t
     assert result == {"deleted": True, "session_id": "live-a"}
     assert stopped == ["live-a"]
     assert storage.get_session("live-a") is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_session_endpoint_uses_full_finalize_manager_path(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "status": "running",
+        "auto_sc_thanks_on_finalize": False,
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    finalized: list[str] = []
+
+    class FakeManager:
+        async def finalize_session(self, session_id: str):
+            finalized.append(session_id)
+            storage.update_session_fields(session_id, status="ended")
+            storage.update_session_summary_state(session_id, summary_status="pending", finalized_at="2026-05-06T10:00:00")
+            return {"status": "ended", "running": False}
+
+        def get_status(self, session_id: str):
+            return {"session_id": session_id, "status": "ended", "running": False}
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+
+    class FakeSummaryManager:
+        def summarize_session(self, *args, **kwargs):
+            return {"status": "skipped", "reason": "no_events"}
+
+    monkeypatch.setattr(server_module, "summary_manager", FakeSummaryManager())
+
+    result = await server_module.finalize_session("live-a")
+
+    assert finalized == ["live-a"]
+    assert result["status"] == "ended"
+    assert result["runtime_status"]["status"] == "ended"
+
+
+@pytest.mark.asyncio
+async def test_start_current_session_archives_existing_session_and_writes_memory(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    old = storage.upsert_session({
+        "session_id": "old-live",
+        "connector_id": "youtube-main",
+        "status": "running",
+        "started_at": "2026-05-06T10:00:00",
+        "character_ids": ["coco", "byakuren"],
+        "auto_delete_after_processed": False,
+    })
+    storage.save_event({
+        "bridge_session_id": old["session_id"],
+        "external_message_id": "msg-1",
+        "author_channel_id": "viewer",
+        "author_display_name": "觀眾",
+        "message_text": "今天新番作畫很有話題。",
+        "published_at": "2026-05-06T10:01:00",
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    finalized: list[str] = []
+    started: list[str] = []
+
+    class FakeManager:
+        async def finalize_session(self, session_id: str):
+            finalized.append(session_id)
+            storage.update_session_fields(session_id, status="ended")
+            storage.update_session_summary_state(
+                session_id,
+                summary_status="pending",
+                finalized_at="2026-05-06T10:10:00",
+            )
+            return {"session_id": session_id, "status": "ended"}
+
+        async def start_session(self, session_id: str):
+            started.append(session_id)
+            storage.update_session_fields(session_id, status="running", started_at="2026-05-06T10:20:00")
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        def get_status(self, session_id: str):
+            session = storage.get_session(session_id)
+            return {
+                "session_id": session_id,
+                "status": session.get("status") if session else "missing",
+                "running": bool(session and session.get("status") == "running"),
+            }
+
+        async def stop_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="stopped")
+            return self.get_status(session_id)
+
+    class FakeSummaryManager:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def summarize_session(self, session_id: str, **_kwargs):
+            self.calls.append(session_id)
+            summary = storage.create_summary(session_id, {
+                "title": "直播摘要",
+                "summary_text": "討論新番作畫。",
+                "memory_text": "本場直播討論新番作畫。",
+                "character_ids": ["coco", "byakuren"],
+                "event_count": 1,
+                "status": "completed",
+                "metadata": {"memory_write_status": "not_started"},
+            })
+            storage.update_session_summary_state(
+                session_id,
+                summary_status="completed",
+                summary_id=summary["id"],
+                finalized_at="2026-05-06T10:10:00",
+            )
+            return {"status": "completed", "summary": summary}
+
+    memory_writes: list[dict] = []
+
+    class FakeMemoriaClient:
+        def write_shared_youtube_memory(self, **kwargs):
+            memory_writes.append(kwargs)
+            return {"block_id": "shared-memory-1"}
+
+    fake_summary = FakeSummaryManager()
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+    monkeypatch.setattr(server_module, "summary_manager", fake_summary)
+    monkeypatch.setattr(server_module._sessions_routes, "MemoriaClient", FakeMemoriaClient)
+
+    result = await server_module.start_current_session(server_module.LiveSessionConfig(
+        video_id="",
+        character_ids=["coco"],
+        auto_inject=True,
+    ))
+
+    assert finalized == ["old-live"]
+    assert fake_summary.calls == ["old-live"]
+    assert memory_writes and memory_writes[0]["session_id"] == "old-live"
+    assert memory_writes[0]["character_ids"] == ["coco", "byakuren"]
+    assert storage.get_session("old-live") is None
+    assert started == [result["session_id"]]
+    assert storage.get_session(result["session_id"])["status"] == "running"
+    assert result["archived_sessions"][0]["session_id"] == "old-live"
+    assert result["archived_sessions"][0]["memory_write"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_start_current_session_validates_new_live_before_archiving_existing(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "old-live",
+        "connector_id": "youtube-main",
+        "status": "running",
+        "started_at": "2026-05-06T10:00:00",
+        "character_ids": ["coco"],
+    })
+    storage.save_event({
+        "bridge_session_id": "old-live",
+        "external_message_id": "msg-1",
+        "author_channel_id": "viewer",
+        "author_display_name": "觀眾",
+        "message_text": "舊直播仍在進行。",
+        "published_at": "2026-05-06T10:01:00",
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    finalized: list[str] = []
+    started: list[str] = []
+
+    class FakeManager:
+        async def finalize_session(self, session_id: str):
+            finalized.append(session_id)
+            storage.update_session_fields(session_id, status="ended")
+            return {"session_id": session_id, "status": "ended"}
+
+        async def start_session(self, session_id: str):
+            started.append(session_id)
+            raise ValueError("connector 缺少 YouTube API key")
+
+        def get_status(self, session_id: str):
+            session = storage.get_session(session_id)
+            return {
+                "session_id": session_id,
+                "status": session.get("status") if session else "missing",
+                "running": bool(session and session.get("status") == "running"),
+            }
+
+        async def stop_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="stopped")
+            return self.get_status(session_id)
+
+    class FakeSummaryManager:
+        def summarize_session(self, *_args, **_kwargs):
+            return {"status": "skipped", "reason": "not_expected"}
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+    monkeypatch.setattr(server_module, "summary_manager", FakeSummaryManager())
+
+    with pytest.raises(HTTPException) as exc:
+        await server_module.start_current_session(server_module.LiveSessionConfig(
+            video_id="real-video",
+            character_ids=["coco"],
+        ))
+
+    assert exc.value.status_code == 400
+    assert "API key" in str(exc.value.detail)
+    assert finalized == []
+    assert started == []
+    old_session = storage.get_session("old-live")
+    assert old_session is not None
+    assert old_session["status"] == "running"
+    assert storage.count_events("old-live") == 1
+    assert [session["session_id"] for session in storage.list_sessions()] == ["old-live"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_session_disables_auto_test_events_for_real_youtube_session(tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+
+    session = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "video_id": "real-video",
+        "auto_test_events_enabled": True,
+        "test_event_use_llm": True,
+    })
+
+    assert session["video_id"] == "real-video"
+    assert session["auto_test_events_enabled"] is False
 
 
 @pytest.mark.asyncio

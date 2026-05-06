@@ -12,6 +12,7 @@ from api.models.requests import (
     PreferenceAggregateRequest, SyntheticRequest,
 )
 from api.models.responses import SystemConfigDTO
+from api.session_limits import MAX_SESSION_CHARACTERS
 from core.i18n import DEFAULT_LOCALE, normalize_locale
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -63,6 +64,7 @@ async def get_config():
         dual_layer_enabled=prefs.get("dual_layer_enabled", False),
         group_chat_max_bot_turns=int(prefs.get("group_chat_max_bot_turns", 3)),
         group_chat_turn_delay_seconds=float(prefs.get("group_chat_turn_delay_seconds", 2.0)),
+        max_session_characters=MAX_SESSION_CHARACTERS,
         opening_penalty_enabled=prefs.get("opening_penalty_enabled", True),
         opening_penalty_tokenizer_ref=prefs.get("opening_penalty_tokenizer_ref", ""),
         tts_enabled=prefs.get("tts_enabled", False),

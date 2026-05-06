@@ -251,15 +251,17 @@ class EventRepositoryMixin:
         *,
         unhandled_only: bool = True,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict]:
         limit = max(1, min(int(limit or 100), 500))
+        offset = max(0, int(offset or 0))
         where = "bridge_session_id = ? AND priority_class = 'super_chat'"
         if unhandled_only:
             where += " AND (handled_in_closing_at IS NULL OR handled_in_closing_at = '')"
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM live_events WHERE {where} ORDER BY sc_tier DESC, id ASC LIMIT ?",
-                (session_id, limit),
+                f"SELECT * FROM live_events WHERE {where} ORDER BY sc_tier DESC, id ASC LIMIT ? OFFSET ?",
+                (session_id, limit, offset),
             ).fetchall()
         return [event for row in rows if (event := self._row_to_event(row))]
 

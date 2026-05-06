@@ -1320,6 +1320,7 @@ def test_dynamic_auto_inject_delay_accelerates_with_pending_count():
         "min_pending_events": 1,
         "max_pending_events": 10,
         "dynamic_inject_enabled": True,
+        "inject_min_interval_ratio": 0.32,
     }
 
     low = YouTubeBridgeManager._auto_inject_delay(base_session, 1, active_interaction=False)
@@ -1328,6 +1329,18 @@ def test_dynamic_auto_inject_delay_accelerates_with_pending_count():
 
     assert high < low
     assert active == 60
+
+
+def test_dynamic_auto_inject_delay_uses_configured_min_seconds_and_stays_enabled():
+    session = {
+        "inject_interval_seconds": 60,
+        "min_pending_events": 1,
+        "max_pending_events": 10,
+        "dynamic_inject_enabled": False,
+        "inject_min_interval_seconds": 20,
+    }
+
+    assert YouTubeBridgeManager._auto_inject_delay(session, 10, active_interaction=False) == 20.0
 
 
 def test_director_opening_decision_builds_short_kickoff_prompt():
@@ -1893,9 +1906,9 @@ def test_generated_super_chat_uses_public_topic_not_internal_guidance():
 def test_dynamic_auto_inject_does_not_accelerate_while_generation_is_active():
     session = {
         "inject_interval_seconds": 60,
-        "dynamic_inject_enabled": True,
         "min_pending_events": 1,
         "max_pending_events": 12,
+        "inject_min_interval_seconds": 15,
     }
 
     assert YouTubeBridgeManager._auto_inject_delay(session, 8, active_interaction=True) == 60.0
@@ -2152,6 +2165,36 @@ async def test_start_session_without_video_id_uses_test_mode(monkeypatch):
 
         stopped = await manager.stop_session("live-a")
         assert stopped["running"] is False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_start_session_auto_enables_single_connector_from_legacy_disabled_state(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        trace_path = tmp_dir / "runtime" / "llm_trace.jsonl"
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(bridge_engine, "DEFAULT_LLM_TRACE_PATH", trace_path)
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "youtube-main",
+            "display_name": "YouTube Main",
+            "enabled": False,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "youtube-main",
+            "display_name": "QA Live",
+        })
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        status = await manager.start_session("live-a")
+
+        connector = storage.get_connector("youtube-main")
+        assert status["running"] is True
+        assert connector["enabled"] is True
+        await manager.stop_session("live-a")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2735,6 +2778,39 @@ async def test_autostart_marks_unavailable_live_session_stopped_without_crashing
 
 
 @pytest.mark.asyncio
+async def test_real_youtube_session_blocks_manual_and_auto_test_events():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Real YouTube Live",
+            "video_id": "real-video",
+            "auto_test_events_enabled": True,
+            "test_event_use_llm": True,
+        })
+        manager = YouTubeBridgeManager(storage)
+
+        with pytest.raises(ValueError, match="真實 YouTube 直播不允許插入測試留言"):
+            await manager.generate_test_events("live-a", count=1, use_llm=True)
+
+        with pytest.raises(ValueError, match="真實 YouTube 直播不允許插入測試留言"):
+            await manager.start_auto_test_events("live-a")
+
+        assert storage.get_session("live-a")["auto_test_events_enabled"] is False
+        assert storage.list_events("live-a") == []
+        assert manager.get_status("live-a")["auto_test_events_running"] is False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
     tmp_dir = _tmp_dir()
     try:
@@ -2798,13 +2874,125 @@ async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
         assert closing_call["display_content"] == "感謝本場 Super Chat。"
         context_text = closing_call["external_context"]["context_text"]
         assert "直播流程 action=closing_super_chat_thanks" in context_text
-        assert "逐條" in context_text
+        assert "逐一點名所有" in context_text
+        assert "片尾名單" in context_text
         assert "SC觀眾" in context_text
         assert "紅色斗內" in context_text
         assert "直播導播 action=closing_super_chat_thanks" not in closing_call["display_content"]
         director_state = storage.get_director_state("live-a")
         assert director_state["director_enabled"] is False
         assert director_state["status"] == "ended"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_closing_super_chat_thanks_lists_every_sc_like_credits():
+    tmp_dir = _tmp_dir()
+    try:
+        FakeClosingMemoriaClient.calls.clear()
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "auto_sc_thanks_on_finalize": True,
+            "character_ids": ["coco"],
+        })
+        for index in range(125):
+            storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"sc-{index}",
+                "message_type": "superChatEvent",
+                "author_display_name": f"SC觀眾{index:02d}",
+                "message_text": f"第 {index} 則支持。",
+                "safe_message_text": f"第 {index} 則支持。",
+                "safety_status": "completed",
+                "safety_label": "clean",
+                "amount_display_string": "NT$150",
+                "amount_micros": 150000000,
+                "sc_tier": 2,
+                "priority_class": "super_chat",
+            })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+        result = await manager.run_closing_super_chat_thanks("live-a")
+
+        assert result["status"] == "completed"
+        assert storage.list_super_chats("live-a", unhandled_only=True) == []
+        interaction = storage.list_interactions("live-a")[0]
+        prompt = interaction["metadata"]["decision"]["prompt"]
+        assert "逐一點名所有" in prompt
+        assert "分組" not in prompt
+        assert "代表性" not in prompt
+        assert "SC觀眾00" in prompt
+        assert "SC觀眾124" in prompt
+        assert prompt.count("感謝 SC觀眾") == 125
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_manual_finalize_uses_full_closing_flow_and_marks_session_ended():
+    tmp_dir = _tmp_dir()
+    try:
+        FakeClosingMemoriaClient.calls.clear()
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Manual Close Live",
+            "target_memoria_session_id": "mem-a",
+            "auto_sc_thanks_on_finalize": True,
+            "auto_inject": True,
+            "auto_test_events_enabled": True,
+            "status": "running",
+        })
+        storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "sc-manual-a",
+            "message_type": "superChatEvent",
+            "author_display_name": "手動收尾SC",
+            "message_text": "收尾前想聽一下新番推薦。",
+            "amount_display_string": "NT$150",
+            "currency": "TWD",
+            "amount_micros": 150000000,
+            "sc_tier": 2,
+            "priority_class": "super_chat",
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager.finalize_session("live-a")
+
+        session = storage.get_session("live-a")
+        assert result["status"] == "ended"
+        assert runtime.status == "ended"
+        assert runtime.running is False
+        assert session["status"] == "ended"
+        assert session["finalized_at"]
+        assert session["summary_status"] == "pending"
+        assert session["auto_inject"] is False
+        assert session["auto_test_events_enabled"] is False
+        assert storage.list_super_chats("live-a", unhandled_only=True) == []
+        director_state = storage.get_director_state("live-a")
+        assert director_state["director_enabled"] is False
+        assert director_state["status"] == "ended"
+        assert director_state["metadata"]["finalized_by"] == "manual_finalize"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2860,7 +3048,7 @@ async def test_duration_finalize_fail_closes_pending_safety_before_closing_thank
         closing_prompt = interactions[0]["metadata"]["decision"]["prompt"]
         assert "system prompt" not in closing_prompt
         assert "催眠" not in closing_prompt
-        assert "不適合公開逐條回覆" in closing_prompt
+        assert "內容不公開" in closing_prompt
         assert "安全檢查未完成" not in closing_prompt
         director_state = storage.get_director_state("live-a")
         safety_result = director_state["metadata"]["closing_safety_resolution"]

@@ -89,6 +89,28 @@ async def memoria_characters():
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@router.get("/memoria/refs")
+async def memoria_refs():
+    try:
+        client = MemoriaClient()
+
+        def _load_refs():
+            characters = client.list_characters()
+            config = client.get_system_config()
+            try:
+                max_session_characters = int(config.get("max_session_characters") or 6)
+            except (TypeError, ValueError):
+                max_session_characters = 6
+            return {
+                "characters": characters,
+                "max_session_characters": max(1, max_session_characters),
+            }
+
+        return await asyncio.to_thread(_load_refs)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @router.get("/memoria/sessions")
 async def memoria_sessions(limit: int = 100):
     try:

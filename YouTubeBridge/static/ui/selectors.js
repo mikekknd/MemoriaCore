@@ -1,7 +1,7 @@
 import { $, state } from "./core.js";
 
 export function selectedSessionId() {
-  return $("sessionSelect").value || $("sessionId").value.trim();
+  return $("sessionId").value.trim();
 }
 
 export function selectedSessionInfo() {

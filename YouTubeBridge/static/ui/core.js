@@ -8,7 +8,7 @@ export const state = {
   connectors: [],
   connector: null,
   characters: [],
-  memoriaSessions: [],
+  maxSessionCharacters: 6,
   topicPacks: [],
   topicEntries: [],
   currentTopicEntryId: 0,
@@ -101,20 +101,42 @@ export function summarizeSsePayload(payload) {
 
 export function installTestIds() {
   [
-    "newSession", "sessionId", "sessionName", "videoId", "memoriaSession", "characterSelect",
-    "injectInterval", "plannedDuration", "scInterruptCooldown", "autoInject", "autoFinalize",
-    "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession", "deleteSession",
+    "sessionId", "videoId", "characterSelect", "characterLimitState",
+    "injectInterval", "injectMinIntervalSeconds", "plannedDuration", "scInterruptCooldown", "autoInject", "autoFinalize",
+    "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession",
     "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",
     "testSuperChatCountPerTick", "autoTestEvents", "generateTestEvents", "eventsList",
-    "directorGuidance", "directorIdle", "toggleDirector", "topicPackSelect",
+    "directorGuidance", "directorIdle", "topicPackSelect",
     "topicEntrySelect", "updateTopicPack", "deleteTopicPack", "deleteAllTopicPacks", "updateTopicEntry", "cancelTopicEntryEdit",
     "topicAutoBuildControls", "autoBuildTopicPack", "importFactCardsFolder", "generateGeminiFactCards", "searchTopicPack", "restoreTopicEntries",
-    "queueList", "refreshChatPreview",
-    "topicPackUsageState", "chatPreviewList", "eventsPane", "summaryPane", "directorPane", "topicPackPane",
-    "queuePane", "log"
+    "topicPackUsageState", "eventsPane", "summaryPane", "topicPackPane", "systemSettingsPane",
+    "runtimeRulesPane", "reloadRuntimeRules", "runtimeRulesContent",
+    "log"
   ].forEach((id) => {
     const element = $(id);
     if (element) element.dataset.testid = id;
+  });
+}
+
+export function positionHelpTooltip(tip) {
+  if (!tip) return;
+  tip.classList.remove("tooltip-left");
+  const rect = tip.getBoundingClientRect();
+  const tooltipWidth = Math.min(280, window.innerWidth * 0.72);
+  const margin = 16;
+  const hasRightRoom = window.innerWidth - rect.right >= tooltipWidth + margin;
+  const hasLeftRoom = rect.left >= tooltipWidth + margin;
+  if (!hasRightRoom && hasLeftRoom) {
+    tip.classList.add("tooltip-left");
+  }
+}
+
+export function installTooltipPositioning(root = document) {
+  root.querySelectorAll(".help-tip").forEach((tip) => {
+    tip.addEventListener("mouseenter", () => positionHelpTooltip(tip));
+    tip.addEventListener("focus", () => positionHelpTooltip(tip));
+    tip.addEventListener("mouseleave", () => tip.classList.remove("tooltip-left"));
+    tip.addEventListener("blur", () => tip.classList.remove("tooltip-left"));
   });
 }
 

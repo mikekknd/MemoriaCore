@@ -96,6 +96,7 @@ def test_system_config_roundtrips_admin_bypass(monkeypatch):
         assert config.status_code == 200, config.text
         assert config.json()["admin_bypass_enabled"] is False
         assert config.json()["group_chat_turn_delay_seconds"] == 2.0
+        assert config.json()["max_session_characters"] == 6
         assert config.json()["ui_locale"] == "zh-TW"
         public_locale = client.get("/api/v1/system/ui-locale")
         assert public_locale.status_code == 200, public_locale.text

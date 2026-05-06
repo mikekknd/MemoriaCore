@@ -260,6 +260,7 @@ delete_connector = _route_handler(_connectors_routes.delete_connector)
 
 list_sessions = _route_handler(_sessions_routes.list_sessions)
 upsert_session = _route_handler(_sessions_routes.upsert_session)
+start_current_session = _route_handler(_sessions_routes.start_current_session)
 get_session = _route_handler(_sessions_routes.get_session)
 delete_session = _route_handler(_sessions_routes.delete_session)
 start_session = _route_handler(_sessions_routes.start_session)
@@ -322,6 +323,7 @@ cleanup_session_events = _route_handler(_summaries_routes.cleanup_session_events
 get_memoria_config = _route_handler(_memoria_routes.get_memoria_config)
 update_memoria_config = _route_handler(_memoria_routes.update_memoria_config)
 test_memoria_auth = _route_handler(_memoria_routes.test_memoria_auth)
+memoria_refs = _route_handler(_memoria_routes.memoria_refs)
 memoria_characters = _route_handler(_memoria_routes.memoria_characters)
 memoria_sessions = _route_handler(_memoria_routes.memoria_sessions)
 

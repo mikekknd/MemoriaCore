@@ -2,25 +2,150 @@ import { $, SINGLE_CONNECTOR_ID, state, api, clearLog, escapeHtml, log, summariz
 import { defaultLiveSession, isSelectedSessionRunning, selectedSessionId, selectedSessionInfo } from "./selectors.js";
 import { refreshTopicPacks } from "./topic-packs.js";
 
+function sessionIsFinalized(session = selectedSessionInfo()) {
+  return !!(
+    session?.finalized_at
+    || session?.status === "ended"
+    || ["completed", "summarizing"].includes(session?.summary_status)
+  );
+}
+
+function sessionHasStarted(session = selectedSessionInfo()) {
+  return !!(session?.started_at || session?.runtime_status?.running || session?.status === "running");
+}
+
+function sessionIsClosing(session = selectedSessionInfo()) {
+  const status = session?.runtime_status?.status || session?.status || "";
+  return ["closing", "summarizing", "finalizing"].includes(status);
+}
+
 export function updateLiveSessionControls() {
   const hasSession = !!selectedSessionId();
   const running = isSelectedSessionRunning();
   const session = selectedSessionInfo();
-  const hasStarted = !!(session?.started_at || session?.runtime_status?.running);
-  $("toggleSession").textContent = running ? "停止" : "開始";
-  $("toggleSession").className = running ? "danger" : "blue";
-  $("deleteSession").disabled = !hasSession;
+  const hasStarted = sessionHasStarted(session);
+  const finalized = sessionIsFinalized(session);
+  const closing = sessionIsClosing(session);
+  syncCharacterSelectionLimit();
+  const characterValidation = validateSelectedCharacters();
+  const isStartAction = !(running || (hasStarted && !finalized)) && !closing;
+  $("toggleSession").textContent = closing
+    ? "收尾中"
+    : ((running || (hasStarted && !finalized)) ? "結束直播並收尾" : (finalized ? "開始全新直播" : "開始直播"));
+  $("toggleSession").className = (running || (hasStarted && !finalized)) && !closing ? "danger" : "blue";
+  $("toggleSession").disabled = closing;
+  if (!closing && isStartAction) {
+    $("toggleSession").disabled = !characterValidation.ok;
+    $("toggleSession").title = characterValidation.ok ? "" : characterValidation.message;
+  } else {
+    $("toggleSession").title = "";
+  }
   $("updateSession").textContent = "更新設定";
-  $("updateSession").hidden = !hasStarted;
-  $("sessionActions").className = hasStarted ? "session-actions" : "session-actions single";
+  $("updateSession").hidden = !hasSession || finalized || closing;
+  $("updateSession").disabled = !$("updateSession").hidden && !characterValidation.ok;
+  $("sessionActions").className = $("updateSession").hidden ? "session-actions single" : "session-actions";
   const autoTestRunning = !!session?.runtime_status?.auto_test_events_running;
   $("toggleAutoTestEvents").textContent = autoTestRunning ? "停止自動測試" : "啟動自動測試";
   $("toggleAutoTestEvents").className = autoTestRunning ? "danger" : "";
   $("toggleAutoTestEvents").disabled = !hasSession;
+  updateTestEventControls();
+}
+
+export function isRealYoutubeLiveSession(session = selectedSessionInfo()) {
+  return !!(
+    $("videoId").value.trim()
+    || session?.video_id
+    || session?.live_chat_id
+  );
+}
+
+export function testEventControlsDisabled() {
+  return isRealYoutubeLiveSession();
+}
+
+export function updateTestEventControls() {
+  const hasSession = !!selectedSessionId();
+  const blocked = testEventControlsDisabled();
+  const manualGroup = document.querySelector(".manual-events");
+  const autoGroup = document.querySelector(".auto-events");
+  if (manualGroup) manualGroup.classList.toggle("is-disabled", blocked);
+  if (autoGroup) autoGroup.classList.toggle("is-disabled", blocked);
+
+  const notice = $("testEventsModeNotice");
+  if (notice) {
+    notice.textContent = blocked
+      ? "真實 YouTube 直播會停用測試留言與自動測試，避免污染正式聊天室與產生額外 LLM 開銷。請改用無 video_id 的測試直播。"
+      : "測試留言只會寫入 YouTubeBridge 測試聊天室，不會送到 YouTube 平台。";
+    notice.className = blocked ? "status warn" : "muted";
+  }
+
+  $("generateTestEvents").disabled = blocked || !hasSession;
+  $("toggleAutoTestEvents").disabled = blocked || !hasSession;
+  $("autoTestEvents").disabled = blocked;
+  for (const id of [
+    "testCommentCount",
+    "testSuperChatCount",
+    "testTopicHint",
+    "testUseLlm",
+    "testMaliciousSc",
+    "testScBurst",
+    "testEventMinSeconds",
+    "testEventMaxSeconds",
+    "testEventCountPerTick",
+    "testSuperChatCountPerTick",
+  ]) {
+    const element = $(id);
+    if (element) element.disabled = blocked;
+  }
+  if (blocked) {
+    $("autoTestEvents").checked = false;
+  }
 }
 
 export function selectedCharacterIds() {
   return Array.from($("characterSelect").selectedOptions).map((option) => option.value).filter(Boolean);
+}
+
+export function maxSessionCharacters() {
+  return Math.max(1, Number(state.maxSessionCharacters || 6) || 6);
+}
+
+export function validateSelectedCharacters() {
+  const count = selectedCharacterIds().length;
+  const max = maxSessionCharacters();
+  if (count < 1) {
+    return { ok: false, count, max, message: "請先選擇至少 1 位角色" };
+  }
+  if (count > max) {
+    return { ok: false, count, max, message: `最多只能選擇 ${max} 位角色` };
+  }
+  return { ok: true, count, max, message: `已選 ${count}/${max} 位角色` };
+}
+
+export function syncCharacterSelectionLimit() {
+  const select = $("characterSelect");
+  const stateLabel = $("characterLimitState");
+  if (!select || !stateLabel) return;
+  const max = maxSessionCharacters();
+  const selected = Array.from(select.selectedOptions).filter((option) => option.value);
+  if (selected.length > max) {
+    selected.slice(max).forEach((option) => {
+      option.selected = false;
+    });
+  }
+  const count = selectedCharacterIds().length;
+  Array.from(select.options).forEach((option) => {
+    option.disabled = !!option.value && !option.selected && count >= max;
+  });
+  const validation = validateSelectedCharacters();
+  stateLabel.textContent = validation.ok ? validation.message : `${validation.message}；目前 ${validation.count}/${validation.max}`;
+  stateLabel.className = validation.ok ? "muted" : "status warn";
+}
+
+export function injectMinIntervalSeconds() {
+  const baseSeconds = Number($("injectInterval").value || 30);
+  const minSeconds = Number($("injectMinIntervalSeconds").value || 10);
+  return Math.max(5, Math.min(minSeconds, baseSeconds || 600));
 }
 
 export async function loadHealth() {
@@ -36,9 +161,9 @@ export async function loadHealth() {
 
 export function fillConnectorForm(connector) {
   if (!connector) return;
-  $("connectorName").value = connector.display_name || "";
-  $("connectorEnabled").checked = !!connector.enabled;
-  $("connectorState").textContent = connector.api_key_configured ? "已儲存 API key" : "尚未儲存 API key";
+  $("connectorState").textContent = connector.api_key_configured
+    ? "已儲存 API key，connector 自動啟用"
+    : "尚未儲存 API key；真實直播需設定";
   $("connectorState").className = connector.api_key_configured ? "status good" : "status warn";
 }
 
@@ -97,7 +222,7 @@ export function shortTime() {
 
 export function selectedTargetMemoriaSessionId() {
   const session = selectedSessionInfo();
-  return session?.target_memoria_session_id || $("memoriaSession").value || "";
+  return session?.target_memoria_session_id || "";
 }
 
 export function updateOpenChatLink(targetSessionId = selectedTargetMemoriaSessionId()) {
@@ -132,8 +257,10 @@ export function chatRoleLabel(message) {
 }
 
 export function renderChatPreview(messages) {
+  const list = $("chatPreviewList");
+  if (!list) return;
   const newestFirst = (messages || []).slice().reverse();
-  $("chatPreviewList").innerHTML = newestFirst.map((message) => {
+  list.innerHTML = newestFirst.map((message) => {
     const role = ["user", "assistant", "system_event", "system"].includes(message.role) ? message.role : "system";
     const idText = message.message_id !== undefined && message.message_id !== null ? ` #${message.message_id}` : "";
     return `<div class="chat-msg ${escapeHtml(role)}">
@@ -141,23 +268,27 @@ export function renderChatPreview(messages) {
       <div class="chat-msg-content">${escapeHtml(message.content || "")}</div>
     </div>`;
   }).join("") || `<div class="muted">目前沒有可顯示的聊天紀錄</div>`;
-  $("chatPreviewList").scrollTop = 0;
+  list.scrollTop = 0;
 }
 
 export async function refreshChatPreview({ silent = false } = {}) {
+  const previewState = $("chatPreviewState");
+  const previewList = $("chatPreviewList");
+  const refreshButton = $("refreshChatPreview");
+  if (!previewState || !previewList) return;
   let id = selectedSessionId();
   if (!id) {
-    $("chatPreviewState").textContent = "尚未選擇 Live Session";
-    $("chatPreviewState").className = "status warn";
-    $("chatPreviewList").innerHTML = `<div class="muted">請先建立或選擇 Live Session。</div>`;
+    previewState.textContent = "尚未選擇 Live Session";
+    previewState.className = "status warn";
+    previewList.innerHTML = `<div class="muted">請先建立或選擇 Live Session。</div>`;
     updateOpenChatLink("");
     if (!silent) log("Chat Preview 未更新", "請先建立或選擇 Live Session。");
     return;
   }
   if (!silent) {
-    $("refreshChatPreview").disabled = true;
-    $("chatPreviewState").textContent = "Chat Preview 更新中...";
-    $("chatPreviewState").className = "status";
+    if (refreshButton) refreshButton.disabled = true;
+    previewState.textContent = "Chat Preview 更新中...";
+    previewState.className = "status";
   }
   try {
     const data = await api(`/sessions/${encodeURIComponent(id)}/chat-preview?limit=80`);
@@ -166,15 +297,15 @@ export async function refreshChatPreview({ silent = false } = {}) {
     if (data.memoria_session_id) {
       const shown = (data.messages || []).length;
       if (data.stale) {
-        $("chatPreviewState").textContent = `後端忙碌，使用快取：${data.memoria_session_id.slice(0, 8)}... / ${shown}/${data.message_count || 0} 則`;
-        $("chatPreviewState").className = "status warn";
+        previewState.textContent = `後端忙碌，使用快取：${data.memoria_session_id.slice(0, 8)}... / ${shown}/${data.message_count || 0} 則`;
+        previewState.className = "status warn";
       } else {
-        $("chatPreviewState").textContent = `MemoriaCore session: ${data.memoria_session_id.slice(0, 8)}... / ${shown}/${data.message_count || 0} 則，${shortTime()} 已更新`;
-        $("chatPreviewState").className = "status good";
+        previewState.textContent = `MemoriaCore session: ${data.memoria_session_id.slice(0, 8)}... / ${shown}/${data.message_count || 0} 則，${shortTime()} 已更新`;
+        previewState.className = "status good";
       }
     } else {
-      $("chatPreviewState").textContent = data.stale ? "後端忙碌，沒有可用快取" : "尚未綁定 MemoriaCore session";
-      $("chatPreviewState").className = "status warn";
+      previewState.textContent = data.stale ? "後端忙碌，沒有可用快取" : "尚未綁定 MemoriaCore session";
+      previewState.className = "status warn";
     }
     if (!silent) {
       log(data.stale ? "Chat Preview 使用快取" : "Chat Preview 已更新", {
@@ -186,15 +317,16 @@ export async function refreshChatPreview({ silent = false } = {}) {
       });
     }
   } catch (error) {
-    $("chatPreviewState").textContent = "Chat Preview 讀取失敗";
-    $("chatPreviewState").className = "status bad";
+    previewState.textContent = "Chat Preview 讀取失敗";
+    previewState.className = "status bad";
     if (!silent) log("Chat Preview 讀取失敗", String(error));
   } finally {
-    if (!silent) $("refreshChatPreview").disabled = false;
+    if (!silent && refreshButton) refreshButton.disabled = false;
   }
 }
 
 export function scheduleChatPreviewRefresh({ reloadSessions = false } = {}) {
+  if (!$("chatPreviewList")) return;
   if (state.chatPreviewRefreshTimer) clearTimeout(state.chatPreviewRefreshTimer);
   state.chatPreviewRefreshTimer = setTimeout(async () => {
     state.chatPreviewRefreshTimer = null;
@@ -235,36 +367,28 @@ export async function testMemoriaAuth() {
 
 export async function loadMemoriaRefs() {
   try {
-    state.characters = await api("/memoria/characters");
+    const data = await api("/memoria/refs");
+    state.maxSessionCharacters = Number(data.max_session_characters || 6);
+    state.characters = data.characters || [];
     $("characterSelect").innerHTML = state.characters.map((c) =>
       `<option value="${escapeHtml(c.character_id)}" title="${escapeHtml(c.character_id)}">${escapeHtml(c.name || c.character_id)}</option>`
     ).join("");
+    syncCharacterSelectionLimit();
+    updateLiveSessionControls();
   } catch (error) {
     $("characterSelect").innerHTML = `<option value="">角色清單讀取失敗，請先設定 MemoriaCore Auth</option>`;
+    state.maxSessionCharacters = 6;
+    syncCharacterSelectionLimit();
+    updateLiveSessionControls();
     log("角色清單讀取失敗", String(error));
-  }
-  try {
-    state.memoriaSessions = await api("/memoria/sessions?limit=200");
-    $("memoriaSession").innerHTML = `<option value="">自動建立或沿用 Live Session 目標</option>` + state.memoriaSessions.map((s) =>
-      `<option value="${escapeHtml(s.session_id)}">${escapeHtml(s.group_name || s.session_id)} - ${escapeHtml(s.session_id)}</option>`
-    ).join("");
-  } catch (error) {
-    $("memoriaSession").innerHTML = `<option value="">Session 清單讀取失敗，請先設定 MemoriaCore Auth</option>`;
-    log("MemoriaCore session 清單讀取失敗", String(error));
   }
 }
 
 export async function loadSessions(preferredId = "", options = {}) {
   const selectDefault = options.selectDefault !== false;
   state.sessions = await api("/sessions");
-  $("sessionSelect").innerHTML = `<option value="">新直播草稿</option>` + state.sessions.map((s) => {
-    const name = s.display_name || s.session_id;
-    const status = s.runtime_status?.status || s.status;
-    return `<option value="${escapeHtml(s.session_id)}">${escapeHtml(name)} - ${escapeHtml(s.session_id)} [${escapeHtml(status)}]</option>`;
-  }).join("");
   const selected = selectDefault ? defaultLiveSession(preferredId) : null;
   if (selected) {
-    $("sessionSelect").value = selected.session_id;
     fillSessionForm(selected);
   }
   else newSessionDraft();
@@ -273,10 +397,9 @@ export async function loadSessions(preferredId = "", options = {}) {
 
 export function fillSessionForm(session) {
   $("sessionId").value = session.session_id || "";
-  $("sessionName").value = session.display_name || "";
   $("videoId").value = session.video_id || "";
-  $("memoriaSession").value = session.target_memoria_session_id || "";
   $("injectInterval").value = session.inject_interval_seconds || 30;
+  $("injectMinIntervalSeconds").value = session.inject_min_interval_seconds || Math.round(Number(session.inject_interval_seconds || 30) * Number(session.inject_min_interval_ratio || 0.32));
   $("minPending").value = session.min_pending_events || 1;
   $("maxPending").value = session.max_pending_events || 12;
   $("plannedDuration").value = session.planned_duration_minutes || 30;
@@ -285,11 +408,9 @@ export function fillSessionForm(session) {
   $("directorGroupTurnLimit").value = session.director_group_turn_limit || 3;
   $("directorMaxChatBatches").value = session.director_max_chat_batches_before_anchor || 2;
   $("autoInject").checked = !!session.auto_inject;
-  $("dynamicInject").checked = session.dynamic_inject_enabled !== false;
   $("autoFinalize").checked = !!session.auto_finalize_on_duration;
   $("autoScThanksOnFinalize").checked = session.auto_sc_thanks_on_finalize !== false;
   $("autoDeleteProcessed").checked = !!session.auto_delete_after_processed;
-  $("autoDirector").checked = $("autoDirector").checked !== false;
   $("directorGuidance").value = session.director_guidance || "";
   $("researchEnabled").checked = !!session.research_enabled;
   $("autoTestEvents").checked = !!session.auto_test_events_enabled;
@@ -309,11 +430,10 @@ export function fillSessionForm(session) {
 export function newSessionDraft() {
   clearLog();
   $("sessionId").value = "";
-  $("sessionName").value = `YT Live ${new Date().toLocaleString()}`;
   $("videoId").value = "";
-  $("memoriaSession").value = "";
   Array.from($("characterSelect").options).forEach((option) => option.selected = false);
   $("injectInterval").value = 30;
+  $("injectMinIntervalSeconds").value = 10;
   $("minPending").value = 1;
   $("maxPending").value = 12;
   $("plannedDuration").value = 30;
@@ -322,11 +442,9 @@ export function newSessionDraft() {
   $("directorGroupTurnLimit").value = 3;
   $("directorMaxChatBatches").value = 2;
   $("autoInject").checked = true;
-  $("dynamicInject").checked = true;
   $("autoFinalize").checked = true;
   $("autoScThanksOnFinalize").checked = true;
   $("autoDeleteProcessed").checked = true;
-  $("autoDirector").checked = true;
   $("directorGuidance").value = "";
   $("researchEnabled").checked = false;
   $("autoTestEvents").checked = false;
@@ -344,10 +462,13 @@ export function newSessionDraft() {
   renderNoSummary();
   $("topicPackSelect").value = "";
   $("topicPackEntries").innerHTML = `<div class="muted">尚無 fact card</div>`;
-  $("chatPreviewState").textContent = "尚未選擇 Live Session";
-  $("chatPreviewState").className = "status warn";
-  $("chatPreviewList").innerHTML = `<div class="muted">請先建立或選擇 Live Session。</div>`;
-  $("sessionSelect").value = "";
+  const previewState = $("chatPreviewState");
+  const previewList = $("chatPreviewList");
+  if (previewState && previewList) {
+    previewState.textContent = "尚未選擇 Live Session";
+    previewState.className = "status warn";
+    previewList.innerHTML = `<div class="muted">請先建立或選擇 Live Session。</div>`;
+  }
   state.selectedEventIds.clear();
   state.events = [];
   renderEvents();
@@ -359,9 +480,9 @@ export function newSessionDraft() {
 export async function saveConnector() {
   const payload = {
     connector_id: SINGLE_CONNECTOR_ID,
-    display_name: $("connectorName").value.trim(),
+    display_name: "YouTube Main",
     api_key: $("apiKey").value,
-    enabled: $("connectorEnabled").checked,
+    enabled: true,
   };
   const data = await api("/connectors", { method: "POST", body: JSON.stringify(payload) });
   $("apiKey").value = "";
@@ -369,20 +490,22 @@ export async function saveConnector() {
   await loadConnectors();
 }
 
-export async function saveSession(createNew) {
-  const payload = {
+export function liveSessionPayload({ createNew = false } = {}) {
+  const blockTestEvents = testEventControlsDisabled();
+  return {
     session_id: createNew ? "" : $("sessionId").value.trim(),
     connector_id: state.connector?.connector_id || SINGLE_CONNECTOR_ID,
-    display_name: $("sessionName").value.trim(),
+    display_name: "YouTube Live",
     video_id: $("videoId").value.trim(),
-    target_memoria_session_id: $("memoriaSession").value,
+    target_memoria_session_id: "",
     character_ids: selectedCharacterIds(),
     auto_connect: true,
     auto_inject: $("autoInject").checked,
     inject_interval_seconds: Number($("injectInterval").value || 30),
+    inject_min_interval_seconds: injectMinIntervalSeconds(),
     min_pending_events: Number($("minPending").value || 1),
     max_pending_events: Number($("maxPending").value || 12),
-    dynamic_inject_enabled: $("dynamicInject").checked,
+    dynamic_inject_enabled: true,
     planned_duration_minutes: Number($("plannedDuration").value || 30),
     sc_interrupt_cooldown_seconds: Number($("scInterruptCooldown").value || 30),
     max_sc_per_batch: Number($("maxScPerBatch").value || 5),
@@ -393,7 +516,7 @@ export async function saveSession(createNew) {
     auto_delete_after_processed: $("autoDeleteProcessed").checked,
     director_guidance: $("directorGuidance").value.trim(),
     research_enabled: $("researchEnabled").checked,
-    auto_test_events_enabled: $("autoTestEvents").checked,
+    auto_test_events_enabled: blockTestEvents ? false : $("autoTestEvents").checked,
     test_event_min_seconds: Number($("testEventMinSeconds").value || 20),
     test_event_max_seconds: Number($("testEventMaxSeconds").value || 45),
     test_event_count_per_tick: Number($("testEventCountPerTick").value || 3),
@@ -402,10 +525,13 @@ export async function saveSession(createNew) {
     test_malicious_sc_enabled: $("testMaliciousSc").checked,
     test_sc_burst_mode: $("testScBurst").checked,
   };
+}
+
+export async function saveSession(createNew) {
+  const payload = liveSessionPayload({ createNew });
   const data = await api("/sessions", { method: "POST", body: JSON.stringify(payload) });
   log(createNew ? "新直播已建立" : "直播設定已更新", data);
   await loadSessions(data.session_id);
-  $("sessionSelect").value = data.session_id;
   fillSessionForm(data);
   subscribeEvents();
   updateLiveSessionControls();
@@ -421,38 +547,59 @@ export async function sessionAction(action) {
   updateLiveSessionControls();
 }
 
-export async function deleteSession() {
-  const id = selectedSessionId();
-  if (!id) return;
-  const data = await api(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
-  log("runtime session 已刪除", data);
-  await loadSessions("", { selectDefault: false });
-  $("sessionSelect").value = "";
-  newSessionDraft();
-  updateLiveSessionControls();
-}
-
 export async function updateSessionSettings() {
   await saveSession(!selectedSessionId());
 }
 
+export async function startCurrentSession() {
+  const validation = validateSelectedCharacters();
+  if (!validation.ok) throw new Error(validation.message);
+  const button = $("toggleSession");
+  button.disabled = true;
+  button.textContent = "啟動中";
+  try {
+    const payload = liveSessionPayload({ createNew: true });
+    const data = await api("/sessions/current/start", { method: "POST", body: JSON.stringify(payload) });
+    log("直播已開始", data);
+    state.sessions = [data];
+    fillSessionForm(data);
+    subscribeEvents();
+    await setDirector(true, true);
+    await refreshEvents();
+    await refreshSummary();
+    await refreshTopicPacks();
+  } finally {
+    updateLiveSessionControls();
+  }
+}
+
+export async function finalizeCurrentSession() {
+  const id = selectedSessionId();
+  if (!id) throw new Error("請先建立或選擇 Live Session");
+  const button = $("toggleSession");
+  button.disabled = true;
+  button.textContent = "收尾中";
+  try {
+    const data = await api(`/sessions/${encodeURIComponent(id)}/finalize`, { method: "POST", body: "{}" });
+    log("直播已結束並寫入 Shared Memory", data);
+    if (data.summary) renderSummary(data.summary);
+    await loadSessions("", { selectDefault: !data.runtime_session_deleted });
+    await refreshEvents();
+    await refreshSummary();
+    await refreshTopicPacks();
+  } finally {
+    updateLiveSessionControls();
+  }
+}
+
 export async function toggleSession() {
-  if (isSelectedSessionRunning()) {
-    await sessionAction("stop");
+  const session = selectedSessionInfo();
+  const shouldFinalize = isSelectedSessionRunning() || (sessionHasStarted(session) && !sessionIsFinalized(session));
+  if (shouldFinalize) {
+    await finalizeCurrentSession();
     return;
   }
-  let id = selectedSessionId();
-  if (!id) {
-    await saveSession(true);
-    id = selectedSessionId();
-  } else {
-    await saveSession(false);
-  }
-  if (!id) throw new Error("請先建立或選擇 Live Session");
-  await sessionAction("start");
-  if ($("autoDirector").checked) {
-    await setDirector(true, true);
-  }
+  await startCurrentSession();
 }
 
 export async function refreshEvents() {
@@ -495,10 +642,12 @@ export function renderEvents() {
 export async function injectEvents(usePending) {
   const id = selectedSessionId();
   if (!id) throw new Error("請先建立或選擇 Live Session");
+  const validation = validateSelectedCharacters();
+  if (!validation.ok) throw new Error(validation.message);
   const eventIds = usePending ? [] : Array.from(state.selectedEventIds);
   const payload = {
     content: $("injectContent").value,
-    memoria_session_id: $("memoriaSession").value,
+    memoria_session_id: selectedTargetMemoriaSessionId(),
     character_ids: selectedCharacterIds(),
     event_ids: eventIds,
     max_events: 50,
@@ -517,6 +666,9 @@ export async function injectEvents(usePending) {
 export async function generateTestEvents() {
   const id = selectedSessionId();
   if (!id) throw new Error("請先建立或選擇 Live Session");
+  if (testEventControlsDisabled()) {
+    throw new Error("真實 YouTube 直播不允許插入測試留言；請改用無 video_id 的測試直播。");
+  }
   const payload = {
     count: Number($("testCommentCount").value || 5),
     topic_hint: $("testTopicHint").value.trim(),
@@ -536,6 +688,10 @@ export async function generateTestEvents() {
 export async function toggleAutoTestEvents() {
   const id = selectedSessionId();
   if (!id) throw new Error("請先建立或選擇 Live Session");
+  if (testEventControlsDisabled()) {
+    $("autoTestEvents").checked = false;
+    throw new Error("真實 YouTube 直播不允許插入測試留言；自動測試已停用。");
+  }
   await saveSession(false);
   const session = selectedSessionInfo();
   const running = !!session?.runtime_status?.auto_test_events_running;
@@ -624,24 +780,6 @@ export async function makeSummary(force) {
   }
 }
 
-export async function writeMemory() {
-  const id = selectedSessionId();
-  if (!id) throw new Error("請先建立或選擇 Live Session");
-  const data = await api(`/sessions/${encodeURIComponent(id)}/summary/write-memory`, {
-    method: "POST",
-    body: JSON.stringify({ force: false }),
-  });
-  log("shared memory 寫入完成", data);
-  if (data.runtime_session_deleted) {
-    await loadSessions();
-    renderSummary(data.summary || data);
-  }
-  else {
-    renderSummary(data.summary || data);
-    await refreshSummary();
-  }
-}
-
 export async function refreshDirector() {
   const id = selectedSessionId();
   if (!id) {
@@ -660,12 +798,11 @@ export async function refreshDirector() {
 }
 
 export function updateDirectorControls(data) {
-  const button = $("toggleDirector");
-  if (!button) return;
-  const enabled = !!data?.director_enabled;
-  button.textContent = enabled ? "停止導播" : "啟動導播";
-  button.className = enabled ? "danger" : "primary";
-  button.disabled = !selectedSessionId();
+  const status = $("directorState");
+  if (!status) return;
+  status.title = data?.director_enabled
+    ? "導播目前已啟用"
+    : "導播會在直播開始後自動啟用";
 }
 
 export async function updateDirectorGuidance() {
@@ -701,20 +838,16 @@ export async function setDirector(start, kickoff = false) {
   await refreshDirector();
 }
 
-export async function toggleDirector() {
-  const current = await refreshDirector();
-  const shouldStart = !current?.director_enabled;
-  await setDirector(shouldStart, shouldStart);
-}
-
 export async function refreshQueue() {
   const id = selectedSessionId();
-  if (!id) return;
+  const queueState = $("queueState");
+  const queueList = $("queueList");
+  if (!id || !queueState || !queueList) return;
   const data = await api(`/sessions/${encodeURIComponent(id)}/interactions?limit=80`);
   const items = data.interactions || [];
-  $("queueState").textContent = data.active ? `active: ${data.active.status}` : `${items.length} jobs`;
-  $("queueState").className = data.active ? "status warn" : "status";
-  $("queueList").innerHTML = items.map((item) => `
+  queueState.textContent = data.active ? `active: ${data.active.status}` : `${items.length} jobs`;
+  queueState.className = data.active ? "status warn" : "status";
+  queueList.innerHTML = items.map((item) => `
     <div class="item">
       <strong>${escapeHtml(item.source)} <span class="muted">${escapeHtml(item.status)} / p${escapeHtml(item.priority)}</span></strong>
       <p class="mono">${escapeHtml(item.job_id)}</p>

@@ -91,6 +91,8 @@ def row_to_session(row: sqlite3.Row | None) -> dict | None:
         "auto_connect": bool(row["auto_connect"]),
         "auto_inject": bool(row["auto_inject"]),
         "inject_interval_seconds": int(row["inject_interval_seconds"] or 30),
+        "inject_min_interval_seconds": int(row_value(row, "inject_min_interval_seconds", 10) or 10),
+        "inject_min_interval_ratio": float(row_value(row, "inject_min_interval_ratio", 0.32) or 0.32),
         "min_pending_events": int(row["min_pending_events"] or 1),
         "max_pending_events": int(row_value(row, "max_pending_events", 12) or 12),
         "dynamic_inject_enabled": bool(row_value(row, "dynamic_inject_enabled", 1)),

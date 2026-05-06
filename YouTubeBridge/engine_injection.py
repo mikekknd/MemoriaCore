@@ -20,17 +20,24 @@ class InjectionManagerMixin:
     @staticmethod
     def _auto_inject_delay(session: dict[str, Any], pending_count: int, *, active_interaction: bool) -> float:
         base = max(5, min(int(session.get("inject_interval_seconds", 30) or 30), 600))
-        if not session.get("dynamic_inject_enabled", True):
-            return float(base)
         max_pending = max(
             int(session.get("min_pending_events", 1) or 1),
             int(session.get("max_pending_events", 12) or 12),
         )
         if active_interaction:
             return float(base)
+        try:
+            min_seconds_raw = session.get("inject_min_interval_seconds")
+            if min_seconds_raw is None:
+                legacy_ratio = float(session.get("inject_min_interval_ratio", 0.32) or 0.32)
+                min_seconds = int(round(base * legacy_ratio))
+            else:
+                min_seconds = int(min_seconds_raw or 5)
+        except (TypeError, ValueError):
+            min_seconds = int(round(base * 0.32))
+        min_seconds = max(5, min(min_seconds, base))
         ratio = max(0.0, min(1.0, pending_count / max_pending))
-        acceleration = 1.0 - (0.68 * math.sqrt(ratio))
-        return float(max(5, int(round(base * acceleration))))
+        return float(max(min_seconds, int(round(base - ((base - min_seconds) * math.sqrt(ratio))))))
 
     @staticmethod
     def _select_pending_events_for_injection(

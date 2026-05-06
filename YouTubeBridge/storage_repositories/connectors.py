@@ -84,7 +84,7 @@ class ConnectorRepositoryMixin:
                         DEFAULT_CONNECTOR_ID,
                         (source["display_name"] if source else "") or DEFAULT_CONNECTOR_NAME,
                         (source["api_key"] if source else "") or "",
-                        int(source["enabled"]) if source else 1,
+                        1,
                         (source["created_at"] if source else "") or now,
                         now,
                     ),
@@ -92,11 +92,15 @@ class ConnectorRepositoryMixin:
             else:
                 next_display_name = canonical["display_name"] or DEFAULT_CONNECTOR_NAME
                 next_api_key = canonical["api_key"] or ((keyed["api_key"] if keyed else "") or "")
-                if next_display_name != canonical["display_name"] or next_api_key != canonical["api_key"]:
+                if (
+                    next_display_name != canonical["display_name"]
+                    or next_api_key != canonical["api_key"]
+                    or not canonical["enabled"]
+                ):
                     conn.execute(
                         """
                         UPDATE connectors
-                        SET display_name = ?, api_key = ?, updated_at = ?
+                        SET display_name = ?, api_key = ?, enabled = 1, updated_at = ?
                         WHERE connector_id = ?
                         """,
                         (next_display_name, next_api_key, now, DEFAULT_CONNECTOR_ID),
@@ -120,7 +124,7 @@ class ConnectorRepositoryMixin:
             "connector_id": DEFAULT_CONNECTOR_ID,
             "display_name": str(config.get("display_name", "") or existing.get("display_name") or DEFAULT_CONNECTOR_NAME),
             "api_key": api_key or existing.get("api_key", ""),
-            "enabled": bool(config.get("enabled")) if "enabled" in config else bool(existing.get("enabled", True)),
+            "enabled": True,
         }
         saved = self.upsert_connector(payload)
         with self._lock, self._connect() as conn:

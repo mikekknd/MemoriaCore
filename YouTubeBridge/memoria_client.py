@@ -217,6 +217,18 @@ class MemoriaClient:
         data = response.json()
         return data if isinstance(data, list) else []
 
+    def get_system_config(self) -> dict[str, Any]:
+        self.ensure_auth()
+        response = self.session.get(
+            f"{self.base_url}/system/config",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"MemoriaCore system config failed: HTTP {response.status_code} {response.text[:500]}")
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
     def list_sessions(self, *, limit: int = 100) -> list[dict[str, Any]]:
         self.ensure_auth()
         response = self.session.get(

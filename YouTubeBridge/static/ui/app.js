@@ -1,12 +1,12 @@
-import { $, state, initBridgeKey, installTestIds, log } from "./core.js";
+import { $, state, escapeHtml, initBridgeKey, installTestIds, installTooltipPositioning, log } from "./core.js";
 import { requestedSessionIdFromUrl, selectedTopicEntry } from "./selectors.js";
 import {
-  deleteSession, fillSessionForm, generateTestEvents, injectEvents, interruptNow, loadConnectors, loadHealth,
-  loadMemoriaConfig, loadMemoriaRefs, loadSessions, makeSummary, newSessionDraft, refreshChatPreview,
-  refreshDirector, refreshEvents, refreshQueue, refreshSummary, replySuperChats, saveConnector, saveMemoriaConfig,
-  sessionAction, subscribeEvents, testMemoriaAuth, toggleAutoTestEvents, toggleDirector, toggleSession,
-  updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings, writeMemory,
-} from "./control.js";
+  generateTestEvents, injectEvents, interruptNow, loadConnectors, loadHealth,
+  loadMemoriaConfig, loadMemoriaRefs, loadSessions, makeSummary,
+  refreshDirector, refreshEvents, refreshSummary, replySuperChats, saveConnector, saveMemoriaConfig,
+  testMemoriaAuth, toggleAutoTestEvents, toggleSession,
+  syncCharacterSelectionLimit, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
+} from "./control.js?v=character-limit-v1";
 import {
   addTopicEntry, autoBuildTopicPack, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, generateGeminiFactCards, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
@@ -23,9 +23,74 @@ async function refreshAll() {
   await refreshEvents();
   await refreshSummary();
   await refreshDirector();
-  await refreshQueue();
   await refreshTopicPacks();
-  await refreshChatPreview({ silent: true });
+  await loadRuntimeRules();
+}
+
+export function renderRuntimeRulesMarkdown(markdown) {
+  const html = [];
+  let inList = false;
+  const closeList = () => {
+    if (inList) {
+      html.push("</ul>");
+      inList = false;
+    }
+  };
+  for (const rawLine of String(markdown || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+    if (line.startsWith("### ")) {
+      closeList();
+      html.push(`<h4>${escapeHtml(line.slice(4))}</h4>`);
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      closeList();
+      html.push(`<h3>${escapeHtml(line.slice(3))}</h3>`);
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      closeList();
+      html.push(`<h2>${escapeHtml(line.slice(2))}</h2>`);
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      if (!inList) {
+        html.push("<ul>");
+        inList = true;
+      }
+      html.push(`<li>${escapeHtml(line.slice(2))}</li>`);
+      continue;
+    }
+    closeList();
+    html.push(`<p>${escapeHtml(line)}</p>`);
+  }
+  closeList();
+  return html.join("");
+}
+
+export async function loadRuntimeRules() {
+  const content = $("runtimeRulesContent");
+  const stateBadge = $("runtimeRulesState");
+  if (!content || !stateBadge) return;
+  stateBadge.textContent = "載入中";
+  stateBadge.className = "status";
+  try {
+    const response = await fetch("/ui-assets/live_runtime_rules.md", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const markdown = await response.text();
+    content.innerHTML = renderRuntimeRulesMarkdown(markdown);
+    stateBadge.textContent = "已載入";
+    stateBadge.className = "status good";
+  } catch (error) {
+    content.textContent = "規則說明載入失敗，請檢查 live_runtime_rules.md 是否存在。";
+    stateBadge.textContent = "載入失敗";
+    stateBadge.className = "status bad";
+    log("規則說明載入失敗", String(error));
+  }
 }
 
 document.querySelectorAll(".tab").forEach((tab) => {
@@ -48,16 +113,9 @@ $("testMemoriaAuth").onclick = () => testMemoriaAuth().catch((error) => {
   $("memoriaAuthState").className = "status bad";
   log("MemoriaCore 連線測試失敗", String(error));
 });
-$("memoriaSession").onchange = () => refreshChatPreview({ silent: true });
-$("memoriaBaseUrl").onchange = () => refreshChatPreview({ silent: true });
-$("newSession").onclick = () => {
-  newSessionDraft();
-  updateTopicActionVisibility();
-};
-$("toggleSession").onclick = () => toggleSession().catch((error) => log("開始 / 停止失敗", String(error)));
+$("reloadRuntimeRules").onclick = () => loadRuntimeRules();
+$("toggleSession").onclick = () => toggleSession().catch((error) => log("直播操作失敗", String(error)));
 $("updateSession").onclick = () => updateSessionSettings().catch((error) => log("直播設定更新失敗", String(error)));
-$("finalizeSession").onclick = () => sessionAction("finalize").catch((error) => log("標記結束失敗", String(error)));
-$("deleteSession").onclick = () => deleteSession().catch((error) => log("刪除失敗", String(error)));
 $("refreshEvents").onclick = () => refreshEvents().catch((error) => log("留言更新失敗", String(error)));
 $("generateTestEvents").onclick = () => generateTestEvents().catch((error) => log("測試留言生成失敗", String(error)));
 $("toggleAutoTestEvents").onclick = () => toggleAutoTestEvents().catch((error) => log("自動測試留言切換失敗", String(error)));
@@ -67,10 +125,7 @@ $("replySuperChats").onclick = () => replySuperChats().catch((error) => log("SC 
 $("interruptNow").onclick = () => interruptNow().catch((error) => log("中斷失敗", String(error)));
 $("makeSummary").onclick = () => makeSummary(false).catch((error) => log("摘要失敗", String(error)));
 $("forceSummary").onclick = () => makeSummary(true).catch((error) => log("強制摘要失敗", String(error)));
-$("writeMemory").onclick = () => writeMemory().catch((error) => log("寫入記憶失敗", String(error)));
 $("updateDirectorGuidance").onclick = () => updateDirectorGuidance().catch((error) => log("導播方向更新失敗", String(error)));
-$("toggleDirector").onclick = () => toggleDirector().catch((error) => log("導播啟動 / 停止失敗", String(error)));
-$("refreshQueue").onclick = () => refreshQueue().catch((error) => log("queue 更新失敗", String(error)));
 $("refreshTopicPacks").onclick = () => refreshTopicPacks().catch((error) => log("資料包更新失敗", String(error)));
 $("createTopicPack").onclick = () => createTopicPack().catch((error) => log("資料包建立失敗", String(error)));
 $("updateTopicPack").onclick = () => updateTopicPack().catch((error) => log("資料包更新失敗", String(error)));
@@ -94,28 +149,13 @@ $("topicEntrySelect").onchange = () => {
 $("topicPackTitle").addEventListener("input", updateTopicActionVisibility);
 $("topicEntryTitle").addEventListener("input", updateTopicActionVisibility);
 $("topicEntryBody").addEventListener("input", updateTopicActionVisibility);
-$("refreshChatPreview").onclick = () => refreshChatPreview().catch((error) => log("Chat Preview 更新失敗", String(error)));
-$("openFullChat").onclick = (event) => {
-  const link = $("openFullChat");
-  if (link.getAttribute("aria-disabled") === "true" || !link.dataset.href) {
-    event.preventDefault();
-    log("完整 Chat 尚未可開啟", "目前 Live Session 尚未綁定 MemoriaCore session。");
-  }
-};
-$("sessionSelect").onchange = async () => {
-  const session = state.sessions.find((item) => item.session_id === $("sessionSelect").value);
-  if (session) fillSessionForm(session);
-  else newSessionDraft();
+$("videoId").addEventListener("input", updateLiveSessionControls);
+$("characterSelect").addEventListener("change", () => {
+  syncCharacterSelectionLimit();
   updateLiveSessionControls();
-  subscribeEvents();
-  await refreshEvents();
-  await refreshSummary();
-  await refreshDirector();
-  await refreshQueue();
-  await refreshTopicPacks();
-  await refreshChatPreview({ silent: true });
-};
+});
 
 installTestIds();
+installTooltipPositioning();
 updateTopicActionVisibility();
 initBridgeKey().then(() => refreshAll()).catch((error) => log("初始化失敗", String(error)));

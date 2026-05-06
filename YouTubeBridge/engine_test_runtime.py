@@ -18,11 +18,42 @@ logger = logging.getLogger("youtube_bridge")
 
 
 class TestRuntimeManagerMixin:
+    @staticmethod
+    def _is_real_youtube_session(session: dict[str, Any] | None) -> bool:
+        if not session:
+            return False
+        return bool(str(session.get("video_id") or "").strip() or str(session.get("live_chat_id") or "").strip())
+
+    def _disable_test_events_for_real_youtube_session(self, session_id: str, session: dict[str, Any] | None = None) -> bool:
+        session = session or self.storage.get_session(session_id)
+        if not self._is_real_youtube_session(session):
+            return False
+        if session and session.get("auto_test_events_enabled"):
+            self.storage.update_session_fields(session_id, auto_test_events_enabled=False)
+        runtime = self._runtimes.get(session_id)
+        current_task = asyncio.current_task()
+        if runtime and runtime.test_event_task and runtime.test_event_task is not current_task and not runtime.test_event_task.done():
+            runtime.test_event_task.cancel()
+        if runtime:
+            runtime.test_event_task = None
+        return True
+
+    def _ensure_test_events_allowed(self, session_id: str, session: dict[str, Any] | None = None) -> None:
+        if self._disable_test_events_for_real_youtube_session(session_id, session):
+            raise ValueError("真實 YouTube 直播不允許插入測試留言；請改用無 video_id 的測試直播。")
+
     async def _auto_test_event_loop(self, runtime: LiveRuntime) -> None:
         await self._broadcast(runtime.session_id, {"type": "test_event_auto_started", "session_id": runtime.session_id})
         while runtime.running:
             session = self.storage.get_session(runtime.session_id)
             if not session or not session.get("auto_test_events_enabled"):
+                return
+            if self._disable_test_events_for_real_youtube_session(runtime.session_id, session):
+                await self._broadcast(runtime.session_id, {
+                    "type": "test_event_auto_stopped",
+                    "session_id": runtime.session_id,
+                    "reason": "real_youtube_live",
+                })
                 return
             min_seconds = max(1, int(session.get("test_event_min_seconds", 20) or 20))
             max_seconds = max(min_seconds, int(session.get("test_event_max_seconds", 45) or 45))
@@ -64,6 +95,7 @@ class TestRuntimeManagerMixin:
         session = self.storage.get_session(session_id)
         if not session:
             raise ValueError("live session 不存在")
+        self._ensure_test_events_allowed(session_id, session)
         self.storage.update_session_fields(session_id, auto_test_events_enabled=True)
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
         if runtime.running and (not runtime.test_event_task or runtime.test_event_task.done()):
@@ -98,6 +130,7 @@ class TestRuntimeManagerMixin:
         session = self.storage.get_session(session_id)
         if not session:
             raise ValueError("live session 不存在")
+        self._ensure_test_events_allowed(session_id, session)
         count = max(1, min(int(count or 5), 30))
         super_chat_count = max(0, min(int(super_chat_count or 0), 30))
         comments = await asyncio.to_thread(

@@ -45,6 +45,7 @@ def test_connector_and_session_roundtrip():
             "auto_connect": False,
             "auto_inject": True,
             "inject_interval_seconds": 15,
+            "inject_min_interval_seconds": 8,
             "min_pending_events": 3,
             "max_pending_events": 9,
             "dynamic_inject_enabled": True,
@@ -78,6 +79,7 @@ def test_connector_and_session_roundtrip():
         assert session["character_ids"] == ["coco", "bailian"]
         assert session["auto_inject"] is True
         assert session["inject_interval_seconds"] == 15
+        assert session["inject_min_interval_seconds"] == 8
         assert session["min_pending_events"] == 3
         assert session["max_pending_events"] == 9
         assert session["dynamic_inject_enabled"] is True
@@ -85,7 +87,7 @@ def test_connector_and_session_roundtrip():
         assert session["auto_finalize_on_duration"] is True
         assert session["auto_delete_after_processed"] is True
         assert session["director_guidance"] == "先測注入，再做收束。"
-        assert session["auto_test_events_enabled"] is True
+        assert session["auto_test_events_enabled"] is False
         assert session["test_event_min_seconds"] == 7
         assert session["test_event_max_seconds"] == 13
         assert session["test_event_count_per_tick"] == 4
@@ -139,7 +141,7 @@ def test_single_connector_collapses_existing_connectors_and_sessions():
         assert connector["connector_id"] == "youtube-main"
         assert connector["display_name"] == "Main Connector"
         assert connector["api_key"] == "secret-key"
-        assert connector["enabled"] is False
+        assert connector["enabled"] is True
         assert storage.list_connectors() == [connector]
         assert storage.get_session("live-a")["connector_id"] == "youtube-main"
     finally:

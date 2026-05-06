@@ -128,7 +128,8 @@ async def generate_test_chat_events(session_id: str, body: TestChatGenerateReque
             sc_burst=body.sc_burst,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        status_code = 404 if "不存在" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -138,7 +139,8 @@ async def start_auto_test_events(session_id: str):
     try:
         return await manager.start_auto_test_events(session_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        status_code = 404 if "不存在" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc))
 
 
 @router.post("/sessions/{session_id}/test-events/auto/stop")
