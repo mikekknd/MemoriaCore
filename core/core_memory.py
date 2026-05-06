@@ -9,7 +9,10 @@ from datetime import datetime
 from core.storage_manager import SHARED_MEMORY_CHARACTER_ID, SHARED_MEMORY_USER_ID, StorageManager
 from core.system_logger import SystemLogger
 from core.prompt_manager import get_prompt_manager
-from core.xml_prompt import xml_attr
+from core.chat_orchestrator.memory_context import (
+    format_proactive_topics_prompt,
+    format_static_profile_prompt,
+)
 
 class MemorySystem:
     def __init__(self):
@@ -1031,21 +1034,7 @@ class MemorySystem:
         if not basic_facts and not critical_facts:
             return ""
 
-        lines = ["<user_static_profile>"]
-        if basic_facts:
-            lines.append("<basic_info>")
-            for f in basic_facts:
-                lines.append(f'<fact key="{xml_attr(f["fact_key"])}">{f["fact_value"]}</fact>')
-            lines.append("</basic_info>")
-
-        if critical_facts:
-            lines.append("<critical_rules>")
-            for f in critical_facts:
-                lines.append(f'<rule key="{xml_attr(f["fact_key"])}">{f["fact_value"]}</rule>')
-            lines.append("</critical_rules>")
-
-        lines.append("</user_static_profile>")
-        return "\n".join(lines)
+        return format_static_profile_prompt(basic_facts, critical_facts)
 
     # ════════════════════════════════════════════════════════════
     # SECTION: 主動話題 Prompt 注入
@@ -1067,13 +1056,6 @@ class MemorySystem:
         if not topics:
             return ""
 
-        lines = [
-            "<proactive_topics>",
-            "<instruction>以下是系統背景蒐集到、使用者可能感興趣的資訊。請視上下文自然融合，不要說「我查到了」或「根據背景資訊」。</instruction>",
-        ]
         for t in topics:
-            lines.append(f'<topic keyword="{xml_attr(t["interest_keyword"])}">{t["summary_content"]}</topic>')
             self.storage.mark_topic_mentioned(self.db_path, t['topic_id'])
-
-        lines.append("</proactive_topics>")
-        return "\n".join(lines)
+        return format_proactive_topics_prompt(topics)

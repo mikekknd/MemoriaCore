@@ -229,8 +229,17 @@ class TestDualLayerCoordinator:
         assert "<user_identity" not in messages[-1]["content"]
         assert '<user user_name="夏雪" />' not in messages[-1]["content"]
         assert '<latest_user_message speaker="human_user" user_name="夏雪">' not in messages[-1]["content"]
-        assert '<original_user_request role="background_constraint" speaker="human_user" user_name="夏雪">' in messages[-1]["content"]
-        assert '<primary_reply_target role="primary_response_target" speaker="可可">' in messages[-1]["content"]
+        assert "original_user_request:" in messages[-1]["content"]
+        assert "role: background_constraint" in messages[-1]["content"]
+        assert "speaker: human_user" in messages[-1]["content"]
+        assert "user_name: 夏雪" in messages[-1]["content"]
+        assert "primary_reply_target:" in messages[-1]["content"]
+        assert "role: primary_response_target" in messages[-1]["content"]
+        assert "speaker: 可可" in messages[-1]["content"]
+        assert "<original_user_request" not in messages[-1]["content"]
+        assert "<primary_reply_target" not in messages[-1]["content"]
+        assert "<turn_context>" not in messages[-1]["content"]
+        assert "<routing_decision>" not in messages[-1]["content"]
         assert "兩位早安阿" in messages[-1]["content"]
         assert "早安呀" in messages[-1]["content"]
         assert '<group_followup_instruction source="system_control">' in messages[-1]["content"]
@@ -271,6 +280,49 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_dual_layer_retrieved_memory_context_is_flat(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
+    ):
+        """雙層最終 system prompt 的 retrieved_memory_context 內層不再使用深層 XML。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        mock_memory_system.set_core_search_results([
+            {"insight": "使用者偏好先驗證再下結論。", "score": 0.91},
+        ])
+        mock_memory_system.set_search_results([
+            {
+                "block_id": "mem-a",
+                "timestamp": "2026-05-07T08:00:00",
+                "overview": "使用者討論 prompt token 壓縮。",
+                "raw_dialogues": [{"role": "user", "content": "XML 太深"}],
+            }
+        ])
+        mock_memory_system.search_profile_by_query = lambda *args, **kwargs: [
+            {"fact_key": "favorite_food", "fact_value": "毛豆", "score": 0.88},
+        ]
+
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "prompt 可以壓短嗎"}],
+            last_entities=[],
+            user_prompt="prompt 可以壓短嗎",
+            user_prefs=sample_user_prefs,
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        system_prompt = chat_call["messages"][0]["content"]
+        assert system_prompt.count("<retrieved_memory_context>") == 1
+        assert "core_memory:" in system_prompt
+        assert "relevant_preferences:" in system_prompt
+        assert "episodic_memories:" in system_prompt
+        assert "uid: mem-a" in system_prompt
+        assert "<user_core_memory>" not in system_prompt
+        assert "<user_relevant_preferences>" not in system_prompt
+        assert "<preference" not in system_prompt
+        assert "<episodic_memory" not in system_prompt
+        assert "<timestamp>" not in system_prompt
+        assert "<overview>" not in system_prompt
+        assert "<dialogue>" not in system_prompt
 
     def test_dual_layer_group_reuses_query_expand_state(
         self, mock_deps, mock_memory_system, sample_user_prefs
@@ -415,6 +467,63 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_single_layer_retrieved_memory_context_is_flat(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層最終 system prompt 的 retrieved_memory_context 也使用同一套扁平格式。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        mock_memory_system.set_core_search_results([
+            {"insight": "使用者偏好先驗證再下結論。", "score": 0.91},
+        ])
+        mock_memory_system.set_search_results([
+            {
+                "block_id": "mem-single",
+                "timestamp": "2026-05-07T08:00:00",
+                "overview": "使用者討論 prompt token 壓縮。",
+                "raw_dialogues": [{"role": "user", "content": "XML 太深"}],
+            }
+        ])
+        mock_memory_system.search_profile_by_query = lambda *args, **kwargs: [
+            {"fact_key": "favorite_food", "fact_value": "毛豆", "score": 0.88},
+        ]
+
+        orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "prompt 可以壓短嗎"}],
+            last_entities=[],
+            user_prompt="prompt 可以壓短嗎",
+            user_prefs={**sample_user_prefs, "dual_layer_enabled": False},
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        system_prompt = chat_call["messages"][0]["content"]
+        assert system_prompt.count("<retrieved_memory_context>") == 1
+        assert "core_memory:" in system_prompt
+        assert "relevant_preferences:" in system_prompt
+        assert "episodic_memories:" in system_prompt
+        assert "uid: mem-single" in system_prompt
+        assert "<user_core_memory>" not in system_prompt
+        assert "<user_relevant_preferences>" not in system_prompt
+        assert "<preference" not in system_prompt
+        assert "<episodic_memory" not in system_prompt
+        assert "<timestamp>" not in system_prompt
+        assert "<overview>" not in system_prompt
+        assert "<dialogue>" not in system_prompt
 
     def test_single_layer_group_reuses_query_expand_state(
         self,

@@ -15,14 +15,14 @@ from core.prompt_utils import build_user_prefix, format_latest_user_message_for_
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.dialogue_format import (
     format_history_for_llm,
-    format_dialogue_for_analysis,
     collect_cited_uids,
     snapshot_messages_for_pipeline,
     strip_system_events,
 )
+from core.chat_orchestrator.memory_context import build_retrieved_memory_context
 from core.chat_orchestrator.router_hints import build_router_context_hints
 from core.chat_orchestrator.dataclasses import SharedExpandState, SharedToolState
-from core.xml_prompt import format_tool_context_xml, format_tool_results_xml, xml_attr
+from core.xml_prompt import format_tool_context_xml, format_tool_results_xml
 from core.chat_orchestrator.group_context import (
     build_group_participants_block,
     build_llm_log_context,
@@ -142,58 +142,26 @@ def _run_chat_orchestration(
                                                 user_id=user_id, character_id=character_id,
                                                 visibility_filter=visibility_filter)
 
-    core_ctx = ""
-    core_debug_text = "未觸發核心認知。"
-    if core_insights:
-        core_ctx = f"<user_core_memory>\n{core_insights[0]['insight']}\n</user_core_memory>\n"
-        core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
-
     with timer.step("使用者偏好檢索 (Profile Search)"):
         profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5,
                                                      user_id=user_id,
                                                      visibility_filter=visibility_filter)
-    profile_ctx = ""
-    profile_debug_text = "未觸發使用者偏好。"
-    if profile_matches:
-        profile_lines = [
-            f'<preference key="{xml_attr(pm["fact_key"])}">{pm["fact_value"]}</preference>'
-            for pm in profile_matches
-        ]
-        profile_ctx = "<user_relevant_preferences>\n" + "\n".join(profile_lines) + "\n</user_relevant_preferences>\n"
-        profile_debug_text = f"觸發 {len(profile_matches)} 筆偏好: " + ", ".join(
-            [f"{pm['fact_key']}={pm['fact_value']} ({pm['score']:.3f})" for pm in profile_matches])
-
-    block_details = []
-    mem_ctx = "無相關記憶。"
-    if blocks:
-        formatted_blocks = []
-        for i, block in enumerate(blocks):
-            raw_text = format_dialogue_for_analysis(block["raw_dialogues"], force_group=force_group)
-            formatted_blocks.append(
-                f'<episodic_memory index="{i + 1}" uid="{xml_attr(block.get("block_id", "unknown"))}">\n'
-                f"<timestamp>{block['timestamp']}</timestamp>\n"
-                f"<overview>\n{block['overview']}\n</overview>\n"
-                f"<dialogue>\n{raw_text}\n</dialogue>\n"
-                "</episodic_memory>"
-            )
-            overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
-            block_details.append({
-                "id": i + 1, "overview": overview_header,
-                "hybrid": block.get("_debug_score", 0),
-                "dense": block.get("_debug_raw_sim", 0),
-                "sparse": block.get("_debug_sparse_raw", 0),
-                "recency": block.get("_debug_recency", 0),
-                "importance": block.get("_debug_importance", 0),
-            })
-        mem_ctx = "\n\n".join(formatted_blocks)
 
     static_profile = ms.get_static_profile_prompt(user_id=user_id, visibility_filter=visibility_filter)
-    static_profile_block = f"\n{static_profile}\n" if static_profile else ""
-
     proactive_topics_block = ms.get_proactive_topics_prompt(limit=1, user_id=user_id, character_id=character_id,
                                                              visibility_filter=visibility_filter)
-    if proactive_topics_block:
-        proactive_topics_block = f"\n{proactive_topics_block}\n"
+    retrieved_memory = build_retrieved_memory_context(
+        static_profile=static_profile,
+        core_insights=core_insights,
+        profile_matches=profile_matches,
+        proactive_topics=proactive_topics_block,
+        blocks=blocks,
+        force_group=force_group,
+    )
+    mem_ctx = retrieved_memory.prompt
+    block_details = retrieved_memory.block_details
+    core_debug_text = retrieved_memory.core_debug_text
+    profile_debug_text = retrieved_memory.profile_debug_text
 
     # 動態角色載入（evolved_prompt 優先，否則使用 system_prompt）
     char_mgr = get_character_manager()
@@ -234,8 +202,6 @@ def _run_chat_orchestration(
 
     sys_prompt = f"""{char_sys_prompt}
 {group_participants_block}
-{static_profile_block}
-{core_ctx}{profile_ctx}{proactive_topics_block}
 {_suffix}"""
 
     # ⚠️ 上下文組裝必須在 debug 預覽之前完成（修正原本 clean_history 引用順序錯誤）。

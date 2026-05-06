@@ -44,8 +44,11 @@ def test_group_participants_block_uses_summary_and_omits_current(monkeypatch):
     assert "目前扮演=角色A; id=char-a; raw_group=測試群組" in block
     assert "角色A (char-a)" not in block
     assert "角色 A 簡介" not in block
-    assert '<participant character_id="char-b" name="角色B">' in block
-    assert "<summary>角色 B fallback 人格</summary>" in block
+    assert "- name: 角色B" in block
+    assert "  character_id: char-b" in block
+    assert "  role: 角色 B fallback 人格" in block
+    assert "<participant" not in block
+    assert "<summary>" not in block
     assert "角色 A 完整人格" not in block
 
 
@@ -62,7 +65,8 @@ def test_group_participants_block_omits_current_when_it_is_only_participant(monk
     assert "你正在多 AI 群組「測試群組」中對話。" in block
     assert "目前扮演=角色A; id=char-a; raw_group=測試群組" in block
     assert "角色A (char-a)" not in block
-    assert "<no_other_participants />" in block
+    assert "- none" in block
+    assert "<no_other_participants" not in block
 
 
 def test_group_participants_block_omits_blank_group_name_from_prompt(monkeypatch):
@@ -78,6 +82,20 @@ def test_group_participants_block_omits_blank_group_name_from_prompt(monkeypatch
     assert "你正在多 AI 群組對話中。" in block
     assert "未命名群組" not in block
     assert "raw_group=\n" in block
+
+
+def test_default_group_participants_template_keeps_only_outer_xml():
+    template = group_context.get_prompt_manager().get_default("group_participants_block")
+
+    assert template.lstrip().startswith("<group_context>")
+    assert template.rstrip().endswith("</group_context>")
+    assert "current_character:" in template
+    assert "rules:" in template
+    assert "participants:" in template
+    assert "<context>" not in template
+    assert "<current_character>" not in template
+    assert "<group_output_rules>" not in template
+    assert "<other_ai_participants>" not in template
 
 
 def test_llm_log_context_lists_user_current_ai_and_participants():

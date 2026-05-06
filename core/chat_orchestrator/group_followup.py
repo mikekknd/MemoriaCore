@@ -11,6 +11,29 @@ _FOLLOWUP_INSTRUCTION_RE = re.compile(
 )
 
 
+def _prompt_scalar(value: object) -> str:
+    """把 metadata 欄位壓成單行，維持 prompt 區塊穩定。"""
+    return " ".join(str(value or "").split())
+
+
+def _literal_block(value: object, *, indent: str = "    ") -> str:
+    """建立 Markdown literal block 內容，保留多行正文。"""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    return "\n".join(f"{indent}{line}" if line else indent for line in lines)
+
+
+def _context_item(name: str, fields: list[tuple[str, object]], content: object) -> str:
+    lines = [f"{name}:"]
+    for key, value in fields:
+        scalar = _prompt_scalar(value)
+        if scalar:
+            lines.append(f"  {key}: {scalar}")
+    lines.append("  content: |")
+    lines.append(_literal_block(content))
+    return "\n".join(lines)
+
+
 def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | None = None) -> str:
     """建立接力回合的焦點上下文。
 
@@ -21,22 +44,22 @@ def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | No
     last_character_name = followup.get("last_character_name", "")
     last_reply = followup.get("last_reply", "")
     return "\n\n".join([
-        xml_block(
+        _context_item(
             "original_user_request",
+            [
+                ("role", "background_constraint"),
+                ("speaker", "human_user"),
+                ("user_name", ctx.get("user_name") or ""),
+            ],
             original_user_prompt,
-            attrs={
-                "role": "background_constraint",
-                "speaker": "human_user",
-                "user_name": ctx.get("user_name") or "",
-            },
         ),
-        xml_block(
+        _context_item(
             "primary_reply_target",
+            [
+                ("role", "primary_response_target"),
+                ("speaker", last_character_name),
+            ],
             last_reply,
-            attrs={
-                "role": "primary_response_target",
-                "speaker": last_character_name,
-            },
         ),
     ])
 

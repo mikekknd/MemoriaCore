@@ -5,7 +5,6 @@
 """
 
 from core.prompt_manager import get_prompt_manager
-from core.xml_prompt import xml_attr
 
 
 SUMMARY_MAX_CHARS = 240
@@ -24,6 +23,11 @@ def character_summary_text(character: dict, *, fallback_to_prompt: bool = False)
         return summary
     fallback = character.get("system_prompt") or character.get("reply_rules") or ""
     return compact_text(fallback)
+
+
+def _prompt_scalar(value: object, *, limit: int = SUMMARY_MAX_CHARS) -> str:
+    """把 prompt 欄位壓成單行，避免破壞 Markdown-like 結構。"""
+    return compact_text(str(value or ""), limit=limit)
 
 
 def is_group_context(session_ctx: dict | None) -> bool:
@@ -64,15 +68,15 @@ def build_group_participants_block(
         if current_id and cid == current_id:
             continue
         char = character_manager.get_character(cid) or {}
-        name = char.get("name") or cid
+        name = _prompt_scalar(char.get("name") or cid)
         summary = character_summary_text(char, fallback_to_prompt=True) or "無角色簡介"
-        lines.append(
-            f'<participant character_id="{xml_attr(cid)}" name="{xml_attr(name)}">\n'
-            f"<summary>{summary}</summary>\n"
-            "</participant>"
-        )
+        lines.extend([
+            f"- name: {name}",
+            f"  character_id: {_prompt_scalar(cid, limit=120)}",
+            f"  role: {summary}",
+        ])
 
-    participants_text = "\n".join(lines) if lines else "<no_other_participants />"
+    participants_text = "\n".join(lines) if lines else "- none"
 
     group_name = ""
     if session_ctx:
