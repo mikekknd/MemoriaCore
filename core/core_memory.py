@@ -433,12 +433,14 @@ class MemorySystem:
 
         if not best_match:
             highest_sim = 0.0
+            candidate_match = None
             for core in core_memories:
                 sim = self.cosine_similarity(new_dense, core.get("insight_vector", []))
-                if sim > highest_sim:
+                if candidate_match is None or sim > highest_sim:
                     highest_sim = sim
+                    candidate_match = core
             if highest_sim >= fusion_threshold:
-                best_match = next((c for c in core_memories if self.cosine_similarity(new_dense, c.get("insight_vector", [])) == highest_sim), None)
+                best_match = candidate_match
 
         if best_match:
             old_weight = float(best_match.get("encounter_count", 1.0))
@@ -527,6 +529,55 @@ class MemorySystem:
                 clusters.append(current_cluster)
         return clusters
 
+    def _calculate_consolidation_weight(self, sorted_blocks, session_gap_seconds=1200):
+        total_weight = 0.0
+        last_valid_time = None
+
+        for block in sorted_blocks:
+            base_count = float(block.get("encounter_count", 1.0))
+
+            try:
+                block_time = datetime.fromisoformat(block["timestamp"])
+                if last_valid_time is None or (block_time - last_valid_time).total_seconds() > session_gap_seconds:
+                    contribution = base_count
+                    last_valid_time = block_time
+                else:
+                    # 寫入時已依各自 user turns 計算權重；這裡不再扣減同 session block。
+                    contribution = base_count
+            except ValueError:
+                contribution = base_count
+
+            total_weight += contribution
+
+        return max(0.5, round(total_weight, 1))
+
+    def _format_memory_time(self, timestamp):
+        try:
+            return datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return timestamp
+
+    def _dedupe_dialogues(self, dialogues, seen_dialogues=None):
+        seen = seen_dialogues if seen_dialogues is not None else set()
+        deduped = []
+        for msg in dialogues:
+            dedup_key = f"{msg.get('role', '')}:{msg.get('content', '')}"
+            if dedup_key not in seen:
+                seen.add(dedup_key)
+                deduped.append(msg)
+        return deduped
+
+    def _collect_potential_preferences(self, blocks):
+        merged_prefs = []
+        seen_pref_tags = set()
+        for block in blocks:
+            for pref in block.get("potential_preferences", []):
+                tag_key = pref["tag"] if isinstance(pref, dict) else str(pref)
+                if tag_key not in seen_pref_tags:
+                    seen_pref_tags.add(tag_key)
+                    merged_prefs.append(pref)
+        return merged_prefs
+
     def consolidate_and_fuse(
         self, related_blocks, router, task_key="compress", fusion_threshold=0.72,
         user_id="default", character_id="default", visibility="public",
@@ -538,29 +589,7 @@ class MemorySystem:
         # ==========================================
         # 記憶累積權重計算 (S 型曲線已移至 add_memory_block 計算保障)
         # ==========================================
-        total_weight = 0.0
-        last_valid_time = None
-        session_gap_seconds = 1200 # 20分鐘
-
-        for b in sorted_blocks:
-            base_count = float(b.get("encounter_count", 1.0))
-
-            try:
-                b_time = datetime.fromisoformat(b["timestamp"])
-                if last_valid_time is None or (b_time - last_valid_time).total_seconds() > session_gap_seconds:
-                    contribution = base_count
-                    last_valid_time = b_time
-                else:
-                    # 時間過近，同一次 Session 產生的多個 block 在寫入時已根據各自 user_turns 計算權重
-                    # 這裡我們信任已計算的權重，不做惡意扣減。S曲線天生防切碎膨脹。
-                    contribution = base_count
-            except ValueError:
-                contribution = base_count
-
-            total_weight += contribution
-
-        # 最終權重四捨五入至小數點第一位，保底至少 0.5 確保不會歸零
-        total_weight = max(0.5, round(total_weight, 1))
+        total_weight = self._calculate_consolidation_weight(sorted_blocks)
 
         SystemLogger.log_system_event("大腦反芻啟動", f"開始融合 {len(sorted_blocks)} 筆區塊，校準後權重積分: {total_weight}...")
 
@@ -586,18 +615,8 @@ class MemorySystem:
             seen_dialogues = set()
             for b in older_blocks:
                 b_time_str = b.get("timestamp", "未知時間")
-                try:
-                    dt = datetime.fromisoformat(b_time_str)
-                    time_str = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    time_str = b_time_str
-
-                block_dialogues = []
-                for msg in b.get("raw_dialogues", []):
-                    dedup_key = f"{msg.get('role', '')}:{msg.get('content', '')}"
-                    if dedup_key not in seen_dialogues:
-                        seen_dialogues.add(dedup_key)
-                        block_dialogues.append(msg)
+                time_str = self._format_memory_time(b_time_str)
+                block_dialogues = self._dedupe_dialogues(b.get("raw_dialogues", []), seen_dialogues)
 
                 if block_dialogues:
                     old_dialogues_pool.append({"role": "system", "content": f"[系統標記：以下對話發生於 {time_str}]"})
@@ -655,19 +674,10 @@ class MemorySystem:
 
         if latest_block:
             latest_time_str = latest_block.get("timestamp", "未知時間")
-            try:
-                dt = datetime.fromisoformat(latest_time_str)
-                time_str = dt.strftime("%Y-%m-%d %H:%M")
-            except:
-                time_str = latest_time_str
+            time_str = self._format_memory_time(latest_time_str)
 
             combined_dialogues.append({"role": "system", "content": f"[系統標記：近期原始對話發生於 {time_str}]"})
-            seen_latest = set()
-            for msg in latest_block.get("raw_dialogues", []):
-                dedup_key = f"{msg.get('role', '')}:{msg.get('content', '')}"
-                if dedup_key not in seen_latest:
-                    seen_latest.add(dedup_key)
-                    combined_dialogues.append(msg)
+            combined_dialogues.extend(self._dedupe_dialogues(latest_block.get("raw_dialogues", [])))
 
         from core.chat_orchestrator.dialogue_format import format_dialogue_for_analysis
         dialogue_text = format_dialogue_for_analysis(
@@ -709,14 +719,7 @@ class MemorySystem:
             memory_blocks = self._memory_blocks_cache[cache_key]
 
             # 從所有來源區塊收集潛在偏好（去重）
-            merged_prefs = []
-            seen_pref_tags = set()
-            for b in sorted_blocks:
-                for p in b.get("potential_preferences", []):
-                    tag_key = p["tag"] if isinstance(p, dict) else str(p)
-                    if tag_key not in seen_pref_tags:
-                        seen_pref_tags.add(tag_key)
-                        merged_prefs.append(p)
+            merged_prefs = self._collect_potential_preferences(sorted_blocks)
 
             merged_block = {
                 "block_id": str(uuid.uuid4()),

@@ -588,25 +588,28 @@ async def delete_core(
     require_db_writes_enabled()
     ms = get_memory_sys()
     async with db_write_lock:
-        # 從所有已快取的 visibility slot 移除
-        found = False
+        deleted = 0
         user_id = str(current_user["id"])
         character_id = "default"
         for vis in _visibility_filter_for(current_user):
+            deleted = await asyncio.to_thread(
+                ms.storage.delete_core_memory,
+                ms.db_path,
+                user_id,
+                character_id,
+                core_id,
+                vis,
+            )
             cache_key = (user_id, character_id, vis)
             if cache_key in ms._core_memories_cache:
-                before = len(ms._core_memories_cache[cache_key])
                 ms._core_memories_cache[cache_key] = [
                     c for c in ms._core_memories_cache[cache_key]
                     if c["core_id"] != core_id
                 ]
-                if len(ms._core_memories_cache[cache_key]) < before:
-                    found = True
-        if not found:
+            if deleted:
+                break
+        if deleted < 1:
             raise HTTPException(404, detail=f"Core memory {core_id} not found")
-        await asyncio.to_thread(
-            ms.storage.delete_core_memory, ms.db_path, user_id, character_id, core_id
-        )
     return {"status": "deleted", "core_id": core_id}
 
 

@@ -1,22 +1,9 @@
 # 【環境假設】：Python 3.12, numpy 庫可用。使用內建 sqlite3。支援 Schema Evolution。
 from __future__ import annotations
 
-import json
 import os
-import re
-import sqlite3
-from datetime import datetime, timedelta
 
 import numpy as np
-
-from core.runtime_paths import runtime_file
-from core.storage.constants import (
-    DEFAULT_SYSTEM_PROMPT,
-    GLOBAL_TOPIC_CHARACTER_ID,
-    MAINTENANCE_DROP_TABLE_ALLOWLIST,
-    SHARED_MEMORY_CHARACTER_ID,
-    SHARED_MEMORY_USER_ID,
-)
 
 
 class CoreMemoryRepositoryMixin:

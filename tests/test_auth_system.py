@@ -602,6 +602,60 @@ def test_memory_inspect_endpoints_are_admin_scope_aware(auth_tmp_dir, monkeypatc
         deps.memory_sys = None
 
 
+def test_user_core_delete_uses_storage_when_cache_is_empty(auth_tmp_dir, monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "core-delete-test-secret")
+    storage = _storage(auth_tmp_dir)
+    memory_db = str(auth_tmp_dir / "memory_db_test.db")
+    storage._init_db(memory_db)
+    deps.storage = storage
+    deps.memory_sys = _InspectMemorySystem(storage, memory_db)
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(memory.router, prefix="/api/v1")
+    app.add_middleware(AuthMiddleware)
+    client = TestClient(app)
+
+    try:
+        owner = client.post(
+            "/api/v1/auth/register",
+            json={"username": "owner", "password": "abc123", "password_confirm": "abc123"},
+        )
+        assert owner.status_code == 200, owner.text
+        owner_id = str(owner.json()["user"]["id"])
+        csrf = owner.json()["csrf_token"]
+
+        storage.save_core_memory(
+            memory_db,
+            "core-cache-miss",
+            "2026-05-07T00:00:00",
+            "stored insight",
+            [0.1, 0.2],
+            user_id=owner_id,
+            character_id="default",
+            visibility="public",
+        )
+        assert deps.memory_sys._core_memories_cache == {}
+
+        response = client.delete(
+            "/api/v1/memory/core/core-cache-miss",
+            headers={"X-CSRF-Token": csrf},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"status": "deleted", "core_id": "core-cache-miss"}
+        assert storage.load_core_db(
+            memory_db,
+            user_id=owner_id,
+            character_id="default",
+            visibility_filter=["public"],
+        ) == []
+    finally:
+        deps.set_db_maintenance_mode(False)
+        deps.storage = None
+        deps.memory_sys = None
+
+
 def test_profile_list_route_is_registered():
     routes = {
         (route.path, tuple(sorted(route.methods)), route.endpoint.__name__)
