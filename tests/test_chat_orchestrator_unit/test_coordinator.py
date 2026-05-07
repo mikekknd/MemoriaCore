@@ -49,8 +49,9 @@ def sample_user_prefs():
 
 
 class TestDualLayerCoordinator:
-    def test_returns_11_tuple(self, mock_deps, sample_user_prefs):
-        """雙層編排應回傳 11-tuple"""
+    def test_returns_orchestration_result(self, mock_deps, sample_user_prefs):
+        """雙層編排應回傳 OrchestrationResult"""
+        from core.chat_orchestrator.dataclasses import OrchestrationResult
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
@@ -60,11 +61,11 @@ class TestDualLayerCoordinator:
             user_prefs=sample_user_prefs,
         )
 
-        assert isinstance(result, tuple)
+        assert isinstance(result, OrchestrationResult)
         assert len(result) == 12
 
     def test_reply_in_result(self, mock_deps, mock_router_with_tools, sample_user_prefs):
-        """12-tuple 的第一個元素應是回覆文字"""
+        """OrchestrationResult 的第一個相容位置應是回覆文字"""
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
@@ -189,8 +190,7 @@ class TestDualLayerCoordinator:
             user_prefs=sample_user_prefs,
         )
 
-        # 只要不拋例外即通過
-        assert isinstance(result, tuple)
+        # 只要不拋例外且保留序列相容即通過
         assert len(result) == 12
 
     def test_group_followup_appended_when_history_ends_with_assistant(
@@ -849,35 +849,17 @@ class TestUnpackOrchestrationResult:
         assert len(unpacked) == 12
         assert unpacked == result
 
-    def test_handles_11_tuple_pads_tool_state(self):
-        """舊 11-tuple 應補足 tool_state_export=None"""
+    @pytest.mark.parametrize("length", [9, 10, 11, 13])
+    def test_rejects_legacy_tuple_lengths(self, length):
+        """內部 orchestration contract 只接受 OrchestrationResult 或最新 12-slot tuple。"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
-        result = tuple(range(11))
-        unpacked = _unpack_orchestration_result(result)
+        with pytest.raises(ValueError, match="12"):
+            _unpack_orchestration_result(tuple(range(length)))
 
-        assert len(unpacked) == 12
-        assert unpacked[-1] is None
-
-    def test_handles_10_tuple_pads_cited_uids_and_tool_state(self):
-        """10-tuple 應補足 cited_uids=[] 和 tool_state_export=None"""
+    def test_rejects_non_tuple_sequence(self):
+        """12-slot list 不應繞過最新 tuple contract。"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
-        result = tuple(range(10))
-        unpacked = _unpack_orchestration_result(result)
-
-        assert len(unpacked) == 12
-        assert unpacked[-2] == []
-        assert unpacked[-1] is None
-
-    def test_handles_9_tuple_pads_full(self):
-        """9-tuple 應補足 thinking_speech=""、cited_uids=[]、tool_state_export=None"""
-        from api.routers.chat.orchestration import _unpack_orchestration_result
-
-        result = tuple(range(9))
-        unpacked = _unpack_orchestration_result(result)
-
-        assert len(unpacked) == 12
-        assert unpacked[-3] == ""
-        assert unpacked[-2] == []
-        assert unpacked[-1] is None
+        with pytest.raises(ValueError, match="12-slot tuple"):
+            _unpack_orchestration_result(list(range(12)))

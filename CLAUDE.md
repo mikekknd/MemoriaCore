@@ -32,6 +32,7 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
 
 **SQLite Locking**
 永遠透過 `StorageManager` 的 async lock 讀寫，**禁止直接使用 aiosqlite / sqlite3**。
+`core/storage/` 是 `StorageManager` 的內部 repository mixin package；除此 package 與 `core/storage_manager.py` facade 外，主專案程式碼不得直接連 SQLite。
 例外：`PersonaProbe/` 內讀取 `conversation.db` 時，使用 Python 內建 `sqlite3`（PersonaProbe 不經由 StorageManager）。
 
 **Runtime 資料與 Log**
@@ -46,7 +47,7 @@ Backend: FastAPI (port 8088)；Frontend: Streamlit (port 8501)、Telegram bot、
 Pydantic model 統一放 `api/models/`，不可在 router 檔內定義新 model。
 
 **Tool 實作**
-每個 tool 需提供 `*_SCHEMA`（`{"type": "function", ...}`）與執行函式（回傳 `str`）；新增後在 `core/chat_orchestrator/coordinator.py` 內 Pre-fork 區段的 `tools_list` 登記。
+每個 tool 需提供 `*_SCHEMA`（`{"type": "function", ...}`）與執行函式（回傳 `str`）；新增後在 `core/chat_orchestrator/generation_context.py` 的 `build_available_tools()` 登記，供單層與雙層編排共用。
 
 **Prompt Templates**
 所有 LLM prompt 模板統一存放於 `prompts_default.json`，禁止在 Python 程式碼中硬寫 prompt 字串。
@@ -61,7 +62,7 @@ api_messages.extend(clean_history)   # ← 禁止移除此行
 ```
 每次修改 `sys_prompt` 組裝邏輯（例如增減人格區塊、speech_rules 等）後，**必須確認 `api_messages.extend(clean_history)` 仍然存在且在 sys_prompt 賦值之後**。
 此行一旦遺漏，LLM 僅收到系統提示，對話紀錄完全消失，但不會有任何報錯，只會讓模型失憶。
-涉及檔案：`api/routers/chat/orchestration.py`（單層）、`core/chat_orchestrator/coordinator.py` 內 `_memory_branch()`（雙層）— 兩處都要確認。
+涉及檔案：`core/chat_orchestrator/generation_context.py` 的 `build_final_chat_context()`；單層 `api/routers/chat/orchestration.py` 與雙層 `core/chat_orchestrator/coordinator.py` 都呼叫此共用組裝函式。
 
 **Router Agent 對話歷史不可重複末筆 user 訊息（高頻踩坑）**
 `run_router_agent` 內部會把 `user_prompt` 自行 append 到 messages 末尾。若 `recent_history` 已包含當前 user_prompt（例如在 `add_user_message` 後直接傳 `session_messages[-context_window:]`），就會形成兩筆相同的 user 訊息，導致路由判斷被汙染。

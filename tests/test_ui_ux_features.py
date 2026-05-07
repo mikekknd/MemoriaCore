@@ -613,6 +613,7 @@ def test_chat_sync_returns_and_persists_character_name(monkeypatch):
             "測試回覆",
             "",
             [],
+            None,
         )
 
     deps.character_mgr = FakeCharacterManager()
@@ -678,7 +679,7 @@ def test_chat_sync_returns_roster_event_when_roster_changes(monkeypatch):
             return None
 
     def fake_orchestration(*args, **kwargs):
-        return ("ok", [], {}, False, None, "", None, None, "ok", "", [])
+        return ("ok", [], {}, False, None, "", None, None, "ok", "", [], None)
 
     async def fake_group_loop(**kwargs):
         return [{

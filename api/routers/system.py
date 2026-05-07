@@ -3,7 +3,7 @@ import asyncio
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from api.dependencies import (
-    get_memory_sys, get_storage, get_router,
+    get_memory_sys, get_storage, get_router, get_analyzer,
     get_persona_sync_manager, reload_router, reload_tts,
     require_db_writes_enabled,
 )
@@ -247,9 +247,7 @@ async def trigger_persona_sync_now(
 @router.post("/synthetic")
 async def synthetic_data(body: SyntheticRequest):
     require_db_writes_enabled()
-    import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools_synthetic import generate_synthetic_data
+    from tools.synthetic import generate_synthetic_data
     ms = get_memory_sys()
     ana = get_analyzer()
     rtr = get_router()

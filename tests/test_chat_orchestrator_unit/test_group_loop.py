@@ -56,6 +56,7 @@ async def test_group_loop_passes_target_character_id(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
@@ -135,6 +136,7 @@ async def test_group_loop_uses_transient_user_anchor_without_persisting_it(monke
             None,
             "",
             [],
+            None,
         )
 
     monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
@@ -280,6 +282,7 @@ async def test_group_loop_emits_each_turn_before_next_route(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     async def fake_sleep(_seconds):
@@ -356,6 +359,7 @@ async def test_group_loop_uses_configured_turn_delay(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     slept = []
@@ -427,6 +431,7 @@ async def test_group_loop_emits_typing_event_before_orchestration(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())

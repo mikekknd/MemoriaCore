@@ -31,7 +31,17 @@ def _control_ui_source() -> str:
     parts = [(static_root / "index.html").read_text(encoding="utf-8")]
     ui_root = static_root / "ui"
     if ui_root.exists():
-        for name in ("index.css", "core.js", "selectors.js", "topic-packs.js", "control.js", "app.js"):
+        for name in (
+            "index.css",
+            "core.js",
+            "selectors.js",
+            "topic-packs.js",
+            "topic-graph.js",
+            "topic-pack-crud.js",
+            "fact-card-import.js",
+            "control.js",
+            "app.js",
+        ):
             path = ui_root / name
             if path.exists():
                 parts.append(path.read_text(encoding="utf-8"))
