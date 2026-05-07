@@ -345,6 +345,10 @@ get_session_topic_pack_usage = _route_handler(_topic_packs_routes.get_session_to
 search_session_topic_packs = _route_handler(_topic_packs_routes.search_session_topic_packs)
 search_topic_pack = _route_handler(_topic_packs_routes.search_topic_pack)
 rebuild_topic_pack_embeddings = _route_handler(_topic_packs_routes.rebuild_topic_pack_embeddings)
+get_topic_pack_graph = _route_handler(_topic_packs_routes.get_topic_pack_graph)
+rebuild_topic_pack_graph = _route_handler(_topic_packs_routes.rebuild_topic_pack_graph)
+list_topic_graph_traces = _route_handler(_topic_packs_routes.list_topic_graph_traces)
+get_latest_topic_graph_trace = _route_handler(_topic_packs_routes.get_latest_topic_graph_trace)
 link_topic_pack = _route_handler(_topic_packs_routes.link_topic_pack)
 
 import_fact_cards_folder_to_pack = _route_handler(_fact_cards_routes.import_fact_cards_folder_to_pack)

@@ -560,6 +560,31 @@ def test_topic_pack_rebuild_embeddings_action_lives_with_pack_controls():
     assert '<div class="topic-panel topic-ops-panel">' not in index_html
 
 
+def test_control_ui_exposes_topic_graph_debug_panel():
+    index_html = _control_ui_source()
+
+    assert 'id="topicGraphPanel"' in index_html
+    assert 'id="topicGraphState"' in index_html
+    assert 'id="refreshTopicGraph"' in index_html
+    assert 'id="rebuildTopicGraph"' in index_html
+    assert 'id="refreshTopicGraphTrace"' in index_html
+    assert 'id="topicGraphSvg"' in index_html
+    assert 'id="topicGraphSelectedNode"' in index_html
+    assert 'id="topicGraphLatestTrace"' in index_html
+    assert 'id="topicGraphTraces"' in index_html
+    assert 'function refreshTopicGraph' in index_html
+    assert 'function rebuildTopicGraph' in index_html
+    assert 'function renderTopicGraph' in index_html
+    assert 'function selectTopicGraphNode' in index_html
+    assert "/topic-packs/${packId}/graph" in index_html
+    assert "/topic-packs/${packId}/graph/rebuild" in index_html
+    assert "/sessions/${encodeURIComponent(id)}/topic-graph/traces" in index_html
+    assert "/sessions/${encodeURIComponent(id)}/topic-graph/latest-trace" in index_html
+    assert '$("refreshTopicGraph").onclick = () => refreshTopicGraph()' in index_html
+    assert '$("rebuildTopicGraph").onclick = () => rebuildTopicGraph()' in index_html
+    assert '$("refreshTopicGraphTrace").onclick = () => refreshTopicGraphTrace()' in index_html
+
+
 def test_topic_pack_entry_list_drives_edit_and_delete_actions():
     index_html = _control_ui_source()
 
@@ -1553,6 +1578,115 @@ async def test_topic_pack_search_endpoint_searches_selected_pack_without_live_se
     assert len(result["entries"]) == 1
     assert result["entries"][0]["id"] == anime["id"]
     assert result["entries"][0]["similarity"] > 0.99
+
+
+@pytest.mark.asyncio
+async def test_topic_graph_list_endpoint_returns_sanitized_graph(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    pack = storage.create_topic_pack({"title": "可測試資料包"})
+    entry = storage.create_topic_pack_entry(pack["id"], {
+        "title": "魔法帽攻頂",
+        "body": "不可把 <topic_pack_fact_cards> raw context 直接公開。",
+        "source_type": "factcards_folder",
+    })
+    storage.replace_topic_graph(
+        pack["id"],
+        nodes=[
+            {
+                "node_key": "entry:magic",
+                "entry_id": entry["id"],
+                "node_type": "topic",
+                "title": "魔法帽攻頂",
+                "summary": "safe summary",
+                "metadata": {
+                    "prompt": "hidden",
+                    "external_context": "<topic_pack_fact_cards>raw</topic_pack_fact_cards>",
+                    "embedding": [0.1, 0.2],
+                    "primary_entity": "魔法帽",
+                },
+            },
+        ],
+        edges=[],
+    )
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    result = await server_module.get_topic_pack_graph(pack["id"])
+
+    dumped = str(result)
+    assert result["pack_id"] == pack["id"]
+    assert result["nodes"][0]["node_key"] == "entry:magic"
+    assert result["nodes"][0]["node_type"] == "topic"
+    assert result["nodes"][0]["metadata"] == {"primary_entity": "魔法帽"}
+    assert "prompt" not in dumped
+    assert "external_context" not in dumped
+    assert "<topic_pack_fact_cards>" not in dumped
+    assert "embedding" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_topic_graph_rebuild_endpoint_rebuilds_selected_pack(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    pack = storage.create_topic_pack({"title": "可測試資料包"})
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    rebuilt: list[int] = []
+
+    class FakeManager:
+        def rebuild_topic_graph_for_pack(self, pack_id: int):
+            rebuilt.append(pack_id)
+            return {"status": "completed", "pack_id": pack_id, "node_count": 2, "edge_count": 1}
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+
+    result = await server_module.rebuild_topic_pack_graph(pack["id"])
+
+    assert result == {"status": "completed", "pack_id": pack["id"], "node_count": 2, "edge_count": 1}
+    assert rebuilt == [pack["id"]]
+
+
+@pytest.mark.asyncio
+async def test_topic_graph_trace_endpoints_return_sanitized_recent_and_latest_trace(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+    })
+    pack = storage.create_topic_pack({"title": "可測試資料包"})
+    storage.record_topic_graph_retrieval_trace("live-a", pack["id"], {
+        "source": "external_context",
+        "query_text": "魔法帽",
+        "entry_node_ids": [1],
+        "expanded_node_ids": [1, 2],
+        "selected_node_ids": [1, 2],
+        "rejected_nodes": [{"node_id": 3, "reason": "token_budget"}],
+        "context_text_preview": "<topic_pack_fact_cards>raw</topic_pack_fact_cards>",
+    })
+    storage.record_topic_graph_retrieval_trace("live-a", pack["id"], {
+        "source": "director",
+        "query_text": "榜單",
+        "entry_node_ids": [4],
+        "expanded_node_ids": [4, 5],
+        "selected_node_ids": [4],
+        "rejected_nodes": [],
+        "context_text_preview": "safe preview",
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    traces = await server_module.list_topic_graph_traces("live-a", limit=10)
+    latest = await server_module.get_latest_topic_graph_trace("live-a")
+
+    assert [trace["source"] for trace in traces["traces"]] == ["director", "external_context"]
+    assert traces["traces"][0]["selected_node_ids"] == [4]
+    assert traces["traces"][1]["rejected_nodes"][0]["reason"] == "token_budget"
+    assert latest["trace"]["source"] == "director"
+    dumped = str(traces) + str(latest)
+    assert "<topic_pack_fact_cards>" not in dumped
 
 
 @pytest.mark.asyncio

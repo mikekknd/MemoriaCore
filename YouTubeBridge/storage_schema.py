@@ -185,6 +185,48 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(session_id, pack_id)
         );
 
+        CREATE TABLE IF NOT EXISTS topic_graph_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pack_id INTEGER NOT NULL,
+            entry_id INTEGER,
+            node_key TEXT NOT NULL,
+            node_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT DEFAULT '',
+            source_name TEXT DEFAULT '',
+            source_heading TEXT DEFAULT '',
+            metadata_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(pack_id, node_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS topic_graph_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pack_id INTEGER NOT NULL,
+            source_node_id INTEGER NOT NULL,
+            target_node_id INTEGER NOT NULL,
+            edge_type TEXT NOT NULL,
+            weight REAL NOT NULL DEFAULT 1.0,
+            evidence TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            UNIQUE(pack_id, source_node_id, target_node_id, edge_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS topic_graph_retrieval_traces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            pack_id INTEGER NOT NULL,
+            source TEXT DEFAULT '',
+            query_text TEXT DEFAULT '',
+            entry_node_ids_json TEXT DEFAULT '[]',
+            expanded_node_ids_json TEXT DEFAULT '[]',
+            selected_node_ids_json TEXT DEFAULT '[]',
+            rejected_nodes_json TEXT DEFAULT '[]',
+            context_text_preview TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS research_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
@@ -253,6 +295,12 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             ON topic_pack_entry_usages(session_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_topic_pack_usages_entry
             ON topic_pack_entry_usages(session_id, entry_id);
+        CREATE INDEX IF NOT EXISTS idx_topic_graph_nodes_pack
+            ON topic_graph_nodes(pack_id, node_type, entry_id);
+        CREATE INDEX IF NOT EXISTS idx_topic_graph_edges_pack
+            ON topic_graph_edges(pack_id, source_node_id, edge_type);
+        CREATE INDEX IF NOT EXISTS idx_topic_graph_traces_session
+            ON topic_graph_retrieval_traces(session_id, id);
         CREATE INDEX IF NOT EXISTS idx_research_requests_session
             ON research_requests(session_id, created_at);
         """

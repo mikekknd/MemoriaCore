@@ -23,6 +23,18 @@ class TopicPackRepositoryMixin:
     def _row_to_topic_pack_entry_embedding(cls, row: sqlite3.Row | None) -> dict | None:
         return mappers.row_to_topic_pack_entry_embedding(row)
 
+    @classmethod
+    def _row_to_topic_graph_node(cls, row: sqlite3.Row | None) -> dict | None:
+        return mappers.row_to_topic_graph_node(row)
+
+    @classmethod
+    def _row_to_topic_graph_edge(cls, row: sqlite3.Row | None) -> dict | None:
+        return mappers.row_to_topic_graph_edge(row)
+
+    @classmethod
+    def _row_to_topic_graph_retrieval_trace(cls, row: sqlite3.Row | None) -> dict | None:
+        return mappers.row_to_topic_graph_retrieval_trace(row)
+
     def create_topic_pack(self, data: dict[str, Any]) -> dict:
         now = datetime.now().isoformat()
         title = str(data.get("title", "") or "").strip()
@@ -189,6 +201,9 @@ class TopicPackRepositoryMixin:
                     f"DELETE FROM topic_pack_entry_usages WHERE entry_id IN ({placeholders})",
                     entry_ids,
                 )
+            conn.execute("DELETE FROM topic_graph_edges WHERE pack_id = ?", (pack_id,))
+            conn.execute("DELETE FROM topic_graph_nodes WHERE pack_id = ?", (pack_id,))
+            conn.execute("DELETE FROM topic_graph_retrieval_traces WHERE pack_id = ?", (pack_id,))
             conn.execute("DELETE FROM topic_pack_entry_embeddings WHERE pack_id = ?", (pack_id,))
             conn.execute("DELETE FROM topic_pack_entry_usages WHERE pack_id = ?", (pack_id,))
             conn.execute("DELETE FROM live_session_topic_packs WHERE pack_id = ?", (pack_id,))
@@ -216,6 +231,9 @@ class TopicPackRepositoryMixin:
             )
             conn.execute("DELETE FROM topic_pack_entry_embeddings")
             conn.execute("DELETE FROM topic_pack_entry_usages")
+            conn.execute("DELETE FROM topic_graph_edges")
+            conn.execute("DELETE FROM topic_graph_nodes")
+            conn.execute("DELETE FROM topic_graph_retrieval_traces")
             conn.execute("DELETE FROM live_session_topic_packs")
             conn.execute("DELETE FROM topic_pack_entries")
             conn.execute("DELETE FROM topic_packs")
@@ -303,6 +321,178 @@ class TopicPackRepositoryMixin:
                 (int(entry_id),),
             ).fetchone()
         return self._row_to_topic_pack_entry_embedding(row)
+
+    def replace_topic_graph(
+        self,
+        pack_id: int,
+        nodes: list[dict[str, Any]],
+        edges: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        pack_id = int(pack_id)
+        if not self.get_topic_pack(pack_id):
+            raise ValueError("topic pack 不存在")
+        now = datetime.now().isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM topic_graph_edges WHERE pack_id = ?", (pack_id,))
+            conn.execute("DELETE FROM topic_graph_nodes WHERE pack_id = ?", (pack_id,))
+            node_id_by_key: dict[str, int] = {}
+            for node in nodes:
+                node_key = str(node.get("node_key") or "").strip()
+                node_type = str(node.get("node_type") or "").strip()
+                title = str(node.get("title") or "").strip()
+                if not node_key or not node_type or not title:
+                    continue
+                entry_id = node.get("entry_id")
+                try:
+                    clean_entry_id = int(entry_id) if entry_id is not None else None
+                except (TypeError, ValueError):
+                    clean_entry_id = None
+                cursor = conn.execute(
+                    """
+                    INSERT INTO topic_graph_nodes (
+                        pack_id, entry_id, node_key, node_type, title, summary,
+                        source_name, source_heading, metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pack_id,
+                        clean_entry_id,
+                        node_key[:240],
+                        node_type[:40],
+                        title[:240],
+                        str(node.get("summary") or "")[:2000],
+                        str(node.get("source_name") or "")[:240],
+                        str(node.get("source_heading") or "")[:240],
+                        self._json_dump(node.get("metadata") if isinstance(node.get("metadata"), dict) else {}),
+                        now,
+                        now,
+                    ),
+                )
+                node_id_by_key[node_key] = int(cursor.lastrowid)
+            for edge in edges:
+                source_key = str(edge.get("source_node_key") or "").strip()
+                target_key = str(edge.get("target_node_key") or "").strip()
+                source_id = node_id_by_key.get(source_key)
+                target_id = node_id_by_key.get(target_key)
+                if not source_id or not target_id or source_id == target_id:
+                    continue
+                edge_type = str(edge.get("edge_type") or "").strip()
+                if not edge_type:
+                    continue
+                try:
+                    weight = float(edge.get("weight") if edge.get("weight") is not None else 1.0)
+                except (TypeError, ValueError):
+                    weight = 1.0
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO topic_graph_edges (
+                        pack_id, source_node_id, target_node_id, edge_type,
+                        weight, evidence, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pack_id,
+                        source_id,
+                        target_id,
+                        edge_type[:40],
+                        weight,
+                        str(edge.get("evidence") or "")[:1000],
+                        now,
+                    ),
+                )
+            conn.commit()
+        return self.get_topic_graph(pack_id)
+
+    def get_topic_graph(self, pack_id: int) -> dict[str, Any]:
+        pack_id = int(pack_id)
+        with self._lock, self._connect() as conn:
+            node_rows = conn.execute(
+                """
+                SELECT *
+                FROM topic_graph_nodes
+                WHERE pack_id = ?
+                ORDER BY id ASC
+                """,
+                (pack_id,),
+            ).fetchall()
+            edge_rows = conn.execute(
+                """
+                SELECT edge.*, source.node_key AS source_node_key, target.node_key AS target_node_key
+                FROM topic_graph_edges edge
+                JOIN topic_graph_nodes source ON source.id = edge.source_node_id
+                JOIN topic_graph_nodes target ON target.id = edge.target_node_id
+                WHERE edge.pack_id = ?
+                ORDER BY edge.id ASC
+                """,
+                (pack_id,),
+            ).fetchall()
+        nodes = [node for row in node_rows if (node := self._row_to_topic_graph_node(row))]
+        edges = [edge for row in edge_rows if (edge := self._row_to_topic_graph_edge(row))]
+        return {"pack_id": pack_id, "nodes": nodes, "edges": edges}
+
+    def record_topic_graph_retrieval_trace(
+        self,
+        session_id: str,
+        pack_id: int,
+        trace: dict[str, Any],
+    ) -> dict[str, Any]:
+        clean_session_id = str(session_id or "").strip()
+        if not clean_session_id:
+            raise ValueError("session_id 不可為空")
+        pack_id = int(pack_id)
+        if not self.get_topic_pack(pack_id):
+            raise ValueError("topic pack 不存在")
+        now = datetime.now().isoformat()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO topic_graph_retrieval_traces (
+                    session_id, pack_id, source, query_text, entry_node_ids_json,
+                    expanded_node_ids_json, selected_node_ids_json, rejected_nodes_json,
+                    context_text_preview, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_session_id,
+                    pack_id,
+                    str(trace.get("source") or "")[:80],
+                    str(trace.get("query_text") or "")[:1000],
+                    self._json_dump(trace.get("entry_node_ids") if isinstance(trace.get("entry_node_ids"), list) else []),
+                    self._json_dump(trace.get("expanded_node_ids") if isinstance(trace.get("expanded_node_ids"), list) else []),
+                    self._json_dump(trace.get("selected_node_ids") if isinstance(trace.get("selected_node_ids"), list) else []),
+                    self._json_dump(trace.get("rejected_nodes") if isinstance(trace.get("rejected_nodes"), list) else []),
+                    str(trace.get("context_text_preview") or "")[:2000],
+                    now,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM topic_graph_retrieval_traces WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        saved = self._row_to_topic_graph_retrieval_trace(row)
+        if not saved:
+            raise RuntimeError("topic graph trace 儲存失敗")
+        return saved
+
+    def list_topic_graph_retrieval_traces(self, session_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 20), 100))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM topic_graph_retrieval_traces
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [trace for row in rows if (trace := self._row_to_topic_graph_retrieval_trace(row))]
+
+    def get_latest_topic_graph_retrieval_trace(self, session_id: str) -> dict[str, Any] | None:
+        traces = self.list_topic_graph_retrieval_traces(session_id, limit=1)
+        return traces[0] if traces else None
 
     def list_topic_pack_entries_missing_embeddings(self, pack_id: int, *, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit or 100), 500))

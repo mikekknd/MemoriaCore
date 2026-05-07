@@ -10,7 +10,7 @@ import {
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
-  refreshTopicEntries, refreshTopicPacks, updateTopicActionVisibility,
+  rebuildTopicGraph, refreshTopicEntries, refreshTopicGraph, refreshTopicGraphTrace, refreshTopicPacks, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
 } from "./topic-packs.js";
 
@@ -137,6 +137,9 @@ $("updateTopicEntry").onclick = () => updateTopicEntry().catch((error) => log("f
 $("cancelTopicEntryEdit").onclick = () => cancelTopicEntryEdit();
 $("importFactCardsFolder").onclick = () => importFactCardsFolder().catch((error) => log("FactCards 資料夾匯入失敗", String(error)));
 $("rebuildTopicEmbeddings").onclick = () => rebuildTopicEmbeddings().catch((error) => log("向量索引重建失敗", String(error)));
+$("refreshTopicGraph").onclick = () => refreshTopicGraph().catch((error) => log("Topic Graph 更新失敗", String(error)));
+$("rebuildTopicGraph").onclick = () => rebuildTopicGraph().catch((error) => log("Topic Graph 重建失敗", String(error)));
+$("refreshTopicGraphTrace").onclick = () => refreshTopicGraphTrace().catch((error) => log("Topic Graph trace 更新失敗", String(error)));
 $("topicPackSelect").onchange = () => refreshTopicEntries().catch((error) => log("fact card 更新失敗", String(error)));
 $("sessionTopicPackSelect").onchange = () => {
   $("topicPackSelect").value = $("sessionTopicPackSelect").value;

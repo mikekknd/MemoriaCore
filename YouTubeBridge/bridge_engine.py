@@ -380,8 +380,13 @@ class YouTubeBridgeManager(
         if self._topic_pack_entries_can_answer(entries):
             resolution["local_answerable"] = True
             resolution["research_status"] = "not_needed"
-            context_entries = entries[:1]
-            self._record_topic_pack_usage(session_id, context_entries, query_text, "external_context")
+            context_entries = self._topic_graph_context_entries_for_hits(
+                session_id,
+                entries[:1],
+                query_text,
+                "external_context",
+                max_entries=4,
+            )
             return self._topic_pack_context_text(context_entries), resolution
 
         if not session.get("research_enabled"):
@@ -1107,7 +1112,17 @@ class YouTubeBridgeManager(
         if not entries:
             return ""
         lines = ["", "<topic_pack_fact_cards>"]
+        strategy = str(entries[0].get("topic_graph_strategy") or "").strip()
+        if strategy:
+            lines.append(f"召回策略：{strategy}")
+        role_labels = {
+            "entry": "入口",
+            "detail": "深挖",
+            "related": "關聯",
+        }
         for entry in entries[-8:]:
-            lines.append(f"- {entry.get('title')}: {entry.get('body')}".strip())
+            role = str(entry.get("topic_graph_role") or "").strip()
+            label = f"[{role_labels[role]}] " if role in role_labels else ""
+            lines.append(f"- {label}{entry.get('title')}: {entry.get('body')}".strip())
         lines.append("</topic_pack_fact_cards>")
         return "\n".join(lines)

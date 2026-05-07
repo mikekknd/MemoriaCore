@@ -18,6 +18,7 @@ from fact_cards import (
     iter_fact_card_files,
     parse_fact_card_markdown,
 )
+from topic_graph import build_topic_graph_payload
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -117,6 +118,170 @@ class TopicPackManagerMixin:
         self._record_topic_pack_usage(session_id, entries, query_text, usage_source, replenish_reason)
         return self._topic_pack_context_text(entries)
 
+    def _topic_graph_context_entries_for_hits(
+        self,
+        session_id: str,
+        entries: list[dict[str, Any]],
+        query_text: str,
+        usage_source: str,
+        *,
+        max_entries: int = 4,
+    ) -> list[dict[str, Any]]:
+        selected, trace = self._expand_topic_graph_entries(entries, max_entries=max_entries)
+        if not selected:
+            selected = entries[:max(1, min(max_entries, len(entries)))]
+        self._record_topic_pack_usage(session_id, selected, query_text, usage_source)
+        if trace and selected:
+            try:
+                pack_id = int(selected[0].get("pack_id") or 0)
+                if pack_id:
+                    self.storage.record_topic_graph_retrieval_trace(
+                        session_id,
+                        pack_id,
+                        {
+                            **trace,
+                            "source": usage_source,
+                            "query_text": query_text,
+                            "context_text_preview": self._topic_pack_context_text(selected)[:2000],
+                        },
+                    )
+            except Exception as exc:
+                logger.warning("topic graph trace record failed session_id=%s error=%s", session_id, exc)
+        return selected
+
+    def _expand_topic_graph_entries(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        max_entries: int = 4,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        if not entries:
+            return [], None
+        selected: list[dict[str, Any]] = []
+        selected_entry_ids: set[int] = set()
+        selected_node_ids: list[int] = []
+        entry_node_ids: list[int] = []
+        expanded_node_ids: list[int] = []
+        rejected_nodes: list[dict[str, Any]] = []
+        graph_used = False
+
+        def add_entry(entry: dict[str, Any], node: dict[str, Any] | None, role: str) -> None:
+            if len(selected) >= max(1, int(max_entries or 4)):
+                if node:
+                    rejected_nodes.append({"node_id": node["id"], "reason": "entry_budget"})
+                return
+            try:
+                entry_id = int(entry.get("id") or entry.get("entry_id") or 0)
+            except (TypeError, ValueError):
+                entry_id = 0
+            if entry_id <= 0 or entry_id in selected_entry_ids:
+                return
+            selected_entry_ids.add(entry_id)
+            item = dict(entry)
+            item["topic_graph_role"] = role
+            if node:
+                item["topic_graph_node_id"] = int(node["id"])
+                selected_node_ids.append(int(node["id"]))
+            selected.append(item)
+
+        for entry in entries[:2]:
+            if len(selected) >= max_entries:
+                break
+            try:
+                pack_id = int(entry.get("pack_id") or 0)
+                entry_id = int(entry.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            graph = self.storage.get_topic_graph(pack_id) if pack_id else {"nodes": [], "edges": []}
+            nodes = graph.get("nodes") or []
+            edges = graph.get("edges") or []
+            if not nodes:
+                add_entry(entry, None, "entry")
+                continue
+            node_by_id = {int(node["id"]): node for node in nodes}
+            entry_node = next((node for node in nodes if int(node.get("entry_id") or 0) == entry_id), None)
+            if not entry_node:
+                add_entry(entry, None, "entry")
+                continue
+            graph_used = True
+            entry_node_ids.append(int(entry_node["id"]))
+            add_entry(entry, entry_node, "entry")
+
+            detail_edges = sorted(
+                [
+                    edge for edge in edges
+                    if edge.get("edge_type") == "detail_of"
+                    and int(edge.get("target_node_id") or 0) == int(entry_node["id"])
+                ],
+                key=lambda edge: float(edge.get("weight") or 0.0),
+                reverse=True,
+            )
+            detail_count = 0
+            for edge in detail_edges:
+                if detail_count >= 2:
+                    break
+                node = node_by_id.get(int(edge.get("source_node_id") or 0))
+                if not node or not node.get("entry_id"):
+                    continue
+                expanded_node_ids.append(int(node["id"]))
+                detail_entry = self.storage.get_topic_pack_entry(int(node["entry_id"]))
+                if detail_entry:
+                    detail_entry["similarity"] = float(edge.get("weight") or 0.0)
+                    before = len(selected)
+                    add_entry(detail_entry, node, "detail")
+                    if len(selected) > before:
+                        detail_count += 1
+
+            relation_edges = sorted(
+                [
+                    edge for edge in edges
+                    if edge.get("edge_type") in {"compare_with", "mentions"}
+                    and int(edge.get("source_node_id") or 0) == int(entry_node["id"])
+                ],
+                key=lambda edge: (0 if edge.get("edge_type") == "compare_with" else 1, -float(edge.get("weight") or 0.0)),
+            )
+            relation_count = 0
+            for edge in relation_edges:
+                if relation_count >= 1:
+                    break
+                node = node_by_id.get(int(edge.get("target_node_id") or 0))
+                if not node or not node.get("entry_id"):
+                    continue
+                expanded_node_ids.append(int(node["id"]))
+                related_entry = self.storage.get_topic_pack_entry(int(node["entry_id"]))
+                if related_entry:
+                    related_entry["similarity"] = float(edge.get("weight") or 0.0)
+                    before = len(selected)
+                    add_entry(related_entry, node, "related")
+                    if len(selected) > before:
+                        relation_count += 1
+
+        if not graph_used:
+            return selected, None
+        strategy = self._topic_graph_strategy_text(selected)
+        for item in selected:
+            item["topic_graph_strategy"] = strategy
+        return selected, {
+            "entry_node_ids": entry_node_ids,
+            "expanded_node_ids": expanded_node_ids,
+            "selected_node_ids": selected_node_ids,
+            "rejected_nodes": rejected_nodes,
+        }
+
+    @staticmethod
+    def _topic_graph_strategy_text(entries: list[dict[str, Any]]) -> str:
+        entry_title = next((str(item.get("title") or "") for item in entries if item.get("topic_graph_role") == "entry"), "")
+        detail_title = next((str(item.get("title") or "") for item in entries if item.get("topic_graph_role") == "detail"), "")
+        related_title = next((str(item.get("title") or "") for item in entries if item.get("topic_graph_role") == "related"), "")
+        parts = []
+        if entry_title:
+            parts.append(f"先討論「{entry_title[:60]}」")
+        if detail_title:
+            parts.append(f"再延伸「{detail_title[:60]}」")
+        if related_title:
+            parts.append(f"若自然比較，可短提「{related_title[:60]}」")
+        return "；".join(parts) + "。" if parts else ""
+
     def _topic_pack_sequence_context_for_session(
         self,
         session_id: str,
@@ -129,7 +294,13 @@ class TopicPackManagerMixin:
             session_id,
             turns_per_entry=turns_per_entry,
         )
-        self._record_topic_pack_usage(session_id, entries, query_text, usage_source)
+        entries = self._topic_graph_context_entries_for_hits(
+            session_id,
+            entries,
+            query_text,
+            usage_source,
+            max_entries=4,
+        )
         return self._topic_pack_context_text(entries)
 
     def _topic_pack_sequence_entries_for_session(
@@ -412,6 +583,27 @@ class TopicPackManagerMixin:
         })
         return int(pack["id"])
 
+    def rebuild_topic_graph_for_pack(self, pack_id: int) -> dict[str, Any]:
+        entries = self.storage.list_topic_pack_entries(int(pack_id), limit=500)
+        if not entries and not self.storage.get_topic_pack(int(pack_id)):
+            raise ValueError("topic pack 不存在")
+        documents = [
+            {
+                "title": entry.get("pack_title") or "Topic Pack",
+                "summary": "",
+                "source_name": entry.get("source_url") or entry.get("source_type") or "topic_pack",
+                "facts": [
+                    {
+                        "entry_id": int(entry["id"]),
+                        "title": entry.get("title") or "",
+                        "body": entry.get("body") or "",
+                    }
+                ],
+            }
+            for entry in entries
+        ]
+        return self._rebuild_topic_graph_from_documents(int(pack_id), documents)
+
     def _import_fact_card_paths_to_pack(
         self,
         paths: list[Path],
@@ -422,6 +614,7 @@ class TopicPackManagerMixin:
         created_entries: list[dict[str, Any]] = []
         embeddings: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        graph_documents: list[dict[str, Any]] = []
         parsed_files = 0
         for path in paths:
             try:
@@ -430,10 +623,16 @@ class TopicPackManagerMixin:
             except Exception as exc:
                 failures.append({"file": str(path), "error": str(exc)[:300]})
                 continue
+            graph_facts: list[dict[str, Any]] = []
             for payload in document.to_topic_pack_entries():
                 try:
                     entry = self.storage.create_topic_pack_entry(int(target_pack_id), payload)
                     created_entries.append(entry)
+                    graph_facts.append({
+                        "entry_id": int(entry["id"]),
+                        "title": entry.get("title") or payload.get("title") or "",
+                        "body": entry.get("body") or payload.get("body") or "",
+                    })
                     try:
                         embeddings.append(self.index_topic_pack_entry(int(entry["id"])))
                     except Exception as exc:
@@ -444,6 +643,17 @@ class TopicPackManagerMixin:
                         })
                 except Exception as exc:
                     failures.append({"file": str(path), "title": payload.get("title"), "error": str(exc)[:300]})
+            if graph_facts:
+                graph_documents.append({
+                    "title": document.title,
+                    "summary": document.summary,
+                    "source_name": document.source_name or path.name,
+                    "facts": graph_facts,
+                })
+        graph_status = self._rebuild_topic_graph_from_documents(
+            int(target_pack_id),
+            graph_documents,
+        )
         return {
             "status": "completed",
             "pack_id": int(target_pack_id),
@@ -455,7 +665,37 @@ class TopicPackManagerMixin:
             "entries": created_entries,
             "embeddings": embeddings,
             "failures": failures,
+            "graph": graph_status,
         }
+
+    def _rebuild_topic_graph_from_documents(
+        self,
+        pack_id: int,
+        documents: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not documents:
+            self.storage.replace_topic_graph(int(pack_id), [], [])
+            return {"status": "completed", "node_count": 0, "edge_count": 0}
+        try:
+            payload = build_topic_graph_payload(documents)
+            graph = self.storage.replace_topic_graph(
+                int(pack_id),
+                payload.get("nodes", []),
+                payload.get("edges", []),
+            )
+            return {
+                "status": "completed",
+                "node_count": len(graph.get("nodes") or []),
+                "edge_count": len(graph.get("edges") or []),
+            }
+        except Exception as exc:
+            logger.warning("topic graph rebuild failed pack_id=%s error=%s", pack_id, exc)
+            return {
+                "status": "failed",
+                "node_count": 0,
+                "edge_count": 0,
+                "error": str(exc)[:300],
+            }
 
     def generate_fact_cards_with_gemini(
         self,

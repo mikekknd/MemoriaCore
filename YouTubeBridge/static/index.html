@@ -356,6 +356,26 @@
               </div>
               <div id="topicPackEntries" class="list topic-entry-list"></div>
             </div>
+
+            <div id="topicGraphPanel" class="topic-panel topic-graph-panel is-hidden">
+              <div class="topic-panel-header">
+                <h3>關係圖 Debug</h3>
+                <span id="topicGraphState" class="status">尚未載入</span>
+              </div>
+              <div class="topic-form-actions">
+                <button id="refreshTopicGraph" class="is-hidden">刷新關係圖</button>
+                <button id="rebuildTopicGraph" class="is-hidden">重建關係圖</button>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="refreshTopicGraphTrace" class="is-hidden">刷新召回路徑</button>
+              </div>
+              <svg id="topicGraphSvg" viewBox="0 0 720 520" role="img" aria-label="Fact Card topic graph"></svg>
+              <div class="topic-graph-details">
+                <div id="topicGraphSelectedNode" class="item">尚未選擇節點</div>
+                <div id="topicGraphLatestTrace" class="item">尚無召回路徑</div>
+              </div>
+              <div id="topicGraphTraces" class="list topic-graph-trace-list"></div>
+            </div>
           </div>
         </div>
 

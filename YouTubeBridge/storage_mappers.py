@@ -292,3 +292,57 @@ def row_to_topic_pack_entry_embedding(row: sqlite3.Row | None) -> dict | None:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def row_to_topic_graph_node(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "pack_id": int(row["pack_id"]),
+        "entry_id": int(row["entry_id"]) if row["entry_id"] is not None else None,
+        "node_key": row["node_key"] or "",
+        "node_type": row["node_type"] or "",
+        "title": row["title"] or "",
+        "summary": row["summary"] or "",
+        "source_name": row["source_name"] or "",
+        "source_heading": row["source_heading"] or "",
+        "metadata": json_load(row["metadata_json"], {}),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def row_to_topic_graph_edge(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "pack_id": int(row["pack_id"]),
+        "source_node_id": int(row["source_node_id"]),
+        "target_node_id": int(row["target_node_id"]),
+        "source_node_key": row_value(row, "source_node_key", "") or "",
+        "target_node_key": row_value(row, "target_node_key", "") or "",
+        "edge_type": row["edge_type"] or "",
+        "weight": float(row["weight"] or 0.0),
+        "evidence": row["evidence"] or "",
+        "created_at": row["created_at"],
+    }
+
+
+def row_to_topic_graph_retrieval_trace(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "session_id": row["session_id"] or "",
+        "pack_id": int(row["pack_id"]),
+        "source": row["source"] or "",
+        "query_text": row["query_text"] or "",
+        "entry_node_ids": json_load(row["entry_node_ids_json"], []),
+        "expanded_node_ids": json_load(row["expanded_node_ids_json"], []),
+        "selected_node_ids": json_load(row["selected_node_ids_json"], []),
+        "rejected_nodes": json_load(row["rejected_nodes_json"], []),
+        "context_text_preview": row["context_text_preview"] or "",
+        "created_at": row["created_at"],
+    }

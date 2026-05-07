@@ -406,6 +406,139 @@ def test_topic_pack_crud_and_session_linking():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_topic_graph_storage_replaces_nodes_edges_and_lists_graph():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        pack = storage.create_topic_pack({
+            "title": "四月新番資料包",
+            "description": "直播前準備的 fact cards",
+        })
+        entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "《魔法帽的工作室》：精緻奇幻新作正式攻頂",
+            "body": "Anime Corner 第 4 週以 9.20% 得票拿下第 1。",
+            "source_type": "factcards_folder",
+        })
+
+        graph = storage.replace_topic_graph(
+            pack["id"],
+            nodes=[
+                {
+                    "node_key": "document:overview",
+                    "node_type": "document",
+                    "title": "春番總覽",
+                    "summary": "2026 春番熱門話題。",
+                    "source_name": "overview.md",
+                    "source_heading": "",
+                    "metadata": {"kind": "overview"},
+                },
+                {
+                    "node_key": "entry:magic-hat",
+                    "entry_id": entry["id"],
+                    "node_type": "topic",
+                    "title": entry["title"],
+                    "summary": entry["body"],
+                    "source_name": "overview.md",
+                    "source_heading": entry["title"],
+                    "metadata": {"entity": "魔法帽的工作室"},
+                },
+            ],
+            edges=[
+                {
+                    "source_node_key": "document:overview",
+                    "target_node_key": "entry:magic-hat",
+                    "edge_type": "contains",
+                    "weight": 1.0,
+                    "evidence": "overview.md contains topic heading",
+                },
+            ],
+        )
+
+        assert graph["pack_id"] == pack["id"]
+        assert len(graph["nodes"]) == 2
+        assert len(graph["edges"]) == 1
+        listed = storage.get_topic_graph(pack["id"])
+        topic_node = next(node for node in listed["nodes"] if node["node_key"] == "entry:magic-hat")
+        assert topic_node["entry_id"] == entry["id"]
+        assert topic_node["metadata"]["entity"] == "魔法帽的工作室"
+        assert listed["edges"][0]["edge_type"] == "contains"
+        assert listed["edges"][0]["source_node_key"] == "document:overview"
+        assert listed["edges"][0]["target_node_key"] == "entry:magic-hat"
+
+        replaced = storage.replace_topic_graph(
+            pack["id"],
+            nodes=[
+                {
+                    "node_key": "document:replacement",
+                    "node_type": "document",
+                    "title": "替換後圖譜",
+                },
+            ],
+            edges=[],
+        )
+
+        assert [node["node_key"] for node in replaced["nodes"]] == ["document:replacement"]
+        assert storage.get_topic_graph(pack["id"])["edges"] == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_topic_graph_retrieval_traces_roundtrip_and_latest_trace():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+        })
+        pack = storage.create_topic_pack({"title": "四月新番資料包"})
+
+        first = storage.record_topic_graph_retrieval_trace(
+            "live-a",
+            pack["id"],
+            {
+                "source": "external_context",
+                "query_text": "魔法帽攻頂",
+                "entry_node_ids": [1],
+                "expanded_node_ids": [1, 2],
+                "selected_node_ids": [1, 2],
+                "rejected_nodes": [{"node_id": 3, "reason": "token_budget"}],
+                "context_text_preview": "<topic_pack_fact_cards>...</topic_pack_fact_cards>",
+            },
+        )
+        second = storage.record_topic_graph_retrieval_trace(
+            "live-a",
+            pack["id"],
+            {
+                "source": "director",
+                "query_text": "榜單拉鋸",
+                "entry_node_ids": [4],
+                "expanded_node_ids": [4, 5],
+                "selected_node_ids": [4],
+                "rejected_nodes": [],
+                "context_text_preview": "Re:ZERO reference",
+            },
+        )
+
+        traces = storage.list_topic_graph_retrieval_traces("live-a", limit=10)
+        assert [trace["id"] for trace in traces] == [second["id"], first["id"]]
+        assert traces[0]["selected_node_ids"] == [4]
+        assert traces[1]["rejected_nodes"][0]["reason"] == "token_budget"
+
+        latest = storage.get_latest_topic_graph_retrieval_trace("live-a")
+        assert latest["id"] == second["id"]
+        assert latest["source"] == "director"
+        assert latest["query_text"] == "榜單拉鋸"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_set_session_topic_pack_replaces_existing_pack_link():
     tmp_dir = _tmp_dir()
     try:

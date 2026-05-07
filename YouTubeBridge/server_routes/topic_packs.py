@@ -39,6 +39,75 @@ def _require_state():
     return _state
 
 
+def _sanitize_graph_metadata(metadata: dict | None) -> dict:
+    safe: dict = {}
+    for key, value in (metadata or {}).items():
+        key_str = str(key)
+        key_lower = key_str.lower()
+        if key_lower in {"prompt", "external_context", "context_text", "raw_context", "embedding", "embeddings", "vector"}:
+            continue
+        safe[key_str] = value
+    return safe
+
+
+def sanitize_topic_graph(graph: dict) -> dict:
+    return {
+        "pack_id": int(graph.get("pack_id") or 0),
+        "nodes": [
+            {
+                "id": int(node.get("id") or 0),
+                "pack_id": int(node.get("pack_id") or 0),
+                "entry_id": node.get("entry_id"),
+                "node_key": str(node.get("node_key") or ""),
+                "node_type": str(node.get("node_type") or ""),
+                "title": str(node.get("title") or ""),
+                "summary": str(node.get("summary") or "")[:500],
+                "source_name": str(node.get("source_name") or ""),
+                "source_heading": str(node.get("source_heading") or ""),
+                "metadata": _sanitize_graph_metadata(node.get("metadata") if isinstance(node.get("metadata"), dict) else {}),
+            }
+            for node in graph.get("nodes", [])
+            if isinstance(node, dict)
+        ],
+        "edges": [
+            {
+                "id": int(edge.get("id") or 0),
+                "pack_id": int(edge.get("pack_id") or 0),
+                "source_node_id": int(edge.get("source_node_id") or 0),
+                "target_node_id": int(edge.get("target_node_id") or 0),
+                "source_node_key": str(edge.get("source_node_key") or ""),
+                "target_node_key": str(edge.get("target_node_key") or ""),
+                "edge_type": str(edge.get("edge_type") or ""),
+                "weight": float(edge.get("weight") or 0.0),
+                "evidence": str(edge.get("evidence") or "")[:500],
+            }
+            for edge in graph.get("edges", [])
+            if isinstance(edge, dict)
+        ],
+    }
+
+
+def sanitize_topic_graph_trace(trace: dict | None) -> dict | None:
+    if not trace:
+        return None
+    preview = str(trace.get("context_text_preview") or "")
+    if "<topic_pack_fact_cards" in preview:
+        preview = "[hidden context]"
+    return {
+        "id": int(trace.get("id") or 0),
+        "session_id": str(trace.get("session_id") or ""),
+        "pack_id": int(trace.get("pack_id") or 0),
+        "source": str(trace.get("source") or ""),
+        "query_text": str(trace.get("query_text") or "")[:500],
+        "entry_node_ids": list(trace.get("entry_node_ids") or []),
+        "expanded_node_ids": list(trace.get("expanded_node_ids") or []),
+        "selected_node_ids": list(trace.get("selected_node_ids") or []),
+        "rejected_nodes": list(trace.get("rejected_nodes") or []),
+        "context_text_preview": preview[:500],
+        "created_at": str(trace.get("created_at") or ""),
+    }
+
+
 @router.get("/topic-packs")
 async def list_topic_packs():
     return storage.list_topic_packs()
@@ -216,6 +285,44 @@ async def rebuild_topic_pack_embeddings(pack_id: int):
         return await asyncio.to_thread(manager.rebuild_topic_pack_embeddings, pack_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/topic-packs/{pack_id}/graph")
+async def get_topic_pack_graph(pack_id: int):
+    if not storage.get_topic_pack(pack_id):
+        raise HTTPException(status_code=404, detail="topic pack not found")
+    return sanitize_topic_graph(storage.get_topic_graph(pack_id))
+
+
+@router.post("/topic-packs/{pack_id}/graph/rebuild")
+async def rebuild_topic_pack_graph(pack_id: int):
+    if not storage.get_topic_pack(pack_id):
+        raise HTTPException(status_code=404, detail="topic pack not found")
+    try:
+        return await asyncio.to_thread(manager.rebuild_topic_graph_for_pack, pack_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/sessions/{session_id}/topic-graph/traces")
+async def list_topic_graph_traces(session_id: str, limit: int = 20):
+    if not storage.get_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    traces = storage.list_topic_graph_retrieval_traces(session_id, limit=limit)
+    return {
+        "session_id": session_id,
+        "traces": [trace for item in traces if (trace := sanitize_topic_graph_trace(item))],
+    }
+
+
+@router.get("/sessions/{session_id}/topic-graph/latest-trace")
+async def get_latest_topic_graph_trace(session_id: str):
+    if not storage.get_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    return {
+        "session_id": session_id,
+        "trace": sanitize_topic_graph_trace(storage.get_latest_topic_graph_retrieval_trace(session_id)),
+    }
 
 
 @router.post("/sessions/{session_id}/topic-packs/{pack_id}")

@@ -385,6 +385,89 @@ def test_build_external_context_retrieves_relevant_topic_pack_fact_cards():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_audience_question_graph_expands_related_fact_cards_and_records_trace():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        magic = storage.create_topic_pack_entry(pack["id"], {
+            "title": "《魔法帽的工作室》：精緻奇幻新作正式攻頂",
+            "body": "Anime Corner 第 4 週以 9.20% 拿下第 1，第一次把《Re:從零開始的異世界生活 第四季》拉下冠軍。",
+            "source_type": "factcards_folder",
+        })
+        dragon = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第 5 話「巨鱗龍迷宮」：龍、迷宮與可可的臨場創意",
+            "body": "可可一行人被困在迷宮，巨鱗龍阻擋她們靠近魔法陣。",
+            "source_type": "factcards_folder",
+        })
+        rezero = storage.create_topic_pack_entry(pack["id"], {
+            "title": "《Re:從零開始的異世界生活 第四季》：續作霸權仍然是春番基本盤",
+            "body": "前三週連續拿下冠軍，第 4 週退到第 3 後仍保住前段班。",
+            "source_type": "factcards_folder",
+        })
+        food = storage.create_topic_pack_entry(pack["id"], {
+            "title": "拉麵",
+            "body": "豚骨拉麵是濃厚系美食主題。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.upsert_topic_pack_entry_embedding(magic["id"], [1.0, 0.0], model="fake-embed", content_hash="magic")
+        storage.upsert_topic_pack_entry_embedding(dragon["id"], [0.0, 1.0], model="fake-embed", content_hash="dragon")
+        storage.upsert_topic_pack_entry_embedding(rezero["id"], [0.0, 1.0], model="fake-embed", content_hash="rezero")
+        storage.upsert_topic_pack_entry_embedding(food["id"], [0.0, 1.0], model="fake-embed", content_hash="food")
+        storage.replace_topic_graph(
+            pack["id"],
+            nodes=[
+                {"node_key": f"entry:{magic['id']}", "entry_id": magic["id"], "node_type": "topic", "title": magic["title"], "summary": magic["body"]},
+                {"node_key": f"entry:{dragon['id']}", "entry_id": dragon["id"], "node_type": "detail", "title": dragon["title"], "summary": dragon["body"]},
+                {"node_key": f"entry:{rezero['id']}", "entry_id": rezero["id"], "node_type": "topic", "title": rezero["title"], "summary": rezero["body"]},
+                {"node_key": f"entry:{food['id']}", "entry_id": food["id"], "node_type": "topic", "title": food["title"], "summary": food["body"]},
+            ],
+            edges=[
+                {"source_node_key": f"entry:{dragon['id']}", "target_node_key": f"entry:{magic['id']}", "edge_type": "detail_of", "weight": 0.95},
+                {"source_node_key": f"entry:{magic['id']}", "target_node_key": f"entry:{rezero['id']}", "edge_type": "compare_with", "weight": 0.75},
+            ],
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "魔法帽攻頂有什麼可以深入比較的細節？",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
+        payload, _summary = manager.build_external_context("live-a")
+
+        assert "精緻奇幻新作正式攻頂" in payload["context_text"]
+        assert "巨鱗龍迷宮" in payload["context_text"]
+        assert "續作霸權仍然是春番基本盤" in payload["context_text"]
+        assert "豚骨拉麵" not in payload["context_text"]
+        assert "召回策略" in payload["context_text"]
+        assert "[深挖]" in payload["context_text"]
+        assert "[關聯]" in payload["context_text"]
+        trace = storage.get_latest_topic_graph_retrieval_trace("live-a")
+        assert trace is not None
+        assert trace["source"] == "external_context"
+        assert trace["entry_node_ids"]
+        assert set(trace["selected_node_ids"]) >= set(trace["entry_node_ids"])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_build_external_context_uses_one_sequential_topic_when_no_audience_question():
     tmp_dir = _tmp_dir()
     try:
@@ -434,6 +517,65 @@ def test_build_external_context_uses_one_sequential_topic_when_no_audience_quest
         second_stat = next(item for item in stats["entries"] if item["entry_id"] == second["id"])
         assert first_stat["usage_count"] == 1
         assert second_stat["usage_count"] == 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_sequential_topic_context_expands_detail_from_topic_graph():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "director_guidance": "本場只聊魔法帽。",
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        topic = storage.create_topic_pack_entry(pack["id"], {
+            "title": "《魔法帽的工作室》：精緻奇幻新作正式攻頂",
+            "body": "新作攻頂，挑戰續作霸權。",
+            "source_type": "factcards_folder",
+        })
+        detail = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第 5 話「巨鱗龍迷宮」：龍、迷宮與可可的臨場創意",
+            "body": "可可一行人靠規則與創意解開危機。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.replace_topic_graph(
+            pack["id"],
+            nodes=[
+                {"node_key": f"entry:{topic['id']}", "entry_id": topic["id"], "node_type": "topic", "title": topic["title"], "summary": topic["body"]},
+                {"node_key": f"entry:{detail['id']}", "entry_id": detail["id"], "node_type": "detail", "title": detail["title"], "summary": detail["body"]},
+            ],
+            edges=[
+                {"source_node_key": f"entry:{detail['id']}", "target_node_key": f"entry:{topic['id']}", "edge_type": "detail_of", "weight": 0.95},
+            ],
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "想聽你們聊剛剛的新番節奏",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+
+        payload, _summary = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient).build_external_context("live-a")
+
+        assert "精緻奇幻新作正式攻頂" in payload["context_text"]
+        assert "巨鱗龍迷宮" in payload["context_text"]
+        trace = storage.get_latest_topic_graph_retrieval_trace("live-a")
+        assert trace is not None
+        assert trace["source"] == "external_context"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1487,6 +1629,24 @@ def test_director_turn_limit_releases_after_idle_window():
     assert YouTubeBridgeManager._director_should_pause_for_turn_limit({"consecutive_ai_turns": 1}, 60) is False
 
 
+def test_director_topic_turn_limit_uses_session_anchor_setting():
+    session = {"director_anchor_every_turns": 4}
+    recent_state = {
+        "consecutive_ai_turns": 3,
+        "last_director_action_at": (datetime.now() - timedelta(seconds=30)).isoformat(),
+    }
+    limit_state = {
+        "consecutive_ai_turns": 4,
+        "last_director_action_at": (datetime.now() - timedelta(seconds=30)).isoformat(),
+    }
+
+    assert YouTubeBridgeManager._director_topic_turn_limit(session) == 4
+    assert YouTubeBridgeManager._director_should_force_idle_turn(recent_state, session) is True
+    assert YouTubeBridgeManager._director_should_pause_for_turn_limit(recent_state, 60, session) is False
+    assert YouTubeBridgeManager._director_should_force_idle_turn(limit_state, session) is False
+    assert YouTubeBridgeManager._director_should_pause_for_turn_limit(limit_state, 60, session) is True
+
+
 def test_public_event_hides_internal_test_topic_hint():
     public = YouTubeBridgeManager._public_event({
         "id": 1,
@@ -2258,7 +2418,7 @@ async def test_poll_loop_classifies_and_broadcasts_clean_live_event(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_start_session_without_video_id_uses_test_mode(monkeypatch):
+async def test_start_session_without_video_id_uses_test_mode_without_clearing_llm_trace(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
         trace_path = tmp_dir / "runtime" / "llm_trace.jsonl"
@@ -2286,7 +2446,7 @@ async def test_start_session_without_video_id_uses_test_mode(monkeypatch):
         assert status["mode"] == "test"
         assert session["status"] == "running"
         assert session["started_at"]
-        assert trace_path.read_text(encoding="utf-8") == ""
+        assert trace_path.read_text(encoding="utf-8") == "stale trace\n"
 
         stopped = await manager.stop_session("live-a")
         assert stopped["running"] is False
@@ -3021,6 +3181,50 @@ async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
         director_state = storage.get_director_state("live-a")
         assert director_state["director_enabled"] is False
         assert director_state["status"] == "ended"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_duration_finalize_skips_closing_super_chat_thanks_when_no_unhandled_sc(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        FakeClosingMemoriaClient.calls.clear()
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "auto_sc_thanks_on_finalize": True,
+            "auto_finalize_on_duration": True,
+            "planned_duration_minutes": 1,
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        async def fail_if_closing_thanks_runs(_session_id: str):
+            raise AssertionError("closing SC thanks should be skipped before entering the thanks flow")
+
+        monkeypatch.setattr(manager, "run_closing_super_chat_thanks", fail_if_closing_thanks_runs)
+
+        await manager._finalize_for_duration(runtime, session)
+
+        assert runtime.status == "ended"
+        assert storage.get_session("live-a")["status"] == "ended"
+        assert storage.list_interactions("live-a") == []
+        assert FakeClosingMemoriaClient.calls == []
+        director_state = storage.get_director_state("live-a")
+        assert director_state["metadata"]["closing_super_chat_thanks"] == {
+            "status": "skipped",
+            "reason": "no_unhandled_super_chats",
+            "super_chat_count": 0,
+        }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

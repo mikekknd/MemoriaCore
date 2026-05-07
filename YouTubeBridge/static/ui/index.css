@@ -428,7 +428,7 @@ a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-ev
 }
 .topic-workspace {
   display: grid;
-  grid-template-columns: minmax(240px, 0.85fr) minmax(420px, 1.35fr);
+  grid-template-columns: minmax(230px, 0.75fr) minmax(360px, 1fr) minmax(420px, 1.25fr);
   gap: 14px;
   align-items: start;
 }
@@ -480,6 +480,52 @@ a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-ev
 .topic-entry-card p {
   max-height: 8.6em;
   overflow: hidden;
+}
+.topic-graph-panel {
+  min-height: 480px;
+}
+.topic-graph-panel svg {
+  width: 100%;
+  min-height: 260px;
+  border: 1px solid #2f3540;
+  border-radius: 8px;
+  background: #17191c;
+}
+.topic-graph-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.topic-graph-node {
+  cursor: pointer;
+}
+.topic-graph-node text {
+  fill: #d7dce4;
+  font-size: 10px;
+  paint-order: stroke;
+  pointer-events: none;
+  stroke: #17191c;
+  stroke-linejoin: round;
+  stroke-width: 3px;
+}
+.topic-graph-node circle {
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 1.5;
+}
+.topic-graph-node.is-selected circle {
+  stroke: #f8fafc;
+  stroke-width: 3;
+}
+.topic-graph-edge {
+  stroke: rgba(148, 163, 184, 0.32);
+  stroke-width: 1.2;
+}
+.topic-graph-edge.is-trace {
+  stroke: #8b5cf6;
+  stroke-width: 2.2;
+}
+.topic-graph-trace-list {
+  max-height: 160px;
 }
 .blocking-overlay {
   position: fixed;

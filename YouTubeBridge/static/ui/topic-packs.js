@@ -28,7 +28,11 @@ export function updateTopicActionVisibility() {
   setTopicActionVisible("cancelTopicEntryEdit", hasPack && hasEntry);
   setTopicActionVisible("rebuildTopicEmbeddings", hasPack);
   setTopicActionVisible("importFactCardsFolder", hasPack && !liveLocked);
+  setTopicActionVisible("refreshTopicGraph", hasPack);
+  setTopicActionVisible("rebuildTopicGraph", hasPack);
+  setTopicActionVisible("refreshTopicGraphTrace", hasPack && hasSession);
   $("topicEntryPanel").classList.toggle("is-hidden", !hasPack);
+  $("topicGraphPanel").classList.toggle("is-hidden", !hasPack);
   $("topicFactCardLiveLockNotice").classList.toggle("is-hidden", !(hasPack && liveLocked));
 
   $("createTopicPack").disabled = hasPack || !hasPackTitle;
@@ -37,6 +41,9 @@ export function updateTopicActionVisibility() {
   $("updateTopicEntry").disabled = !hasPack || !hasEntry || !hasEntryContent || entryBusy;
   $("cancelTopicEntryEdit").disabled = !hasPack || !hasEntry || entryBusy;
   $("importFactCardsFolder").disabled = !hasPack || liveLocked || importBusy;
+  $("refreshTopicGraph").disabled = !hasPack;
+  $("rebuildTopicGraph").disabled = !hasPack;
+  $("refreshTopicGraphTrace").disabled = !hasPack || !hasSession;
   $("importFactCardsFolder").textContent = importBusy ? "匯入中..." : "匯入 FactCards 資料夾";
 }
 
@@ -212,7 +219,178 @@ export async function refreshTopicEntries() {
   }
   $("topicPackEntries").innerHTML = renderTopicEntries(entries) || `<div class="muted">尚無 fact card</div>`;
   bindTopicEntryCardButtons();
+  await refreshTopicGraph();
+  await refreshTopicGraphTrace();
   updateTopicActionVisibility();
+}
+
+function topicGraphColor(type) {
+  return {
+    document: "#64748b",
+    category: "#38bdf8",
+    topic: "#e5e7eb",
+    detail: "#8b5cf6",
+    entity: "#22c55e",
+    reference: "#9ca3af",
+  }[type] || "#cbd5e1";
+}
+
+function topicGraphPoint(index, total) {
+  const width = 720;
+  const height = 520;
+  const radius = Math.min(width * 0.42, height * 0.39);
+  const angle = total <= 1 ? 0 : (Math.PI * 2 * index) / total - Math.PI / 2;
+  return {
+    x: width / 2 + Math.cos(angle) * radius,
+    y: height / 2 + Math.sin(angle) * radius,
+  };
+}
+
+function topicGraphLabel(node, point) {
+  const width = 720;
+  const height = 520;
+  const rawTitle = String(node.title || "");
+  const limit = node.node_type === "entity" ? 14 : 16;
+  const title = rawTitle.length > limit ? `${rawTitle.slice(0, limit)}...` : rawTitle;
+  if (Math.abs(point.x - width / 2) < 28) {
+    return {
+      title,
+      x: point.x,
+      y: point.y < height / 2 ? point.y - 14 : point.y + 22,
+      anchor: "middle",
+    };
+  }
+  if (point.x < width / 2) {
+    return {
+      title,
+      x: point.x - 10,
+      y: point.y + 4,
+      anchor: "end",
+    };
+  }
+  return {
+    title,
+    x: point.x + 10,
+    y: point.y + 4,
+    anchor: "start",
+  };
+}
+
+export function selectTopicGraphNode(nodeId) {
+  state.selectedTopicGraphNodeId = Number(nodeId || 0);
+  const node = (state.topicGraph.nodes || []).find((item) => Number(item.id) === state.selectedTopicGraphNodeId);
+  if (!node) {
+    $("topicGraphSelectedNode").textContent = "尚未選擇節點";
+    renderTopicGraph();
+    return;
+  }
+  const edges = (state.topicGraph.edges || []).filter((edge) =>
+    Number(edge.source_node_id) === Number(node.id) || Number(edge.target_node_id) === Number(node.id)
+  );
+  $("topicGraphSelectedNode").innerHTML = `
+    <strong>${escapeHtml(node.title)}</strong>
+    <p>${escapeHtml(node.node_type)} · ${escapeHtml(node.source_name || "no source")}</p>
+    <p>${escapeHtml(String(node.summary || "").slice(0, 220))}</p>
+    <p class="muted">${edges.length} 條關聯</p>
+  `;
+  renderTopicGraph();
+}
+
+export function renderTopicGraph() {
+  const svg = $("topicGraphSvg");
+  if (!svg) return;
+  const nodes = state.topicGraph.nodes || [];
+  const edges = state.topicGraph.edges || [];
+  if (!nodes.length) {
+    svg.innerHTML = `<text x="24" y="40" fill="#94a3b8">尚無 topic graph</text>`;
+    return;
+  }
+  const positions = new Map(nodes.map((node, index) => [Number(node.id), topicGraphPoint(index, nodes.length)]));
+  const traceNodeIds = new Set((state.topicGraphLatestTrace?.selected_node_ids || []).map((id) => Number(id)));
+  const edgeHtml = edges.map((edge) => {
+    const start = positions.get(Number(edge.source_node_id));
+    const end = positions.get(Number(edge.target_node_id));
+    if (!start || !end) return "";
+    const isTrace = traceNodeIds.has(Number(edge.source_node_id)) && traceNodeIds.has(Number(edge.target_node_id));
+    return `<line class="topic-graph-edge ${isTrace ? "is-trace" : ""}" x1="${start.x.toFixed(1)}" y1="${start.y.toFixed(1)}" x2="${end.x.toFixed(1)}" y2="${end.y.toFixed(1)}"></line>`;
+  }).join("");
+  const nodeHtml = nodes.map((node) => {
+    const point = positions.get(Number(node.id));
+    const selected = Number(node.id) === Number(state.selectedTopicGraphNodeId);
+    const radius = traceNodeIds.has(Number(node.id)) ? 8 : 6;
+    const label = topicGraphLabel(node, point);
+    return `
+      <g class="topic-graph-node ${selected ? "is-selected" : ""}" data-topic-graph-node="${escapeHtml(node.id)}">
+        <title>${escapeHtml(node.title || "")}</title>
+        <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${radius}" fill="${topicGraphColor(node.node_type)}"></circle>
+        <text x="${label.x.toFixed(1)}" y="${label.y.toFixed(1)}" text-anchor="${label.anchor}">${escapeHtml(label.title)}</text>
+      </g>
+    `;
+  }).join("");
+  svg.innerHTML = edgeHtml + nodeHtml;
+  svg.querySelectorAll("[data-topic-graph-node]").forEach((item) => {
+    item.addEventListener("click", () => selectTopicGraphNode(item.dataset.topicGraphNode));
+  });
+}
+
+export function renderTopicGraphTrace() {
+  const latest = state.topicGraphLatestTrace;
+  $("topicGraphLatestTrace").innerHTML = latest
+    ? `<strong>${escapeHtml(latest.source || "trace")}</strong><p>${escapeHtml(latest.query_text || "")}</p><p class="muted">selected: ${(latest.selected_node_ids || []).join(", ")}</p>`
+    : "尚無召回路徑";
+  $("topicGraphTraces").innerHTML = (state.topicGraphTraces || []).map((trace) => `
+    <div class="item">
+      <strong>${escapeHtml(trace.source || "trace")}</strong>
+      <p>${escapeHtml(trace.query_text || "")}</p>
+      <p class="muted">${escapeHtml(trace.created_at || "")}</p>
+    </div>
+  `).join("") || `<div class="muted">尚無 trace</div>`;
+}
+
+export async function refreshTopicGraph() {
+  const packId = Number($("topicPackSelect").value || 0);
+  if (!packId) {
+    state.topicGraph = { nodes: [], edges: [] };
+    $("topicGraphState").textContent = "尚未載入";
+    renderTopicGraph();
+    return null;
+  }
+  const graph = await api(`/topic-packs/${packId}/graph`);
+  state.topicGraph = graph;
+  $("topicGraphState").textContent = `${(graph.nodes || []).length} 節點 / ${(graph.edges || []).length} 關聯`;
+  $("topicGraphState").className = "status good";
+  renderTopicGraph();
+  return graph;
+}
+
+export async function rebuildTopicGraph() {
+  const packId = Number($("topicPackSelect").value || 0);
+  if (!packId) throw new Error("請先選擇資料包");
+  const data = await api(`/topic-packs/${packId}/graph/rebuild`, {
+    method: "POST",
+    body: "{}",
+  });
+  log("Topic Graph 已重建", data);
+  await refreshTopicGraph();
+  return data;
+}
+
+export async function refreshTopicGraphTrace() {
+  const id = selectedSessionId();
+  if (!id) {
+    state.topicGraphTraces = [];
+    state.topicGraphLatestTrace = null;
+    renderTopicGraphTrace();
+    renderTopicGraph();
+    return null;
+  }
+  const traces = await api(`/sessions/${encodeURIComponent(id)}/topic-graph/traces?limit=20`);
+  const latest = await api(`/sessions/${encodeURIComponent(id)}/topic-graph/latest-trace`);
+  state.topicGraphTraces = traces.traces || [];
+  state.topicGraphLatestTrace = latest.trace || null;
+  renderTopicGraphTrace();
+  renderTopicGraph();
+  return traces;
 }
 
 export async function createTopicPack() {
