@@ -6,6 +6,7 @@ from typing import Any
 
 
 DETAIL_DOCUMENT_MARKERS = ("深挖", "細節", "補充", "detail", "deep")
+TOPIC_GRAPH_ROLE_TAG_PREFIX = "topic_graph_role:"
 COMPARISON_MARKERS = (
     "拉下來",
     "反超",
@@ -43,6 +44,43 @@ def extract_entities(text: str) -> list[str]:
 def is_detail_document(source_name: str, title: str) -> bool:
     haystack = f"{source_name}\n{title}".lower()
     return any(marker.lower() in haystack for marker in DETAIL_DOCUMENT_MARKERS)
+
+
+def is_index_source_name(source_name: str) -> bool:
+    stem = re.sub(r"\.[^.\\/]+$", "", str(source_name or "").strip()).lower()
+    return bool(stem) and stem.startswith("index")
+
+
+def topic_graph_role_from_source_name(source_name: str) -> str:
+    clean = str(source_name or "").strip()
+    if not clean:
+        return ""
+    return "entry" if is_index_source_name(clean) else "detail"
+
+
+def normalize_topic_graph_role(role: str) -> str:
+    clean = str(role or "").strip().lower()
+    if clean in {"entry", "topic", "main", "overview"}:
+        return "entry"
+    if clean in {"detail", "deep", "deep_dive", "supplement"}:
+        return "detail"
+    return ""
+
+
+def topic_graph_role_tag(role: str) -> str:
+    clean = normalize_topic_graph_role(role) or "entry"
+    return f"{TOPIC_GRAPH_ROLE_TAG_PREFIX}{clean}"
+
+
+def topic_graph_role_from_tags(tags: list[Any] | tuple[Any, ...] | None) -> str:
+    for tag in tags or []:
+        text = str(tag or "").strip().lower()
+        if not text.startswith(TOPIC_GRAPH_ROLE_TAG_PREFIX):
+            continue
+        role = normalize_topic_graph_role(text[len(TOPIC_GRAPH_ROLE_TAG_PREFIX):])
+        if role:
+            return role
+    return ""
 
 
 def has_comparison_context(text: str) -> bool:
@@ -115,7 +153,8 @@ def build_topic_graph_payload(documents: list[dict[str, Any]]) -> dict[str, list
             "source_heading": "",
             "metadata": {"source_name": source_name},
         })
-        detail_document = is_detail_document(source_name, doc_title)
+        document_role = topic_graph_role_from_source_name(source_name)
+        detail_document = document_role == "detail" or (not document_role and is_detail_document(source_name, doc_title))
         category_key = ""
         if not detail_document:
             category_key = add_node({
@@ -144,7 +183,10 @@ def build_topic_graph_payload(documents: list[dict[str, Any]]) -> dict[str, list
                 clean_entry_id = int(entry_id) if entry_id is not None else None
             except (TypeError, ValueError):
                 clean_entry_id = None
-            node_type = "detail" if detail_document else "topic"
+            fact_role = normalize_topic_graph_role(
+                str(fact.get("topic_graph_role") or fact.get("node_type") or "")
+            )
+            node_type = "detail" if fact_role == "detail" or (not fact_role and detail_document) else "topic"
             node_key = f"entry:{clean_entry_id}" if clean_entry_id else f"{node_type}:{normalize_node_key(source_name)}:{normalize_node_key(title)}"
             fact_entities = extract_entities(f"{title}\n{body}")
             title_entities = extract_entities(title)
@@ -160,6 +202,7 @@ def build_topic_graph_payload(documents: list[dict[str, Any]]) -> dict[str, list
                 "metadata": {
                     "primary_entity": primary_entity,
                     "entities": fact_entities,
+                    "topic_graph_role": "detail" if node_type == "detail" else "entry",
                 },
             })
             add_edge(category_key or document_key, node_key, "contains", evidence=f"{source_name} contains {title}")

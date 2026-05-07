@@ -76,7 +76,7 @@ def _overview_graph_markdown() -> str:
 
 
 def _deep_graph_markdown() -> str:
-    return """# 2026-05-07《魔法帽的工作室》攻頂話題深挖
+    return """# 2026-05-07《魔法帽的工作室》第 5 話資料
 
 ## Summary
 本卡以《魔法帽的工作室》在 5 月初攻頂後的深度討論為核心。
@@ -514,8 +514,8 @@ def test_import_fact_cards_folder_builds_topic_graph_from_overview_and_deep_dive
     try:
         cards_dir = tmp_dir / "FactCards"
         cards_dir.mkdir()
-        (cards_dir / "20260506-overview.md").write_text(_overview_graph_markdown(), encoding="utf-8")
-        (cards_dir / "20260507-magic-hat-deep-dive.md").write_text(_deep_graph_markdown(), encoding="utf-8")
+        (cards_dir / "index-20260506-overview.md").write_text(_overview_graph_markdown(), encoding="utf-8")
+        (cards_dir / "20260507-magic-hat-episode5.md").write_text(_deep_graph_markdown(), encoding="utf-8")
 
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
         manager = YouTubeBridgeManager(
@@ -531,12 +531,17 @@ def test_import_fact_cards_folder_builds_topic_graph_from_overview_and_deep_dive
         edges = graph["edges"]
         node_by_id = {node["id"]: node for node in nodes}
 
-        assert any(node["node_type"] == "document" and node["source_name"] == "20260506-overview.md" for node in nodes)
+        assert any(node["node_type"] == "document" and node["source_name"] == "index-20260506-overview.md" for node in nodes)
         assert any(node["node_type"] == "category" and "春番" in node["title"] for node in nodes)
         assert any(node["node_type"] == "topic" and "魔法帽" in node["title"] for node in nodes)
         assert any(node["node_type"] == "topic" and "Re:從零" in node["title"] for node in nodes)
         assert any(node["node_type"] == "detail" and "巨鱗龍迷宮" in node["title"] for node in nodes)
         assert any(node["node_type"] == "entity" and "魔法帽" in node["title"] for node in nodes)
+        entries = storage.list_topic_pack_entries(result["pack_id"], limit=20)
+        magic_entry = next(entry for entry in entries if "魔法帽" in entry["title"])
+        detail_entry = next(entry for entry in entries if "巨鱗龍迷宮" in entry["title"])
+        assert "topic_graph_role:entry" in magic_entry["tags"]
+        assert "topic_graph_role:detail" in detail_entry["tags"]
 
         detail_edges = [
             edge for edge in edges
@@ -557,6 +562,18 @@ def test_import_fact_cards_folder_builds_topic_graph_from_overview_and_deep_dive
             and "魔法帽" in node_by_id[edge["source_node_id"]]["title"]
             and "Re:從零" in node_by_id[edge["target_node_id"]]["title"]
             for edge in edges
+        )
+
+        rebuilt = manager.rebuild_topic_graph_for_pack(result["pack_id"])
+        assert rebuilt["node_count"] >= 6
+        rebuilt_graph = storage.get_topic_graph(result["pack_id"])
+        assert any(
+            node["node_type"] == "topic" and "魔法帽" in node["title"]
+            for node in rebuilt_graph["nodes"]
+        )
+        assert any(
+            node["node_type"] == "detail" and "巨鱗龍迷宮" in node["title"]
+            for node in rebuilt_graph["nodes"]
         )
     finally:
         import shutil

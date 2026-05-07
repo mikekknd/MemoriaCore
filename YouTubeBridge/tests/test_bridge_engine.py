@@ -580,6 +580,126 @@ def test_sequential_topic_context_expands_detail_from_topic_graph():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_sequential_topic_context_uses_only_topic_nodes_as_entry_points():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "director_guidance": "本場只聊魔法帽。",
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        detail = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第 5 話「巨鱗龍迷宮」：龍、迷宮與可可的臨場創意",
+            "body": "這是細節卡，不能被導播當成換題入口。",
+            "source_type": "factcards_folder",
+            "tags": ["20260507_magic_hat_deep_dive"],
+        })
+        topic = storage.create_topic_pack_entry(pack["id"], {
+            "title": "《魔法帽的工作室》：精緻奇幻新作正式攻頂",
+            "body": "這是入口卡，導播應該用它推進話題。",
+            "source_type": "factcards_folder",
+            "tags": ["topic_graph_role:entry"],
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.replace_topic_graph(
+            pack["id"],
+            nodes=[
+                {"node_key": f"entry:{detail['id']}", "entry_id": detail["id"], "node_type": "detail", "title": detail["title"], "summary": detail["body"]},
+                {"node_key": f"entry:{topic['id']}", "entry_id": topic["id"], "node_type": "topic", "title": topic["title"], "summary": topic["body"]},
+            ],
+            edges=[
+                {"source_node_key": f"entry:{detail['id']}", "target_node_key": f"entry:{topic['id']}", "edge_type": "detail_of", "weight": 0.95},
+            ],
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "想聽你們聊剛剛的新番節奏",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+
+        payload, _summary = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient).build_external_context("live-a")
+
+        assert "[入口] 《魔法帽的工作室》" in payload["context_text"]
+        assert "[入口] 第 5 話" not in payload["context_text"]
+        assert "[深挖] 第 5 話" in payload["context_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_question_hitting_detail_card_includes_parent_topic_entry():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": False,
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        topic = storage.create_topic_pack_entry(pack["id"], {
+            "title": "《魔法帽的工作室》：精緻奇幻新作正式攻頂",
+            "body": "魔法帽攻頂，是目前討論入口。",
+            "source_type": "factcards_folder",
+            "tags": ["topic_graph_role:entry"],
+        })
+        detail = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第 5 話「巨鱗龍迷宮」：龍、迷宮與可可的臨場創意",
+            "body": "巨鱗龍迷宮的細節是本話深挖內容。",
+            "source_type": "factcards_folder",
+            "tags": ["topic_graph_role:detail"],
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.upsert_topic_pack_entry_embedding(topic["id"], [0.0, 1.0], model="fake-embed", content_hash="topic")
+        storage.upsert_topic_pack_entry_embedding(detail["id"], [1.0, 0.0], model="fake-embed", content_hash="detail")
+        storage.replace_topic_graph(
+            pack["id"],
+            nodes=[
+                {"node_key": f"entry:{topic['id']}", "entry_id": topic["id"], "node_type": "topic", "title": topic["title"], "summary": topic["body"]},
+                {"node_key": f"entry:{detail['id']}", "entry_id": detail["id"], "node_type": "detail", "title": detail["title"], "summary": detail["body"]},
+            ],
+            edges=[
+                {"source_node_key": f"entry:{detail['id']}", "target_node_key": f"entry:{topic['id']}", "edge_type": "detail_of", "weight": 0.95},
+            ],
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "巨鱗龍迷宮那段可以查一下細節嗎？",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+
+        payload, _summary = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient).build_external_context("live-a")
+
+        assert "[入口] 《魔法帽的工作室》" in payload["context_text"]
+        assert "[深挖] 第 5 話" in payload["context_text"]
+        assert payload["context_text"].index("[入口] 《魔法帽的工作室》") < payload["context_text"].index("[深挖] 第 5 話")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_sequential_topic_context_advances_after_three_recalls():
     tmp_dir = _tmp_dir()
     try:

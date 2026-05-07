@@ -42,11 +42,15 @@ class FactCardDocument:
     facts: list[FactCardFact]
     source_name: str = ""
 
-    def to_topic_pack_entries(self) -> list[dict[str, Any]]:
+    def to_topic_pack_entries(self, *, extra_tags: list[str] | None = None) -> list[dict[str, Any]]:
         source_tag = _source_tag(self.source_name)
         tags = [*FACT_CARD_DEFAULT_TAGS]
         if source_tag:
             tags.append(source_tag)
+        for tag in extra_tags or []:
+            clean_tag = str(tag or "").strip()
+            if clean_tag and clean_tag not in tags:
+                tags.append(clean_tag)
         entries: list[dict[str, Any]] = []
         for fact in self.facts:
             body = fact.body.strip()

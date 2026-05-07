@@ -15,10 +15,16 @@ from bridge_contracts import (
 )
 from fact_cards import (
     DEFAULT_FACT_CARDS_DIR,
+    FACT_CARD_SOURCE_TYPE,
     iter_fact_card_files,
     parse_fact_card_markdown,
 )
-from topic_graph import build_topic_graph_payload
+from topic_graph import (
+    build_topic_graph_payload,
+    topic_graph_role_from_tags,
+    topic_graph_role_from_source_name,
+    topic_graph_role_tag,
+)
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -149,6 +155,61 @@ class TopicPackManagerMixin:
                 logger.warning("topic graph trace record failed session_id=%s error=%s", session_id, exc)
         return selected
 
+    def _entry_topic_graph_role(
+        self,
+        entry: dict[str, Any],
+        *,
+        graph_role_by_entry_id: dict[int, str] | None = None,
+    ) -> str:
+        try:
+            entry_id = int(entry.get("id") or entry.get("entry_id") or 0)
+        except (TypeError, ValueError):
+            entry_id = 0
+        graph_role = (graph_role_by_entry_id or {}).get(entry_id, "")
+        if graph_role:
+            return graph_role
+        tags = entry.get("tags") if isinstance(entry.get("tags"), list) else []
+        tag_role = topic_graph_role_from_tags(tags)
+        if tag_role:
+            return tag_role
+        if str(entry.get("source_type") or "") == FACT_CARD_SOURCE_TYPE:
+            if any(str(tag).strip().lower().startswith("index") for tag in tags):
+                return "entry"
+            return "detail"
+        return "entry"
+
+    def _topic_graph_entry_roles_for_pack(self, pack_id: int) -> dict[int, str]:
+        graph = self.storage.get_topic_graph(int(pack_id))
+        roles: dict[int, str] = {}
+        for node in graph.get("nodes") or []:
+            try:
+                entry_id = int(node.get("entry_id") or 0)
+            except (TypeError, ValueError):
+                entry_id = 0
+            if entry_id <= 0:
+                continue
+            node_type = str(node.get("node_type") or "").strip().lower()
+            if node_type == "detail":
+                roles[entry_id] = "detail"
+            elif node_type == "topic":
+                roles[entry_id] = "entry"
+        return roles
+
+    def _topic_pack_entry_points(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        role_cache: dict[int, dict[int, str]] = {}
+        entry_points: list[dict[str, Any]] = []
+        for entry in entries:
+            try:
+                pack_id = int(entry.get("pack_id") or 0)
+            except (TypeError, ValueError):
+                pack_id = 0
+            roles = role_cache.setdefault(pack_id, self._topic_graph_entry_roles_for_pack(pack_id) if pack_id else {})
+            role = self._entry_topic_graph_role(entry, graph_role_by_entry_id=roles)
+            if role == "detail":
+                continue
+            entry_points.append(entry)
+        return entry_points or entries
+
     def _expand_topic_graph_entries(
         self,
         entries: list[dict[str, Any]],
@@ -204,14 +265,41 @@ class TopicPackManagerMixin:
                 add_entry(entry, None, "entry")
                 continue
             graph_used = True
-            entry_node_ids.append(int(entry_node["id"]))
-            add_entry(entry, entry_node, "entry")
+            anchor_node = entry_node
+            hit_is_detail = str(entry_node.get("node_type") or "").strip().lower() == "detail"
+            if hit_is_detail:
+                parent_edges = sorted(
+                    [
+                        edge for edge in edges
+                        if edge.get("edge_type") == "detail_of"
+                        and int(edge.get("source_node_id") or 0) == int(entry_node["id"])
+                    ],
+                    key=lambda edge: float(edge.get("weight") or 0.0),
+                    reverse=True,
+                )
+                parent_node = None
+                for edge in parent_edges:
+                    candidate = node_by_id.get(int(edge.get("target_node_id") or 0))
+                    if candidate and str(candidate.get("node_type") or "") == "topic" and candidate.get("entry_id"):
+                        parent_node = candidate
+                        break
+                if parent_node:
+                    parent_entry = self.storage.get_topic_pack_entry(int(parent_node["entry_id"]))
+                    if parent_entry:
+                        entry_node_ids.append(int(parent_node["id"]))
+                        add_entry(parent_entry, parent_node, "entry")
+                        anchor_node = parent_node
+                expanded_node_ids.append(int(entry_node["id"]))
+                add_entry(entry, entry_node, "detail")
+            else:
+                entry_node_ids.append(int(entry_node["id"]))
+                add_entry(entry, entry_node, "entry")
 
             detail_edges = sorted(
                 [
                     edge for edge in edges
                     if edge.get("edge_type") == "detail_of"
-                    and int(edge.get("target_node_id") or 0) == int(entry_node["id"])
+                    and int(edge.get("target_node_id") or 0) == int(anchor_node["id"])
                 ],
                 key=lambda edge: float(edge.get("weight") or 0.0),
                 reverse=True,
@@ -236,7 +324,7 @@ class TopicPackManagerMixin:
                 [
                     edge for edge in edges
                     if edge.get("edge_type") in {"compare_with", "mentions"}
-                    and int(edge.get("source_node_id") or 0) == int(entry_node["id"])
+                    and int(edge.get("source_node_id") or 0) == int(anchor_node["id"])
                 ],
                 key=lambda edge: (0 if edge.get("edge_type") == "compare_with" else 1, -float(edge.get("weight") or 0.0)),
             )
@@ -312,6 +400,7 @@ class TopicPackManagerMixin:
         entries = self.storage.list_session_topic_pack_entries(session_id, limit=200)
         if not entries:
             return []
+        entries = self._topic_pack_entry_points(entries)
         threshold = max(1, int(turns_per_entry or TOPIC_SEQUENCE_TURNS_PER_ENTRY))
         stats = self.storage.get_topic_pack_usage_stats(session_id, recent_limit=50)
         usage_counts = {
@@ -587,6 +676,7 @@ class TopicPackManagerMixin:
         entries = self.storage.list_topic_pack_entries(int(pack_id), limit=500)
         if not entries and not self.storage.get_topic_pack(int(pack_id)):
             raise ValueError("topic pack 不存在")
+        existing_roles = self._topic_graph_entry_roles_for_pack(int(pack_id))
         documents = [
             {
                 "title": entry.get("pack_title") or "Topic Pack",
@@ -597,6 +687,7 @@ class TopicPackManagerMixin:
                         "entry_id": int(entry["id"]),
                         "title": entry.get("title") or "",
                         "body": entry.get("body") or "",
+                        "topic_graph_role": self._entry_topic_graph_role(entry, graph_role_by_entry_id=existing_roles),
                     }
                 ],
             }
@@ -624,7 +715,8 @@ class TopicPackManagerMixin:
                 failures.append({"file": str(path), "error": str(exc)[:300]})
                 continue
             graph_facts: list[dict[str, Any]] = []
-            for payload in document.to_topic_pack_entries():
+            role = topic_graph_role_from_source_name(path.name) or "detail"
+            for payload in document.to_topic_pack_entries(extra_tags=[topic_graph_role_tag(role)]):
                 try:
                     entry = self.storage.create_topic_pack_entry(int(target_pack_id), payload)
                     created_entries.append(entry)
@@ -632,6 +724,7 @@ class TopicPackManagerMixin:
                         "entry_id": int(entry["id"]),
                         "title": entry.get("title") or payload.get("title") or "",
                         "body": entry.get("body") or payload.get("body") or "",
+                        "topic_graph_role": role,
                     })
                     try:
                         embeddings.append(self.index_topic_pack_entry(int(entry["id"])))
