@@ -1,7 +1,7 @@
 # MemoriaCore 正式上線安全指引
 
 > 適用版本：MemoriaCore（FastAPI port 8088 + dashboard.html）  
-> 最後更新：2026-04-27
+> 最後更新：2026-05-07
 
 ---
 
@@ -9,12 +9,12 @@
 
 | 項目 | 嚴重度 | 說明 |
 |---|---|---|
-| `GET /system/config` 暴露 `su_user_id` | **高** | 任何能連線的用戶皆可取得 SU ID 並冒充 |
-| FastAPI 無內建驗證層 | **高** | 所有 API 端點預設無 auth token |
-| SQLite 直接位於專案目錄 | 中 | DB 檔若被直接讀取，所有記憶明文可見 |
-| LLM API Key 存於 `user_prefs.json` | 中 | 明文儲存；需限制檔案系統存取權限 |
-| Telegram Bot Token 存於 `bot_configs.json` / legacy `user_prefs.json` | 中 | 明文儲存；需限制檔案系統存取權限 |
-| dashboard.html 無 CSRF 防護 | 低 | 僅限信任網路部署時影響有限 |
+| 管理員帳號或 Cookie 外洩 | **高** | `/system/config`、Prompt、角色、Log 等管理端點依賴 admin 身份保護 |
+| JWT/CSRF/CORS 設定錯誤 | **高** | `MEMORIACORE_JWT_SECRET`、`MEMORIACORE_COOKIE_SECURE`、`MEMORIACORE_CORS_ORIGINS` 設錯會削弱登入保護 |
+| runtime SQLite 明文資料 | 中 | `runtime/*.db` 存放對話、記憶、使用者與人格資料，需限制檔案系統權限 |
+| LLM API Key 存於 `runtime/user_prefs.json` | 中 | 明文儲存；需限制檔案系統存取權限 |
+| Bot Token 存於 `runtime/bot_configs.json` / legacy prefs | 中 | 明文儲存；需限制檔案系統存取權限 |
+| dashboard.html 暴露於不可信網路 | 中 | 即使有登入，也應搭配 HTTPS、VPN / reverse proxy 與防火牆 |
 
 ---
 
@@ -81,39 +81,40 @@ htpasswd -c /etc/nginx/.htpasswd su_username
 
 ### 2-2. SU User ID 保護
 
-`GET /system/config` 回傳的 `su_user_id` 是識別 SU 身份的唯一憑證。  
-任何能取得此值的人都可透過 `POST /session`（帶 `user_id`）冒充 SU 取得 private face。
+`GET /system/config` 僅 admin 可讀，但其中仍包含 `su_user_id`、API key 狀態與多項高權限設定。
+任何取得 admin Cookie / CSRF token 的人都可操作管理端點，因此 admin 瀏覽器 session 必須視為高敏感憑證。
 
 **短期緩解（不改 code）：**
-- 完成 2-1 確保只有 SU 能連線即可；`su_user_id` 暴露在 response 中屬已知設計，前提是網路已隔離。
+- 完成 2-1 確保只有可信網路能連線；對外部署時使用 HTTPS、Secure Cookie 與明確 CORS allowlist。
 
 **中期加固（建議實作）：**
-- 將 `GET /system/config` 的 response 中 `su_user_id` 改為遮罩輸出（`"su_user_id": "****"`），僅 `PUT /system/config` 允許寫入完整值。
-- 或為 `/system/*` 端點加上 `X-Admin-Token` Header 驗證（環境變數注入）。
+- 將 `GET /system/config` response 中的 secret 類欄位遮罩輸出，僅 `PUT /system/config` 允許寫入完整值。
+- 對高風險管理操作保留 CSRF 檢查，並維持 admin role gate。
 
 ---
 
 ### 2-3. API Key / Secret 檔案權限
 
-`user_prefs.json` 存放 OpenAI key 等敏感資訊；`bot_configs.json` 存放 Bot token。兩者都需限制讀取權限：
+`runtime/user_prefs.json` 存放 OpenAI/OpenRouter/Tavily/OpenWeather 等 key；`runtime/bot_configs.json` 存放 Bot token。兩者都需限制讀取權限：
 
 **Linux / macOS：**
 ```bash
-chmod 600 user_prefs.json bot_configs.json
-chown <service_user> user_prefs.json bot_configs.json
+chmod 600 runtime/user_prefs.json runtime/bot_configs.json
+chown <service_user> runtime/user_prefs.json runtime/bot_configs.json
 ```
 
 **Windows：**
-- 右鍵 `user_prefs.json` 與 `bot_configs.json` → 內容 → 安全性
+- 右鍵 `runtime/user_prefs.json` 與 `runtime/bot_configs.json` → 內容 → 安全性
 - 移除 Everyone / Users 的讀取權，僅保留執行服務的帳號
 
 ---
 
 ### 2-4. SQLite 資料庫保護
 
-`conversation.db`、`ai_memory.db` 存放所有對話與記憶明文。
+`runtime/conversation.db`、`runtime/memory_db_*.db`、`runtime/users.db`、`runtime/persona_snapshots.db` 存放對話、記憶、使用者與人格資料明文。
 
-- 確保 DB 檔案不在 web server 靜態目錄內（目前位於根目錄，已符合）
+- 確保 `runtime/` 不在 web server 靜態目錄內；FastAPI 只掛載 `static/`
+- 限制 `runtime/` 讀寫權限，只允許執行服務的帳號存取
 - 定期備份並加密後傳至離線儲存
 - 若需更高安全性，考慮改用 PostgreSQL + 資料庫層加密
 

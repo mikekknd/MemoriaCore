@@ -25,8 +25,9 @@
 ## 修改入口
 
 - Prompt 注入邏輯：`core/prompt_utils.py`
-- 單層對話傳入 context：`api/routers/chat/orchestration.py`
-- 雙層對話傳入 context：`core/chat_orchestrator/coordinator.py`
+- 共用 prompt/context 組裝：`core/chat_orchestrator/generation_context.py`
+- 單層對話傳入 `session_ctx`：`api/routers/chat/orchestration.py`
+- 雙層對話傳入 `session_ctx`：`core/chat_orchestrator/coordinator.py`
 - 啟動預熱：`api/main.py`
 
 若未來加入多個 SU 或多地點日程，應先把 `weather_city` 升級成 per-SU profile 欄位，再擴充快取 key；不要回到全域多城市 prompt cache。

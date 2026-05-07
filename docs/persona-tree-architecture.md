@@ -17,15 +17,16 @@
 
 ---
 
-## 二、資料庫結構（`persona_snapshots.db`，Schema v2）
+## 二、資料庫結構（`runtime/persona_snapshots.db`，Schema v3）
 
-三張表，由 `StorageManager._init_persona_snapshot_db()` 管理（PRAGMA user_version=2）：
+三張表，由 `core/storage/persona_snapshots.py` 的 `PersonaSnapshotRepositoryMixin._init_persona_snapshot_db()` 管理（PRAGMA user_version=3）。v3 在 v2 trait tree 基礎上加入 `persona_face`，支援 public/private 雙 face。
 
 **`persona_snapshots`**
 | 欄位 | 說明 |
 |------|------|
 | `id` | 主鍵 |
 | `character_id` | 角色識別 |
+| `persona_face` | `public` / `private` |
 | `version` | 版本號（遞增） |
 | `timestamp` | ISO 8601 時間戳 |
 | `summary` | 演化摘要（probe-report 首段） |
@@ -36,6 +37,7 @@
 |------|------|
 | `trait_key` | UUID hex（32 字元），跨版本穩定識別碼 |
 | `character_id` | 角色識別 |
+| `persona_face` | `public` / `private` |
 | `name` | Trait 名稱（2~8 字短詞） |
 | `created_version` | 首次出現版本 |
 | `last_active_version` | 最近一次被更新（updates/new）版本 |
@@ -181,7 +183,7 @@ Base prefix: `/api/v1/system/personality`
 | `core/persona_evolution/extractor.py` | `TRAIT_V1_SCHEMA` / `TRAIT_VN_SCHEMA` + `parse_trait_v1` / `parse_trait_vn` 容錯解析 |
 | `core/persona_evolution/lineage.py` | `infer_single_parent` — BGE-M3 cosine fallback，threshold=0.82 |
 | `core/persona_evolution/snapshot_store.py` | `PersonaSnapshotStore` 高層 orchestrator，組合 lineage + storage |
-| `core/storage_manager.py`（SECTION: 人格演化 Snapshots）| Schema v2 建構、`save_trait_snapshot` 原子寫入 + B' sweep |
+| `core/storage/persona_snapshots.py` | Schema v3 建構 / migration、`save_trait_snapshot` 原子寫入 + B' sweep |
 | `core/persona_sync.py`（`PersonaSyncManager`）| 觸發條件判斷、3 次 LLM 呼叫流程、evolved_prompt 寫入 |
 | `api/routers/persona_evolution.py` | 7 個 GET 唯讀端點 |
 
@@ -288,7 +290,7 @@ class TraitDiff(BaseModel):
 │ TRAIT_VN_SCHEMA     │  │ parent()        │  │ get_active_traits()          │
 │ parse_trait_v1()    │  │ BGE-M3 cosine   │  │ get_trait_timeline()         │
 │ parse_trait_vn()    │  │ threshold=0.82  │  │ _init_persona_snapshot_db()  │
-└─────────────────────┘  └─────────────────┘  │ (Schema v2: persona_traits)  │
+└─────────────────────┘  └─────────────────┘  │ (Schema v3: persona_face)    │
                                                └──────────────────────────────┘
               │                    ▲
               │ raw LLM output     │ embedding vector
@@ -357,7 +359,7 @@ G:\ClaudeProject\MemoriaCore\
 │   ├── app.py                   # Streamlit (port 8502)
 │   └── llm_client.py            # LLMClient (Ollama / OpenRouter)
 └── docs/
-    └── persona-evolution-architecture.md  # 系統設計文件
+    └── persona-tree-architecture.md  # 本文件
 ```
 
 ---

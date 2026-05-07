@@ -72,5 +72,5 @@ trigger_policy = nullable
 - 背景蒐集 scope 在 `core/background_gatherer.py`，不得再使用 `active_character_id` 作為寫入目標。
 - `GLOBAL_TOPIC_CHARACTER_ID` 定義於 `core/storage_manager.py`。
 - topic 查詢邏輯在 `StorageManager.get_unmentioned_topics(..., include_global=True)`。
-- prompt 注入入口在 `CoreMemorySystem.get_proactive_topics_prompt()`。
+- prompt 注入入口在 `MemorySystem.get_proactive_topics_prompt()`（`core/core_memory.py`）。
 - 若未來新增主動推播 API，請沿用 `__global__` pool，並在送出時標記已提及，避免多角色重複提同一話題。
