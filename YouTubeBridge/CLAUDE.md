@@ -68,7 +68,8 @@ python -m pytest YouTubeBridge/tests -q
 拆分或 engine runtime 相關 targeted 測試：
 
 ```powershell
-python -m pytest YouTubeBridge/tests/test_bridge_engine_split_modules.py YouTubeBridge/tests/test_bridge_engine.py -q
+$engineTests = (Get-ChildItem YouTubeBridge/tests/test_bridge_engine_*.py).FullName
+python -m pytest $engineTests -q
 ```
 
 若 Windows 上 `.pyTestTemp\basetemp` 發生 ACL / PermissionError，先執行：

@@ -111,7 +111,8 @@ Storage 支援模組：
 常用 targeted 測試：
 
 ```powershell
-python -m pytest YouTubeBridge/tests/test_bridge_engine_split_modules.py YouTubeBridge/tests/test_bridge_engine.py -q
+$engineTests = (Get-ChildItem YouTubeBridge/tests/test_bridge_engine_*.py).FullName
+python -m pytest $engineTests -q
 python -m pytest YouTubeBridge/tests/test_server_auth.py YouTubeBridge/tests/test_server_route_split.py -q
 python -m pytest YouTubeBridge/tests/test_storage.py YouTubeBridge/tests/test_storage_repository_split.py -q
 ```
