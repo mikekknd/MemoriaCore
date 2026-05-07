@@ -14,6 +14,7 @@ from api.routers.chat_rest import (
 )
 from core.chat_orchestrator.dialogue_format import format_history_for_llm
 from core.chat_orchestrator.dataclasses import PipelineContext
+from core.chat_orchestrator.group_followup import build_group_followup_instruction
 
 
 def test_external_context_payload_is_generic_and_capped():
@@ -300,6 +301,26 @@ def test_youtube_live_director_external_context_uses_explicit_group_turn_limit()
     assert limit == 5
 
 
+def test_youtube_live_director_context_payload_preserves_group_turn_limit():
+    session = _SessionStub(["char-a", "char-b"])
+    body = ChatSyncRequest(
+        content="請自然延續直播。",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "group_turn_limit": 10,
+            "summary": {"source": "youtube_live_director", "group_turn_limit": 10},
+        },
+    )
+
+    context, summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert context["group_turn_limit"] == 10
+    assert summary["group_turn_limit"] == 10
+    assert _external_context_group_turn_limit(session, context) == 10
+
+
 def test_youtube_live_director_external_context_defaults_to_group_chat_limit_shape():
     session = _SessionStub(["char-a", "char-b", "char-c", "char-d"])
 
@@ -328,6 +349,25 @@ def test_group_followup_prompt_has_youtube_live_no_audience_handoff_exception():
     assert "直播自主推進" in template
     assert "不要把問題丟回觀眾" in template
     assert "不可把問題丟回觀眾" in template
+
+
+def test_youtube_live_group_followup_instruction_includes_live_rules_block():
+    instruction = build_group_followup_instruction(
+        {
+            "user_prompt_original": "請自然延續直播。",
+            "last_character_name": "可可",
+            "last_reply": "大家最在意第 4 話的節奏吧？",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "repeat_speaker_reply_to_ai",
+        },
+        "請自然延續直播。",
+        {"external_chat_context": {"source": "youtube_live_director"}},
+    )
+
+    assert "youtube_live_group_context:" in instruction
+    assert "直播專用群聊規則" in instruction
+    assert "不要把問題丟回觀眾" in instruction
+    assert "把上一位角色的問句視為角色間接話入口" in instruction
 
 
 def test_youtube_live_chat_external_context_keeps_short_batch_round_limit():

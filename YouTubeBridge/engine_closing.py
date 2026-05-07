@@ -129,19 +129,27 @@ class ClosingManagerMixin:
         safety_closing_result = await self._resolve_pending_safety_for_closing(runtime.session_id)
         closing_result = None
         if session.get("auto_sc_thanks_on_finalize", True):
-            try:
-                closing_result = await asyncio.wait_for(
-                    self.run_closing_super_chat_thanks(runtime.session_id),
-                    timeout=45,
-                )
-            except asyncio.TimeoutError:
-                closing_result = await self._complete_closing_super_chat_thanks_fallback(
-                    runtime.session_id,
-                    reason="timeout",
-                )
-            except Exception as exc:
-                logger.warning("closing super chat thanks failed session_id=%s error=%s", runtime.session_id, exc)
-                closing_result = {"status": "failed", "error": str(exc)[:500]}
+            pending_super_chats = self._list_unhandled_super_chats_for_closing(runtime.session_id, batch_size=500)
+            if not pending_super_chats:
+                closing_result = {
+                    "status": "skipped",
+                    "reason": "no_unhandled_super_chats",
+                    "super_chat_count": 0,
+                }
+            else:
+                try:
+                    closing_result = await asyncio.wait_for(
+                        self.run_closing_super_chat_thanks(runtime.session_id),
+                        timeout=45,
+                    )
+                except asyncio.TimeoutError:
+                    closing_result = await self._complete_closing_super_chat_thanks_fallback(
+                        runtime.session_id,
+                        reason="timeout",
+                    )
+                except Exception as exc:
+                    logger.warning("closing super chat thanks failed session_id=%s error=%s", runtime.session_id, exc)
+                    closing_result = {"status": "failed", "error": str(exc)[:500]}
         finalized_at = datetime.now().isoformat()
         runtime.status = "ended"
         self.storage.finalize_incomplete_interactions(

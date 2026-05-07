@@ -67,6 +67,7 @@ def run_group_router(
     bot_turn_index: int = 0,
     max_bot_turns: int | None = None,
     allow_single_participant_repeat: bool = True,
+    discussion_mode: str = "default",
 ) -> GroupRouterResult:
     """根據近期群組上下文選出下一位 AI；無需接話時回傳 should_respond=False。"""
     participants = _normalize_characters(active_characters)
@@ -84,6 +85,7 @@ def run_group_router(
     not_yet_spoken_refs = _participant_refs(not_yet_spoken_ids, participants)
     all_participants_spoke = len(participants) > 1 and not not_yet_spoken_ids
     remaining_bot_turns = _remaining_bot_turns(bot_turn_index, max_bot_turns)
+    normalized_discussion_mode = _normalize_discussion_mode(discussion_mode)
 
     if len(participants) == 1:
         only_id = participants[0]["character_id"]
@@ -112,11 +114,14 @@ def run_group_router(
                 "bot_turn_index": max(0, int(bot_turn_index or 0)),
                 "max_bot_turns": max_bot_turns,
                 "remaining_bot_turns_including_next": remaining_bot_turns,
+                "discussion_mode": normalized_discussion_mode,
             },
             ensure_ascii=False,
             indent=2,
         ),
     )
+    if normalized_discussion_mode == "youtube_live":
+        prompt += "\n\n" + _youtube_live_group_router_rules()
 
     try:
         parsed = router.generate_json(
@@ -137,7 +142,7 @@ def run_group_router(
     action = str(parsed.get("action") or "")
     target = parsed.get("target_character_id")
     reason = str(parsed.get("reason", ""))
-    return _validate_action_result(
+    result = _validate_action_result(
         conversation_intent=conversation_intent,
         action=action,
         target=target,
@@ -146,6 +151,30 @@ def run_group_router(
         already_spoken_ids=spoken_after_user,
         not_yet_spoken_ids=not_yet_spoken_ids,
         last_speaker_id=last_speaker_id,
+    )
+    return _apply_youtube_live_continuation_policy(
+        result,
+        participants=participants,
+        already_spoken_ids=spoken_after_user,
+        last_speaker_id=last_speaker_id,
+        remaining_bot_turns=remaining_bot_turns,
+        discussion_mode=normalized_discussion_mode,
+    )
+
+
+def _normalize_discussion_mode(value: str | None) -> str:
+    return "youtube_live" if str(value or "").strip() == "youtube_live" else "default"
+
+
+def _youtube_live_group_router_rules() -> str:
+    return (
+        "<youtube_live_group_router_rules>\n"
+        "- 這是 YouTube 直播的多角色對話，不是普通使用者問答。\n"
+        "- 不要因為所有角色都已各說一次就停止；只要 remaining_bot_turns_including_next > 0，仍應優先評估角色間接話。\n"
+        "- 若上一位角色提出問句、具體觀點、比較、吐槽或未完成的切入點，優先選 repeat_speaker_reply_to_ai 或 new_speaker_reply_to_ai。\n"
+        "- 角色把問題丟給觀眾時，不代表應該等待觀眾；應讓另一位角色接住、補充、反問角色或提出下一個切入點。\n"
+        "- 只有在近期交換已自然收束、沒有具體主張可補充，或已沒有剩餘回合時才停止。\n"
+        "</youtube_live_group_router_rules>"
     )
 
 
@@ -387,6 +416,45 @@ def _validate_action_result(
         return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
 
     return _fallback_with_unspoken(participants, not_yet_spoken_ids, last_speaker_id)
+
+
+def _apply_youtube_live_continuation_policy(
+    result: GroupRouterResult,
+    *,
+    participants: list[dict],
+    already_spoken_ids: set[str],
+    last_speaker_id: str | None,
+    remaining_bot_turns: int | None,
+    discussion_mode: str,
+) -> GroupRouterResult:
+    if discussion_mode != "youtube_live" or result.should_respond:
+        return result
+    if remaining_bot_turns is not None and remaining_bot_turns <= 0:
+        return result
+    if len(participants) < 2 or not already_spoken_ids:
+        return result
+
+    spoken_candidates = [
+        participant["character_id"]
+        for participant in participants
+        if participant["character_id"] in already_spoken_ids and participant["character_id"] != last_speaker_id
+    ]
+    if not spoken_candidates:
+        spoken_candidates = [
+            participant["character_id"]
+            for participant in participants
+            if participant["character_id"] != last_speaker_id
+        ]
+    if not spoken_candidates:
+        return result
+
+    return GroupRouterResult(
+        True,
+        spoken_candidates[0],
+        "youtube live discussion mode keeps role-to-role momentum within remaining turn budget",
+        "repeat_speaker_reply_to_ai",
+        "continue_group_discussion",
+    )
 
 
 def _fallback_with_unspoken(

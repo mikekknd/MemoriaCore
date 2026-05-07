@@ -338,6 +338,68 @@ def test_continue_discussion_intent_with_stop_all_spoken_stops_when_valid():
     assert result.conversation_intent == "continue_group_discussion"
 
 
+def test_youtube_live_discussion_mode_discourages_early_stop_after_all_spoke():
+    router = _Router({
+        "conversation_intent": "continue_group_discussion",
+        "action": "stop_all_spoken",
+        "target_character_id": None,
+        "reason": "兩位角色都已回應",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "請自然延續直播。"},
+            {"role": "assistant", "content": "A 先聊第 4 話演出。", "character_id": "char-a", "character_name": "角色A"},
+            {"role": "assistant", "content": "B 補充社群正在討論作畫落差。", "character_id": "char-b", "character_name": "角色B"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-b",
+        honor_mentions=False,
+        bot_turn_index=2,
+        max_bot_turns=6,
+        discussion_mode="youtube_live",
+    )
+
+    assert result.should_respond is True
+    assert result.target_character_id == "char-a"
+    assert result.action == "repeat_speaker_reply_to_ai"
+    assert result.conversation_intent == "continue_group_discussion"
+    prompt_messages = router.args[1]
+    prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
+    turn_state = _extract_turn_state(prompt_text)
+    assert turn_state["discussion_mode"] == "youtube_live"
+    assert "<youtube_live_group_router_rules>" in prompt_text
+    assert "不要因為所有角色都已各說一次就停止" in prompt_text
+
+
+def test_default_discussion_mode_keeps_normal_stop_policy():
+    router = _Router({
+        "conversation_intent": "continue_group_discussion",
+        "action": "stop_all_spoken",
+        "target_character_id": None,
+        "reason": "已自然收尾",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "你們討論一下"},
+            {"role": "assistant", "content": "A 的觀點。", "character_id": "char-a"},
+            {"role": "assistant", "content": "B 的補充。", "character_id": "char-b"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-b",
+        honor_mentions=False,
+        bot_turn_index=2,
+        max_bot_turns=6,
+    )
+
+    assert result.should_respond is False
+    assert result.target_character_id is None
+    assert result.action == "stop_all_spoken"
+
+
 def test_router_participant_summary_prefers_character_summary():
     router = _Router({
         "conversation_intent": "single_response",

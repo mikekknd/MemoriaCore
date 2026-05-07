@@ -144,7 +144,7 @@ class DirectorRuntimeManagerMixin:
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
                     continue
-                if self._director_should_pause_for_turn_limit(state, idle_seconds):
+                if self._director_should_pause_for_turn_limit(state, idle_seconds, session):
                     update_fields = {"status": "turn_limit_wait"}
                     if not state.get("last_director_action_at"):
                         update_fields["last_director_action_at"] = datetime.now().isoformat()
@@ -152,7 +152,7 @@ class DirectorRuntimeManagerMixin:
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
                     continue
-                if int(state.get("consecutive_ai_turns", 0) or 0) >= 2:
+                if self._director_topic_turn_limit_reached(session, state):
                     state = self.storage.update_director_state(
                         runtime.session_id,
                         status="turn_limit_released",
@@ -180,7 +180,7 @@ class DirectorRuntimeManagerMixin:
                 if action == "wait" and self._director_should_force_guidance_turn(session, state):
                     decision = self._director_guidance_transition_decision(session, state)
                     action = str(decision.get("action") or "transition_topic").strip()
-                if action == "wait" and self._director_should_force_idle_turn(state):
+                if action == "wait" and self._director_should_force_idle_turn(state, session):
                     decision = self._director_idle_continue_decision(session, state)
                     action = str(decision.get("action") or "continue_topic").strip()
                 if action == "wait":

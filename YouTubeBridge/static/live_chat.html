@@ -154,6 +154,7 @@
       <h1>Live Chat</h1>
       <div class="status-row">
         <span id="sessionBadge" class="badge">尋找 live session...</span>
+        <span id="durationBadge" class="badge">已直播 -- / 目標 --</span>
         <span id="countBadge">0 則</span>
         <span id="updatedBadge">尚未更新</span>
       </div>
@@ -178,6 +179,8 @@
       fallbackRefreshTimer: null,
       historyRefreshTimer: null,
       historyRefreshInFlight: false,
+      durationRefreshTimer: null,
+      sessionTiming: null,
       startupRetryTimers: [],
       liveEventMessages: [],
       displayMessages: [],
@@ -249,6 +252,45 @@
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return "";
       return date.toLocaleTimeString("zh-TW", { hour12: false });
+    }
+    function formatDuration(seconds) {
+      if (!Number.isFinite(seconds) || seconds < 0) return "--";
+      const totalSeconds = Math.floor(seconds);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const remainSeconds = totalSeconds % 60;
+      if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainSeconds).padStart(2, "0")}`;
+      }
+      return `${minutes}:${String(remainSeconds).padStart(2, "0")}`;
+    }
+    function updateDurationBadge() {
+      const badge = $("durationBadge");
+      const timing = state.sessionTiming;
+      if (!badge || !timing?.startedAt) {
+        if (badge) badge.textContent = "已直播 -- / 目標 --";
+        return;
+      }
+      const start = new Date(timing.startedAt);
+      if (Number.isNaN(start.getTime())) {
+        badge.textContent = "已直播 -- / 目標 --";
+        return;
+      }
+      const end = timing.finalizedAt ? new Date(timing.finalizedAt) : new Date();
+      const elapsedSeconds = Math.max(0, (Number.isNaN(end.getTime()) ? Date.now() : end.getTime()) - start.getTime()) / 1000;
+      const plannedMinutes = Number(timing.plannedMinutes || 0);
+      const target = plannedMinutes > 0 ? formatDuration(plannedMinutes * 60) : "未設定";
+      badge.textContent = `已直播 ${formatDuration(elapsedSeconds)} / 目標 ${target}`;
+    }
+    function startDurationRefresh() {
+      if (state.durationRefreshTimer) return;
+      updateDurationBadge();
+      state.durationRefreshTimer = setInterval(updateDurationBadge, 1000);
+    }
+    function stopDurationRefresh() {
+      if (!state.durationRefreshTimer) return;
+      clearInterval(state.durationRefreshTimer);
+      state.durationRefreshTimer = null;
     }
     function setCharacterColorMap(characterIds) {
       state.characterColorMap = {};
@@ -389,7 +431,10 @@
         state.sessionId = "";
         state.subscribedSessionId = "";
         stopHistoryRefresh();
+        stopDurationRefresh();
+        state.sessionTiming = null;
         $("sessionBadge").textContent = "尚無 live session";
+        updateDurationBadge();
         return null;
       }
       if (selected.session_id !== state.sessionId) {
@@ -405,6 +450,13 @@
         setCharacterColorMap(selected.character_ids || []);
         scheduleStartupRetries();
       }
+      state.sessionTiming = {
+        startedAt: selected.started_at || selected.created_at || "",
+        finalizedAt: selected.finalized_at || "",
+        plannedMinutes: selected.planned_duration_minutes,
+      };
+      startDurationRefresh();
+      updateDurationBadge();
       $("sessionBadge").textContent = `${selected.display_name || "YT Live"} / ${selected.session_id.slice(0, 10)}...`;
       return selected;
     }

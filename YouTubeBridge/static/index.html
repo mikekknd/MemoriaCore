@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YouTubeBridge</title>
-  <link rel="stylesheet" href="/ui-assets/index.css?v=character-limit-v1">
+  <link rel="stylesheet" href="/ui-assets/index.css?v=topic-graph-primary-focus-v1">
 </head>
 <body>
   <header>
@@ -24,6 +24,24 @@
       <p id="factCardImportMessage" class="muted" aria-live="polite">正在讀取 FactCards 資料夾、建立資料卡並重建向量，請稍候。</p>
       <div class="progress-track" role="progressbar" aria-label="FactCards 匯入進度">
         <span></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="topicGraphModal" class="topic-graph-modal is-hidden" aria-hidden="true">
+    <div class="topic-graph-modal-shell" role="dialog" aria-modal="true" aria-labelledby="topicGraphModalTitle">
+      <div class="topic-graph-modal-header">
+        <div>
+          <h3 id="topicGraphModalTitle">關係圖 Debug</h3>
+          <p class="muted">滾輪縮放、拖曳空白處平移、拖曳節點調整位置；點節點可高亮一階關聯。</p>
+        </div>
+        <div class="toolbar">
+          <button id="closeTopicGraphModal">關閉</button>
+        </div>
+      </div>
+      <div class="topic-graph-modal-body">
+        <svg id="topicGraphModalSvg" viewBox="0 0 720 520" role="img" aria-label="Fact Card topic graph fullscreen"></svg>
+        <aside id="topicGraphModalDetails" class="topic-graph-modal-details item">尚未選擇節點</aside>
       </div>
     </div>
   </div>
@@ -74,6 +92,12 @@
                       <span class="help-tip" tabindex="0" aria-label="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。" data-tooltip="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。">?</span>
                     </span>
                     <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="10" max="3600" value="60">
+                  </label>
+                  <label>
+                    <span class="field-label">單一話題持續回合數
+                      <span class="help-tip" tabindex="0" aria-label="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。" data-tooltip="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。">?</span>
+                    </span>
+                    <input id="directorAnchorEveryTurns" type="number" min="1" max="10" value="2">
                   </label>
                   <label>
                     <span class="field-label">導播回合上限
@@ -369,6 +393,12 @@
               <div class="topic-form-actions single">
                 <button id="refreshTopicGraphTrace" class="is-hidden">刷新召回路徑</button>
               </div>
+              <div class="topic-form-actions single">
+                <button id="resetTopicGraphView" class="is-hidden">重置視圖</button>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="openTopicGraphModal" class="is-hidden">放大檢視</button>
+              </div>
               <svg id="topicGraphSvg" viewBox="0 0 720 520" role="img" aria-label="Fact Card topic graph"></svg>
               <div class="topic-graph-details">
                 <div id="topicGraphSelectedNode" class="item">尚未選擇節點</div>
@@ -445,6 +475,6 @@
     </div>
   </main>
 
-  <script type="module" src="/ui-assets/app.js?v=character-limit-v1"></script>
+  <script type="module" src="/ui-assets/app.js?v=topic-graph-primary-focus-v1"></script>
 </body>
 </html>

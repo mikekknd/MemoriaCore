@@ -75,6 +75,7 @@ async def run_group_chat_loop(
     shared_tool_state: SharedToolState | None = None
     # 同一輪 user 輸入的檢索意圖固定，query expansion 只需呼叫一次。
     shared_expand_state = SharedExpandState()
+    discussion_mode = _discussion_mode_for_external_context(extra_session_ctx)
 
     for turn_index in range(max_turns):
         route = await asyncio.to_thread(
@@ -88,6 +89,7 @@ async def run_group_chat_loop(
             bot_turn_index=turn_index,
             max_bot_turns=max_turns,
             allow_single_participant_repeat=bool(user_prefs.get("group_chat_allow_single_character_repeat", True)),
+            discussion_mode=discussion_mode,
         )
         if not route.should_respond or not route.target_character_id:
             if turn_index == 0:
@@ -146,6 +148,7 @@ async def run_group_chat_loop(
             "shared_expand_state": shared_expand_state,
             "followup_instruction": followup_instruction,
             "expose_llm_trace": expose_llm_trace,
+            "group_discussion_mode": discussion_mode,
         }
         if extra_session_ctx:
             session_ctx.update(extra_session_ctx)
@@ -254,6 +257,16 @@ def _group_turn_delay_seconds(user_prefs: dict) -> float:
     except (TypeError, ValueError):
         delay = 2.0
     return max(0.0, min(delay, MAX_GROUP_TURN_DELAY_SECONDS))
+
+
+def _discussion_mode_for_external_context(extra_session_ctx: dict | None) -> str:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return "default"
+    source = str(external_context.get("source") or "").strip()
+    if source in {"youtube_live", "youtube_live_director"}:
+        return "youtube_live"
+    return "default"
 
 
 def _character_by_id(characters: list[dict], character_id: str) -> dict | None:

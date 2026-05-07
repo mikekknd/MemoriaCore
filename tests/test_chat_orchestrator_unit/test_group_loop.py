@@ -163,6 +163,72 @@ async def test_group_loop_uses_transient_user_anchor_without_persisting_it(monke
 
 
 @pytest.mark.asyncio
+async def test_group_loop_passes_youtube_live_discussion_mode_to_router(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-live-discussion-mode",
+        messages=[{"role": "system_event", "content": "直播節奏提示"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions["sid-live-discussion-mode"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    captured_modes = []
+    captured_session_ctx = []
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(False, None, "done", "stop_all_spoken", "continue_group_discussion"),
+    ]
+
+    def fake_group_router(*args, **kwargs):
+        captured_modes.append(kwargs.get("discussion_mode"))
+        return route_results.pop(0)
+
+    def fake_orchestration(*args, **kwargs):
+        captured_session_ctx.append(dict(kwargs["session_ctx"]))
+        return (
+            f"回覆 {kwargs['session_ctx']['character_id']}",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 2, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            extra_session_ctx={"external_chat_context": {"source": "youtube_live_director"}},
+            transient_user_content="請根據已提供的直播流程提示回應。",
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_modes == ["youtube_live", "youtube_live"]
+    assert captured_session_ctx[0]["group_discussion_mode"] == "youtube_live"
+
+
+@pytest.mark.asyncio
 async def test_group_loop_emits_each_turn_before_next_route(monkeypatch):
     from api.routers.chat import group_loop
 

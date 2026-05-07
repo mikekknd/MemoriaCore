@@ -6,13 +6,14 @@ import {
   refreshDirector, refreshEvents, refreshSummary, replySuperChats, saveConnector, saveMemoriaConfig,
   testMemoriaAuth, toggleAutoTestEvents, toggleSession,
   syncCharacterSelectionLimit, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
-} from "./control.js?v=character-limit-v1";
+} from "./control.js?v=topic-graph-primary-focus-v1";
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
-  rebuildTopicGraph, refreshTopicEntries, refreshTopicGraph, refreshTopicGraphTrace, refreshTopicPacks, updateTopicActionVisibility,
+  closeTopicGraphModal, openTopicGraphModal, rebuildTopicGraph, refreshTopicEntries, refreshTopicGraph, refreshTopicGraphTrace,
+  refreshTopicPacks, resetTopicGraphView, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
-} from "./topic-packs.js";
+} from "./topic-packs.js?v=topic-graph-primary-focus-v1";
 
 async function refreshAll() {
   await loadHealth();
@@ -140,6 +141,9 @@ $("rebuildTopicEmbeddings").onclick = () => rebuildTopicEmbeddings().catch((erro
 $("refreshTopicGraph").onclick = () => refreshTopicGraph().catch((error) => log("Topic Graph 更新失敗", String(error)));
 $("rebuildTopicGraph").onclick = () => rebuildTopicGraph().catch((error) => log("Topic Graph 重建失敗", String(error)));
 $("refreshTopicGraphTrace").onclick = () => refreshTopicGraphTrace().catch((error) => log("Topic Graph trace 更新失敗", String(error)));
+$("resetTopicGraphView").onclick = () => resetTopicGraphView();
+$("openTopicGraphModal").onclick = () => openTopicGraphModal();
+$("closeTopicGraphModal").onclick = () => closeTopicGraphModal();
 $("topicPackSelect").onchange = () => refreshTopicEntries().catch((error) => log("fact card 更新失敗", String(error)));
 $("sessionTopicPackSelect").onchange = () => {
   $("topicPackSelect").value = $("sessionTopicPackSelect").value;

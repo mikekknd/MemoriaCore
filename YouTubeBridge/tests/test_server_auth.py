@@ -222,6 +222,20 @@ def test_live_chat_assigns_stable_assistant_bubble_colors():
     assert ".msg.assistant.character-color-5" in live_chat_html
 
 
+def test_live_chat_shows_elapsed_and_target_duration():
+    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+
+    assert 'id="durationBadge"' in live_chat_html
+    assert "durationRefreshTimer" in live_chat_html
+    assert "function formatDuration(seconds)" in live_chat_html
+    assert "function updateDurationBadge()" in live_chat_html
+    assert "function startDurationRefresh()" in live_chat_html
+    assert "selected.started_at || selected.created_at" in live_chat_html
+    assert "selected.planned_duration_minutes" in live_chat_html
+    assert "已直播" in live_chat_html
+    assert "目標" in live_chat_html
+
+
 def test_control_ui_honors_requested_session_id_on_initial_load():
     index_html = _control_ui_source()
 
@@ -232,8 +246,8 @@ def test_control_ui_honors_requested_session_id_on_initial_load():
 def test_control_ui_loads_external_css_and_module_script():
     index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
 
-    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=character-limit-v1">' in index_html
-    assert '<script type="module" src="/ui-assets/app.js?v=character-limit-v1"></script>' in index_html
+    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=topic-graph-primary-focus-v1">' in index_html
+    assert '<script type="module" src="/ui-assets/app.js?v=topic-graph-primary-focus-v1"></script>' in index_html
     assert "<style>" not in index_html
     assert "<script>\n" not in index_html
 
@@ -454,7 +468,7 @@ def test_events_pane_is_grouped_as_test_comment_tool():
 def test_control_ui_checkbox_inputs_keep_native_compact_size():
     index_html = _control_ui_source()
 
-    assert 'href="/ui-assets/index.css?v=character-limit-v1"' in index_html
+    assert 'href="/ui-assets/index.css?v=topic-graph-primary-focus-v1"' in index_html
     assert '\ninput[type="checkbox"] {' in index_html
     checkbox_block = index_html[
         index_html.index('\ninput[type="checkbox"] {'):
@@ -498,6 +512,8 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert 'setTopicActionVisible("runResearch", hasSession);' not in index_html
     assert 'setTopicActionVisible("searchTopicPack"' not in index_html
     assert 'setTopicActionVisible("restoreTopicEntries"' not in index_html
+    assert "} else if (!previousPackId && state.topicPacks.length === 1) {" in index_html
+    assert '$("topicPackSelect").value = String(state.topicPacks[0].id);' in index_html
     assert '$("topicEntryPanel").classList.toggle("is-hidden", !hasPack);' in index_html
     assert '$("topicPackTitle").addEventListener("input", updateTopicActionVisibility);' in index_html
     assert '$("topicEntryTitle").addEventListener("input", updateTopicActionVisibility);' in index_html
@@ -568,6 +584,12 @@ def test_control_ui_exposes_topic_graph_debug_panel():
     assert 'id="refreshTopicGraph"' in index_html
     assert 'id="rebuildTopicGraph"' in index_html
     assert 'id="refreshTopicGraphTrace"' in index_html
+    assert 'id="resetTopicGraphView"' in index_html
+    assert 'id="openTopicGraphModal"' in index_html
+    assert 'id="topicGraphModal"' in index_html
+    assert 'id="topicGraphModalSvg"' in index_html
+    assert 'id="topicGraphModalDetails"' in index_html
+    assert 'id="closeTopicGraphModal"' in index_html
     assert 'id="topicGraphSvg"' in index_html
     assert 'id="topicGraphSelectedNode"' in index_html
     assert 'id="topicGraphLatestTrace"' in index_html
@@ -576,6 +598,59 @@ def test_control_ui_exposes_topic_graph_debug_panel():
     assert 'function rebuildTopicGraph' in index_html
     assert 'function renderTopicGraph' in index_html
     assert 'function selectTopicGraphNode' in index_html
+    assert "function clearTopicGraphSelection" in index_html
+    assert "function toggleTopicGraphNodeSelection" in index_html
+    assert "function renderTopicGraphSelectedNodeDetails" in index_html
+    assert "function topicGraphLabelCandidateForce" in index_html
+    assert "function topicGraphLabelCandidateVisible" in index_html
+    assert "topicGraphBusy: false" in index_html
+    assert "topicGraphViewport:" in index_html
+    assert "topicGraphNodePositions:" in index_html
+    assert "topicGraphModalOpen: false" in index_html
+    assert "topicGraphTraceAutoFollow: true" in index_html
+    assert "topicGraphTraceRefreshTimer: null" in index_html
+    assert "let topicGraphDrag = null;" in index_html
+    assert "function setTopicGraphBusy(action" in index_html
+    assert "function topicGraphLayout(nodes, edges)" in index_html
+    assert "function topicGraphPositions(nodes, edges)" in index_html
+    assert "function topicGraphRelatedNodeIds(selectedNodeId, edges)" in index_html
+    assert "function topicGraphPrimaryTraceNodeId(trace)" in index_html
+    assert "function topicGraphNodeClass(node, selected, relatedNodeIds, focusNodeIds, traceNodeIds, primaryTraceNodeId)" in index_html
+    assert "function topicGraphEdgeClass(edge, traceNodeIds, selected, relatedNodeIds, focusNodeIds)" in index_html
+    assert "function topicGraphAutoFocusNodeIds(trace, edges)" in index_html
+    assert "function shouldRenderTopicGraphLabel" in index_html
+    assert "const denseGraph = nodes.length > 36;" in index_html
+    assert "entity: 52" in index_html
+    assert "const maxVisibleLabels = selected ? Math.max(18, relatedNodeIds.size) : (focusNodeIds.size ? Math.max(18, focusNodeIds.size) : (denseGraph ? 46 : 64));" in index_html
+    assert "function clampTopicGraphScale" in index_html
+    assert "function zoomTopicGraph" in index_html
+    assert "function beginTopicGraphNodeDrag" in index_html
+    assert "function resetTopicGraphView" in index_html
+    assert "function openTopicGraphModal" in index_html
+    assert "function closeTopicGraphModal" in index_html
+    assert "function bindTopicGraphViewportControls" in index_html
+    assert "function renderTopicGraphToSvg(svg)" in index_html
+    assert "const focusNodeIds = selected ? relatedNodeIds : topicGraphAutoFocusNodeIds(state.topicGraphLatestTrace, edges);" in index_html
+    assert "const primaryTraceNodeId = topicGraphPrimaryTraceNodeId(state.topicGraphLatestTrace);" in index_html
+    assert 'const activeTrace = Number(node.id) === primaryTraceNodeId;' in index_html
+    assert 'class="topic-graph-trace-pulse"' in index_html
+    assert 'const graphBusy = !!state.topicGraphBusy;' in index_html
+    assert '$("refreshTopicGraph").disabled = !hasPack || graphBusy;' in index_html
+    assert '$("rebuildTopicGraph").disabled = !hasPack || graphBusy;' in index_html
+    assert 'setTopicActionVisible("openTopicGraphModal", hasPack);' in index_html
+    assert '$("openTopicGraphModal").disabled = !hasPack || graphBusy;' in index_html
+    assert '$("refreshTopicGraph").textContent = action === "refresh" ? "刷新中..." : "刷新關係圖";' in index_html
+    assert '$("rebuildTopicGraph").textContent = action === "rebuild" ? "重建中..." : "重建關係圖";' in index_html
+    assert 'setTopicGraphBusy("refresh", "正在刷新關係圖...");' in index_html
+    assert 'setTopicGraphBusy("rebuild", "正在重建關係圖...");' in index_html
+    assert 'setTopicGraphBusy("trace", "正在刷新召回路徑...");' in index_html
+    assert 'refreshTopicGraphTrace({ showBusy: false })' in index_html
+    assert "function scheduleTopicGraphTraceRefresh" in index_html
+    assert 'scheduleTopicGraphTraceRefresh({ reason: payload.type });' in index_html
+    assert "function setTopicGraphLoadedState" in index_html
+    assert "setTopicGraphLoadedState(state.topicGraph);" in index_html
+    assert '$("topicGraphState").textContent = "關係圖刷新失敗";' in index_html
+    assert '$("topicGraphState").textContent = "關係圖重建失敗";' in index_html
     assert "/topic-packs/${packId}/graph" in index_html
     assert "/topic-packs/${packId}/graph/rebuild" in index_html
     assert "/sessions/${encodeURIComponent(id)}/topic-graph/traces" in index_html
@@ -583,6 +658,45 @@ def test_control_ui_exposes_topic_graph_debug_panel():
     assert '$("refreshTopicGraph").onclick = () => refreshTopicGraph()' in index_html
     assert '$("rebuildTopicGraph").onclick = () => rebuildTopicGraph()' in index_html
     assert '$("refreshTopicGraphTrace").onclick = () => refreshTopicGraphTrace()' in index_html
+    assert '$("resetTopicGraphView").onclick = () => resetTopicGraphView();' in index_html
+    assert '$("openTopicGraphModal").onclick = () => openTopicGraphModal();' in index_html
+    assert '$("closeTopicGraphModal").onclick = () => closeTopicGraphModal();' in index_html
+    assert 'svg.addEventListener("wheel", onWheel' in index_html
+    assert 'svg.addEventListener("pointerdown", onPointerDown' in index_html
+    assert 'svg.addEventListener("click", onSvgClick' in index_html
+    assert "const TOPIC_GRAPH_NODE_CLICK_SLOP_PX = 5;" in index_html
+    assert 'topicGraphDrag = {' in index_html
+    assert "const clientDx = event.clientX - topicGraphDrag.clientX;" in index_html
+    assert "if (!topicGraphDrag.moved && Math.hypot(clientDx, clientDy) < TOPIC_GRAPH_NODE_CLICK_SLOP_PX) return;" in index_html
+    assert "topicGraphDrag.moved = true;" in index_html
+    assert "const completedDrag = topicGraphDrag;" in index_html
+    assert "toggleTopicGraphNodeSelection(completedDrag.nodeId);" in index_html
+    assert "handled: !completedDrag.moved" in index_html
+    assert "if (topicGraphLastNodeDrag?.handled || topicGraphLastNodeDrag?.moved)" in index_html
+    assert 'state.topicGraphNodePositions[String(topicGraphDrag.nodeId)]' in index_html
+    assert 'clearTopicGraphSelection();' in index_html
+    assert "toggleTopicGraphNodeSelection(item.dataset.topicGraphNode)" in index_html
+    assert 'renderTopicGraphSelectedNodeDetails(null, []);' in index_html
+    assert 'renderTopicGraphSelectedNodeDetails(node, edges);' in index_html
+    assert "目前召回焦點" in index_html
+    assert "補充召回" in index_html
+    assert "自動跟隨" in index_html
+    assert 'if (selected && !relatedNodeIds.has(Number(candidate.node.id))) return;' in index_html
+    assert 'force: topicGraphLabelCandidateForce(node, selected, relatedNodeIds, traceNodeIds, focusNodeIds)' in index_html
+    assert 'if (!topicGraphLabelCandidateVisible(candidate, selected, visibleLabels.size, maxVisibleLabels)) return;' in index_html
+    assert 'denseGraph && ["entity", "reference"].includes(candidate.node.node_type)' not in index_html
+    assert '["topicGraphSelectedNode", "topicGraphModalDetails"]' in index_html
+    assert 'class="topic-graph-viewport"' in index_html
+    assert "pointer-events: auto;" in index_html
+    assert ".topic-graph-node.is-active-trace circle" in index_html
+    assert ".topic-graph-node.is-recalled-trace circle" in index_html
+    assert ".topic-graph-trace-pulse" in index_html
+    assert "@keyframes topicGraphTracePulse" in index_html
+    assert ".topic-graph-node.is-dimmed" in index_html
+    assert ".topic-graph-edge.is-dimmed" in index_html
+    assert ".topic-graph-node.is-dimmed text" in index_html
+    assert ".topic-graph-modal-body" in index_html
+    assert ".topic-graph-modal-details" in index_html
 
 
 def test_topic_pack_entry_list_drives_edit_and_delete_actions():
@@ -658,6 +772,8 @@ def test_fact_cards_folder_import_shows_blocking_progress_feedback():
     assert "function setFactCardImportBusy(isBusy" in index_html
     assert '$("factCardImportOverlay").classList.toggle("is-hidden", !busy);' in index_html
     assert "setFactCardImportBusy(true);" in import_block
+    assert "匯入完成，但關係圖建立失敗" in import_block
+    assert "請查看 Log 或點重建關係圖" in import_block
     assert "finally {" in import_block
     assert "setFactCardImportBusy(false);" in import_block
 
@@ -714,6 +830,8 @@ def test_director_controls_are_integrated_into_live_session_panel():
     assert "角色停頓後續話秒數" in live_session_block
     assert 'id="directorIdle"' in live_session_block
     assert 'data-testid="director-idle-seconds"' in live_session_block
+    assert "單一話題持續回合數" in live_session_block
+    assert 'id="directorAnchorEveryTurns"' in director_block
     assert 'id="directorGroupTurnLimit"' in director_block
     assert live_session_block.index('id="directorGroupTurnLimit"') > live_session_block.index('id="directorControls"')
     assert 'id="directorGuidance"' in live_session_block
@@ -851,6 +969,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "directorGroupTurnLimit": "導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。",
         "directorMaxChatBatches": "連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。",
         "directorIdle": "角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。",
+        "directorAnchorEveryTurns": "同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。",
         "directorGuidance": "本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。",
     }
 
@@ -865,6 +984,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         ("注入間隔秒數", "injectInterval"),
         ("動態注入最短秒數", "injectMinIntervalSeconds"),
         ("話題資料包", "sessionTopicPackSelect"),
+        ("單一話題持續回合數", "directorAnchorEveryTurns"),
         ("導播回合上限", "directorGroupTurnLimit"),
         ("幾批留言後回主軸", "directorMaxChatBatches"),
         ("角色停頓後續話秒數", "directorIdle"),
@@ -1350,6 +1470,53 @@ async def test_start_current_session_validates_new_live_before_archiving_existin
     assert old_session["status"] == "running"
     assert storage.count_events("old-live") == 1
     assert [session["session_id"] for session in storage.list_sessions()] == ["old-live"]
+
+
+@pytest.mark.asyncio
+async def test_start_current_session_never_reuses_client_memoria_session_id(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    started: list[str] = []
+
+    class FakeManager:
+        async def start_session(self, session_id: str):
+            started.append(session_id)
+            session = storage.get_session(session_id)
+            assert session is not None
+            assert session["target_memoria_session_id"] == ""
+            storage.update_session_fields(session_id, status="running", started_at="2026-05-06T10:20:00")
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        def get_status(self, session_id: str):
+            session = storage.get_session(session_id)
+            return {
+                "session_id": session_id,
+                "status": session.get("status") if session else "missing",
+                "running": bool(session and session.get("status") == "running"),
+            }
+
+        async def stop_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="stopped")
+            return self.get_status(session_id)
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+
+    result = await server_module.start_current_session(server_module.LiveSessionConfig(
+        video_id="",
+        target_memoria_session_id="old-memoria-session",
+        character_ids=["coco"],
+    ))
+
+    assert started == [result["session_id"]]
+    assert result["target_memoria_session_id"] == ""
+    assert storage.get_session(result["session_id"])["target_memoria_session_id"] == ""
 
 
 @pytest.mark.asyncio

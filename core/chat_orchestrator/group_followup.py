@@ -43,7 +43,7 @@ def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | No
     original_user_prompt = followup.get("user_prompt_original") or user_prompt
     last_character_name = followup.get("last_character_name", "")
     last_reply = followup.get("last_reply", "")
-    return "\n\n".join([
+    items = [
         _context_item(
             "original_user_request",
             [
@@ -61,7 +61,29 @@ def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | No
             ],
             last_reply,
         ),
-    ])
+    ]
+    live_rules = _youtube_live_group_context(session_ctx)
+    if live_rules:
+        items.append(live_rules)
+    return "\n\n".join(items)
+
+
+def _youtube_live_group_context(session_ctx: dict | None) -> str:
+    external_context = (session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return ""
+    source = str(external_context.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return ""
+    return _context_item(
+        "youtube_live_group_context",
+        [("role", "live_group_rules"), ("source", source)],
+        (
+            "直播專用群聊規則：這是 YouTube 直播多角色對話，不保證有觀眾即時回覆。"
+            "請把上一位角色的問句視為角色間接話入口，接住、補充、反駁或提出下一個切入點；"
+            "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+        ),
+    )
 
 
 def build_group_followup_instruction(

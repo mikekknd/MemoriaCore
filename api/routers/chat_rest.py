@@ -154,13 +154,24 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
     for key in ("connector_id", "video_id", "live_chat_id"):
         if raw.get(key):
             summary[key] = str(raw.get(key))
+    group_turn_limit = raw.get("group_turn_limit", raw_summary.get("group_turn_limit"))
+    try:
+        group_turn_limit = int(group_turn_limit)
+    except (TypeError, ValueError):
+        group_turn_limit = None
+    if group_turn_limit is not None:
+        group_turn_limit = max(1, min(group_turn_limit, 12))
+        summary["group_turn_limit"] = group_turn_limit
     visible_events = _normalize_visible_events(raw.get("visible_events"))
-    return {
+    context = {
         "source": source,
         "context_text": context_text,
         "visible_events": visible_events,
         "summary": summary,
-    }, summary
+    }
+    if group_turn_limit is not None:
+        context["group_turn_limit"] = group_turn_limit
+    return context, summary
 
 
 def _normalize_visible_events(raw_events) -> list[dict]:

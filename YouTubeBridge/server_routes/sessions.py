@@ -192,6 +192,14 @@ async def _prepare_current_session_start_config(config: dict) -> dict:
     config["session_id"] = ""
     config["connector_id"] = DEFAULT_CONNECTOR_ID
     config["display_name"] = str(config.get("display_name") or "YouTube Live").strip() or "YouTube Live"
+    config["target_memoria_session_id"] = ""
+    config["started_at"] = ""
+    config["finalized_at"] = ""
+    config["summary_status"] = "pending"
+    config["summary_id"] = None
+    config["summary_error"] = ""
+    config["summary_updated_at"] = ""
+    config["status"] = "stopped"
     storage.ensure_single_connector()
     config["video_id"] = extract_video_id(config.get("video_id", ""))
 

@@ -1,6 +1,6 @@
 import { $, SINGLE_CONNECTOR_ID, state, api, clearLog, escapeHtml, log, summarizeSsePayload } from "./core.js";
 import { defaultLiveSession, isSelectedSessionRunning, selectedSessionId, selectedSessionInfo } from "./selectors.js";
-import { bindSessionTopicPack, refreshTopicPacks } from "./topic-packs.js";
+import { bindSessionTopicPack, refreshTopicPacks, scheduleTopicGraphTraceRefresh } from "./topic-packs.js";
 
 function sessionIsFinalized(session = selectedSessionInfo()) {
   return !!(
@@ -406,6 +406,7 @@ export function fillSessionForm(session) {
   $("plannedDuration").value = session.planned_duration_minutes || 30;
   $("scInterruptCooldown").value = session.sc_interrupt_cooldown_seconds || 30;
   $("maxScPerBatch").value = session.max_sc_per_batch || 5;
+  $("directorAnchorEveryTurns").value = session.director_anchor_every_turns || 2;
   $("directorGroupTurnLimit").value = session.director_group_turn_limit || 3;
   $("directorMaxChatBatches").value = session.director_max_chat_batches_before_anchor || 2;
   $("autoInject").checked = !!session.auto_inject;
@@ -440,6 +441,7 @@ export function newSessionDraft() {
   $("plannedDuration").value = 30;
   $("scInterruptCooldown").value = 30;
   $("maxScPerBatch").value = 5;
+  $("directorAnchorEveryTurns").value = 2;
   $("directorGroupTurnLimit").value = 3;
   $("directorMaxChatBatches").value = 2;
   $("autoInject").checked = true;
@@ -511,6 +513,7 @@ export function liveSessionPayload({ createNew = false } = {}) {
     planned_duration_minutes: Number($("plannedDuration").value || 30),
     sc_interrupt_cooldown_seconds: Number($("scInterruptCooldown").value || 30),
     max_sc_per_batch: Number($("maxScPerBatch").value || 5),
+    director_anchor_every_turns: Number($("directorAnchorEveryTurns").value || 2),
     director_group_turn_limit: Number($("directorGroupTurnLimit").value || 3),
     director_max_chat_batches_before_anchor: Number($("directorMaxChatBatches").value || 2),
     auto_finalize_on_duration: $("autoFinalize").checked,
@@ -813,6 +816,7 @@ export function updateDirectorControls(data) {
 export async function updateDirectorGuidance() {
   const id = selectedSessionId();
   if (!id) throw new Error("請先建立或選擇 Live Session");
+  await saveSession(false);
   const current = await refreshDirector();
   if (current?.director_enabled) {
     await setDirector(true, false);
@@ -881,6 +885,9 @@ export function subscribeEvents() {
     }
     if (["memoria_injected", "interaction_started", "interaction_completed", "interaction_interrupted", "director_injected", "interrupt_requested"].includes(payload.type)) {
       await refreshQueue();
+    }
+    if (["memoria_injected", "interaction_started", "interaction_completed", "director_injected"].includes(payload.type)) {
+      scheduleTopicGraphTraceRefresh({ reason: payload.type });
     }
     if (["research_card_created"].includes(payload.type)) {
       await refreshTopicPacks();

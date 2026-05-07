@@ -132,20 +132,38 @@ class DirectorManagerMixin:
         )
 
     @staticmethod
+    def _director_topic_turn_limit(session: dict[str, Any] | None = None) -> int:
+        try:
+            value = int((session or {}).get("director_anchor_every_turns", 2) or 2)
+        except (TypeError, ValueError):
+            value = 2
+        return max(1, min(value, 10))
+
+    @staticmethod
+    def _director_topic_turn_limit_reached(
+        session: dict[str, Any] | None,
+        state: dict[str, Any],
+    ) -> bool:
+        return int(state.get("consecutive_ai_turns", 0) or 0) >= DirectorManagerMixin._director_topic_turn_limit(session)
+
+    @staticmethod
     def _director_should_force_guidance_turn(session: dict[str, Any], state: dict[str, Any]) -> bool:
         guidance = DirectorManagerMixin._public_director_topic(session, state)
         current_topic = str(state.get("current_topic") or "").strip()
         if not guidance:
             return False
-        if int(state.get("consecutive_ai_turns", 0) or 0) >= 2:
+        if DirectorManagerMixin._director_topic_turn_limit_reached(session, state):
             return False
         normalized_guidance = guidance.replace(" ", "")
         normalized_topic = current_topic.replace(" ", "")
         return bool(normalized_guidance and normalized_guidance[:80] not in normalized_topic)
 
     @staticmethod
-    def _director_should_force_idle_turn(state: dict[str, Any]) -> bool:
-        return int(state.get("consecutive_ai_turns", 0) or 0) < 2
+    def _director_should_force_idle_turn(
+        state: dict[str, Any],
+        session: dict[str, Any] | None = None,
+    ) -> bool:
+        return not DirectorManagerMixin._director_topic_turn_limit_reached(session, state)
 
     @staticmethod
     def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -157,8 +175,12 @@ class DirectorManagerMixin:
             return None
 
     @staticmethod
-    def _director_should_pause_for_turn_limit(state: dict[str, Any], idle_seconds: int) -> bool:
-        if int(state.get("consecutive_ai_turns", 0) or 0) < 2:
+    def _director_should_pause_for_turn_limit(
+        state: dict[str, Any],
+        idle_seconds: int,
+        session: dict[str, Any] | None = None,
+    ) -> bool:
+        if not DirectorManagerMixin._director_topic_turn_limit_reached(session, state):
             return False
         last_action_at = DirectorManagerMixin._parse_iso_datetime(state.get("last_director_action_at"))
         if not last_action_at:

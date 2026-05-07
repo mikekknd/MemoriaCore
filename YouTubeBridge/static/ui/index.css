@@ -19,6 +19,9 @@ body {
   font-family: "Segoe UI", "Noto Sans TC", system-ui, sans-serif;
   letter-spacing: 0;
 }
+body.topic-graph-modal-open {
+  overflow: hidden;
+}
 header {
   position: sticky;
   top: 0;
@@ -490,6 +493,12 @@ a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-ev
   border: 1px solid #2f3540;
   border-radius: 8px;
   background: #17191c;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.topic-graph-panel svg.is-panning {
+  cursor: grabbing;
 }
 .topic-graph-details {
   display: grid;
@@ -499,11 +508,15 @@ a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-ev
 .topic-graph-node {
   cursor: pointer;
 }
+.topic-graph-viewport {
+  transform-box: fill-box;
+  transform-origin: 0 0;
+}
 .topic-graph-node text {
   fill: #d7dce4;
   font-size: 10px;
   paint-order: stroke;
-  pointer-events: none;
+  pointer-events: auto;
   stroke: #17191c;
   stroke-linejoin: round;
   stroke-width: 3px;
@@ -516,6 +529,37 @@ a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-ev
   stroke: #f8fafc;
   stroke-width: 3;
 }
+.topic-graph-node.is-recalled-trace circle:not(.topic-graph-trace-pulse) {
+  stroke: rgba(253, 224, 71, 0.75);
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 4px rgba(250, 204, 21, 0.38));
+}
+.topic-graph-node.is-active-trace circle:not(.topic-graph-trace-pulse) {
+  stroke: #fef08a;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 8px rgba(250, 204, 21, 0.9));
+}
+.topic-graph-trace-pulse {
+  fill: none;
+  pointer-events: none;
+  stroke: #fde047;
+  stroke-width: 3;
+  animation: topicGraphTracePulse 1.35s ease-out infinite;
+}
+@keyframes topicGraphTracePulse {
+  0% {
+    opacity: 0.95;
+    stroke-width: 3;
+  }
+  72% {
+    opacity: 0.18;
+    stroke-width: 8;
+  }
+  100% {
+    opacity: 0;
+    stroke-width: 10;
+  }
+}
 .topic-graph-edge {
   stroke: rgba(148, 163, 184, 0.32);
   stroke-width: 1.2;
@@ -524,8 +568,85 @@ a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-ev
   stroke: #8b5cf6;
   stroke-width: 2.2;
 }
+.topic-graph-node.is-focused circle {
+  stroke: #f8fafc;
+  stroke-width: 2.6;
+}
+.topic-graph-node.is-dimmed {
+  opacity: 0.22;
+}
+.topic-graph-node.is-dimmed text {
+  display: none;
+}
+.topic-graph-edge.is-focused {
+  stroke: rgba(248, 250, 252, 0.78);
+  stroke-width: 2;
+}
+.topic-graph-edge.is-dimmed {
+  opacity: 0.12;
+}
 .topic-graph-trace-list {
   max-height: 160px;
+}
+.topic-graph-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.62);
+}
+.topic-graph-modal-shell {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: #fff;
+  box-shadow: 0 22px 70px rgba(15, 23, 42, 0.34);
+}
+.topic-graph-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.topic-graph-modal-header h3,
+.topic-graph-modal-header p {
+  margin: 0;
+}
+.topic-graph-modal-header h3 {
+  margin-bottom: 4px;
+  font-size: 16px;
+}
+.topic-graph-modal-body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 12px;
+}
+.topic-graph-modal svg {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid #2f3540;
+  border-radius: 8px;
+  background: #17191c;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.topic-graph-modal svg.is-panning {
+  cursor: grabbing;
+}
+.topic-graph-modal-details {
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
 }
 .blocking-overlay {
   position: fixed;
@@ -625,6 +746,13 @@ pre {
     border-top: 1px solid var(--line);
     padding-left: 0;
     padding-top: 14px;
+  }
+  .topic-graph-modal-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(320px, 1fr) auto;
+  }
+  .topic-graph-modal-details {
+    max-height: 180px;
   }
   header { align-items: flex-start; flex-direction: column; }
   .right-rail {

@@ -95,12 +95,6 @@ class RuntimeLifecycleManagerMixin:
             if needs_youtube_polling:
                 self._disable_test_events_for_real_youtube_session(session_id, session)
                 session = self.storage.get_session(session_id) or session
-            if not needs_youtube_polling:
-                try:
-                    self._clear_llm_trace_log()
-                except OSError as exc:
-                    logger.warning("clear llm trace failed before test live session start: %s", exc)
-
             existing = self._runtimes.get(session_id)
             if existing and existing.running:
                 return self.get_status(session_id)
