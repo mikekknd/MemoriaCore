@@ -318,6 +318,13 @@ class DirectorRuntimeManagerMixin:
             )
         if action == "closing_super_chat_thanks" and prompt:
             context_parts.append("本場 Super Chat 參考內容：\n" + prompt[:3000])
+        episode_patch, episode_context_text = self._episode_plan_external_context_patch(
+            session,
+            state,
+            decision,
+        )
+        if episode_context_text:
+            context_parts.append(episode_context_text)
         if action == "opening":
             opening_intro_context = self._opening_intro_context_for_session(session)
             if opening_intro_context:
@@ -363,6 +370,12 @@ class DirectorRuntimeManagerMixin:
         }
         if live_hosting:
             external_context["live_hosting"] = live_hosting
+        if episode_patch:
+            external_context.update(episode_patch)
+            live_episode_plan = episode_patch.get("live_episode_plan") or {}
+            external_context["summary"]["episode_plan_id"] = live_episode_plan.get("plan_id", "")
+            external_context["summary"]["episode_plan_turn_id"] = live_episode_plan.get("turn_id", "")
+            external_context["summary"]["episode_plan_mode"] = live_episode_plan.get("mode", "")
         external_context = self._attach_live_persona_overrides(session, external_context)
         interaction = self.storage.create_interaction(
             {

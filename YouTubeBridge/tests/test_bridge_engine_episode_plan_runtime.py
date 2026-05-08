@@ -152,3 +152,32 @@ def test_audience_event_classifier_maps_super_chat_to_bounded_interrupt():
         assert decision["episode_plan"]["interrupt_state"]["return_turn_index"] == 0
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_episode_plan_projection_contains_turn_contract_without_full_plan_json():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        plan, planned_state = manager._episode_plan_and_state(session, state)
+        turn = manager._episode_current_turn_contract(plan, planned_state)
+
+        projection = manager._episode_plan_context_text(
+            plan,
+            planned_state,
+            turn,
+            interrupt_state={},
+        )
+
+        assert "<live_episode_director_context>" in projection
+        assert "plan_id: plan-general-panel" in projection
+        assert "segment: seg_01 / 事件 Hook" in projection
+        assert "turn_contract: seg_01_turn_01" in projection
+        assert "selection_mode: router_select" in projection
+        assert "queries: 事件名稱 爆點 觀眾反應" in projection
+        assert "required_entities: 事件名稱" in projection
+        assert "max_sentences: 2" in projection
+        assert "participants" not in projection
+        assert "planned_turn_contracts" not in projection
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

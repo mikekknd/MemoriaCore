@@ -292,3 +292,184 @@ class EpisodePlanManagerMixin:
                 "classification_reason": classified["reason"],
             },
         }
+
+    def _episode_planned_turn_decision(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        plan, planned_state = self._episode_plan_and_state(session, state)
+        if not plan:
+            return {}
+        turn = self._episode_current_turn_contract(plan, planned_state)
+        segment = self._episode_current_segment(plan, planned_state)
+        if not turn or not segment:
+            return {}
+        return {
+            "action": "continue_topic",
+            "reason": f"episode planned turn {turn['turn_id']}",
+            "prompt": str(turn.get("intent") or segment.get("goal") or ""),
+            "current_topic": str(segment.get("title") or ""),
+            "episode_plan": {
+                "mode": "planned_turn",
+                "planned_state": planned_state,
+                "segment": {
+                    "segment_id": str(segment.get("segment_id") or ""),
+                    "title": str(segment.get("title") or ""),
+                    "goal": str(segment.get("goal") or ""),
+                },
+                "turn_contract": turn,
+            },
+        }
+
+    def _episode_plan_context_text(
+        self,
+        plan: dict[str, Any],
+        planned_state: dict[str, Any],
+        turn: dict[str, Any],
+        *,
+        interrupt_state: dict[str, Any],
+    ) -> str:
+        segment = self._episode_current_segment(plan, planned_state) or {}
+        speaker = turn.get("speaker_policy") if isinstance(turn.get("speaker_policy"), dict) else {}
+        evidence = turn.get("evidence_policy") if isinstance(turn.get("evidence_policy"), dict) else {}
+        output = (
+            turn.get("output_requirements")
+            if isinstance(turn.get("output_requirements"), dict)
+            else {}
+        )
+        forbidden = (
+            turn.get("forbidden_repetition")
+            if isinstance(turn.get("forbidden_repetition"), dict)
+            else {}
+        )
+        queries = [
+            str(query).strip()
+            for query in evidence.get("queries") or []
+            if str(query).strip()
+        ]
+        required_entities = [
+            str(item).strip()
+            for item in evidence.get("required_entities") or []
+            if str(item).strip()
+        ]
+        preferred_functions = [
+            str(item).strip()
+            for item in speaker.get("preferred_role_functions") or []
+            if str(item).strip()
+        ]
+        allowed_participant_ids = [
+            str(item).strip()
+            for item in speaker.get("allowed_participant_ids") or []
+            if str(item).strip()
+        ]
+        lines = [
+            "<live_episode_director_context>",
+            f"plan_id: {plan.get('plan_id')}",
+            f"segment: {segment.get('segment_id')} / {segment.get('title')}",
+            f"segment_goal: {segment.get('goal')}",
+            f"turn_contract: {turn.get('turn_id')}",
+            f"turn_type: {turn.get('turn_type')}",
+            f"turn_intent: {turn.get('intent')}",
+            "speaker_policy:",
+            f"  selection_mode: {speaker.get('selection_mode') or 'router_select'}",
+            "  preferred_role_functions: "
+            + (", ".join(preferred_functions) if preferred_functions else "未指定"),
+            "  allowed_participant_ids: "
+            + (", ".join(allowed_participant_ids) if allowed_participant_ids else "未指定"),
+            f"  avoid_repeat_speaker: {bool(speaker.get('avoid_repeat_speaker'))}",
+            "evidence_policy:",
+            f"  queries: {' | '.join(queries)}",
+            "  required_entities: "
+            + (", ".join(required_entities) if required_entities else "未指定"),
+            f"  max_cards: {int(evidence.get('max_cards') or 0)}",
+            f"  allow_unverified_claims: {bool(evidence.get('allow_unverified_claims'))}",
+            "output_requirements:",
+            f"  max_sentences: {int(output.get('max_sentences') or 2)}",
+            f"  must_end_with_question: {bool(output.get('must_end_with_question'))}",
+            f"  allow_audience_question: {bool(output.get('allow_audience_question'))}",
+            f"  should_handoff: {bool(output.get('should_handoff'))}",
+            f"  handoff_target_function: {output.get('handoff_target_function') or '未指定'}",
+            "forbidden_repetition:",
+            "  claims: " + ", ".join(str(item) for item in forbidden.get("claims") or []),
+            "  metaphors: " + ", ".join(str(item) for item in forbidden.get("metaphors") or []),
+            "  openings: " + ", ".join(str(item) for item in forbidden.get("openings") or []),
+        ]
+        if interrupt_state:
+            lines.append(f"interrupt_type: {interrupt_state.get('interrupt_type')}")
+            lines.append(f"resume_rule: {interrupt_state.get('resume_rule')}")
+        else:
+            lines.append("resume_rule: 本輪不是聊天室打斷，完成後依 required_turn_types 檢查段落進度。")
+        lines.append("</live_episode_director_context>")
+        return "\n".join(lines)
+
+    def _episode_turn_topic_context(self, session_id: str, turn: dict[str, Any]) -> str:
+        evidence = turn.get("evidence_policy") if isinstance(turn.get("evidence_policy"), dict) else {}
+        queries = [
+            str(query).strip()
+            for query in evidence.get("queries") or []
+            if str(query).strip()
+        ]
+        if not queries:
+            return ""
+        max_cards = max(1, min(int(evidence.get("max_cards") or 3), 8))
+        return self._topic_pack_context_for_query(
+            session_id,
+            "\n".join(queries),
+            limit=max_cards,
+            usage_source="episode_plan",
+            allow_fallback=bool(evidence.get("allow_unverified_claims")),
+        )
+
+    def _episode_plan_external_context_patch(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
+        if not payload:
+            return {}, ""
+        plan, planned_state = self._episode_plan_and_state(session, state)
+        if not plan:
+            return {}, ""
+        turn = (
+            payload.get("turn_contract")
+            if isinstance(payload.get("turn_contract"), dict)
+            else self._episode_current_turn_contract(plan, planned_state)
+        )
+        if not turn:
+            return {}, ""
+        interrupt_state = (
+            payload.get("interrupt_state")
+            if isinstance(payload.get("interrupt_state"), dict)
+            else {}
+        )
+        segment_payload = payload.get("segment") if isinstance(payload.get("segment"), dict) else {}
+        current = self._episode_current_segment(plan, planned_state) or {}
+        context_text = self._episode_plan_context_text(
+            plan,
+            planned_state,
+            turn,
+            interrupt_state=interrupt_state,
+        )
+        topic_context = self._episode_turn_topic_context(
+            str(session.get("session_id") or ""),
+            turn,
+        )
+        patch = {
+            "live_episode_plan": {
+                "plan_id": str(plan.get("plan_id") or ""),
+                "title": str(plan.get("title") or ""),
+                "mode": str(payload.get("mode") or "planned_turn"),
+                "segment_id": str(
+                    segment_payload.get("segment_id")
+                    or current.get("segment_id")
+                    or ""
+                ),
+                "turn_id": str(turn.get("turn_id") or ""),
+                "turn_type": str(turn.get("turn_type") or ""),
+                "interrupt_state": interrupt_state,
+            }
+        }
+        return patch, "\n".join(part for part in (context_text, topic_context) if part)

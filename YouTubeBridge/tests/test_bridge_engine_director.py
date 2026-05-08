@@ -33,6 +33,7 @@ from bridge_engine_test_support import (
     bridge_engine,
     normalize_message,
 )
+from test_live_episode_plan_contract import sample_plan
 
 
 def test_director_opening_decision_builds_short_kickoff_prompt():
@@ -50,6 +51,59 @@ def test_director_opening_decision_builds_short_kickoff_prompt():
     assert "測試導播開場與觀眾互動" in decision["prompt"]
     assert "queue" not in decision["prompt"]
     assert "prompt" not in decision["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_director_turn_includes_episode_plan_context(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        captured = {}
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "續話完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        result = await manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            manager._episode_planned_turn_decision(
+                session,
+                storage.get_director_state("live-a"),
+            ),
+        )
+
+        assert result["interaction"]["status"] == "completed"
+        context = captured["external_context"]["context_text"]
+        assert "<live_episode_director_context>" in context
+        assert "turn_contract: seg_01_turn_01" in context
+        assert "output_requirements:" in context
+        assert captured["external_context"]["live_episode_plan"]["plan_id"] == "plan-general-panel"
+        assert captured["external_context"]["summary"]["episode_plan_turn_id"] == "seg_01_turn_01"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
