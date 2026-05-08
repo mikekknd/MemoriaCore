@@ -10,6 +10,7 @@ from api.routers.chat.pipeline import _run_memory_pipeline_bg
 from core.chat_orchestrator.group_followup import build_group_followup_instruction
 from core.chat_orchestrator.group_router import run_group_router
 from core.chat_orchestrator.dataclasses import SharedExpandState, SharedToolState
+from core.chat_orchestrator.live_persona import apply_live_persona_to_participants
 
 
 MAX_GROUP_TURNS_HARD_LIMIT = 12
@@ -46,6 +47,18 @@ async def run_group_chat_loop(
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
+    if extra_session_ctx:
+        base_ctx = {
+            "user_id": session.user_id,
+            "channel": session.channel,
+            "persona_face": session.persona_face,
+            "session_id": session.session_id,
+            "active_character_ids": list(session.active_character_ids or [session.character_id]),
+            "session_mode": session.session_mode,
+            "group_name": session.group_name,
+        }
+        base_ctx.update(extra_session_ctx)
+        participants = apply_live_persona_to_participants(participants, base_ctx)
     if not participants:
         return []
 
@@ -76,6 +89,7 @@ async def run_group_chat_loop(
     # 同一輪 user 輸入的檢索意圖固定，query expansion 只需呼叫一次。
     shared_expand_state = SharedExpandState()
     discussion_mode = _discussion_mode_for_external_context(extra_session_ctx)
+    live_hosting = _live_hosting_for_external_context(extra_session_ctx)
 
     for turn_index in range(max_turns):
         route = await asyncio.to_thread(
@@ -90,6 +104,7 @@ async def run_group_chat_loop(
             max_bot_turns=max_turns,
             allow_single_participant_repeat=bool(user_prefs.get("group_chat_allow_single_character_repeat", True)),
             discussion_mode=discussion_mode,
+            live_hosting=live_hosting,
         )
         if not route.should_respond or not route.target_character_id:
             if turn_index == 0:
@@ -267,6 +282,17 @@ def _discussion_mode_for_external_context(extra_session_ctx: dict | None) -> str
     if source in {"youtube_live", "youtube_live_director"}:
         return "youtube_live"
     return "default"
+
+
+def _live_hosting_for_external_context(extra_session_ctx: dict | None) -> dict | None:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return None
+    source = str(external_context.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return None
+    hosting = external_context.get("live_hosting")
+    return hosting if isinstance(hosting, dict) and hosting else None
 
 
 def _character_by_id(characters: list[dict], character_id: str) -> dict | None:

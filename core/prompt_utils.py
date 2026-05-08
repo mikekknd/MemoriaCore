@@ -121,6 +121,14 @@ def build_user_prefix(
     return env_block + user_identity_block + ("\n" + external_chat_context_block if external_chat_context_block else "") + emo_block + "\n\n"
 
 
+def build_retrieved_memory_context_user_block(mem_ctx: str) -> str:
+    """把本輪召回記憶放進 user message，避免每輪變動破壞 system prompt cache。"""
+    content = str(mem_ctx or "").strip()
+    if not content:
+        return ""
+    return f"<retrieved_memory_context>\n{content}\n</retrieved_memory_context>\n\n"
+
+
 def format_latest_user_message_for_llm(content: str, session_ctx: dict | None = None) -> str:
     """群組模式中明確標示最後一則訊息來自真人使用者。
 

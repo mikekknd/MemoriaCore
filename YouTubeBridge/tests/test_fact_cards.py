@@ -537,6 +537,14 @@ def test_import_fact_cards_folder_builds_topic_graph_from_overview_and_deep_dive
         assert any(node["node_type"] == "topic" and "Re:從零" in node["title"] for node in nodes)
         assert any(node["node_type"] == "detail" and "巨鱗龍迷宮" in node["title"] for node in nodes)
         assert any(node["node_type"] == "entity" and "魔法帽" in node["title"] for node in nodes)
+        category_node = next(node for node in nodes if node["node_type"] == "category")
+        document_nodes = [node for node in nodes if node["node_type"] == "document"]
+        source_file_targets = {
+            edge["target_node_id"]
+            for edge in edges
+            if edge["edge_type"] == "source_file" and edge["source_node_id"] == category_node["id"]
+        }
+        assert source_file_targets >= {node["id"] for node in document_nodes}
         entries = storage.list_topic_pack_entries(result["pack_id"], limit=20)
         magic_entry = next(entry for entry in entries if "魔法帽" in entry["title"])
         detail_entry = next(entry for entry in entries if "巨鱗龍迷宮" in entry["title"])
@@ -550,6 +558,13 @@ def test_import_fact_cards_folder_builds_topic_graph_from_overview_and_deep_dive
         ]
         assert detail_edges
         assert any("魔法帽" in node_by_id[edge["target_node_id"]]["title"] for edge in detail_edges)
+        assert any(
+            edge["edge_type"] == "source_of"
+            and node_by_id[edge["source_node_id"]]["node_type"] == "document"
+            and "magic-hat" in node_by_id[edge["source_node_id"]]["source_name"]
+            and "魔法帽" in node_by_id[edge["target_node_id"]]["title"]
+            for edge in edges
+        )
 
         assert any(
             edge["edge_type"] == "mentions"

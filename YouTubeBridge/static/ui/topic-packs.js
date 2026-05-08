@@ -23,12 +23,12 @@ export {
   addTopicEntry,
   updateTopicEntry,
   deleteTopicEntry,
-} from "./topic-pack-crud.js";
+} from "./topic-pack-crud.js?v=topic-graph-sources-v2";
 export {
   setFactCardImportBusy,
   importFactCardsFolder,
   rebuildTopicEmbeddings,
-} from "./fact-card-import.js";
+} from "./fact-card-import.js?v=topic-graph-sources-v2";
 export {
   setTopicGraphBusy,
   setTopicGraphLoadedState,
@@ -43,7 +43,7 @@ export {
   rebuildTopicGraph,
   refreshTopicGraphTrace,
   scheduleTopicGraphTraceRefresh,
-} from "./topic-graph.js";
+} from "./topic-graph.js?v=topic-graph-sources-v2";
 
 export function setTopicActionVisible(id, visible) {
   const element = $(id);

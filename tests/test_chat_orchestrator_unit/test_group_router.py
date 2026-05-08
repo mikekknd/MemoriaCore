@@ -373,6 +373,42 @@ def test_youtube_live_discussion_mode_discourages_early_stop_after_all_spoke():
     assert "不要因為所有角色都已各說一次就停止" in prompt_text
 
 
+def test_youtube_live_router_prompt_includes_hosting_rules():
+    router = _Router({
+        "conversation_intent": "continue_group_discussion",
+        "action": "repeat_speaker_reply_to_ai",
+        "target_character_id": "char-a",
+        "reason": "接續主持節奏",
+    })
+
+    run_group_router(
+        [
+            {"role": "user", "content": "請自然延續直播。"},
+            {"role": "assistant", "content": "A 先聊事件 Hook。", "character_id": "char-a", "character_name": "角色A"},
+            {"role": "assistant", "content": "B 補充觀眾驚訝點。", "character_id": "char-b", "character_name": "角色B"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-b",
+        honor_mentions=False,
+        bot_turn_index=2,
+        max_bot_turns=6,
+        discussion_mode="youtube_live",
+        live_hosting={
+            "host_interaction_rules": "可可提出觀眾視角；白蓮負責分析收束。",
+            "program_segment_plan": "事件 Hook\n核心分析\n反方觀點",
+            "program_segment_turns": 3,
+            "current_segment": {"index": 1, "name": "核心分析"},
+        },
+    )
+
+    prompt_messages = router.args[1]
+    prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
+    assert "<youtube_live_hosting_router_rules>" in prompt_text
+    assert "可可提出觀眾視角" in prompt_text
+    assert "目前節目段落：核心分析" in prompt_text
+
+
 def test_default_discussion_mode_keeps_normal_stop_policy():
     router = _Router({
         "conversation_intent": "continue_group_discussion",

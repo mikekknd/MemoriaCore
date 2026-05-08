@@ -95,6 +95,8 @@ def build_topic_graph_payload(documents: list[dict[str, Any]]) -> dict[str, list
     entity_node_by_name: dict[str, str] = {}
     topic_node_by_entity: dict[str, str] = {}
     fact_nodes: list[dict[str, Any]] = []
+    category_keys: list[str] = []
+    document_nodes: list[dict[str, str]] = []
 
     def add_node(payload: dict[str, Any]) -> str:
         node_key = str(payload.get("node_key") or "").strip()
@@ -167,11 +169,18 @@ def build_topic_graph_payload(documents: list[dict[str, Any]]) -> dict[str, list
                 "metadata": {"source_name": source_name},
             })
             add_edge(document_key, category_key, "contains", evidence=f"{source_name} summary category")
+            category_keys.append(category_key)
 
         document_entities = extract_entities(f"{doc_title}\n{doc_summary}")
         document_primary_entity = document_entities[0] if document_entities else ""
         for entity in document_entities:
             ensure_entity(entity, source_name=source_name)
+        document_nodes.append({
+            "node_key": document_key,
+            "source_name": source_name,
+            "role": "detail" if detail_document else "entry",
+            "primary_entity": document_primary_entity,
+        })
 
         for fact in document.get("facts") or []:
             title = str(fact.get("title") or "").strip()
@@ -222,6 +231,29 @@ def build_topic_graph_payload(documents: list[dict[str, Any]]) -> dict[str, list
                 "primary_entity": primary_entity,
                 "entities": fact_entities,
             })
+
+    for category_key in category_keys:
+        for document in document_nodes:
+            add_edge(
+                category_key,
+                document["node_key"],
+                "source_file",
+                weight=0.35,
+                evidence=f"{document['source_name']} belongs to topic graph source set",
+            )
+
+    for document in document_nodes:
+        if document["role"] != "detail" or not document["primary_entity"]:
+            continue
+        target_key = topic_node_by_entity.get(document["primary_entity"], "")
+        if target_key:
+            add_edge(
+                document["node_key"],
+                target_key,
+                "source_of",
+                weight=0.55,
+                evidence=f"{document['source_name']} source file expands {document['primary_entity']}",
+            )
 
     for fact in fact_nodes:
         source_key = fact["node_key"]

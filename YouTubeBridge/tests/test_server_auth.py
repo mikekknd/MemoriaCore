@@ -33,18 +33,39 @@ def _control_ui_source() -> str:
     if ui_root.exists():
         for name in (
             "index.css",
+            "base.css",
+            "live-session.css",
+            "topic-pack.css",
+            "topic-graph.css",
+            "overlays.css",
             "core.js",
             "selectors.js",
             "topic-packs.js",
             "topic-graph.js",
             "topic-pack-crud.js",
             "fact-card-import.js",
+            "memoria-control.js",
+            "live-persona-control.js",
+            "events-control.js",
+            "summary-director-control.js",
+            "session-control.js",
             "control.js",
             "app.js",
         ):
             path = ui_root / name
             if path.exists():
                 parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+def _live_chat_source() -> str:
+    static_root = Path(server_module.STATIC_ROOT)
+    ui_root = static_root / "ui"
+    parts = [(static_root / "live_chat.html").read_text(encoding="utf-8")]
+    for name in ("live-chat.css", "live-chat.js"):
+        path = ui_root / name
+        if path.exists():
+            parts.append(path.read_text(encoding="utf-8"))
     return "\n".join(parts)
 
 
@@ -189,7 +210,7 @@ def test_live_page_propagates_requested_session_id_to_live_chat_frame():
 
 
 def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
-    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+    live_chat_html = _live_chat_source()
 
     assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
     assert '"chat_message"' in live_chat_html
@@ -209,7 +230,7 @@ def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
 
 
 def test_live_chat_polls_memoria_history_while_sse_is_connected():
-    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+    live_chat_html = _live_chat_source()
 
     assert "historyRefreshTimer" in live_chat_html
     assert "function startHistoryRefresh()" in live_chat_html
@@ -219,7 +240,7 @@ def test_live_chat_polls_memoria_history_while_sse_is_connected():
 
 
 def test_live_chat_assigns_stable_assistant_bubble_colors():
-    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+    live_chat_html = _live_chat_source()
 
     assert "ASSISTANT_COLOR_CLASSES" in live_chat_html
     assert "characterColorMap" in live_chat_html
@@ -233,7 +254,7 @@ def test_live_chat_assigns_stable_assistant_bubble_colors():
 
 
 def test_live_chat_shows_elapsed_and_target_duration():
-    live_chat_html = (Path(server_module.STATIC_ROOT) / "live_chat.html").read_text(encoding="utf-8")
+    live_chat_html = _live_chat_source()
 
     assert 'id="durationBadge"' in live_chat_html
     assert "durationRefreshTimer" in live_chat_html
@@ -256,8 +277,8 @@ def test_control_ui_honors_requested_session_id_on_initial_load():
 def test_control_ui_loads_external_css_and_module_script():
     index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
 
-    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=topic-graph-primary-focus-v1">' in index_html
-    assert '<script type="module" src="/ui-assets/app.js?v=topic-graph-primary-focus-v1"></script>' in index_html
+    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=topic-graph-sources-v2">' in index_html
+    assert '<script type="module" src="/ui-assets/app.js?v=topic-graph-sources-v2"></script>' in index_html
     assert "<style>" not in index_html
     assert "<script>\n" not in index_html
 
@@ -438,6 +459,22 @@ def test_control_ui_limits_character_selection_and_blocks_start_without_characte
     assert "最多只能選擇" in index_html
 
 
+def test_control_ui_exposes_live_persona_overlay_editor():
+    source = _control_ui_source()
+
+    assert "直播角色設定" in source
+    assert "只覆寫 YouTubeBridge 直播時送給角色的 prompt" in source
+    assert 'id="livePersonaCharacterSelect"' in source
+    assert 'id="livePersonaSystemPrompt"' in source
+    assert 'id="livePersonaOpeningIntro"' in source
+    assert 'id="livePersonaAddressingRows"' in source
+    assert 'id="addLivePersonaAddressingRow"' in source
+    assert "live-persona-addressing-row" in source
+    assert 'id="livePersonaAddressing"' not in source
+    assert 'id="saveLivePersonaOverlay"' in source
+    assert "/persona-overlays" in source
+
+
 def test_events_pane_is_grouped_as_test_comment_tool():
     index_html = _control_ui_source()
 
@@ -478,7 +515,7 @@ def test_events_pane_is_grouped_as_test_comment_tool():
 def test_control_ui_checkbox_inputs_keep_native_compact_size():
     index_html = _control_ui_source()
 
-    assert 'href="/ui-assets/index.css?v=topic-graph-primary-focus-v1"' in index_html
+    assert 'href="/ui-assets/index.css?v=topic-graph-sources-v2"' in index_html
     assert '\ninput[type="checkbox"] {' in index_html
     checkbox_block = index_html[
         index_html.index('\ninput[type="checkbox"] {'):
@@ -617,6 +654,7 @@ def test_control_ui_exposes_topic_graph_debug_panel():
     assert "topicGraphViewport:" in index_html
     assert "topicGraphNodePositions:" in index_html
     assert "topicGraphModalOpen: false" in index_html
+    assert "topicGraphShowSourceNodes: false" in index_html
     assert "topicGraphTraceAutoFollow: true" in index_html
     assert "topicGraphTraceRefreshTimer: null" in index_html
     assert "let topicGraphDrag = null;" in index_html
@@ -628,9 +666,16 @@ def test_control_ui_exposes_topic_graph_debug_panel():
     assert "function topicGraphNodeClass(node, selected, relatedNodeIds, focusNodeIds, traceNodeIds, primaryTraceNodeId)" in index_html
     assert "function topicGraphEdgeClass(edge, traceNodeIds, selected, relatedNodeIds, focusNodeIds)" in index_html
     assert "function topicGraphAutoFocusNodeIds(trace, edges)" in index_html
+    assert "function topicGraphVisibleGraph" in index_html
+    assert "function toggleTopicGraphSourceNodes" in index_html
+    assert "function topicGraphSyntheticSourceEdges" in index_html
+    assert "function topicGraphPrimaryEntity" in index_html
+    assert "const TOPIC_GRAPH_SOURCE_NODE_TYPES" in index_html
     assert "function shouldRenderTopicGraphLabel" in index_html
     assert "const denseGraph = nodes.length > 36;" in index_html
-    assert "entity: 52" in index_html
+    assert "topic: 64" in index_html
+    assert "entity: 48" in index_html
+    assert "function topicGraphNodeTypeLabel" in index_html
     assert "const maxVisibleLabels = selected ? Math.max(18, relatedNodeIds.size) : (focusNodeIds.size ? Math.max(18, focusNodeIds.size) : (denseGraph ? 46 : 64));" in index_html
     assert "function clampTopicGraphScale" in index_html
     assert "function zoomTopicGraph" in index_html
@@ -640,8 +685,9 @@ def test_control_ui_exposes_topic_graph_debug_panel():
     assert "function closeTopicGraphModal" in index_html
     assert "function bindTopicGraphViewportControls" in index_html
     assert "function renderTopicGraphToSvg(svg)" in index_html
-    assert "const focusNodeIds = selected ? relatedNodeIds : topicGraphAutoFocusNodeIds(state.topicGraphLatestTrace, edges);" in index_html
-    assert "const primaryTraceNodeId = topicGraphPrimaryTraceNodeId(state.topicGraphLatestTrace);" in index_html
+    assert "const latestTrace = currentTopicGraphLatestTrace();" in index_html
+    assert "const focusNodeIds = selected ? relatedNodeIds : topicGraphAutoFocusNodeIds(latestTrace, edges);" in index_html
+    assert "const primaryTraceNodeId = topicGraphPrimaryTraceNodeId(latestTrace);" in index_html
     assert 'const activeTrace = Number(node.id) === primaryTraceNodeId;' in index_html
     assert 'class="topic-graph-trace-pulse"' in index_html
     assert 'const graphBusy = !!state.topicGraphBusy;' in index_html
@@ -691,11 +737,18 @@ def test_control_ui_exposes_topic_graph_debug_panel():
     assert "目前召回焦點" in index_html
     assert "補充召回" in index_html
     assert "自動跟隨" in index_html
+    assert "來源節點只用來追溯 Markdown 檔案" in index_html
+    assert "綠色 entity 節點" in index_html
+    assert "function topicGraphTraceMatchesPack" in index_html
+    assert "const packTraces = (traces.traces || []).filter((trace) => topicGraphTraceMatchesPack(trace, packId));" in index_html
+    assert 'data-topic-graph-jump="${escapeHtml(node.id)}"' in index_html
+    assert "function centerTopicGraphOnNode" in index_html
     assert 'if (selected && !relatedNodeIds.has(Number(candidate.node.id))) return;' in index_html
     assert 'force: topicGraphLabelCandidateForce(node, selected, relatedNodeIds, traceNodeIds, focusNodeIds)' in index_html
     assert 'if (!topicGraphLabelCandidateVisible(candidate, selected, visibleLabels.size, maxVisibleLabels)) return;' in index_html
     assert 'denseGraph && ["entity", "reference"].includes(candidate.node.node_type)' not in index_html
-    assert '["topicGraphSelectedNode", "topicGraphModalDetails"]' in index_html
+    assert 'const mainElement = $("topicGraphSelectedNode");' in index_html
+    assert 'const modalElement = $("topicGraphModalDetails");' in index_html
     assert 'class="topic-graph-viewport"' in index_html
     assert "pointer-events: auto;" in index_html
     assert ".topic-graph-node.is-active-trace circle" in index_html

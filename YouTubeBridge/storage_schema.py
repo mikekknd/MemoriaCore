@@ -51,6 +51,9 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             auto_finalize_on_duration INTEGER NOT NULL DEFAULT 1,
             auto_delete_after_processed INTEGER NOT NULL DEFAULT 1,
             director_guidance TEXT DEFAULT '',
+            host_interaction_rules TEXT DEFAULT '',
+            program_segment_plan TEXT DEFAULT '',
+            program_segment_turns INTEGER NOT NULL DEFAULT 3,
             auto_test_events_enabled INTEGER NOT NULL DEFAULT 0,
             test_event_min_seconds INTEGER NOT NULL DEFAULT 20,
             test_event_max_seconds INTEGER NOT NULL DEFAULT 45,
@@ -185,6 +188,19 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(session_id, pack_id)
         );
 
+        CREATE TABLE IF NOT EXISTS live_persona_overlays (
+            character_id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            mode TEXT NOT NULL DEFAULT 'replace',
+            system_prompt TEXT DEFAULT '',
+            self_address TEXT DEFAULT '',
+            addressing_json TEXT DEFAULT '{}',
+            opening_intro TEXT DEFAULT '',
+            reply_rules TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS topic_graph_nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pack_id INTEGER NOT NULL,
@@ -303,10 +319,13 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             ON topic_graph_retrieval_traces(session_id, id);
         CREATE INDEX IF NOT EXISTS idx_research_requests_session
             ON research_requests(session_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_live_persona_overlays_enabled
+            ON live_persona_overlays(enabled, updated_at);
         """
     )
     ensure_live_session_columns(conn)
     ensure_live_event_columns(conn)
+    ensure_live_persona_overlay_columns(conn)
     conn.commit()
 
 
@@ -324,6 +343,9 @@ def ensure_live_session_columns(conn: sqlite3.Connection) -> None:
         "auto_finalize_on_duration": "auto_finalize_on_duration INTEGER NOT NULL DEFAULT 1",
         "auto_delete_after_processed": "auto_delete_after_processed INTEGER NOT NULL DEFAULT 1",
         "director_guidance": "director_guidance TEXT DEFAULT ''",
+        "host_interaction_rules": "host_interaction_rules TEXT DEFAULT ''",
+        "program_segment_plan": "program_segment_plan TEXT DEFAULT ''",
+        "program_segment_turns": "program_segment_turns INTEGER NOT NULL DEFAULT 3",
         "auto_test_events_enabled": "auto_test_events_enabled INTEGER NOT NULL DEFAULT 0",
         "test_event_min_seconds": "test_event_min_seconds INTEGER NOT NULL DEFAULT 20",
         "test_event_max_seconds": "test_event_max_seconds INTEGER NOT NULL DEFAULT 45",
@@ -373,3 +395,21 @@ def ensure_live_event_columns(conn: sqlite3.Connection) -> None:
     for name, ddl in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE live_events ADD COLUMN {ddl}")
+
+
+def ensure_live_persona_overlay_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(live_persona_overlays)").fetchall()}
+    columns = {
+        "enabled": "enabled INTEGER NOT NULL DEFAULT 0",
+        "mode": "mode TEXT NOT NULL DEFAULT 'replace'",
+        "system_prompt": "system_prompt TEXT DEFAULT ''",
+        "self_address": "self_address TEXT DEFAULT ''",
+        "addressing_json": "addressing_json TEXT DEFAULT '{}'",
+        "opening_intro": "opening_intro TEXT DEFAULT ''",
+        "reply_rules": "reply_rules TEXT DEFAULT ''",
+        "created_at": "created_at TEXT DEFAULT ''",
+        "updated_at": "updated_at TEXT DEFAULT ''",
+    }
+    for name, ddl in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE live_persona_overlays ADD COLUMN {ddl}")

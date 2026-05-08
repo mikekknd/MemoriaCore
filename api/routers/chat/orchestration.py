@@ -32,6 +32,7 @@ from core.chat_orchestrator.group_context import (
     build_llm_log_context,
 )
 from core.chat_orchestrator.group_followup import inject_group_followup_instruction
+from core.chat_orchestrator.live_persona import resolve_live_persona_prompt
 from core.chat_orchestrator.persona_agent import _sanitize_group_reply
 from core.opening_penalty import get_opening_penalty_manager
 from api.routers.chat.timer import StepTimer
@@ -182,6 +183,12 @@ def _run_chat_orchestration(
     tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
     char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or DEFAULT_SYSTEM_PROMPT
+    char_sys_prompt, reply_rules = resolve_live_persona_prompt(
+        character_id=character_id,
+        base_prompt=char_sys_prompt,
+        base_reply_rules=reply_rules,
+        session_ctx=ctx,
+    )
     group_participants_block = build_group_participants_block(ctx, char_mgr, character_id)
     log_context = build_llm_log_context(ctx, char_mgr, character_id)
     opening_penalty_mgr = get_opening_penalty_manager()
@@ -333,6 +340,7 @@ def _run_chat_orchestration(
                 session_messages=session_messages,
                 user_prefs=user_prefs,
                 session_ctx=session_ctx,
+                memory_context=mem_ctx,
             )
 
             if opening_penalty_plan.prompt_block:

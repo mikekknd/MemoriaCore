@@ -71,6 +71,9 @@ class InjectionManagerMixin:
             session = self.storage.get_session(runtime.session_id)
             if not session:
                 return
+            if runtime.status == "closing" or session.get("status") == "closing":
+                await asyncio.sleep(1.0)
+                continue
             if self._duration_reached(session):
                 await self._finalize_for_duration(runtime, session)
                 return

@@ -63,7 +63,10 @@ def test_build_external_context_uses_compact_llm_lines():
         })
         _mark_event_clean(storage, event)
 
-        payload, summary = YouTubeBridgeManager(storage).build_external_context("live-a")
+        payload, summary = YouTubeBridgeManager(
+            storage,
+            memoria_client_factory=FakeEmbeddingMemoriaClient,
+        ).build_external_context("live-a")
 
         assert summary["event_count"] == 1
         assert payload["context_text"] == "- @yodawnla: 被看到大型debug現場"

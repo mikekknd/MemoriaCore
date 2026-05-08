@@ -391,6 +391,21 @@ class TopicPackManagerMixin:
         )
         return self._topic_pack_context_text(entries)
 
+    def _topic_pack_sequence_preview_context_for_session(
+        self,
+        session_id: str,
+        *,
+        max_entries: int = 4,
+    ) -> str:
+        """預覽目前序列話題，不寫 usage，供 opening 同一 request 的後續接話使用。"""
+        entries = self._topic_pack_sequence_entries_for_session(session_id)
+        if not entries:
+            return ""
+        selected, _trace = self._expand_topic_graph_entries(entries, max_entries=max_entries)
+        if not selected:
+            selected = entries[:max(1, min(max_entries, len(entries)))]
+        return self._topic_pack_context_text(selected)
+
     def _topic_pack_sequence_entries_for_session(
         self,
         session_id: str,

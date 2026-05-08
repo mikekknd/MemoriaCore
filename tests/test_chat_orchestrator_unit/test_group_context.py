@@ -6,7 +6,7 @@ import core.chat_orchestrator.group_context as group_context
 class _PromptManager:
     def get(self, key: str) -> str:
         assert key == "group_participants_block"
-        return "{group_context_line}\n目前扮演={current_character_name}; id={current_character_id}; raw_group={group_name}\n{participants_text}"
+        return "{group_context_line}\n目前扮演={current_character_name}{self_address_clause}; id={current_character_id}; raw_group={group_name}\n{participants_text}"
 
 
 class _CharacterManager:
@@ -92,6 +92,8 @@ def test_default_group_participants_template_keeps_only_outer_xml():
     assert "current_character:" in template
     assert "rules:" in template
     assert "participants:" in template
+    assert "{self_address_clause}" in template
+    assert "group_name:" not in template
     assert "<context>" not in template
     assert "<current_character>" not in template
     assert "<group_output_rules>" not in template

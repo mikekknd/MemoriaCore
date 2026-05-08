@@ -33,6 +33,7 @@ from core.chat_orchestrator.group_context import (
     build_llm_log_context,
 )
 from core.chat_orchestrator.group_followup import inject_group_followup_instruction
+from core.chat_orchestrator.live_persona import resolve_live_persona_prompt
 from core.opening_penalty import get_opening_penalty_manager
 
 
@@ -141,6 +142,12 @@ def run_dual_layer_orchestration(
     tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
     char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or DEFAULT_SYSTEM_PROMPT
+    char_sys_prompt, reply_rules = resolve_live_persona_prompt(
+        character_id=character_id,
+        base_prompt=char_sys_prompt,
+        base_reply_rules=reply_rules,
+        session_ctx=_ctx,
+    )
     char_name = active_char.get("name", "助理")
     group_participants_block = build_group_participants_block(_ctx, char_mgr, character_id)
     log_context = build_llm_log_context(_ctx, char_mgr, character_id)
@@ -273,6 +280,7 @@ def run_dual_layer_orchestration(
             "pipeline_data": pipeline_data,
             "api_messages": api_messages,
             "retrieval_ctx": retrieval_ctx,
+            "memory_context_prompt": mem_ctx,
             "chat_schema": chat_schema,
             "timer_steps": t._steps,
         }
@@ -386,6 +394,7 @@ def run_dual_layer_orchestration(
     pipeline_data = mem_result["pipeline_data"]
     api_messages = mem_result["api_messages"]
     retrieval_ctx = mem_result["retrieval_ctx"]
+    memory_context_prompt = mem_result.get("memory_context_prompt", "")
     chat_schema = mem_result["chat_schema"]
     tool_context = tool_result["tool_context"]
     thinking_speech = tool_result["thinking_speech"]
@@ -400,6 +409,7 @@ def run_dual_layer_orchestration(
         session_messages=session_messages,
         user_prefs=user_prefs,
         session_ctx=session_ctx,
+        memory_context=memory_context_prompt,
     )
 
     # ════════════════════════════════════════════════════════════

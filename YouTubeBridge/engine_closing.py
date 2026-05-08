@@ -12,6 +12,10 @@ from bridge_runtime import LiveRuntime
 
 logger = logging.getLogger("youtube_bridge")
 
+DURATION_CLOSING_ACTIVE_WAIT_TIMEOUT_SECONDS = 180.0
+DURATION_CLOSING_ACTIVE_WAIT_POLL_SECONDS = 1.0
+DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS = 1.0
+
 
 class ClosingManagerMixin:
     def _list_unhandled_super_chats_for_closing(
@@ -53,23 +57,53 @@ class ClosingManagerMixin:
         return lines
 
     async def _finalize_for_duration(self, runtime: LiveRuntime, session: dict[str, Any]) -> None:
-        if not runtime.running or runtime.status in {"closing", "ended"}:
-            return
-        finalized = await self._finalize_live_session(
-            runtime,
-            session,
-            finalized_by="duration_finalize",
-            closing_message="planned duration reached; closing live session",
-            ended_message="planned duration reached",
-        )
-        try:
-            await self._run_auto_finalize_archive_callback(
+        async with runtime.closing_lock:
+            session = self.storage.get_session(runtime.session_id) or session
+            if not runtime.running or runtime.status in {"closing", "ended"} or session.get("status") == "ended":
+                return
+            started_at = datetime.now().isoformat()
+            runtime.status = "closing"
+            self.storage.update_session_fields(
                 runtime.session_id,
-                finalized_by="duration_finalize",
-                finalized=finalized,
+                status="closing",
+                auto_inject=False,
+                auto_test_events_enabled=False,
             )
-        except Exception as exc:
-            logger.warning("auto finalize archive failed session_id=%s error=%s", runtime.session_id, exc)
+            director_state = self.storage.update_director_state(
+                runtime.session_id,
+                status="duration_closing",
+                metadata={
+                    "duration_closing_started_at": started_at,
+                    "duration_closing_reason": "planned_duration_reached",
+                },
+            )
+            await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
+            await self._broadcast(
+                runtime.session_id,
+                {
+                    "type": "status",
+                    "status": "closing",
+                    "message": "planned duration reached; starting graceful live closing",
+                },
+            )
+            await self._wait_for_active_interaction_before_duration_closing(runtime)
+            duration_closing_result = await self._run_duration_closing_turn(runtime, session)
+            finalized = await self._finalize_live_session(
+                runtime,
+                self.storage.get_session(runtime.session_id) or session,
+                finalized_by="duration_finalize",
+                closing_message="planned duration reached; closing live session",
+                ended_message="planned duration reached",
+                metadata={"duration_closing": duration_closing_result},
+            )
+            try:
+                await self._run_auto_finalize_archive_callback(
+                    runtime.session_id,
+                    finalized_by="duration_finalize",
+                    finalized=finalized,
+                )
+            except Exception as exc:
+                logger.warning("auto finalize archive failed session_id=%s error=%s", runtime.session_id, exc)
 
     async def finalize_session(self, session_id: str) -> dict[str, Any]:
         session = self.storage.get_session(session_id)
@@ -99,6 +133,7 @@ class ClosingManagerMixin:
         finalized_by: str,
         closing_message: str,
         ended_message: str,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if runtime.status == "ended" and session.get("status") == "ended":
             director_metadata = self.storage.get_director_state(runtime.session_id).get("metadata") or {}
@@ -150,6 +185,11 @@ class ClosingManagerMixin:
                 except Exception as exc:
                     logger.warning("closing super chat thanks failed session_id=%s error=%s", runtime.session_id, exc)
                     closing_result = {"status": "failed", "error": str(exc)[:500]}
+        final_closing_result = await self._run_final_closing_turn(
+            runtime,
+            self.storage.get_session(runtime.session_id) or session,
+            closing_super_chat_thanks=closing_result,
+        )
         finalized_at = datetime.now().isoformat()
         runtime.status = "ended"
         self.storage.finalize_incomplete_interactions(
@@ -171,8 +211,10 @@ class ClosingManagerMixin:
             status="ended",
             consecutive_ai_turns=0,
             metadata={
+                **(metadata or {}),
                 "finalized_by": finalized_by,
                 "closing_super_chat_thanks": closing_result,
+                "final_closing": final_closing_result,
                 "closing_safety_resolution": safety_closing_result,
             },
         )
@@ -194,6 +236,114 @@ class ClosingManagerMixin:
             "closing_super_chat_thanks": closing_result,
             "closing_safety_resolution": safety_closing_result,
         }
+
+    async def _wait_for_active_interaction_before_duration_closing(self, runtime: LiveRuntime) -> None:
+        last_job_id = ""
+        wait_started_at = datetime.now()
+        deadline = wait_started_at + timedelta(seconds=max(0.0, float(DURATION_CLOSING_ACTIVE_WAIT_TIMEOUT_SECONDS)))
+        while runtime.running and runtime.status == "closing":
+            active = self.storage.get_active_interaction(runtime.session_id)
+            if not active:
+                return
+            now = datetime.now()
+            job_id = str(active.get("job_id") or "")
+            if now >= deadline:
+                director_state = self.storage.update_director_state(
+                    runtime.session_id,
+                    status="duration_closing_active_wait_timeout",
+                    metadata={
+                        "duration_closing_active_wait_timeout": True,
+                        "duration_closing_active_wait_started_at": wait_started_at.isoformat(),
+                        "duration_closing_active_wait_timed_out_at": now.isoformat(),
+                        "duration_closing_active_wait_job_id": job_id,
+                    },
+                )
+                await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
+                await self._interrupt_active_generation_for_closing(
+                    runtime,
+                    timeout_seconds=DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS,
+                )
+                return
+            if job_id != last_job_id:
+                last_job_id = job_id
+                director_state = self.storage.update_director_state(
+                    runtime.session_id,
+                    status="duration_closing_waiting_active",
+                    metadata={
+                        "duration_closing_waiting_job_id": job_id,
+                        "duration_closing_waiting_since": datetime.now().isoformat(),
+                        "duration_closing_waiting_deadline": deadline.isoformat(),
+                    },
+                )
+                await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
+            await asyncio.sleep(max(0.01, float(DURATION_CLOSING_ACTIVE_WAIT_POLL_SECONDS)))
+
+    async def _run_duration_closing_turn(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not session.get("target_memoria_session_id") or not session.get("character_ids"):
+            return {"status": "skipped", "reason": "missing_memoria_session_or_characters"}
+        state = self.storage.get_director_state(runtime.session_id)
+        topic = (
+            str(state.get("current_topic") or "").strip()
+            or str(session.get("director_guidance") or "").strip()
+            or str(session.get("display_name") or "本場直播").strip()
+        )
+        decision = {
+            "action": "duration_closing",
+            "reason": "預定直播時間已到，先讓角色自然收束整場直播，再進入最終結束流程。",
+            "prompt": "",
+            "current_topic": topic[:200],
+        }
+        try:
+            result = await self._send_director_turn(session, state, decision)
+            return {
+                "status": str(result.get("interaction", {}).get("status") or "completed"),
+                "interaction": result.get("interaction"),
+            }
+        except Exception as exc:
+            logger.warning("duration closing turn failed session_id=%s error=%s", runtime.session_id, exc, exc_info=True)
+            return {"status": "failed", "error": str(exc)[:500]}
+
+    async def _run_final_closing_turn(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        closing_super_chat_thanks: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not session.get("target_memoria_session_id") or not session.get("character_ids"):
+            return {"status": "skipped", "reason": "missing_memoria_session_or_characters"}
+        state = self.storage.get_director_state(runtime.session_id)
+        topic = (
+            str(state.get("current_topic") or "").strip()
+            or str(session.get("director_guidance") or "").strip()
+            or str(session.get("display_name") or "本場直播").strip()
+        )
+        sc_status = str((closing_super_chat_thanks or {}).get("status") or "")
+        sc_note = "本場已完成 Super Chat 感謝，請不要再逐一重唸 SC。" if sc_status == "completed" else "本場沒有需要公開感謝的未處理 Super Chat。"
+        decision = {
+            "action": "final_closing",
+            "reason": "直播收尾流程最後一步，做正式道別並結束直播。",
+            "prompt": (
+                f"請做本場最後完整收尾，主題是「{topic[:160]}」。"
+                f"{sc_note}"
+                "每位角色最多 1 句，總共 1 到 2 輪內完成。"
+                "不要開新話題，不要再次要求觀眾回覆，不要重複前面已說過的收尾比喻。"
+            ),
+            "current_topic": topic[:200],
+        }
+        try:
+            result = await self._send_director_turn(session, state, decision)
+            return {
+                "status": str(result.get("interaction", {}).get("status") or "completed"),
+                "interaction": result.get("interaction"),
+            }
+        except Exception as exc:
+            logger.warning("final closing turn failed session_id=%s error=%s", runtime.session_id, exc, exc_info=True)
+            return {"status": "failed", "error": str(exc)[:500]}
 
     async def _complete_closing_super_chat_thanks_fallback(
         self,
@@ -384,11 +534,12 @@ class ClosingManagerMixin:
                 {"type": "interaction_interrupted", "interaction": interaction},
             )
 
-        deadline = datetime.now() + timedelta(seconds=max(0.1, timeout_seconds))
+        poll_seconds = min(0.1, max(0.01, timeout_seconds))
+        deadline = datetime.now() + timedelta(seconds=max(0.01, timeout_seconds))
         while datetime.now() < deadline:
             if not self.storage.get_active_interaction(runtime.session_id):
                 return interrupted
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(poll_seconds)
 
         finalized = self.storage.finalize_incomplete_interactions(
             runtime.session_id,

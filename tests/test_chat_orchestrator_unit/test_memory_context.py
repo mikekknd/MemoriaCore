@@ -96,15 +96,68 @@ def test_proactive_topics_prompt_uses_flat_sections():
     assert "<topic" not in prompt
 
 
-def test_chat_system_suffix_response_process_rules_are_flat():
+def test_chat_system_suffix_merges_response_rules_into_required_output_format():
     from core.prompt_manager import get_prompt_manager
 
     template = get_prompt_manager().get_default("chat_system_suffix")
 
-    assert "<response_process_rules>" in template
-    assert "</response_process_rules>" in template
-    assert "internal_thought:" in template
-    assert "reply:" in template
+    assert "<retrieved_memory_context>" not in template
+    assert "<response_process_rules>" not in template
+    assert "</response_process_rules>" not in template
+    assert "<required_output_format>" in template
+    assert '"internal_thought":' in template
+    assert '"reply":' in template
     assert "{speech_instruction}" in template
+    assert '"internal_thought": "分析使用者的潛在意圖' in template
+    assert '"reply": "你的自然語言回覆（螢幕字幕文字），文字與語氣規則：{speech_instruction}"' in template
     assert "<internal_thought_rule>" not in template
     assert "</internal_thought_rule>" not in template
+
+
+def test_build_final_chat_context_moves_retrieved_memory_to_latest_user_message():
+    from core.chat_orchestrator.generation_context import build_final_chat_context
+
+    api_messages, _clean_history, sys_prompt = build_final_chat_context(
+        char_sys_prompt="角色 prompt",
+        group_participants_block="",
+        mem_ctx="core_memory:\n- insight: 使用者偏好先驗證。",
+        reply_rules="用繁體中文回應。",
+        session_messages=[{"role": "user", "content": "請整理重點。"}],
+        context_window=5,
+        user_prefs={},
+        session_ctx={},
+        force_group=False,
+    )
+
+    latest_user = api_messages[-1]["content"]
+    assert "<retrieved_memory_context>" not in sys_prompt
+    assert "使用者偏好先驗證" not in sys_prompt
+    assert latest_user.count("<retrieved_memory_context>") == 1
+    assert "core_memory:" in latest_user
+    assert "使用者偏好先驗證" in latest_user
+    assert latest_user.index("<retrieved_memory_context>") < latest_user.index("請整理重點。")
+
+
+def test_youtube_live_chat_system_suffix_omits_dynamic_rules_and_memory_block():
+    from core.chat_orchestrator.generation_context import build_final_chat_context
+
+    api_messages, _clean_history, sys_prompt = build_final_chat_context(
+        char_sys_prompt="直播角色 prompt",
+        group_participants_block="",
+        mem_ctx="core_memory:\n- insight: 直播記憶。",
+        reply_rules="用繁體中文回應。",
+        session_messages=[{"role": "user", "content": "請開場。"}],
+        context_window=5,
+        user_prefs={},
+        session_ctx={
+            "channel": "youtube_live",
+            "external_chat_context": {"source": "youtube_live_director"},
+        },
+        force_group=False,
+    )
+
+    assert "<system_dynamic_rules>" not in sys_prompt
+    assert "<retrieved_memory_context>" not in sys_prompt
+    assert "<response_process_rules>" not in sys_prompt
+    assert "<required_output_format>" in sys_prompt
+    assert "<retrieved_memory_context>" in api_messages[-1]["content"]

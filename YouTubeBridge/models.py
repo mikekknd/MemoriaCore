@@ -43,6 +43,9 @@ class LiveSessionConfig(BaseModel):
     auto_finalize_on_duration: bool = True
     auto_delete_after_processed: bool = True
     director_guidance: str = Field("", max_length=2000)
+    host_interaction_rules: str = Field("", max_length=4000)
+    program_segment_plan: str = Field("", max_length=4000)
+    program_segment_turns: int = Field(3, ge=1, le=12)
     auto_test_events_enabled: bool = False
     test_event_min_seconds: int = Field(20, ge=1, le=3600)
     test_event_max_seconds: int = Field(45, ge=1, le=3600)
@@ -180,3 +183,21 @@ class MemoriaAuthConfig(BaseModel):
     username: str = Field("", max_length=128)
     password: str = Field("", max_length=512)
     admin_bypass: bool = True
+
+
+class LivePersonaOverlayRequest(BaseModel):
+    enabled: bool = False
+    mode: str = Field("replace", max_length=20)
+    system_prompt: str = Field("", max_length=8000)
+    self_address: str = Field("", max_length=120)
+    addressing: dict[str, str] = Field(default_factory=dict)
+    opening_intro: str = Field("", max_length=1200)
+    reply_rules: str = Field("", max_length=2000)
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
+        value = str(value or "replace").strip()
+        if value not in {"replace", "append"}:
+            raise ValueError("mode 必須是 replace 或 append")
+        return value

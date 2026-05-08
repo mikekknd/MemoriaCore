@@ -248,6 +248,54 @@ class TestDualLayerCoordinator:
         assert "上一位發言者" not in messages[0]["content"]
         assert "早安呀" not in messages[0]["content"]
 
+    def test_group_followup_user_control_includes_retrieved_memory_context(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
+    ):
+        """群組接力追加的 user control 也要承載 retrieved_memory_context，system prompt 保持穩定。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        mock_memory_system.set_core_search_results([
+            {"insight": "使用者偏好先驗證再下結論。", "score": 0.91},
+        ])
+        mock_memory_system.set_search_results([
+            {
+                "block_id": "mem-followup",
+                "timestamp": "2026-05-07T08:00:00",
+                "overview": "使用者討論 prompt cache。",
+                "raw_dialogues": [{"role": "user", "content": "不要破壞 cache"}],
+            }
+        ])
+
+        run_dual_layer_orchestration(
+            session_messages=[
+                {"role": "user", "content": "兩位聊一下 prompt cache"},
+                {"role": "assistant", "content": "[可可|char-a]: system prompt 最好穩定。"},
+            ],
+            last_entities=[],
+            user_prompt="兩位聊一下 prompt cache",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "session_mode": "group",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "default",
+                "followup_instruction": {
+                    "user_prompt_original": "兩位聊一下 prompt cache",
+                    "last_character_name": "可可",
+                    "last_reply": "system prompt 最好穩定。",
+                },
+            },
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        system_prompt = chat_call["messages"][0]["content"]
+        followup_user = chat_call["messages"][-1]["content"]
+        assert "<retrieved_memory_context>" not in system_prompt
+        assert "使用者偏好先驗證" not in system_prompt
+        assert "<retrieved_memory_context>" in followup_user
+        assert "使用者偏好先驗證" in followup_user
+        assert "uid: mem-followup" in followup_user
+        assert '<group_followup_instruction source="system_control">' in followup_user
+
     def test_group_followup_turn_skips_tool_router(
         self, mock_deps, mock_router_with_tools, sample_user_prefs
     ):
@@ -281,10 +329,10 @@ class TestDualLayerCoordinator:
         ]
         assert router_calls == []
 
-    def test_dual_layer_retrieved_memory_context_is_flat(
+    def test_dual_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
     ):
-        """雙層最終 system prompt 的 retrieved_memory_context 內層不再使用深層 XML。"""
+        """雙層最終 prompt 將 retrieved_memory_context 放在 user message，避免破壞 system cache。"""
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         mock_memory_system.set_core_search_results([
@@ -311,18 +359,21 @@ class TestDualLayerCoordinator:
 
         chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
         system_prompt = chat_call["messages"][0]["content"]
-        assert system_prompt.count("<retrieved_memory_context>") == 1
-        assert "core_memory:" in system_prompt
-        assert "relevant_preferences:" in system_prompt
-        assert "episodic_memories:" in system_prompt
-        assert "uid: mem-a" in system_prompt
-        assert "<user_core_memory>" not in system_prompt
-        assert "<user_relevant_preferences>" not in system_prompt
-        assert "<preference" not in system_prompt
-        assert "<episodic_memory" not in system_prompt
-        assert "<timestamp>" not in system_prompt
-        assert "<overview>" not in system_prompt
-        assert "<dialogue>" not in system_prompt
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<retrieved_memory_context>" not in system_prompt
+        assert "core_memory:" not in system_prompt
+        assert latest_user.count("<retrieved_memory_context>") == 1
+        assert "core_memory:" in latest_user
+        assert "relevant_preferences:" in latest_user
+        assert "episodic_memories:" in latest_user
+        assert "uid: mem-a" in latest_user
+        assert "<user_core_memory>" not in latest_user
+        assert "<user_relevant_preferences>" not in latest_user
+        assert "<preference" not in latest_user
+        assert "<episodic_memory" not in latest_user
+        assert "<timestamp>" not in latest_user
+        assert "<overview>" not in latest_user
+        assert "<dialogue>" not in latest_user
 
     def test_dual_layer_group_reuses_query_expand_state(
         self, mock_deps, mock_memory_system, sample_user_prefs
@@ -468,7 +519,7 @@ class TestDualLayerCoordinator:
         ]
         assert router_calls == []
 
-    def test_single_layer_retrieved_memory_context_is_flat(
+    def test_single_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self,
         monkeypatch,
         mock_router_with_tools,
@@ -478,7 +529,7 @@ class TestDualLayerCoordinator:
         mock_character_manager,
         sample_user_prefs,
     ):
-        """單層最終 system prompt 的 retrieved_memory_context 也使用同一套扁平格式。"""
+        """單層最終 prompt 也將 retrieved_memory_context 放在 user message。"""
         from api.routers.chat import orchestration
 
         monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
@@ -512,18 +563,21 @@ class TestDualLayerCoordinator:
 
         chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
         system_prompt = chat_call["messages"][0]["content"]
-        assert system_prompt.count("<retrieved_memory_context>") == 1
-        assert "core_memory:" in system_prompt
-        assert "relevant_preferences:" in system_prompt
-        assert "episodic_memories:" in system_prompt
-        assert "uid: mem-single" in system_prompt
-        assert "<user_core_memory>" not in system_prompt
-        assert "<user_relevant_preferences>" not in system_prompt
-        assert "<preference" not in system_prompt
-        assert "<episodic_memory" not in system_prompt
-        assert "<timestamp>" not in system_prompt
-        assert "<overview>" not in system_prompt
-        assert "<dialogue>" not in system_prompt
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<retrieved_memory_context>" not in system_prompt
+        assert "core_memory:" not in system_prompt
+        assert latest_user.count("<retrieved_memory_context>") == 1
+        assert "core_memory:" in latest_user
+        assert "relevant_preferences:" in latest_user
+        assert "episodic_memories:" in latest_user
+        assert "uid: mem-single" in latest_user
+        assert "<user_core_memory>" not in latest_user
+        assert "<user_relevant_preferences>" not in latest_user
+        assert "<preference" not in latest_user
+        assert "<episodic_memory" not in latest_user
+        assert "<timestamp>" not in latest_user
+        assert "<overview>" not in latest_user
+        assert "<dialogue>" not in latest_user
 
     def test_single_layer_group_reuses_query_expand_state(
         self,

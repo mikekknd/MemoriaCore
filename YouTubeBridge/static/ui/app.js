@@ -4,16 +4,17 @@ import {
   generateTestEvents, injectEvents, interruptNow, loadConnectors, loadHealth,
   loadMemoriaConfig, loadMemoriaRefs, loadSessions, makeSummary,
   refreshDirector, refreshEvents, refreshSummary, replySuperChats, saveConnector, saveMemoriaConfig,
+  addLivePersonaAddressingRow, fillLivePersonaOverlayForm, livePersonaOverlayFor, saveLivePersonaOverlay,
   testMemoriaAuth, toggleAutoTestEvents, toggleSession,
   syncCharacterSelectionLimit, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
-} from "./control.js?v=topic-graph-primary-focus-v1";
+} from "./control.js?v=topic-graph-sources-v2";
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
   closeTopicGraphModal, openTopicGraphModal, rebuildTopicGraph, refreshTopicEntries, refreshTopicGraph, refreshTopicGraphTrace,
   refreshTopicPacks, resetTopicGraphView, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
-} from "./topic-packs.js?v=topic-graph-primary-focus-v1";
+} from "./topic-packs.js?v=topic-graph-sources-v2";
 
 async function refreshAll() {
   await loadHealth();
@@ -109,6 +110,8 @@ $("saveMemoriaConfig").onclick = () => saveMemoriaConfig().catch((error) => {
   $("memoriaAuthState").className = "status bad";
   log("MemoriaCore 設定儲存失敗", String(error));
 });
+$("saveLivePersonaOverlay").onclick = () => saveLivePersonaOverlay().catch((error) => log("直播角色設定儲存失敗", String(error)));
+$("addLivePersonaAddressingRow").onclick = () => addLivePersonaAddressingRow();
 $("testMemoriaAuth").onclick = () => testMemoriaAuth().catch((error) => {
   $("memoriaAuthState").textContent = "連線失敗";
   $("memoriaAuthState").className = "status bad";
@@ -160,6 +163,9 @@ $("videoId").addEventListener("input", updateLiveSessionControls);
 $("characterSelect").addEventListener("change", () => {
   syncCharacterSelectionLimit();
   updateLiveSessionControls();
+});
+$("livePersonaCharacterSelect").addEventListener("change", () => {
+  fillLivePersonaOverlayForm(livePersonaOverlayFor($("livePersonaCharacterSelect").value));
 });
 
 installTestIds();

@@ -52,10 +52,13 @@ if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 :: MemoriaCore still enforces its own admin_bypass_enabled and loopback checks.
 if "%MEMORIACORE_ADMIN_BYPASS%"=="" set MEMORIACORE_ADMIN_BYPASS=1
 
-netstat -ano | findstr ":%API_PORT% " | findstr "LISTENING" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [WARN] Port %API_PORT% is already in use. Skipping API server start.
-    goto :after_api
+echo [INFO] Cleaning existing YouTubeBridge process tree on port %API_PORT%...
+call "%~dp0stop_8091.bat"
+if %errorlevel% neq 0 (
+    color 0C
+    echo [ERROR] Port %API_PORT% is still occupied after cleanup.
+    pause
+    exit /b 1
 )
 
 echo [1/1] Starting YouTubeBridge API server on port %API_PORT% ...
@@ -98,13 +101,5 @@ echo Press any key to stop services started by this launcher ...
 pause >nul
 
 echo Stopping services...
-if "%API_STARTED%"=="1" call :stop_port %API_PORT%
-exit /b 0
-
-:stop_port
-set TARGET_PORT=%~1
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":%TARGET_PORT% " ^| findstr "LISTENING"') do (
-    echo      Stopping PID %%p on port %TARGET_PORT%
-    taskkill /PID %%p /F >nul 2>&1
-)
+if "%API_STARTED%"=="1" call "%~dp0stop_8091.bat"
 exit /b 0

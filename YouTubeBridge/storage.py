@@ -14,12 +14,14 @@ from storage_repositories import (
     DirectorStateRepositoryMixin,
     EventRepositoryMixin,
     InteractionRepositoryMixin,
+    LivePersonaRepositoryMixin,
     SessionRepositoryMixin,
     SummaryRepositoryMixin,
     TopicPackRepositoryMixin,
 )
 from storage_schema import (
     ensure_live_event_columns,
+    ensure_live_persona_overlay_columns,
     ensure_live_session_columns,
     init_bridge_db,
 )
@@ -34,6 +36,7 @@ class BridgeStorage(
     SessionRepositoryMixin,
     EventRepositoryMixin,
     TopicPackRepositoryMixin,
+    LivePersonaRepositoryMixin,
     InteractionRepositoryMixin,
     DirectorStateRepositoryMixin,
     SummaryRepositoryMixin,
@@ -68,6 +71,10 @@ class BridgeStorage(
     @staticmethod
     def _ensure_live_event_columns(conn: sqlite3.Connection) -> None:
         ensure_live_event_columns(conn)
+
+    @staticmethod
+    def _ensure_live_persona_overlay_columns(conn: sqlite3.Connection) -> None:
+        ensure_live_persona_overlay_columns(conn)
 
     @staticmethod
     def _json_dump(value: Any) -> str:

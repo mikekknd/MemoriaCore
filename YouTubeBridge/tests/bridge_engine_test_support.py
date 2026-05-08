@@ -137,6 +137,27 @@ class FakeSafetyMemoriaClient:
                 })
         return {"classifications": classifications}
 
+class FakeSafetyAndQueryMemoriaClient(FakeSafetyMemoriaClient):
+    def embed_text(self, text: str, model: str = ""):
+        return FakeEmbeddingMemoriaClient().embed_text(text, model=model)
+
+    def generate_prompt_json(self, *, prompt_key: str, variables: dict, task_key: str = "compress", temperature: float = 0.1, schema: dict | None = None):
+        if prompt_key == "youtube_live_audience_query_classifier_prompt":
+            return FakeEmbeddingMemoriaClient().generate_prompt_json(
+                prompt_key=prompt_key,
+                variables=variables,
+                task_key=task_key,
+                temperature=temperature,
+                schema=schema,
+            )
+        return super().generate_prompt_json(
+            prompt_key=prompt_key,
+            variables=variables,
+            task_key=task_key,
+            temperature=temperature,
+            schema=schema,
+        )
+
 class FakeFailingSafetyMemoriaClient:
     def generate_prompt_json(self, **_kwargs):
         raise RuntimeError("safety model unavailable")
@@ -251,6 +272,7 @@ __all__ = [
     "FakeEmbeddingMemoriaClient",
     "FakeClosingMemoriaClient",
     "FakeSafetyMemoriaClient",
+    "FakeSafetyAndQueryMemoriaClient",
     "FakeFailingSafetyMemoriaClient",
     "FakeClosingFailingSafetyClient",
     "FakeBatchRecordingSafetyClient",

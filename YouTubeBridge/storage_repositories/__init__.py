@@ -5,6 +5,7 @@ from .connectors import ConnectorRepositoryMixin
 from .director_state import DirectorStateRepositoryMixin
 from .events import EventRepositoryMixin
 from .interactions import InteractionRepositoryMixin
+from .live_persona import LivePersonaRepositoryMixin
 from .sessions import SessionRepositoryMixin
 from .summaries import SummaryRepositoryMixin
 from .topic_packs import TopicPackRepositoryMixin
@@ -14,6 +15,7 @@ __all__ = [
     "DirectorStateRepositoryMixin",
     "EventRepositoryMixin",
     "InteractionRepositoryMixin",
+    "LivePersonaRepositoryMixin",
     "SessionRepositoryMixin",
     "SummaryRepositoryMixin",
     "TopicPackRepositoryMixin",

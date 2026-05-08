@@ -29,6 +29,9 @@
     - 若曾跑 hot reload，除了 listener PID，也要清掉 command line 含 `startServerHotReload.bat` / `run_server_hot_reload.py` / `YouTubeBridge\start_hot_reload.bat` / `YouTubeBridge\run_server_hot_reload.py` 的整棵 process tree；只殺 port owner 可能留下 reload parent 或 multiprocessing worker。
   - 啟動非 hot reload server 後，記錄 8088 與 8091 listener PID 與 process start time，再進行測試；測試途中若任一 PID 改變，該輪 E2E 視為受環境干擾，需要重新判定。
   - 若 8088 / 8091 由使用者端 bat 控制，Codex 不應另行背景啟動同 port server；避免兩組 parent / worker 互相踩 port。
+  - Codex / Agent 自行啟動 E2E server 時，測試腳本或人工流程必須使用 `try/finally` 等價流程，在結束、失敗、timeout 或中斷後執行 `stop_e2e_servers.bat`。
+  - `stop_e2e_servers.bat` 會依序清理 MemoriaCore 8088 與 YouTubeBridge 8091 的 listener、hot reload wrapper、server parent 與 child process tree，並列印被清理的 PID。
+  - `start.bat`、`startServerHotReload.bat`、`YouTubeBridge/start.bat` 與 `YouTubeBridge/start_hot_reload.bat` 啟動前也會先清理同 port process tree；因此不要再用手寫 `Stop-Process` 只殺 port owner 作為 E2E 標準流程。
 - 初始化 Browser Use：
   - 使用 `setupAtlasRuntime({ backend: "iab" })`。
   - 取得或建立 tab，前往 `http://127.0.0.1:8091/ui/`。

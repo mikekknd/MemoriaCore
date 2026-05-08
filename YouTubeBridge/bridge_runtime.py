@@ -28,5 +28,6 @@ class LiveRuntime:
     subscribers: set[asyncio.Queue] = field(default_factory=set)
     inject_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     safety_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    closing_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cancel_events: dict[str, threading.Event] = field(default_factory=dict)
     audience_research_tasks: dict[str, threading.Thread] = field(default_factory=dict)

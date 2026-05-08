@@ -8,6 +8,7 @@ export const state = {
   connectors: [],
   connector: null,
   characters: [],
+  livePersonaOverlays: [],
   maxSessionCharacters: 6,
   topicPacks: [],
   topicEntries: [],
@@ -19,6 +20,7 @@ export const state = {
   topicGraphViewport: { scale: 1, x: 0, y: 0 },
   topicGraphNodePositions: {},
   topicGraphModalOpen: false,
+  topicGraphShowSourceNodes: false,
   topicGraphTraceAutoFollow: true,
   topicGraphTraceRefreshTimer: null,
   currentTopicEntryId: 0,
@@ -115,7 +117,7 @@ export function installTestIds() {
     "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession",
     "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",
     "testSuperChatCountPerTick", "autoTestEvents", "generateTestEvents", "eventsList",
-    "directorGuidance", "directorIdle", "topicPackSelect",
+    "directorGuidance", "hostInteractionRules", "programSegmentPlan", "programSegmentTurns", "directorIdle", "topicPackSelect",
     "topicEntrySelect", "updateTopicPack", "deleteTopicPack", "deleteAllTopicPacks", "updateTopicEntry", "cancelTopicEntryEdit",
     "topicEntryPanel", "importFactCardsFolder", "factCardImportOverlay", "factCardImportMessage",
     "topicGraphPanel", "topicGraphState", "refreshTopicGraph", "rebuildTopicGraph", "refreshTopicGraphTrace", "resetTopicGraphView",
@@ -123,6 +125,9 @@ export function installTestIds() {
     "topicGraphSvg", "topicGraphSelectedNode", "topicGraphLatestTrace", "topicGraphTraces",
     "topicFactCardLiveLockNotice", "liveSessionPane", "eventsPane", "summaryPane", "topicPackPane", "systemSettingsPane",
     "runtimeRulesPane", "reloadRuntimeRules", "runtimeRulesContent",
+    "livePersonaCharacterSelect", "livePersonaEnabled", "livePersonaMode", "livePersonaSelfAddress",
+    "livePersonaSystemPrompt", "livePersonaOpeningIntro", "livePersonaAddressingRows",
+    "addLivePersonaAddressingRow", "livePersonaReplyRules", "saveLivePersonaOverlay", "livePersonaOverlayState",
     "log"
   ].forEach((id) => {
     const element = $(id);

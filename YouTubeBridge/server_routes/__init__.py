@@ -8,6 +8,7 @@ from . import (
     director,
     fact_cards,
     memoria,
+    persona_overlays,
     research,
     sessions,
     summaries,
@@ -26,6 +27,7 @@ _ROUTE_MODULES = (
     topic_packs,
     fact_cards,
     research,
+    persona_overlays,
     summaries,
     memoria,
 )

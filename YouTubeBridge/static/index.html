@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YouTubeBridge</title>
-  <link rel="stylesheet" href="/ui-assets/index.css?v=topic-graph-primary-focus-v1">
+  <link rel="stylesheet" href="/ui-assets/index.css?v=topic-graph-sources-v2">
 </head>
 <body>
   <header>
@@ -110,6 +110,24 @@
                       <span class="help-tip" tabindex="0" aria-label="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。" data-tooltip="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。">?</span>
                     </span>
                     <textarea id="directorGuidance" placeholder="例：本場只聊動畫新番，優先展開最新一話細節、作畫品質、社群討論與角色觀點。"></textarea>
+                  </label>
+                  <label class="wide">
+                    <span class="field-label">主持互動規則
+                      <span class="help-tip" tabindex="0" aria-label="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。" data-tooltip="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。">?</span>
+                    </span>
+                    <textarea id="hostInteractionRules" placeholder="例：可可負責觀眾視角與情緒反應；白蓮負責分析、反方觀點與收束。"></textarea>
+                  </label>
+                  <label class="wide">
+                    <span class="field-label">節目段落流程
+                      <span class="help-tip" tabindex="0" aria-label="每行一個段落；導播會依序推進目前段落，例如事件 Hook、觀眾驚訝點、核心分析、反方觀點、收束金句。" data-tooltip="每行一個段落；導播會依序推進目前段落，例如事件 Hook、觀眾驚訝點、核心分析、反方觀點、收束金句。">?</span>
+                    </span>
+                    <textarea id="programSegmentPlan" placeholder="例：事件 Hook&#10;觀眾驚訝點&#10;核心分析&#10;反方觀點&#10;收束金句"></textarea>
+                  </label>
+                  <label>
+                    <span class="field-label">每段落建議回合數
+                      <span class="help-tip" tabindex="0" aria-label="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。" data-tooltip="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。">?</span>
+                    </span>
+                    <input id="programSegmentTurns" type="number" min="1" max="12" value="3">
                   </label>
                 </div>
                 <div class="toolbar" style="margin-top:10px">
@@ -447,6 +465,47 @@
                 <span id="memoriaAuthState" class="status">尚未測試</span>
               </div>
             </div>
+
+            <div class="settings-panel live-persona-panel">
+              <h2>直播角色設定</h2>
+              <p class="muted">這裡只覆寫 YouTubeBridge 直播時送給角色的 prompt，不會修改 MemoriaCore 原始角色。</p>
+              <div class="grid">
+                <label class="wide">角色
+                  <select id="livePersonaCharacterSelect"></select>
+                </label>
+                <label class="checkbox-row wide">
+                  <input id="livePersonaEnabled" type="checkbox">
+                  <span>啟用直播專用 prompt 覆寫</span>
+                </label>
+                <label>覆寫模式
+                  <select id="livePersonaMode">
+                    <option value="replace">replace：直播時取代原角色 prompt</option>
+                    <option value="append">append：附加在原角色 prompt 後</option>
+                  </select>
+                </label>
+                <label>固定自稱
+                  <input id="livePersonaSelfAddress" placeholder="例：本小姐、老身、在下">
+                </label>
+                <label class="wide">直播用角色 prompt
+                  <textarea id="livePersonaSystemPrompt" placeholder="描述直播專用人格、口吻、互動方式與禁止事項。"></textarea>
+                </label>
+                <label class="wide">開場自我介紹
+                  <textarea id="livePersonaOpeningIntro" placeholder="例：本小姐是今天的主持可可，這場會陪大家聊最新新番。"></textarea>
+                </label>
+                <div class="wide live-persona-addressing-editor">
+                  <div class="field-label">對其他角色稱呼</div>
+                  <div id="livePersonaAddressingRows" class="live-persona-addressing-rows"></div>
+                  <button id="addLivePersonaAddressingRow" type="button">新增稱呼</button>
+                </div>
+                <label class="wide">直播回覆規則
+                  <textarea id="livePersonaReplyRules" placeholder="例：不要把問題丟回觀眾；接住上一位角色的觀點並補充細節。"></textarea>
+                </label>
+              </div>
+              <div class="toolbar" style="margin-top:10px">
+                <button id="saveLivePersonaOverlay" class="primary">儲存直播角色設定</button>
+                <span id="livePersonaOverlayState" class="status">尚未載入</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -475,6 +534,6 @@
     </div>
   </main>
 
-  <script type="module" src="/ui-assets/app.js?v=topic-graph-primary-focus-v1"></script>
+  <script type="module" src="/ui-assets/app.js?v=topic-graph-sources-v2"></script>
 </body>
 </html>

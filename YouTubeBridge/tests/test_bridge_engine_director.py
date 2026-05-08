@@ -45,10 +45,287 @@ def test_director_opening_decision_builds_short_kickoff_prompt():
         {},
     )
 
-    assert decision["action"] == "continue_topic"
+    assert decision["action"] == "opening"
     assert "開場" in decision["prompt"]
     assert "測試導播開場與觀眾互動" in decision["prompt"]
-    assert "queue" in decision["prompt"]
+    assert "queue" not in decision["prompt"]
+    assert "prompt" not in decision["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_director_opening_turn_uses_intro_prompt_and_post_opening_fuel_cards(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+            "director_guidance": "本場只聊動畫新番。",
+        })
+        storage.upsert_live_persona_overlay(
+            "koko",
+            {
+                "enabled": True,
+                "mode": "replace",
+                "system_prompt": "直播可可 prompt",
+                "self_address": "本小姐",
+                "opening_intro": "叮咚，可可是今天的直播主持。",
+                "addressing": {"byakuren": "白蓮大人"},
+                "reply_rules": "",
+            },
+        )
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話高光",
+            "body": "這段 FactCard 不應該在開場第一輪直接塞入。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        captured = {}
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "開場完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        result = await manager._send_director_turn(
+            session,
+            {"current_topic": "動畫新番"},
+            YouTubeBridgeManager._director_opening_decision(session, {"current_topic": "動畫新番"}),
+        )
+
+        assert result["interaction"]["status"] == "completed"
+        assert captured["display_content"] == "直播開場。"
+        assert "直播開場任務" in captured["content"]
+        assert "叮咚，可可是今天的直播主持" not in captured["content"]
+        assert "直播開場任務" in captured["external_context"]["context_text"]
+        assert "直播開場自我介紹" in captured["external_context"]["context_text"]
+        assert "叮咚，可可是今天的直播主持" in captured["external_context"]["context_text"]
+        assert "白蓮大人" in captured["external_context"]["context_text"]
+        assert "本小姐（koko）" not in captured["external_context"]["context_text"]
+        assert "character_id: koko" in captured["external_context"]["context_text"]
+        assert "固定自稱：本小姐" in captured["external_context"]["context_text"]
+        assert "開場後話題導入資料" in captured["external_context"]["context_text"]
+        assert "這段 FactCard 不應該在開場第一輪直接塞入" in captured["external_context"]["context_text"]
+        assert "<topic_pack_fact_cards>" in captured["external_context"]["context_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_turn_includes_live_hosting_context_without_visible_events(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+            "director_guidance": "本場只聊動畫新番。",
+            "host_interaction_rules": "可可提出觀眾視角；白蓮拆解與收束。",
+            "program_segment_plan": "事件 Hook\n觀眾驚訝點\n核心分析",
+            "program_segment_turns": 2,
+        })
+        captured = {}
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "續話完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        result = await manager._send_director_turn(
+            session,
+            {"current_topic": "動畫新番", "consecutive_ai_turns": 1},
+            {
+                "action": "continue_topic",
+                "prompt": "請繼續討論。",
+                "current_topic": "動畫新番",
+            },
+        )
+
+        assert result["interaction"]["status"] == "completed"
+        external_context = captured["external_context"]
+        assert external_context["visible_events"] == []
+        assert external_context["live_hosting"]["host_interaction_rules"] == "可可提出觀眾視角；白蓮拆解與收束。"
+        assert external_context["live_hosting"]["program_segment_turns"] == 2
+        assert external_context["live_hosting"]["current_segment"]["name"] == "事件 Hook"
+        assert "主持互動規則" in external_context["context_text"]
+        assert "可可提出觀眾視角" in external_context["context_text"]
+        assert "目前節目段落：事件 Hook" in external_context["context_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_program_segment_state_advances_and_resets_on_topic_change():
+    session = {
+        "program_segment_plan": "事件 Hook\n核心分析\n收束金句",
+        "program_segment_turns": 2,
+    }
+
+    first = YouTubeBridgeManager._program_segment_after_turn(
+        session,
+        {"current_topic": "動畫新番", "metadata": {}},
+        {"action": "continue_topic", "current_topic": "動畫新番"},
+    )
+    second = YouTubeBridgeManager._program_segment_after_turn(
+        session,
+        {"current_topic": "動畫新番", "metadata": {"program_segment": first}},
+        {"action": "continue_topic", "current_topic": "動畫新番"},
+    )
+    third = YouTubeBridgeManager._program_segment_after_turn(
+        session,
+        {"current_topic": "動畫新番", "metadata": {"program_segment": second}},
+        {"action": "continue_topic", "current_topic": "動畫新番"},
+    )
+    reset = YouTubeBridgeManager._program_segment_after_turn(
+        session,
+        {"current_topic": "動畫新番", "metadata": {"program_segment": third}},
+        {"action": "transition_topic", "current_topic": "下一個作品"},
+    )
+
+    assert first["name"] == "事件 Hook"
+    assert first["turns_in_segment"] == 1
+    assert second["name"] == "核心分析"
+    assert second["turns_in_segment"] == 0
+    assert third["name"] == "核心分析"
+    assert third["turns_in_segment"] == 1
+    assert reset["name"] == "事件 Hook"
+    assert reset["turns_in_segment"] == 1
+    assert reset["topic"] == "下一個作品"
+
+
+@pytest.mark.asyncio
+async def test_director_kickoff_sends_topic_anchor_after_opening_when_pack_bound(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+            "director_guidance": "本場只聊動畫新番。",
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話高光",
+            "body": "第一話以長鏡頭建立角色關係，可作為開場後第一個話題。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        sent_actions = []
+
+        async def fake_send(self, session_arg, state_arg, decision_arg):
+            sent_actions.append(decision_arg["action"])
+            return {"interaction": {"job_id": f"job-{len(sent_actions)}"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        await manager._director_kickoff(runtime)
+
+        assert sent_actions == ["opening", "post_opening_topic_anchor"]
+        state = storage.get_director_state("live-a")
+        assert state["metadata"]["opening_decision"]["action"] == "opening"
+        assert state["metadata"]["post_opening_decision"]["action"] == "post_opening_topic_anchor"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_post_opening_topic_turn_includes_fact_cards(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+            "director_guidance": "本場只聊動畫新番。",
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話高光",
+            "body": "第一話以長鏡頭建立角色關係，可作為開場後第一個話題。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        captured = {}
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "資料卡承接完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        result = await manager._send_director_turn(
+            session,
+            {"current_topic": "動畫新番"},
+            YouTubeBridgeManager._director_post_opening_topic_decision(session, {"current_topic": "動畫新番"}),
+        )
+
+        assert result["interaction"]["status"] == "completed"
+        assert captured["display_content"] == "帶入本場話題資料。"
+        assert "開場已完成" in captured["content"]
+        assert "本場方向：" not in captured["external_context"]["context_text"]
+        assert "目前主題：" not in captured["external_context"]["context_text"]
+        assert "不得自行捏造" in captured["external_context"]["context_text"]
+        assert "必須優先使用下方 <topic_pack_fact_cards>" in captured["external_context"]["context_text"]
+        assert "第一話以長鏡頭建立角色關係" in captured["external_context"]["context_text"]
+        assert "<topic_pack_fact_cards>" in captured["external_context"]["context_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 def test_director_forces_transition_when_guidance_changed_after_wait():
     session = {"director_guidance": "改聊 LLM 與內容創作。"}
@@ -312,6 +589,142 @@ async def test_director_idle_ignores_pending_safety_events(monkeypatch):
 
         assert calls == ["continue_topic"]
         assert storage.get_director_state("live-a")["status"] != "pending_chat_seen"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+@pytest.mark.asyncio
+async def test_director_loop_blocks_closing_thanks_before_duration_finalize(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "director_guidance": "先聊動畫新番。",
+            "current_topic": "動畫新番",
+            "auto_finalize_on_duration": True,
+            "auto_sc_thanks_on_finalize": True,
+            "planned_duration_minutes": 10,
+            "started_at": datetime.now().isoformat(),
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            idle_seconds=10,
+            status="running",
+            current_topic="動畫新番",
+            consecutive_ai_turns=0,
+            last_director_action_at=(datetime.now() - timedelta(seconds=30)).isoformat(),
+        )
+        calls = []
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        def premature_closing_decision(self, session_arg, state_arg):
+            return {
+                "action": "closing_super_chat_thanks",
+                "reason": "LLM 過早判斷要收尾。",
+                "prompt": "直播即將收尾，請感謝本場 Super Chat。",
+                "current_topic": "動畫新番",
+            }
+
+        async def fake_send(self, session_arg, state_arg, decision_arg):
+            calls.append(decision_arg)
+            runtime.running = False
+            return {"interaction": {"job_id": "fake-job"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_director_decision", premature_closing_decision)
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        task = asyncio.create_task(manager._director_loop(runtime))
+        for _ in range(20):
+            if calls:
+                break
+            await asyncio.sleep(0.05)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert calls
+        assert calls[0]["action"] == "continue_topic"
+        assert "Super Chat" not in calls[0]["prompt"]
+        assert storage.get_session("live-a")["status"] != "ended"
+        assert storage.list_interactions("live-a") == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@pytest.mark.asyncio
+async def test_director_loop_blocks_time_based_recap_before_duration_finalize(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "director_guidance": "先聊動畫新番。",
+            "auto_finalize_on_duration": True,
+            "planned_duration_minutes": 10,
+            "started_at": datetime.now().isoformat(),
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            idle_seconds=10,
+            status="running",
+            current_topic="動畫新番",
+            consecutive_ai_turns=0,
+            last_director_action_at=(datetime.now() - timedelta(seconds=30)).isoformat(),
+        )
+        calls = []
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        def premature_recap_decision(self, session_arg, state_arg):
+            return {
+                "action": "recap",
+                "reason": "elapsed_percent 已達 80%，需要為直播收尾做準備。",
+                "prompt": "我們來回顧一下並準備收尾。",
+                "current_topic": "動畫新番",
+            }
+
+        async def fake_send(self, session_arg, state_arg, decision_arg):
+            calls.append(decision_arg)
+            runtime.running = False
+            return {"interaction": {"job_id": "fake-job"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_director_decision", premature_recap_decision)
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        task = asyncio.create_task(manager._director_loop(runtime))
+        for _ in range(20):
+            if calls:
+                break
+            await asyncio.sleep(0.05)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert calls
+        assert calls[0]["action"] == "continue_topic"
+        assert "收尾" not in calls[0]["prompt"]
+        assert storage.get_session("live-a")["status"] != "ended"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -4,7 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.prompt_manager import get_prompt_manager
-from core.prompt_utils import build_user_prefix, format_latest_user_message_for_llm
+from core.prompt_utils import (
+    build_retrieved_memory_context_user_block,
+    build_user_prefix,
+    format_latest_user_message_for_llm,
+)
 from core.chat_orchestrator.dialogue_format import format_history_for_llm
 from core.chat_orchestrator.group_context import is_group_context
 
@@ -102,8 +106,9 @@ def build_final_chat_context(
     speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
         reply_rules=reply_rules,
     )
-    suffix = pm.get("chat_system_suffix").format(
-        mem_ctx=mem_ctx,
+    suffix_key = "chat_system_suffix_youtube_live" if _is_youtube_live_prompt_context(session_ctx) else "chat_system_suffix"
+    suffix = pm.get(suffix_key).format(
+        mem_ctx="",
         speech_instruction=speech_instruction,
     )
     sys_prompt = f"""{char_sys_prompt}
@@ -117,10 +122,22 @@ def build_final_chat_context(
 
     if api_messages and api_messages[-1]["role"] == "user":
         prefix = build_user_prefix(session_messages, user_prefs=user_prefs, session_ctx=session_ctx)
+        memory_context = build_retrieved_memory_context_user_block(mem_ctx)
         latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], session_ctx)
-        api_messages[-1] = {**api_messages[-1], "content": prefix + latest_user}
+        api_messages[-1] = {**api_messages[-1], "content": memory_context + prefix + latest_user}
 
     return api_messages, clean_history, sys_prompt
+
+
+def _is_youtube_live_prompt_context(session_ctx: dict | None) -> bool:
+    ctx = session_ctx or {}
+    external = ctx.get("external_chat_context")
+    if not isinstance(external, dict):
+        return False
+    return (
+        str(ctx.get("channel") or "").strip() == "youtube_live"
+        and str(external.get("source") or "").strip() in {"youtube_live", "youtube_live_director"}
+    )
 
 
 def build_history_preview(clean_history: list[dict]) -> str:

@@ -5,6 +5,10 @@
 """
 
 from core.prompt_manager import get_prompt_manager
+from core.chat_orchestrator.live_persona import (
+    live_persona_participant_note,
+    live_persona_self_address_clause,
+)
 
 
 SUMMARY_MAX_CHARS = 240
@@ -70,6 +74,13 @@ def build_group_participants_block(
         char = character_manager.get_character(cid) or {}
         name = _prompt_scalar(char.get("name") or cid)
         summary = character_summary_text(char, fallback_to_prompt=True) or "無角色簡介"
+        live_note = live_persona_participant_note(
+            session_ctx,
+            current_character_id=current_id,
+            participant_id=cid,
+        )
+        if live_note:
+            summary = f"{summary}；{live_note}"
         lines.extend([
             f"- name: {name}",
             f"  character_id: {_prompt_scalar(cid, limit=120)}",
@@ -92,6 +103,10 @@ def build_group_participants_block(
         group_name=group_name,
         current_character_id=current_character_id,
         current_character_name=current_name,
+        self_address_clause=live_persona_self_address_clause(
+            session_ctx,
+            current_character_id=current_id,
+        ),
         participants_text=participants_text,
     )
 

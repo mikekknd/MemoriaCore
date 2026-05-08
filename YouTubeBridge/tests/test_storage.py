@@ -56,6 +56,9 @@ def test_connector_and_session_roundtrip():
             "auto_finalize_on_duration": True,
             "auto_delete_after_processed": True,
             "director_guidance": "先測注入，再做收束。",
+            "host_interaction_rules": "可可提出觀眾視角，白蓮負責分析收束。",
+            "program_segment_plan": "事件 Hook\n核心分析\n收束金句",
+            "program_segment_turns": 4,
             "auto_test_events_enabled": True,
             "test_event_min_seconds": 7,
             "test_event_max_seconds": 13,
@@ -87,6 +90,9 @@ def test_connector_and_session_roundtrip():
         assert session["auto_finalize_on_duration"] is True
         assert session["auto_delete_after_processed"] is True
         assert session["director_guidance"] == "先測注入，再做收束。"
+        assert session["host_interaction_rules"] == "可可提出觀眾視角，白蓮負責分析收束。"
+        assert session["program_segment_plan"] == "事件 Hook\n核心分析\n收束金句"
+        assert session["program_segment_turns"] == 4
         assert session["auto_test_events_enabled"] is False
         assert session["test_event_min_seconds"] == 7
         assert session["test_event_max_seconds"] == 13

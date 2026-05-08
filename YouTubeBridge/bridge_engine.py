@@ -204,6 +204,25 @@ class YouTubeBridgeManager(
             return f"{text[:800]}... [truncated {len(text)} chars]"
         return text
 
+    def _attach_live_persona_overrides(
+        self,
+        session: dict[str, Any] | None,
+        external_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """把直播角色 overlay 附加到 trusted external_context。
+
+        這份 raw prompt 只送往 MemoriaCore final prompt path，不進 public
+        event/status sanitizer。
+        """
+        context = dict(external_context)
+        if not session:
+            return context
+        character_ids = session.get("character_ids") or []
+        overrides = self.storage.live_persona_prompt_overrides_for(character_ids)
+        if overrides:
+            context["character_prompt_overrides"] = overrides
+        return context
+
     @staticmethod
     def _chat_message_from_stream_result(event: dict[str, Any], *, source: str) -> dict[str, Any] | None:
         if not isinstance(event, dict):
@@ -254,6 +273,9 @@ class YouTubeBridgeManager(
                 runtime.status = "missing"
                 runtime.running = False
                 return
+            if runtime.status == "closing" or session.get("status") == "closing":
+                await asyncio.sleep(1.0)
+                continue
             if self._duration_reached(session):
                 await self._finalize_for_duration(runtime, session)
                 return
@@ -1006,7 +1028,7 @@ class YouTubeBridgeManager(
             "max_chars": max_chars,
             "summary": summary,
         }
-        return payload, summary
+        return self._attach_live_persona_overrides(session, payload), summary
 
     @staticmethod
     def _event_line(event: dict[str, Any]) -> str:

@@ -30,22 +30,34 @@ function topicGraphColor(type) {
   }[type] || "#cbd5e1";
 }
 
+function topicGraphNodeTypeLabel(type) {
+  return {
+    document: "來源文件",
+    category: "入口文件分類",
+    topic: "入口話題",
+    detail: "細節卡",
+    entity: "作品/人物實體",
+    reference: "參照節點",
+  }[type] || "其他節點";
+}
+
 const TOPIC_GRAPH_WIDTH = 720;
 const TOPIC_GRAPH_HEIGHT = 520;
 const TOPIC_GRAPH_MIN_SCALE = 0.55;
 const TOPIC_GRAPH_MAX_SCALE = 3.2;
 const TOPIC_GRAPH_NODE_CLICK_SLOP_PX = 5;
+const TOPIC_GRAPH_SOURCE_NODE_TYPES = new Set(["document", "category", "reference"]);
 let topicGraphDrag = null;
 let topicGraphLastNodeDrag = null;
 
 function topicGraphNodePriority(node, degree = 0) {
   const typePriority = {
-    document: 60,
-    entity: 52,
-    topic: 50,
-    detail: 42,
-    category: 36,
+    topic: 64,
+    detail: 56,
+    entity: 48,
     reference: 34,
+    category: 28,
+    document: 20,
   }[node.node_type] || 10;
   return typePriority + Math.min(18, degree);
 }
@@ -145,6 +157,80 @@ function topicGraphPositions(nodes, edges) {
     });
   });
   return positions;
+}
+
+function topicGraphNodeVisible(node) {
+  return !!state.topicGraphShowSourceNodes || !TOPIC_GRAPH_SOURCE_NODE_TYPES.has(node?.node_type);
+}
+
+function topicGraphVisibleGraph() {
+  const nodes = (state.topicGraph.nodes || []).filter((node) => topicGraphNodeVisible(node));
+  const nodeIds = new Set(nodes.map((node) => Number(node.id)));
+  const edges = (state.topicGraph.edges || []).filter((edge) =>
+    nodeIds.has(Number(edge.source_node_id)) && nodeIds.has(Number(edge.target_node_id))
+  );
+  return { nodes, edges: [...edges, ...topicGraphSyntheticSourceEdges(nodes, edges)] };
+}
+
+function topicGraphSourceNodeCount() {
+  return (state.topicGraph.nodes || []).filter((node) => TOPIC_GRAPH_SOURCE_NODE_TYPES.has(node.node_type)).length;
+}
+
+function topicGraphEntitiesFromText(text) {
+  const entities = [];
+  const seen = new Set();
+  for (const match of String(text || "").matchAll(/《([^》]{1,120})》/g)) {
+    const entity = String(match[1] || "").trim();
+    if (!entity || seen.has(entity)) continue;
+    seen.add(entity);
+    entities.push(entity);
+  }
+  return entities;
+}
+
+function topicGraphPrimaryEntity(node) {
+  const metadata = node?.metadata || {};
+  const explicit = String(metadata.primary_entity || metadata.entity || "").trim();
+  if (explicit) return explicit;
+  const entities = Array.isArray(metadata.entities) ? metadata.entities.filter(Boolean) : [];
+  return String(entities[0] || topicGraphEntitiesFromText(`${node?.title || ""}\n${node?.summary || ""}`)[0] || "").trim();
+}
+
+function topicGraphSyntheticSourceEdges(nodes, edges) {
+  if (!state.topicGraphShowSourceNodes) return [];
+  const seen = new Set((edges || []).map((edge) => `${edge.source_node_id}:${edge.target_node_id}:${edge.edge_type}`));
+  const syntheticEdges = [];
+  const addSyntheticEdge = (sourceNode, targetNode, edgeType, weight = 0.35) => {
+    if (!sourceNode || !targetNode || Number(sourceNode.id) === Number(targetNode.id)) return;
+    const key = `${Number(sourceNode.id)}:${Number(targetNode.id)}:${edgeType}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    syntheticEdges.push({
+      id: 0,
+      source_node_id: Number(sourceNode.id),
+      target_node_id: Number(targetNode.id),
+      source_node_key: sourceNode.node_key || "",
+      target_node_key: targetNode.node_key || "",
+      edge_type: edgeType,
+      weight,
+      evidence: "frontend source debug edge",
+    });
+  };
+  const documents = (nodes || []).filter((node) => node.node_type === "document");
+  const categories = (nodes || []).filter((node) => node.node_type === "category");
+  const topicsByEntity = new Map();
+  (nodes || []).filter((node) => node.node_type === "topic").forEach((node) => {
+    const entity = topicGraphPrimaryEntity(node);
+    if (entity && !topicsByEntity.has(entity)) topicsByEntity.set(entity, node);
+  });
+  categories.forEach((category) => {
+    documents.forEach((documentNode) => addSyntheticEdge(category, documentNode, "source_file", 0.32));
+  });
+  documents.forEach((documentNode) => {
+    const targetTopic = topicsByEntity.get(topicGraphPrimaryEntity(documentNode));
+    if (targetTopic) addSyntheticEdge(documentNode, targetTopic, "source_of", 0.55);
+  });
+  return syntheticEdges;
 }
 
 function topicGraphRelatedNodeIds(selectedNodeId, edges) {
@@ -294,7 +380,17 @@ function topicGraphLabelCandidateForce(node, selected, relatedNodeIds, traceNode
 function topicGraphLabelCandidateVisible(candidate, selected, visibleCount, maxVisibleLabels) {
   if (candidate.force) return true;
   if (selected) return false;
+  if (["document", "category"].includes(candidate.node.node_type) && visibleCount > 8) return false;
   return visibleCount < maxVisibleLabels;
+}
+
+function currentTopicGraphPackId() {
+  return Number($("topicPackSelect")?.value || 0);
+}
+
+function currentTopicGraphLatestTrace() {
+  const packId = currentTopicGraphPackId();
+  return topicGraphTraceMatchesPack(state.topicGraphLatestTrace, packId) ? state.topicGraphLatestTrace : null;
 }
 
 function topicGraphTransform() {
@@ -351,6 +447,29 @@ function clearRecentTopicGraphNodeDrag() {
 export function resetTopicGraphView() {
   state.topicGraphViewport = { scale: 1, x: 0, y: 0 };
   renderTopicGraph();
+}
+
+function centerTopicGraphOnNode(nodeId) {
+  const visibleGraph = topicGraphVisibleGraph();
+  const node = (visibleGraph.nodes || []).find((item) => Number(item.id) === Number(nodeId || 0));
+  if (!node) return;
+  const positions = topicGraphPositions(visibleGraph.nodes || [], visibleGraph.edges || []);
+  const point = positions.get(Number(node.id));
+  if (!point) return;
+  const current = state.topicGraphViewport || { scale: 1, x: 0, y: 0 };
+  const scale = clampTopicGraphScale(Math.max(Number(current.scale || 1), 1.35));
+  state.topicGraphViewport = {
+    scale,
+    x: TOPIC_GRAPH_WIDTH / 2 - point.x * scale,
+    y: TOPIC_GRAPH_HEIGHT / 2 - point.y * scale,
+  };
+}
+
+function jumpToTopicGraphNode(nodeId) {
+  const cleanNodeId = Number(nodeId || 0);
+  if (!cleanNodeId) return;
+  centerTopicGraphOnNode(cleanNodeId);
+  selectTopicGraphNode(cleanNodeId);
 }
 
 export function openTopicGraphModal() {
@@ -467,7 +586,7 @@ function toggleTopicGraphNodeSelection(nodeId) {
 }
 
 function renderTopicGraphAutoFocusDetails() {
-  const latest = state.topicGraphLatestTrace;
+  const latest = currentTopicGraphLatestTrace();
   const selectedIds = (latest?.selected_node_ids || []).map((id) => Number(id || 0)).filter(Boolean);
   if (!latest || !selectedIds.length) return "尚未選擇節點";
   const primaryNodeId = topicGraphPrimaryTraceNodeId(latest);
@@ -488,6 +607,81 @@ function renderTopicGraphAutoFocusDetails() {
   `;
 }
 
+function renderTopicGraphLegendHtml() {
+  const types = ["topic", "detail", "entity", "document", "category", "reference"];
+  return `
+    <div class="topic-graph-side-section">
+      <strong>節點顏色</strong>
+      <div class="topic-graph-legend">
+        ${types.map((type) => `
+          <span class="topic-graph-legend-item">
+            <span class="topic-graph-dot" style="--topic-graph-dot: ${topicGraphColor(type)}"></span>
+            ${escapeHtml(topicGraphNodeTypeLabel(type))}
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderTopicGraphSourceToggleHtml() {
+  const sourceCount = topicGraphSourceNodeCount();
+  const showSources = !!state.topicGraphShowSourceNodes;
+  return `
+    <div class="topic-graph-side-section">
+      <strong>來源節點</strong>
+      <button type="button" class="topic-graph-source-toggle" data-topic-graph-toggle-sources="1">
+        ${showSources ? "隱藏來源節點" : `顯示來源節點 (${sourceCount})`}
+      </button>
+      <p class="muted">來源節點只用來追溯 Markdown 檔案與入口文件分類，預設不參與主要話題檢視。</p>
+    </div>
+  `;
+}
+
+function renderTopicGraphEntityListHtml() {
+  const nodes = state.topicGraph.nodes || [];
+  const edges = state.topicGraph.edges || [];
+  const degree = topicGraphDegreeMap(edges);
+  const entities = nodes
+    .filter((node) => node.node_type === "entity")
+    .slice()
+    .sort((left, right) => {
+      const delta = (degree.get(Number(right.id)) || 0) - (degree.get(Number(left.id)) || 0);
+      return delta || String(left.title || "").localeCompare(String(right.title || ""), "zh-Hant");
+    });
+  if (!entities.length) {
+    return `
+      <div class="topic-graph-side-section">
+        <strong>綠色 entity 節點</strong>
+        <p class="muted">目前沒有作品或人物實體節點。</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="topic-graph-side-section">
+      <strong>綠色 entity 節點</strong>
+      <div class="topic-graph-entity-list">
+        ${entities.map((node) => `
+          <button type="button" class="topic-graph-node-link" data-topic-graph-jump="${escapeHtml(node.id)}">
+            <span class="topic-graph-dot" style="--topic-graph-dot: ${topicGraphColor("entity")}"></span>
+            <span class="topic-graph-node-link-title">${escapeHtml(node.title || `node ${node.id}`)}</span>
+            <span class="muted">${degree.get(Number(node.id)) || 0} 關聯</span>
+          </button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function bindTopicGraphDetailsActions(root) {
+  root.querySelectorAll("[data-topic-graph-jump]").forEach((button) => {
+    button.addEventListener("click", () => jumpToTopicGraphNode(button.dataset.topicGraphJump));
+  });
+  root.querySelectorAll("[data-topic-graph-toggle-sources]").forEach((button) => {
+    button.addEventListener("click", toggleTopicGraphSourceNodes);
+  });
+}
+
 function renderTopicGraphSelectedNodeDetails(node, edges = []) {
   const html = node ? `
     <strong>${escapeHtml(node.title)}</strong>
@@ -495,46 +689,72 @@ function renderTopicGraphSelectedNodeDetails(node, edges = []) {
     <p>${escapeHtml(String(node.summary || "").slice(0, 360))}</p>
     <p class="muted">${edges.length} 條關聯</p>
   ` : renderTopicGraphAutoFocusDetails();
-  ["topicGraphSelectedNode", "topicGraphModalDetails"].forEach((id) => {
-    const element = $(id);
-    if (!element) return;
-    if (node || html !== "尚未選擇節點") {
-      element.innerHTML = html;
-    } else {
-      element.textContent = html;
-    }
-  });
+  const mainElement = $("topicGraphSelectedNode");
+  if (mainElement) {
+    if (node || html !== "尚未選擇節點") mainElement.innerHTML = html;
+    else mainElement.textContent = html;
+  }
+  const modalElement = $("topicGraphModalDetails");
+  if (!modalElement) return;
+  const modalHtml = `
+    ${node || html !== "尚未選擇節點" ? html : `<p class="muted">${escapeHtml(html)}</p>`}
+    ${renderTopicGraphSourceToggleHtml()}
+    ${renderTopicGraphLegendHtml()}
+    ${renderTopicGraphEntityListHtml()}
+  `;
+  modalElement.innerHTML = modalHtml;
+  bindTopicGraphDetailsActions(modalElement);
 }
 
 export function selectTopicGraphNode(nodeId) {
   state.selectedTopicGraphNodeId = Number(nodeId || 0);
   const node = (state.topicGraph.nodes || []).find((item) => Number(item.id) === state.selectedTopicGraphNodeId);
-  if (!node) {
+  if (!node || !topicGraphNodeVisible(node)) {
     clearTopicGraphSelection();
     return;
   }
-  const edges = (state.topicGraph.edges || []).filter((edge) =>
+  const visibleGraph = topicGraphVisibleGraph();
+  const edges = (visibleGraph.edges || []).filter((edge) =>
     Number(edge.source_node_id) === Number(node.id) || Number(edge.target_node_id) === Number(node.id)
   );
   renderTopicGraphSelectedNodeDetails(node, edges);
   renderTopicGraph();
 }
 
+function toggleTopicGraphSourceNodes() {
+  state.topicGraphShowSourceNodes = !state.topicGraphShowSourceNodes;
+  const selectedNode = (state.topicGraph.nodes || []).find((item) =>
+    Number(item.id) === Number(state.selectedTopicGraphNodeId || 0)
+  );
+  if (selectedNode && !topicGraphNodeVisible(selectedNode)) {
+    state.selectedTopicGraphNodeId = 0;
+    renderTopicGraphSelectedNodeDetails(null, []);
+  } else if (selectedNode) {
+    selectTopicGraphNode(selectedNode.id);
+    return;
+  } else {
+    renderTopicGraphSelectedNodeDetails(null, []);
+  }
+  renderTopicGraph();
+}
+
 function renderTopicGraphToSvg(svg) {
   if (!svg) return;
   bindTopicGraphViewportControls(svg);
-  const nodes = state.topicGraph.nodes || [];
-  const edges = state.topicGraph.edges || [];
+  const visibleGraph = topicGraphVisibleGraph();
+  const nodes = visibleGraph.nodes || [];
+  const edges = visibleGraph.edges || [];
   if (!nodes.length) {
     svg.innerHTML = `<text x="24" y="40" fill="#94a3b8">尚無 topic graph</text>`;
     return;
   }
   const positions = topicGraphPositions(nodes, edges);
-  const traceNodeIds = new Set((state.topicGraphLatestTrace?.selected_node_ids || []).map((id) => Number(id)));
+  const latestTrace = currentTopicGraphLatestTrace();
+  const traceNodeIds = new Set((latestTrace?.selected_node_ids || []).map((id) => Number(id)));
   const selected = Number(state.selectedTopicGraphNodeId || 0);
   const relatedNodeIds = topicGraphRelatedNodeIds(selected, edges);
-  const focusNodeIds = selected ? relatedNodeIds : topicGraphAutoFocusNodeIds(state.topicGraphLatestTrace, edges);
-  const primaryTraceNodeId = topicGraphPrimaryTraceNodeId(state.topicGraphLatestTrace);
+  const focusNodeIds = selected ? relatedNodeIds : topicGraphAutoFocusNodeIds(latestTrace, edges);
+  const primaryTraceNodeId = topicGraphPrimaryTraceNodeId(latestTrace);
   const degree = topicGraphDegreeMap(edges);
   const edgeHtml = edges.map((edge) => {
     const start = positions.get(Number(edge.source_node_id));
@@ -604,17 +824,22 @@ export function renderTopicGraph() {
 }
 
 export function renderTopicGraphTrace() {
-  const latest = state.topicGraphLatestTrace;
+  const latest = currentTopicGraphLatestTrace();
+  const traces = (state.topicGraphTraces || []).filter((trace) => topicGraphTraceMatchesPack(trace, currentTopicGraphPackId()));
   $("topicGraphLatestTrace").innerHTML = latest
     ? `<strong>${escapeHtml(latest.source || "trace")} <span class="status good">自動跟隨</span></strong><p>${escapeHtml(latest.query_text || "")}</p><p class="muted">selected: ${(latest.selected_node_ids || []).join(", ")}</p>`
     : "尚無召回路徑";
-  $("topicGraphTraces").innerHTML = (state.topicGraphTraces || []).map((trace) => `
+  $("topicGraphTraces").innerHTML = traces.map((trace) => `
     <div class="item">
       <strong>${escapeHtml(trace.source || "trace")}</strong>
       <p>${escapeHtml(trace.query_text || "")}</p>
       <p class="muted">${escapeHtml(trace.created_at || "")}</p>
     </div>
   `).join("") || `<div class="muted">尚無 trace</div>`;
+}
+
+function topicGraphTraceMatchesPack(trace, packId) {
+  return !!trace && Number(trace.pack_id || 0) === Number(packId || 0);
 }
 
 export async function refreshTopicGraph(options = {}) {
@@ -632,6 +857,7 @@ export async function refreshTopicGraph(options = {}) {
     const graph = await api(`/topic-packs/${packId}/graph`);
     state.topicGraph = graph;
     setTopicGraphLoadedState(graph);
+    if (!state.selectedTopicGraphNodeId) renderTopicGraphSelectedNodeDetails(null, []);
     renderTopicGraph();
     return graph;
   } catch (error) {
@@ -667,6 +893,7 @@ export async function rebuildTopicGraph() {
 export async function refreshTopicGraphTrace(options = {}) {
   const showBusy = options.showBusy !== false;
   const id = selectedSessionId();
+  const packId = Number($("topicPackSelect")?.value || 0);
   if (!id) {
     state.topicGraphTraces = [];
     state.topicGraphLatestTrace = null;
@@ -678,8 +905,11 @@ export async function refreshTopicGraphTrace(options = {}) {
   try {
     const traces = await api(`/sessions/${encodeURIComponent(id)}/topic-graph/traces?limit=20`);
     const latest = await api(`/sessions/${encodeURIComponent(id)}/topic-graph/latest-trace`);
-    state.topicGraphTraces = traces.traces || [];
-    state.topicGraphLatestTrace = latest.trace || null;
+    const packTraces = (traces.traces || []).filter((trace) => topicGraphTraceMatchesPack(trace, packId));
+    state.topicGraphTraces = packTraces;
+    state.topicGraphLatestTrace = topicGraphTraceMatchesPack(latest.trace, packId)
+      ? latest.trace
+      : (packTraces[0] || null);
     if (!state.selectedTopicGraphNodeId) renderTopicGraphSelectedNodeDetails(null, []);
     renderTopicGraphTrace();
     renderTopicGraph();

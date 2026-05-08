@@ -88,6 +88,18 @@
 - 這是導播與角色看的內部方向，不會直接顯示在 live chat。
 - 它應描述本場直播主題、角色互動風格、避免事項與主軸收束方向。
 
+### 主持互動規則
+
+- 這是 Live Session 層級的節目主持結構，不屬於任何單一角色 persona。
+- 可放入雙主持分工、接話節奏、避免互相附和、不同觀點輪替等規則。
+- 內容只會透過 trusted external context 提供給導播、群聊 router 與角色接力 prompt，不會顯示在 live chat，也不寫回 MemoriaCore 角色設定或 shared memory。
+
+### 節目段落流程
+
+- 每行代表一個討論段落，例如事件 Hook、觀眾驚訝點、核心分析、反方觀點、收束金句。
+- 導播會根據「每段落建議回合數」在段落間推進，避免同一觀點一直重複。
+- 新直播、開場或 topic transition 會從第一個段落重新開始；沒有填段落流程時，不會注入段落狀態。
+
 ## Research Gate 與 Fact Cards
 
 ### Fact Cards

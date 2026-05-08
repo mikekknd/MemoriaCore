@@ -88,16 +88,47 @@ class DirectorRuntimeManagerMixin:
             )
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": opening_state})
             result = await self._send_director_turn(session, state, decision)
+            final_decision = decision
+            final_result = result
+            sent_turns = 1
+            post_opening_decision: dict[str, Any] | None = None
+            if runtime.running and self.storage.list_session_topic_pack_entries(runtime.session_id, limit=1):
+                refreshed_session = self.storage.get_session(runtime.session_id) or session
+                refreshed_state = self.storage.get_director_state(runtime.session_id)
+                if not self.storage.get_active_interaction(runtime.session_id):
+                    post_opening_decision = self._director_post_opening_topic_decision(
+                        refreshed_session,
+                        refreshed_state,
+                    )
+                    post_opening_state = self.storage.update_director_state(
+                        runtime.session_id,
+                        status="post_opening_topic_anchor",
+                        metadata={"post_opening_decision": post_opening_decision},
+                    )
+                    await self._broadcast(
+                        runtime.session_id,
+                        {"type": "director_state", "director": post_opening_state},
+                    )
+                    final_result = await self._send_director_turn(
+                        refreshed_session,
+                        post_opening_state,
+                        post_opening_decision,
+                    )
+                    final_decision = post_opening_decision
+                    sent_turns += 1
             next_state = self.storage.update_director_state(
                 runtime.session_id,
                 status="running",
                 last_director_action_at=datetime.now().isoformat(),
-                consecutive_ai_turns=int(state.get("consecutive_ai_turns", 0) or 0) + 1,
-                current_topic=str(decision.get("current_topic") or state.get("current_topic") or ""),
+                consecutive_ai_turns=int(state.get("consecutive_ai_turns", 0) or 0) + sent_turns,
+                current_topic=str(final_decision.get("current_topic") or state.get("current_topic") or ""),
                 metadata={
-                    "last_decision": decision,
-                    "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
+                    "last_decision": final_decision,
+                    "last_result_job_id": final_result.get("interaction", {}).get("job_id", ""),
+                    "opening_decision": decision,
+                    "post_opening_decision": post_opening_decision,
                     "chat_batches_since_anchor": 0,
+                    "program_segment": self._program_segment_after_turn(session, state, final_decision),
                 },
             )
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
@@ -119,6 +150,9 @@ class DirectorRuntimeManagerMixin:
                 session = self.storage.get_session(runtime.session_id)
                 if not session:
                     return
+                if runtime.status == "closing" or session.get("status") == "closing":
+                    await asyncio.sleep(1.0)
+                    continue
                 if self._duration_reached(session):
                     await self._finalize_for_duration(runtime, session)
                     return
@@ -172,6 +206,20 @@ class DirectorRuntimeManagerMixin:
 
                 decision = await asyncio.to_thread(self._director_decision, session, state)
                 action = str(decision.get("action") or "wait").strip()
+                if action == "closing_super_chat_thanks":
+                    decision = self._director_idle_continue_decision(session, state)
+                    decision["reason"] = (
+                        "一般導播決策不得提前進入 Super Chat 收尾；"
+                        "SC 感謝只允許在直播時間到達後由 finalize 流程執行。"
+                    )
+                    action = str(decision.get("action") or "continue_topic").strip()
+                if self._director_decision_is_early_live_closing(decision):
+                    decision = self._director_idle_continue_decision(session, state)
+                    decision["reason"] = (
+                        "預定直播時間尚未到達，阻止導播因時間進度提前 recap/close；"
+                        "正式收尾只由 duration finalize 流程執行。"
+                    )
+                    action = str(decision.get("action") or "continue_topic").strip()
                 chat_batches = int((state.get("metadata") or {}).get("chat_batches_since_anchor", 0) or 0)
                 max_chat_batches = max(1, int(session.get("director_max_chat_batches_before_anchor", 2) or 2))
                 if chat_batches >= max_chat_batches and action in {"wait", "reply_chat_batch", "reply_super_chat_batch", "defer_offtopic"}:
@@ -204,6 +252,7 @@ class DirectorRuntimeManagerMixin:
                         "last_decision": decision,
                         "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
                         "chat_batches_since_anchor": 0,
+                        "program_segment": self._program_segment_after_turn(session, state, decision),
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
@@ -228,28 +277,28 @@ class DirectorRuntimeManagerMixin:
         action = str(decision.get("action") or "continue_topic")
         prompt = str(decision.get("prompt") or "").strip()
         public_prompt = self._public_director_prompt(action, session, state)
+        if action == "opening":
+            public_prompt = self._public_director_opening_prompt(session, state)
         public_topic = self._public_director_topic(session, state)
         elapsed_minutes, elapsed_percent, remaining_minutes = self._session_elapsed(session)
-        try:
-            group_turn_limit = int(session.get("director_group_turn_limit", 3) or 3)
-        except (TypeError, ValueError):
-            group_turn_limit = 3
-        group_turn_limit = max(1, min(group_turn_limit, 12))
+        group_turn_limit = self._director_group_turn_limit_for_action(session, action)
         if not prompt:
             prompt = f"目前適合執行 {action}，請自然延續直播對話，不要提到幕後流程。"
-        topic_context = self._topic_pack_sequence_context_for_session(
-            session_id,
-            "\n".join([
-                str(public_topic or ""),
-                str(public_prompt or ""),
-                str(state.get("current_topic") or ""),
-            ]),
-            usage_source="director",
-        )
+        topic_context = ""
+        if action == "opening":
+            topic_context = self._topic_pack_sequence_preview_context_for_session(session_id)
+        else:
+            topic_context = self._topic_pack_sequence_context_for_session(
+                session_id,
+                "\n".join([
+                    str(public_topic or ""),
+                    str(public_prompt or ""),
+                    str(state.get("current_topic") or ""),
+                ]),
+                usage_source="director",
+            )
         context_parts = [
             f"直播流程 action={action}",
-            f"本場方向：{public_topic or '未設定'}",
-            f"目前主題：{public_topic or state.get('current_topic') or '未設定'}",
             f"直播進度：{elapsed_percent}%（已 {elapsed_minutes} 分鐘，剩餘約 {remaining_minutes} 分鐘）",
             f"處理提示：{public_prompt}",
         ]
@@ -259,6 +308,28 @@ class DirectorRuntimeManagerMixin:
             )
         if action == "closing_super_chat_thanks" and prompt:
             context_parts.append("本場 Super Chat 參考內容：\n" + prompt[:3000])
+        if action == "opening":
+            opening_intro_context = self._opening_intro_context_for_session(session)
+            if opening_intro_context:
+                context_parts.append(opening_intro_context)
+            if topic_context:
+                context_parts.append(
+                    "開場後話題導入資料：以下 <topic_pack_fact_cards> 只能在固定開場白與自我介紹完成後使用；"
+                    "請用其中一個具體切入點帶入討論，不得自行捏造資料卡未提供的作品、集數或事件。"
+                )
+        if action == "post_opening_topic_anchor":
+            if topic_context:
+                context_parts.append(
+                    "話題導入規則：開場已完成，接下來必須優先使用下方 <topic_pack_fact_cards> "
+                    "中的具體作品、集數、事件或觀點，不得自行捏造未提供的內容。"
+                )
+            else:
+                context_parts.append(
+                    "話題導入規則：目前沒有可用話題資料卡；請延續開場與既有直播方向，不得自行捏造具體作品、集數或事件。"
+                )
+        live_hosting = self._live_hosting_context_for_session(session, state)
+        if live_hosting:
+            context_parts.append(self._live_hosting_context_text(live_hosting))
         if topic_context:
             context_parts.append(topic_context)
         external_context = {
@@ -280,6 +351,9 @@ class DirectorRuntimeManagerMixin:
                 "group_turn_limit": group_turn_limit,
             },
         }
+        if live_hosting:
+            external_context["live_hosting"] = live_hosting
+        external_context = self._attach_live_persona_overrides(session, external_context)
         interaction = self.storage.create_interaction(
             {
                 "session_id": session_id,

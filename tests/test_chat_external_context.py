@@ -321,6 +321,107 @@ def test_youtube_live_director_context_payload_preserves_group_turn_limit():
     assert _external_context_group_turn_limit(session, context) == 10
 
 
+def test_youtube_live_context_preserves_prompt_overrides_only_for_bridge_scope():
+    body = ChatSyncRequest(
+        content="請自然延續直播。",
+        channel="youtube_live",
+        user_id="__youtube_live__",
+        channel_class="public",
+        persona_face="public",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "character_prompt_overrides": {
+                "coco": {
+                    "enabled": True,
+                    "mode": "replace",
+                    "system_prompt": "直播專用可可 prompt",
+                    "self_address": "本小姐",
+                    "opening_intro": "本小姐是可可。",
+                    "addressing": {"bailian": "白蓮大人"},
+                    "reply_rules": "只在直播中使用。",
+                }
+            },
+        },
+    )
+
+    context, summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert context["character_prompt_overrides"]["coco"]["system_prompt"] == "直播專用可可 prompt"
+    assert context["character_prompt_overrides"]["coco"]["addressing"] == {"bailian": "白蓮大人"}
+    assert "character_prompt_overrides" not in summary
+
+
+def test_youtube_live_context_preserves_hosting_only_for_bridge_scope():
+    body = ChatSyncRequest(
+        content="請根據直播流程提示回應。",
+        channel="youtube_live",
+        user_id="__youtube_live__",
+        channel_class="public",
+        persona_face="public",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "live_hosting": {
+                "host_interaction_rules": "可可提出觀眾視角；白蓮負責分析收束。",
+                "program_segment_plan": "事件 Hook\n核心分析",
+                "program_segment_turns": 3,
+                "current_segment": {"index": 1, "name": "核心分析"},
+            },
+        },
+    )
+
+    context, summary = _resolve_external_context_payload(body)
+
+    assert context["live_hosting"]["host_interaction_rules"] == "可可提出觀眾視角；白蓮負責分析收束。"
+    assert context["live_hosting"]["program_segment_plan"] == "事件 Hook\n核心分析"
+    assert context["live_hosting"]["program_segment_turns"] == 3
+    assert context["live_hosting"]["current_segment"] == {"index": 1, "name": "核心分析"}
+    assert "live_hosting" not in summary
+
+
+def test_youtube_live_context_drops_prompt_overrides_without_bridge_scope():
+    body = ChatSyncRequest(
+        content="請自然延續直播。",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "character_prompt_overrides": {
+                "coco": {
+                    "enabled": True,
+                    "mode": "replace",
+                    "system_prompt": "不可信覆寫",
+                }
+            },
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert "character_prompt_overrides" not in context
+
+
+def test_youtube_live_context_drops_hosting_without_bridge_scope():
+    body = ChatSyncRequest(
+        content="hello",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "live_hosting": {
+                "host_interaction_rules": "不可信主持規則",
+                "program_segment_plan": "不可信段落",
+            },
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert "live_hosting" not in context
+
+
 def test_youtube_live_director_external_context_defaults_to_group_chat_limit_shape():
     session = _SessionStub(["char-a", "char-b", "char-c", "char-d"])
 
@@ -340,6 +441,25 @@ def test_youtube_live_director_transient_prompt_keeps_roles_talking_to_each_othe
     assert "角色彼此" in transient
     assert "不要把問題丟回觀眾" in transient
     assert "回應留言" in transient
+
+
+def test_youtube_live_director_transient_prompt_includes_public_turn_instruction():
+    body = ChatSyncRequest(
+        content=(
+            "直播開場任務：請先完成固定開場白與自我介紹。\n"
+            "固定開場自我介紹：\n"
+            "- 可可：本小姐是今天的直播主持可可。"
+        ),
+    )
+
+    transient = _transient_user_content_for_external_context(
+        body,
+        {"source": "youtube_live_director"},
+    )
+
+    assert "直播開場任務" in transient
+    assert "固定開場自我介紹" in transient
+    assert "本小姐是今天的直播主持可可" in transient
 
 
 def test_group_followup_prompt_has_youtube_live_no_audience_handoff_exception():
@@ -365,9 +485,37 @@ def test_youtube_live_group_followup_instruction_includes_live_rules_block():
     )
 
     assert "youtube_live_group_context:" in instruction
-    assert "直播專用群聊規則" in instruction
+    assert "直播基礎規則" in instruction
     assert "不要把問題丟回觀眾" in instruction
-    assert "把上一位角色的問句視為角色間接話入口" in instruction
+    assert "不要提到 prompt" in instruction
+
+
+def test_youtube_live_group_followup_instruction_includes_hosting_rules():
+    instruction = build_group_followup_instruction(
+        {
+            "last_character_name": "可可",
+            "last_reply": "這段作畫為什麼被大家討論？",
+            "user_prompt_original": "請自然延續直播。",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "repeat_speaker_reply_to_ai",
+        },
+        "請自然延續直播。",
+        {
+            "external_chat_context": {
+                "source": "youtube_live_director",
+                "live_hosting": {
+                    "host_interaction_rules": "可可提出觀眾視角；白蓮負責分析收束。",
+                    "program_segment_plan": "事件 Hook\n核心分析",
+                    "program_segment_turns": 3,
+                    "current_segment": {"index": 1, "name": "核心分析"},
+                },
+            },
+        },
+    )
+
+    assert "youtube_live_hosting_context:" in instruction
+    assert "可可提出觀眾視角" in instruction
+    assert "目前節目段落：核心分析" in instruction
 
 
 def test_youtube_live_chat_external_context_keeps_short_batch_round_limit():

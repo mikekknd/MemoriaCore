@@ -1,0 +1,56 @@
+.live-session-workspace {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.15fr) minmax(320px, 0.85fr);
+  gap: 16px;
+  align-items: start;
+}
+.live-session-panel {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+.live-session-panel + .live-session-panel {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+
+.settings-workspace {
+  display: grid;
+  gap: 16px;
+}
+.settings-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.settings-panel + .settings-panel {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.live-persona-addressing-editor {
+  display: grid;
+  gap: 8px;
+}
+.live-persona-addressing-rows {
+  display: grid;
+  gap: 8px;
+}
+.live-persona-addressing-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.9fr) minmax(160px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.live-persona-addressing-delete {
+  width: 34px;
+  min-width: 34px;
+  padding-left: 0;
+  padding-right: 0;
+}
+.live-persona-addressing-empty {
+  padding: 9px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+}

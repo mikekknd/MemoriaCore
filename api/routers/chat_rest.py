@@ -62,6 +62,87 @@ def _is_youtube_live_external_context(external_context: dict | None) -> bool:
     return str(external_context.get("source") or "").strip() in YOUTUBE_LIVE_EXTERNAL_SOURCES
 
 
+def _body_declares_youtube_live_scope(body: ChatSyncRequest) -> bool:
+    return (
+        str(body.channel or "").strip() == "youtube_live"
+        and str(body.user_id or "").strip() == YOUTUBE_LIVE_USER_ID
+        and str(body.channel_class or "").strip() == "public"
+        and str(body.persona_face or "").strip() == "public"
+    )
+
+
+def _normalize_character_prompt_overrides(raw_overrides) -> dict[str, dict]:
+    if not isinstance(raw_overrides, dict):
+        return {}
+    normalized: dict[str, dict] = {}
+    for raw_character_id, raw in raw_overrides.items():
+        character_id = str(raw_character_id or "").strip()
+        if not character_id or not isinstance(raw, dict):
+            continue
+        system_prompt = str(raw.get("system_prompt") or "").replace("\r", "\n").strip()[:8000]
+        if not system_prompt:
+            continue
+        raw_mode = str(raw.get("mode") or "replace").strip()
+        mode = raw_mode if raw_mode in {"replace", "append"} else "replace"
+        addressing_raw = raw.get("addressing") if isinstance(raw.get("addressing"), dict) else {}
+        addressing = {
+            str(key or "").strip()[:120]: str(value or "").strip()[:120]
+            for key, value in addressing_raw.items()
+            if str(key or "").strip() and str(value or "").strip()
+        }
+        normalized[character_id[:120]] = {
+            "enabled": raw.get("enabled") is not False,
+            "mode": mode,
+            "system_prompt": system_prompt,
+            "self_address": str(raw.get("self_address") or "").strip()[:120],
+            "addressing": addressing,
+            "opening_intro": str(raw.get("opening_intro") or "").replace("\r", "\n").strip()[:1200],
+            "reply_rules": str(raw.get("reply_rules") or "").replace("\r", "\n").strip()[:2000],
+        }
+    return normalized
+
+
+def _normalize_live_hosting(raw_hosting) -> dict:
+    if not isinstance(raw_hosting, dict):
+        return {}
+    host_rules = str(raw_hosting.get("host_interaction_rules") or "").replace("\r", "\n").strip()[:4000]
+    segment_plan = str(raw_hosting.get("program_segment_plan") or "").replace("\r", "\n").strip()[:4000]
+    try:
+        segment_turns = int(raw_hosting.get("program_segment_turns", 3) or 3)
+    except (TypeError, ValueError):
+        segment_turns = 3
+    segment_turns = max(1, min(segment_turns, 12))
+    current_segment = {}
+    raw_segment = raw_hosting.get("current_segment") if isinstance(raw_hosting.get("current_segment"), dict) else {}
+    if raw_segment:
+        try:
+            index = int(raw_segment.get("index", 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        current_segment = {
+            "index": max(0, index),
+            "name": str(raw_segment.get("name") or "").strip()[:160],
+        }
+        for key in ("turns_in_segment", "turns_per_segment", "total_segments"):
+            if key in raw_segment:
+                try:
+                    current_segment[key] = max(0, int(raw_segment.get(key, 0) or 0))
+                except (TypeError, ValueError):
+                    current_segment[key] = 0
+        if not current_segment["name"]:
+            current_segment = {}
+    if not host_rules and not segment_plan and not current_segment:
+        return {}
+    normalized = {
+        "host_interaction_rules": host_rules,
+        "program_segment_plan": segment_plan,
+        "program_segment_turns": segment_turns,
+    }
+    if current_segment:
+        normalized["current_segment"] = current_segment
+    return normalized
+
+
 def _live_session_scope_for_external_context(
     body: ChatSyncRequest | None,
     external_context: dict | None,
@@ -162,6 +243,11 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         group_turn_limit = max(1, min(group_turn_limit, 12))
         summary["group_turn_limit"] = group_turn_limit
     visible_events = _normalize_visible_events(raw.get("visible_events"))
+    character_prompt_overrides = {}
+    live_hosting = {}
+    if source in YOUTUBE_LIVE_EXTERNAL_SOURCES and _body_declares_youtube_live_scope(body):
+        character_prompt_overrides = _normalize_character_prompt_overrides(raw.get("character_prompt_overrides"))
+        live_hosting = _normalize_live_hosting(raw.get("live_hosting"))
     context = {
         "source": source,
         "context_text": context_text,
@@ -170,6 +256,10 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
     }
     if group_turn_limit is not None:
         context["group_turn_limit"] = group_turn_limit
+    if character_prompt_overrides:
+        context["character_prompt_overrides"] = character_prompt_overrides
+    if live_hosting:
+        context["live_hosting"] = live_hosting
     return context, summary
 
 
@@ -334,11 +424,15 @@ def _transient_user_content_for_external_context(body: ChatSyncRequest, external
         return ""
     source = str(external_context.get("source") or "").strip()
     if source == "youtube_live_director":
-        return (
+        public_turn_instruction = str(body.content or "").replace("\r", "\n").strip()
+        base_instruction = (
             "請根據已提供的直播流程提示回應。"
             "這是直播自主推進，不保證有觀眾即時回覆；請讓角色彼此接話、補充或提出不同角度。"
             "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
         )
+        if public_turn_instruction:
+            return f"{public_turn_instruction}\n\n{base_instruction}"
+        return base_instruction
     if source == "youtube_live":
         return "請根據已帶入的 YouTube 直播留言上下文回應。"
     return "請根據已帶入的外部上下文回應。"

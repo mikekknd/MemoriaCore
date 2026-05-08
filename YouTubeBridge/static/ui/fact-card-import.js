@@ -1,5 +1,5 @@
 import { $, state, api, log } from "./core.js";
-import { refreshTopicEntries, refreshTopicPacks } from "./topic-pack-crud.js";
+import { refreshTopicEntries, refreshTopicPacks } from "./topic-pack-crud.js?v=topic-graph-sources-v2";
 import { factCardActionsBlockedDuringLive, updateTopicActionVisibility } from "./topic-packs.js";
 
 export function setFactCardImportBusy(isBusy, message = "正在讀取 FactCards 資料夾、建立資料卡並重建向量，請稍候。") {

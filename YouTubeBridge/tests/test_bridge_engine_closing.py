@@ -33,7 +33,63 @@ from bridge_engine_test_support import (
     bridge_engine,
     normalize_message,
 )
+import engine_closing
 
+
+@pytest.mark.asyncio
+async def test_duration_finalize_runs_program_closing_turn_before_final_end(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "auto_sc_thanks_on_finalize": True,
+            "auto_finalize_on_duration": True,
+            "planned_duration_minutes": 1,
+            "character_ids": ["koko", "byakuren"],
+        })
+        storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "sc-a",
+            "message_type": "superChatEvent",
+            "author_display_name": "SC觀眾",
+            "message_text": "最後支持一下。",
+            "amount_display_string": "NT$150",
+            "currency": "TWD",
+            "amount_micros": 150000000,
+            "sc_tier": 2,
+            "priority_class": "super_chat",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        actions: list[str] = []
+
+        async def fake_send_director_turn(session_arg, state_arg, decision_arg):
+            actions.append(decision_arg["action"])
+            assert runtime.status == "closing"
+            assert storage.get_session("live-a")["status"] == "closing"
+            return {"interaction": {"job_id": f"fake-{len(actions)}"}}
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+
+        await manager._finalize_for_duration(runtime, session)
+
+        assert actions == ["duration_closing", "closing_super_chat_thanks", "final_closing"]
+        assert runtime.status == "ended"
+        assert runtime.running is False
+        assert storage.get_session("live-a")["status"] == "ended"
+        assert storage.list_super_chats("live-a", unhandled_only=True) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @pytest.mark.asyncio
 async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
@@ -107,6 +163,54 @@ async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
         director_state = storage.get_director_state("live-a")
         assert director_state["director_enabled"] is False
         assert director_state["status"] == "ended"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@pytest.mark.asyncio
+async def test_duration_closing_uses_short_group_turn_budget(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+            "director_group_turn_limit": 10,
+        })
+        captured = {}
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "收尾完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        await manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            {
+                "action": "duration_closing",
+                "reason": "預定直播時間已到。",
+                "prompt": "",
+                "current_topic": "動畫新番",
+            },
+        )
+
+        assert captured["external_context"]["group_turn_limit"] == 2
+        assert captured["external_context"]["summary"]["group_turn_limit"] == 2
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -525,7 +629,7 @@ async def test_duration_finalize_timeout_writes_fallback_closing_thanks(monkeypa
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @pytest.mark.asyncio
-async def test_duration_finalize_interrupts_active_generation_before_closing_thanks(monkeypatch):
+async def test_duration_finalize_waits_for_active_generation_before_closing_thanks(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
         FakeClosingMemoriaClient.calls.clear()
@@ -564,7 +668,7 @@ async def test_duration_finalize_interrupts_active_generation_before_closing_tha
             "status": "running",
             "event_ids": [1],
             "memoria_session_id": "mem-a",
-            "content": "即將被 closing 中斷的回應。",
+            "content": "時間到後仍應先完成的回應。",
         })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
@@ -578,17 +682,81 @@ async def test_duration_finalize_interrupts_active_generation_before_closing_tha
 
         monkeypatch.setattr(manager, "_send_director_turn", assert_no_active_before_closing)
 
-        await manager._finalize_for_duration(runtime, session)
+        finalize_task = asyncio.create_task(manager._finalize_for_duration(runtime, session))
+        await asyncio.sleep(0.2)
 
-        interrupted = storage.get_interaction(active["job_id"])
-        assert interrupted["status"] == "interrupted"
-        assert interrupted["reason"] == "live_session_closing"
-        assert cancel_event.is_set()
+        waiting = storage.get_interaction(active["job_id"])
+        assert waiting["status"] == "running"
+        assert cancel_event.is_set() is False
+        assert runtime.status == "closing"
+
+        storage.update_interaction(
+            active["job_id"],
+            status="completed",
+            reply_text="這段回應自然完成後才進入收尾。",
+            completed_at=datetime.now().isoformat(),
+        )
+        await finalize_task
+
+        completed = storage.get_interaction(active["job_id"])
+        assert completed["status"] == "completed"
+        assert completed["reason"] == ""
         assert FakeClosingMemoriaClient.calls
         interactions = storage.list_interactions("live-a")
         assert interactions[0]["status"] == "completed"
         assert interactions[0]["metadata"]["decision"]["action"] == "closing_super_chat_thanks"
         assert storage.list_super_chats("live-a", unhandled_only=True) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@pytest.mark.asyncio
+async def test_duration_finalize_interrupts_stale_active_generation_after_wait_timeout(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "auto_sc_thanks_on_finalize": False,
+            "auto_finalize_on_duration": True,
+            "planned_duration_minutes": 1,
+        })
+        active = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "manual_inject",
+            "priority": 200,
+            "status": "running",
+            "event_ids": [],
+            "memoria_session_id": "mem-a",
+            "content": "這筆互動模擬 provider 卡住，狀態一直停在 running。",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        cancel_event = threading.Event()
+        runtime.cancel_events[active["job_id"]] = cancel_event
+        monkeypatch.setattr(engine_closing, "DURATION_CLOSING_ACTIVE_WAIT_TIMEOUT_SECONDS", 0.01, raising=False)
+        monkeypatch.setattr(engine_closing, "DURATION_CLOSING_ACTIVE_WAIT_POLL_SECONDS", 0.01, raising=False)
+        monkeypatch.setattr(engine_closing, "DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS", 0.01, raising=False)
+
+        await asyncio.wait_for(manager._finalize_for_duration(runtime, session), timeout=3.0)
+
+        interrupted = storage.get_interaction(active["job_id"])
+        assert interrupted["status"] == "interrupted"
+        assert interrupted["reason"] == "live_session_closing"
+        assert cancel_event.is_set() is True
+        assert runtime.status == "ended"
+        assert runtime.running is False
+        assert storage.get_session("live-a")["status"] == "ended"
+        director_metadata = storage.get_director_state("live-a")["metadata"]
+        assert director_metadata["duration_closing_active_wait_timeout"] is True
+        assert director_metadata["duration_closing_active_wait_job_id"] == active["job_id"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

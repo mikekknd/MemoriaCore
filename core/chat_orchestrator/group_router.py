@@ -68,6 +68,7 @@ def run_group_router(
     max_bot_turns: int | None = None,
     allow_single_participant_repeat: bool = True,
     discussion_mode: str = "default",
+    live_hosting: dict | None = None,
 ) -> GroupRouterResult:
     """根據近期群組上下文選出下一位 AI；無需接話時回傳 should_respond=False。"""
     participants = _normalize_characters(active_characters)
@@ -121,7 +122,7 @@ def run_group_router(
         ),
     )
     if normalized_discussion_mode == "youtube_live":
-        prompt += "\n\n" + _youtube_live_group_router_rules()
+        prompt += "\n\n" + _youtube_live_group_router_rules(live_hosting)
 
     try:
         parsed = router.generate_json(
@@ -166,16 +167,41 @@ def _normalize_discussion_mode(value: str | None) -> str:
     return "youtube_live" if str(value or "").strip() == "youtube_live" else "default"
 
 
-def _youtube_live_group_router_rules() -> str:
-    return (
+def _youtube_live_group_router_rules(live_hosting: dict | None = None) -> str:
+    base = (
         "<youtube_live_group_router_rules>\n"
         "- 這是 YouTube 直播的多角色對話，不是普通使用者問答。\n"
         "- 不要因為所有角色都已各說一次就停止；只要 remaining_bot_turns_including_next > 0，仍應優先評估角色間接話。\n"
-        "- 若上一位角色提出問句、具體觀點、比較、吐槽或未完成的切入點，優先選 repeat_speaker_reply_to_ai 或 new_speaker_reply_to_ai。\n"
-        "- 角色把問題丟給觀眾時，不代表應該等待觀眾；應讓另一位角色接住、補充、反問角色或提出下一個切入點。\n"
+        "- 角色把問題丟給觀眾時，不代表應該等待觀眾；應讓另一位角色接住，除非目前正在回應留言或 Super Chat。\n"
         "- 只有在近期交換已自然收束、沒有具體主張可補充，或已沒有剩餘回合時才停止。\n"
         "</youtube_live_group_router_rules>"
     )
+    hosting = _youtube_live_hosting_router_rules(live_hosting)
+    return base + ("\n\n" + hosting if hosting else "")
+
+
+def _youtube_live_hosting_router_rules(live_hosting: dict | None = None) -> str:
+    if not isinstance(live_hosting, dict) or not live_hosting:
+        return ""
+    parts: list[str] = []
+    host_rules = str(live_hosting.get("host_interaction_rules") or "").strip()
+    segment_plan = str(live_hosting.get("program_segment_plan") or "").strip()
+    current = live_hosting.get("current_segment") if isinstance(live_hosting.get("current_segment"), dict) else {}
+    if host_rules:
+        parts.append("主持互動規則：\n" + host_rules)
+    if current and str(current.get("name") or "").strip():
+        parts.append(f"目前節目段落：{str(current.get('name') or '').strip()}")
+    if segment_plan:
+        parts.append("節目段落流程：\n" + segment_plan)
+    try:
+        turns = int(live_hosting.get("program_segment_turns", 0) or 0)
+    except (TypeError, ValueError):
+        turns = 0
+    if turns > 0:
+        parts.append(f"每段落建議回合數：{turns}")
+    if not parts:
+        return ""
+    return "<youtube_live_hosting_router_rules>\n" + "\n\n".join(parts) + "\n</youtube_live_hosting_router_rules>"
 
 
 def _normalize_characters(active_characters: list[dict]) -> list[dict]:

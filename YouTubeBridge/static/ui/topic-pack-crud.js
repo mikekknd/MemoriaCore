@@ -1,6 +1,6 @@
 import { $, state, api, escapeHtml, log } from "./core.js";
 import { currentTopicEntryId, selectedSessionId, selectedTopicEntry, selectedTopicPack, topicEntryById } from "./selectors.js";
-import { refreshTopicGraph, refreshTopicGraphTrace } from "./topic-graph.js";
+import { refreshTopicGraph, refreshTopicGraphTrace } from "./topic-graph.js?v=topic-graph-sources-v2";
 import { updateTopicActionVisibility } from "./topic-packs.js";
 
 export function setTopicEntryEditorBusy(isBusy) {
