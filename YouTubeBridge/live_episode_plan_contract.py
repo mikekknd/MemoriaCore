@@ -279,15 +279,21 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
 def initial_planned_state(plan: dict[str, Any]) -> dict[str, Any]:
     return {
         "plan_id": _require_text(plan.get("plan_id"), "plan_id"),
+        "plan_status": "running",
         "current_segment_index": 0,
         "current_turn_index": 0,
         "completed_segment_ids": [],
         "completed_turn_ids": [],
+        "completed_turn_types": [],
         "segment_memory": copy.deepcopy(SEGMENT_MEMORY_TEMPLATE),
     }
 
 
-def current_turn_contract(
+def initial_segment_memory() -> dict[str, Any]:
+    return copy.deepcopy(SEGMENT_MEMORY_TEMPLATE)
+
+
+def current_segment(
     plan: dict[str, Any],
     planned_state: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -295,12 +301,20 @@ def current_turn_contract(
     if not isinstance(segments, list):
         return None
     segment_index = int(planned_state.get("current_segment_index") or 0)
-    turn_index = int(planned_state.get("current_turn_index") or 0)
     if segment_index < 0 or segment_index >= len(segments):
         return None
     segment = segments[segment_index]
-    if not isinstance(segment, dict):
+    return segment if isinstance(segment, dict) else None
+
+
+def current_turn_contract(
+    plan: dict[str, Any],
+    planned_state: dict[str, Any],
+) -> dict[str, Any] | None:
+    segment = current_segment(plan, planned_state)
+    if not segment:
         return None
+    turn_index = int(planned_state.get("current_turn_index") or 0)
     turns = segment.get("planned_turn_contracts")
     if not isinstance(turns, list) or turn_index < 0 or turn_index >= len(turns):
         return None

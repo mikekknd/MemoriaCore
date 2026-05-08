@@ -1,0 +1,166 @@
+"""Plan-aware director helpers for LiveEpisodePlan sessions."""
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+from live_episode_plan_contract import (
+    current_segment,
+    current_turn_contract,
+    initial_planned_state,
+    initial_segment_memory,
+    validate_live_episode_plan,
+)
+
+
+class EpisodePlanManagerMixin:
+    def _episode_plan_for_session(self, session: dict[str, Any]) -> dict[str, Any] | None:
+        plan_id = str(session.get("episode_plan_id") or "").strip()
+        if not plan_id:
+            return None
+        record = self.storage.get_live_episode_plan(plan_id)
+        if not record:
+            return None
+        return validate_live_episode_plan(record.get("plan_json") or {})
+
+    def _episode_plan_and_state(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        plan = self._episode_plan_for_session(session)
+        if not plan:
+            return None, {}
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        raw_state = metadata.get("planned_state") if isinstance(metadata.get("planned_state"), dict) else {}
+        if raw_state.get("plan_id") != plan.get("plan_id"):
+            return plan, initial_planned_state(plan)
+        planned_state = copy.deepcopy(raw_state)
+        planned_state.setdefault("plan_status", "running")
+        planned_state.setdefault("completed_segment_ids", [])
+        planned_state.setdefault("completed_turn_ids", [])
+        planned_state.setdefault("completed_turn_types", [])
+        planned_state.setdefault("segment_memory", initial_segment_memory())
+        planned_state.setdefault("last_planned_turn_contract_id", "")
+        return plan, planned_state
+
+    @staticmethod
+    def _episode_current_segment(
+        plan: dict[str, Any],
+        planned_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return current_segment(plan, planned_state)
+
+    @staticmethod
+    def _episode_current_turn_contract(
+        plan: dict[str, Any],
+        planned_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return current_turn_contract(plan, planned_state)
+
+    def _planned_state_after_episode_turn(
+        self,
+        plan: dict[str, Any],
+        planned_state: dict[str, Any],
+        completed_turn: dict[str, Any],
+    ) -> dict[str, Any]:
+        next_state = copy.deepcopy(planned_state)
+        segment = self._episode_current_segment(plan, next_state) or {}
+        turns = (
+            segment.get("planned_turn_contracts")
+            if isinstance(segment.get("planned_turn_contracts"), list)
+            else []
+        )
+        turn_id = str(completed_turn.get("turn_id") or "")
+        turn_type = str(completed_turn.get("turn_type") or "")
+        if turn_id:
+            next_state.setdefault("completed_turn_ids", []).append(turn_id)
+            next_state["last_planned_turn_contract_id"] = turn_id
+        if turn_type:
+            next_state.setdefault("completed_turn_types", []).append(turn_type)
+
+        memory = (
+            next_state.get("segment_memory")
+            if isinstance(next_state.get("segment_memory"), dict)
+            else initial_segment_memory()
+        )
+        if turn_id:
+            memory.setdefault("covered_claims", []).append(f"completed:{turn_id}")
+        forbidden = (
+            completed_turn.get("forbidden_repetition")
+            if isinstance(completed_turn.get("forbidden_repetition"), dict)
+            else {}
+        )
+        repeats: list[str] = []
+        for key in ("claims", "metaphors", "openings"):
+            repeats.extend(
+                str(item).strip()
+                for item in forbidden.get(key) or []
+                if str(item).strip()
+            )
+        memory["forbidden_next_repeats"] = repeats[:20]
+        next_state["segment_memory"] = memory
+
+        completion = (
+            segment.get("completion_conditions")
+            if isinstance(segment.get("completion_conditions"), dict)
+            else {}
+        )
+        completed_types = set(next_state.get("completed_turn_types") or [])
+        required_types = {
+            str(item).strip()
+            for item in completion.get("required_turn_types") or []
+            if str(item).strip()
+        }
+        min_turns = int(completion.get("min_planned_turns") or 1)
+        max_turns = int(completion.get("max_planned_turns") or max(min_turns, len(turns), 1))
+        completed_count = len(next_state.get("completed_turn_ids") or [])
+        segment_done = completed_count >= min_turns and required_types.issubset(completed_types)
+        segment_done = segment_done or completed_count >= max_turns
+        if segment_done:
+            segment_index = int(next_state.get("current_segment_index") or 0)
+            segment_id = str(segment.get("segment_id") or "")
+            if segment_id:
+                next_state.setdefault("completed_segment_ids", []).append(segment_id)
+            if segment_index < len(plan.get("segments") or []) - 1:
+                next_state["current_segment_index"] = segment_index + 1
+                next_state["current_turn_index"] = 0
+                next_state["completed_turn_ids"] = []
+                next_state["completed_turn_types"] = []
+                next_state["segment_memory"] = initial_segment_memory()
+                next_state["plan_status"] = "running"
+                return next_state
+            next_state["plan_status"] = "completed"
+            next_state["current_turn_index"] = max(0, len(turns) - 1)
+            return next_state
+
+        current_turn_index = int(next_state.get("current_turn_index") or 0)
+        next_state["current_turn_index"] = min(current_turn_index + 1, max(0, len(turns) - 1))
+        next_state["plan_status"] = "running"
+        return next_state
+
+    def _interrupt_state_for_audience_event(
+        self,
+        plan: dict[str, Any],
+        planned_state: dict[str, Any],
+        event: dict[str, Any],
+        event_type: str,
+        action: str,
+    ) -> dict[str, Any]:
+        segment = self._episode_current_segment(plan, planned_state) or {}
+        handling = (
+            segment.get("audience_handling")
+            if isinstance(segment.get("audience_handling"), dict)
+            else {}
+        )
+        remaining_turns = max(1, min(int(handling.get("max_interrupt_turns") or 1), 4))
+        return {
+            "status": "handling_audience",
+            "source_event_ids": [int(event.get("id") or 0)] if event.get("id") else [],
+            "interrupt_type": str(event_type or "question"),
+            "action": str(action or "bounded_interrupt"),
+            "return_segment_index": int(planned_state.get("current_segment_index") or 0),
+            "return_turn_index": int(planned_state.get("current_turn_index") or 0),
+            "remaining_interrupt_turns": remaining_turns,
+            "resume_rule": str(handling.get("resume_rule") or "bridge_back_to_segment_goal"),
+        }

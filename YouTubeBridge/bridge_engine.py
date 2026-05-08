@@ -19,6 +19,7 @@ import engine_public_events
 from engine_closing import ClosingManagerMixin
 from engine_director import DirectorManagerMixin
 from engine_director_runtime import DirectorRuntimeManagerMixin
+from engine_episode_plans import EpisodePlanManagerMixin
 from engine_event_safety import EventSafetyManagerMixin
 from engine_injection import InjectionManagerMixin
 from engine_runtime_lifecycle import RuntimeLifecycleManagerMixin
@@ -66,6 +67,7 @@ def clear_llm_trace_log(path: Path | None = None) -> dict[str, Any]:
 
 
 class YouTubeBridgeManager(
+    EpisodePlanManagerMixin,
     DirectorRuntimeManagerMixin,
     ClosingManagerMixin,
     InjectionManagerMixin,
