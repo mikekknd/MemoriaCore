@@ -68,6 +68,16 @@ AUDIENCE_QUERY_CLASSIFIER_SCHEMA = {
     "required": ["is_factual_question", "needs_external_search", "safe_search_allowed", "sanitized_query"],
 }
 
+AUDIENCE_EVENT_CLASSIFIER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "event_type": {"type": "string"},
+        "action": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["event_type", "action", "reason"],
+}
+
 SAFETY_CLASSIFIER_BATCH_LIMIT = 20
 AUDIENCE_QUERY_FACT_CARD_MIN_SCORE = 0.20
 AUDIENCE_QUERY_FACT_CARD_STRONG_SCORE = 0.60

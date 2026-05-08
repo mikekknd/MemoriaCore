@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
+from bridge_contracts import AUDIENCE_EVENT_CLASSIFIER_SCHEMA
 from live_episode_plan_contract import (
     current_segment,
     current_turn_contract,
@@ -14,6 +16,16 @@ from live_episode_plan_contract import (
 
 
 class EpisodePlanManagerMixin:
+    @staticmethod
+    def _episode_classifier_actions(plan: dict[str, Any]) -> dict[str, str]:
+        classifier = (
+            plan.get("audience_event_classifier")
+            if isinstance(plan.get("audience_event_classifier"), dict)
+            else {}
+        )
+        actions = classifier.get("actions") if isinstance(classifier.get("actions"), dict) else {}
+        return {str(key): str(value) for key, value in actions.items()}
+
     def _episode_plan_for_session(self, session: dict[str, Any]) -> dict[str, Any] | None:
         plan_id = str(session.get("episode_plan_id") or "").strip()
         if not plan_id:
@@ -163,4 +175,120 @@ class EpisodePlanManagerMixin:
             "return_turn_index": int(planned_state.get("current_turn_index") or 0),
             "remaining_interrupt_turns": remaining_turns,
             "resume_rule": str(handling.get("resume_rule") or "bridge_back_to_segment_goal"),
+        }
+
+    def _classify_episode_audience_event(
+        self,
+        plan: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, str]:
+        actions = self._episode_classifier_actions(plan)
+        label = str(event.get("safety_label") or "").lower()
+        if "prompt" in label or "injection" in label:
+            return {
+                "event_type": "prompt_injection",
+                "action": "ignore",
+                "reason": "safety_label",
+            }
+        if str(event.get("priority_class") or "") == "super_chat":
+            return {
+                "event_type": "super_chat",
+                "action": str(actions.get("super_chat") or "bounded_interrupt"),
+                "reason": "priority_class",
+            }
+        text = str(event.get("safe_message_text") or "").strip()
+        if any(token in text for token in ("更正", "不是", "說錯", "補充一下")):
+            return {
+                "event_type": "correction",
+                "action": str(actions.get("correction") or "verify_then_ack"),
+                "reason": "safe_text",
+            }
+        if "?" in text or "？" in text:
+            return {
+                "event_type": "question",
+                "action": str(actions.get("question") or "bounded_interrupt"),
+                "reason": "safe_text",
+            }
+        if len(text) <= 40:
+            return {
+                "event_type": "reaction",
+                "action": str(actions.get("reaction") or "optional_ack"),
+                "reason": "short_reaction",
+            }
+
+        classifier = (
+            plan.get("audience_event_classifier")
+            if isinstance(plan.get("audience_event_classifier"), dict)
+            else {}
+        )
+        try:
+            result = self._memoria_client().generate_prompt_json(
+                prompt_key="youtube_live_audience_event_classifier_prompt",
+                variables={
+                    "event_json": json.dumps(event, ensure_ascii=False, indent=2),
+                    "allowed_event_types": "\n".join(
+                        str(item) for item in classifier.get("event_types") or []
+                    ),
+                    "actions_json": json.dumps(actions, ensure_ascii=False, indent=2),
+                },
+                task_key="router",
+                temperature=0.0,
+                schema=AUDIENCE_EVENT_CLASSIFIER_SCHEMA,
+            )
+        except Exception:
+            return {
+                "event_type": "off_topic",
+                "action": str(actions.get("off_topic") or "ignore_or_soft_ack"),
+                "reason": "classifier_fallback",
+            }
+
+        event_type = str(result.get("event_type") or "off_topic")
+        action = str(result.get("action") or actions.get(event_type) or "ignore_or_soft_ack")
+        expected_action = str(actions.get(event_type) or action)
+        if action != expected_action:
+            action = expected_action
+        return {
+            "event_type": event_type,
+            "action": action,
+            "reason": str(result.get("reason") or "llm_classifier")[:240],
+        }
+
+    def _episode_interrupt_decision_for_event(
+        self,
+        plan: dict[str, Any],
+        planned_state: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        classified = self._classify_episode_audience_event(plan, event)
+        action = classified["action"]
+        if action == "ignore":
+            return None
+        if action not in {
+            "bounded_interrupt",
+            "verify_then_ack",
+            "ignore_or_soft_ack",
+            "ignore_or_deescalate",
+        }:
+            return None
+        event_type = classified["event_type"]
+        interrupt_state = self._interrupt_state_for_audience_event(
+            plan,
+            planned_state,
+            event,
+            event_type,
+            action,
+        )
+        director_action = "reply_super_chat_batch" if event_type == "super_chat" else "reply_chat_batch"
+        return {
+            "action": director_action,
+            "reason": f"episode audience event: {event_type}",
+            "prompt": str(event.get("safe_message_text") or "")[:500],
+            "current_topic": "",
+            "episode_plan": {
+                "mode": "audience_interrupt",
+                "event_type": event_type,
+                "event_action": action,
+                "interrupt_state": interrupt_state,
+                "classification_reason": classified["reason"],
+            },
         }
