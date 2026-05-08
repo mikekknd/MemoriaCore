@@ -3,11 +3,13 @@ import { requestedSessionIdFromUrl, selectedTopicEntry } from "./selectors.js";
 import {
   generateTestEvents, injectEvents, interruptNow, loadConnectors, loadHealth,
   loadMemoriaConfig, loadMemoriaRefs, loadSessions, makeSummary,
-  refreshDirector, refreshEvents, refreshSummary, replySuperChats, saveConnector, saveMemoriaConfig,
+  bindSelectedEpisodePlan, importEpisodePlanFromFile,
+  refreshDirector, refreshEpisodePlans, refreshEvents, refreshSummary,
+  replySuperChats, saveConnector, saveMemoriaConfig,
   addLivePersonaAddressingRow, fillLivePersonaOverlayForm, livePersonaOverlayFor, saveLivePersonaOverlay,
   addProgramSegmentRow,
   testMemoriaAuth, toggleAutoTestEvents, toggleSession,
-  syncCharacterSelectionLimit, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
+  syncCharacterSelectionLimit, unbindEpisodePlan, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
 } from "./control.js?v=hosting-segments-v1";
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
@@ -22,6 +24,7 @@ async function refreshAll() {
   await loadConnectors();
   await loadMemoriaConfig();
   await loadMemoriaRefs();
+  await refreshEpisodePlans();
   await loadSessions(requestedSessionIdFromUrl());
   await refreshEvents();
   await refreshSummary();
@@ -132,6 +135,9 @@ $("interruptNow").onclick = () => interruptNow().catch((error) => log("中斷失
 $("makeSummary").onclick = () => makeSummary(false).catch((error) => log("摘要失敗", String(error)));
 $("forceSummary").onclick = () => makeSummary(true).catch((error) => log("強制摘要失敗", String(error)));
 $("updateDirectorGuidance").onclick = () => updateDirectorGuidance().catch((error) => log("導播方向更新失敗", String(error)));
+$("importEpisodePlan").onclick = () => importEpisodePlanFromFile().catch((error) => log("匯入企劃失敗", { error: String(error) }));
+$("bindEpisodePlan").onclick = () => bindSelectedEpisodePlan().catch((error) => log("綁定企劃失敗", { error: String(error) }));
+$("unbindEpisodePlan").onclick = () => unbindEpisodePlan().catch((error) => log("解除企劃失敗", { error: String(error) }));
 $("refreshTopicPacks").onclick = () => refreshTopicPacks().catch((error) => log("資料包更新失敗", String(error)));
 $("createTopicPack").onclick = () => createTopicPack().catch((error) => log("資料包建立失敗", String(error)));
 $("updateTopicPack").onclick = () => updateTopicPack().catch((error) => log("資料包更新失敗", String(error)));

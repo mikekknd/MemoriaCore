@@ -76,6 +76,31 @@ export function renderDirectorSegmentState(data) {
   const target = $("directorSegmentState");
   if (!target) return;
   const metadata = data?.metadata || {};
+  const planned = metadata.planned_state || {};
+  const interrupt = metadata.interrupt_state || {};
+  if (planned.plan_id) {
+    const segmentIndex = Number(planned.current_segment_index || 0) + 1;
+    const turnIndex = Number(planned.current_turn_index || 0) + 1;
+    const interruptText = interrupt.status === "handling_audience"
+      ? ` / interrupt：${interrupt.interrupt_type || "audience"}`
+      : "";
+    target.textContent = `企劃：${planned.plan_id} / 段落 ${segmentIndex} / turn ${turnIndex}${interruptText}`;
+    target.className = interrupt.status === "handling_audience"
+      ? "director-segment-state status warn"
+      : "director-segment-state status good";
+    const planStatus = $("episodePlanStatus");
+    if (planStatus) {
+      planStatus.textContent = planned.plan_id;
+      planStatus.className = "status good";
+    }
+    return;
+  }
+  const planStatus = $("episodePlanStatus");
+  if (planStatus) {
+    const session = state.sessions.find((item) => item.session_id === selectedSessionId());
+    planStatus.textContent = session?.episode_plan_id || "未綁定";
+    planStatus.className = session?.episode_plan_id ? "status warn" : "status";
+  }
   const segment = metadata.segment_state || {};
   const current = segment.current_step || {};
   if (!current.name) {
@@ -93,6 +118,56 @@ export function renderDirectorSegmentState(data) {
   target.className = segment.all_steps_completed
     ? "director-segment-state status good"
     : "director-segment-state status warn";
+}
+
+export async function refreshEpisodePlans() {
+  const plans = await api("/episode-plans");
+  state.episodePlans = Array.isArray(plans) ? plans : [];
+  const select = $("episodePlanSelect");
+  if (select) {
+    const current = select.value;
+    select.innerHTML = `<option value="">不使用企劃</option>` + state.episodePlans.map((plan) => (
+      `<option value="${escapeHtml(plan.plan_id)}">${escapeHtml(plan.title || plan.plan_id)}</option>`
+    )).join("");
+    select.value = current;
+  }
+}
+
+export async function importEpisodePlanFromFile() {
+  const file = $("episodePlanFile")?.files?.[0];
+  if (!file) throw new Error("請先選擇 episode-plan.json");
+  const text = await file.text();
+  const plan_json = JSON.parse(text);
+  const saved = await api("/episode-plans/import", {
+    method: "POST",
+    body: JSON.stringify({ plan_json, source_path: file.name }),
+  });
+  log("節目企劃已匯入", saved);
+  await refreshEpisodePlans();
+  $("episodePlanSelect").value = saved.plan_id;
+}
+
+export async function bindSelectedEpisodePlan() {
+  const id = selectedSessionId();
+  if (!id) throw new Error("請先建立或選擇 Live Session");
+  const planId = $("episodePlanSelect")?.value || "";
+  if (!planId) throw new Error("請先選擇節目企劃");
+  const session = await api(`/sessions/${encodeURIComponent(id)}/episode-plan`, {
+    method: "POST",
+    body: JSON.stringify({ plan_id: planId }),
+  });
+  log("節目企劃已綁定", session);
+  await loadSessions(id);
+  await refreshDirector();
+}
+
+export async function unbindEpisodePlan() {
+  const id = selectedSessionId();
+  if (!id) throw new Error("請先建立或選擇 Live Session");
+  const session = await api(`/sessions/${encodeURIComponent(id)}/episode-plan`, { method: "DELETE" });
+  log("節目企劃已解除綁定", session);
+  await loadSessions(id);
+  await refreshDirector();
 }
 
 export function updateDirectorControls(data) {

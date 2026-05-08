@@ -23,6 +23,7 @@ export const state = {
   topicGraphShowSourceNodes: false,
   topicGraphTraceAutoFollow: true,
   topicGraphTraceRefreshTimer: null,
+  episodePlans: [],
   currentTopicEntryId: 0,
   topicEntryEditorBusy: false,
   factCardImportBusy: false,
@@ -113,6 +114,7 @@ export function summarizeSsePayload(payload) {
 export function installTestIds() {
   [
     "sessionId", "videoId", "characterSelect", "characterLimitState",
+    "episodePlanFile", "importEpisodePlan", "episodePlanSelect", "bindEpisodePlan", "unbindEpisodePlan", "episodePlanStatus",
     "injectInterval", "injectMinIntervalSeconds", "plannedDuration", "scInterruptCooldown", "sessionTopicPackSelect", "autoInject", "autoFinalize",
     "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession",
     "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",

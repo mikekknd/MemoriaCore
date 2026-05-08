@@ -913,6 +913,27 @@ def test_director_controls_are_integrated_into_live_session_panel():
     assert "await setDirector(true, true);" in index_html
 
 
+def test_control_ui_exposes_episode_plan_import_and_binding_controls():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
+    ]
+
+    assert 'id="episodePlanFile"' in live_session_block
+    assert 'id="importEpisodePlan"' in live_session_block
+    assert 'id="episodePlanSelect"' in live_session_block
+    assert 'id="bindEpisodePlan"' in live_session_block
+    assert 'id="unbindEpisodePlan"' in live_session_block
+    assert 'id="episodePlanStatus"' in live_session_block
+    assert "function refreshEpisodePlans" in index_html
+    assert "function importEpisodePlanFromFile" in index_html
+    assert "function bindSelectedEpisodePlan" in index_html
+    assert "function renderDirectorSegmentState" in index_html
+    assert "planned_state" in index_html
+    assert "interrupt_state" in index_html
+
+
 def test_live_session_places_director_below_selected_roles_and_runtime_settings_on_right():
     index_html = _control_ui_source()
     live_session_block = index_html[

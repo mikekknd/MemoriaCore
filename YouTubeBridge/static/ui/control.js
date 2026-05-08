@@ -44,10 +44,14 @@ export {
   renderNoSummary,
   makeSummary,
   refreshDirector,
+  refreshEpisodePlans,
   updateDirectorControls,
   updateDirectorGuidance,
   setDirector,
   refreshQueue,
+  importEpisodePlanFromFile,
+  bindSelectedEpisodePlan,
+  unbindEpisodePlan,
 } from "./summary-director-control.js?v=hosting-segments-v1";
 export {
   updateLiveSessionControls,

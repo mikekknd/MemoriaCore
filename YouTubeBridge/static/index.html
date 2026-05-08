@@ -87,6 +87,21 @@
                 </div>
                 <p class="muted">直播開始後會自動啟動導播與開場；此區只調整導播節奏與方向。</p>
                 <div id="directorSegmentState" class="director-segment-state muted">尚無段落狀態</div>
+                <div class="episode-plan-controls">
+                  <div class="section-heading compact">
+                    <h4>節目企劃</h4>
+                    <span id="episodePlanStatus" class="status">未綁定</span>
+                  </div>
+                  <div class="toolbar episode-plan-toolbar">
+                    <input id="episodePlanFile" type="file" accept="application/json,.json">
+                    <button id="importEpisodePlan" type="button">匯入企劃 JSON</button>
+                  </div>
+                  <div class="toolbar episode-plan-toolbar">
+                    <select id="episodePlanSelect"></select>
+                    <button id="bindEpisodePlan" type="button">綁定企劃</button>
+                    <button id="unbindEpisodePlan" type="button">解除綁定</button>
+                  </div>
+                </div>
                 <div class="grid">
                   <label>
                     <span class="field-label">角色停頓後續話秒數

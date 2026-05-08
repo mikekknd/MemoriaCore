@@ -237,6 +237,7 @@ export function fillSessionForm(session) {
   $("autoDeleteProcessed").checked = !!session.auto_delete_after_processed;
   $("directorGuidance").value = session.director_guidance || "";
   $("hostInteractionRules").value = session.host_interaction_rules || "";
+  if ($("episodePlanSelect")) $("episodePlanSelect").value = session.episode_plan_id || "";
   renderProgramSegmentRows(session.program_segment_plan || "");
   $("programSegmentTurns").value = session.program_segment_turns || 3;
   $("researchEnabled").checked = !!session.research_enabled;
@@ -275,6 +276,7 @@ export function newSessionDraft() {
   $("autoDeleteProcessed").checked = true;
   $("directorGuidance").value = "";
   $("hostInteractionRules").value = "";
+  if ($("episodePlanSelect")) $("episodePlanSelect").value = "";
   renderProgramSegmentRows("");
   $("programSegmentTurns").value = 3;
   $("researchEnabled").checked = false;
@@ -331,6 +333,7 @@ export function liveSessionPayload({ createNew = false } = {}) {
     display_name: "YouTube Live",
     video_id: $("videoId").value.trim(),
     target_memoria_session_id: "",
+    episode_plan_id: $("episodePlanSelect")?.value || "",
     character_ids: selectedCharacterIds(),
     auto_connect: true,
     auto_inject: $("autoInject").checked,
