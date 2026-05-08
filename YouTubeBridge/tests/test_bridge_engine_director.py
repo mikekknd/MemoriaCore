@@ -107,6 +107,126 @@ async def test_director_turn_includes_episode_plan_context(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_director_loop_uses_legacy_decision_when_no_episode_plan(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "director_guidance": "先聊四月新番。",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            idle_seconds=10,
+            status="running",
+            last_director_action_at=(datetime.now() - timedelta(seconds=30)).isoformat(),
+        )
+        calls = []
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        def fake_decision(self, session, state):
+            calls.append("legacy")
+            return {
+                "action": "continue_topic",
+                "reason": "legacy",
+                "prompt": "續話。",
+                "current_topic": "四月新番",
+            }
+
+        async def fake_send(self, session, state, decision):
+            runtime.running = False
+            return {"interaction": {"job_id": "fake-job"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_director_decision", fake_decision)
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        task = asyncio.create_task(manager._director_loop(runtime))
+        for _ in range(20):
+            if calls:
+                break
+            await asyncio.sleep(0.05)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert calls == ["legacy"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_loop_uses_episode_plan_decision_when_plan_bound(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            idle_seconds=10,
+            status="running",
+            last_director_action_at=(datetime.now() - timedelta(seconds=30)).isoformat(),
+        )
+        calls = []
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        def forbidden_legacy_decision(self, session, state):
+            raise AssertionError(
+                "episode plan sessions must not use legacy LLM director decision for planned turns"
+            )
+
+        async def fake_send(self, session, state, decision):
+            calls.append(decision["episode_plan"]["turn_contract"]["turn_id"])
+            runtime.running = False
+            return {"interaction": {"job_id": "fake-job"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_director_decision", forbidden_legacy_decision)
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        task = asyncio.create_task(manager._director_loop(runtime))
+        for _ in range(20):
+            if calls:
+                break
+            await asyncio.sleep(0.05)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert calls == ["seg_01_turn_01"]
+        planned_state = storage.get_director_state("live-a")["metadata"]["planned_state"]
+        assert planned_state["last_planned_turn_contract_id"] == "seg_01_turn_01"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_opening_turn_uses_intro_prompt_and_post_opening_fuel_cards(monkeypatch):
     tmp_dir = _tmp_dir()
     try:

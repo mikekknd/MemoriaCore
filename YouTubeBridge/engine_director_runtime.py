@@ -209,7 +209,9 @@ class DirectorRuntimeManagerMixin:
                     await asyncio.sleep(1.0)
                     continue
 
-                decision = await asyncio.to_thread(self._director_decision, session, state)
+                decision = self._episode_plan_next_decision(session, state)
+                if decision is None:
+                    decision = await asyncio.to_thread(self._director_decision, session, state)
                 action = str(decision.get("action") or "wait").strip()
                 if action == "closing_super_chat_thanks":
                     decision = self._director_idle_continue_decision(session, state)
@@ -263,6 +265,7 @@ class DirectorRuntimeManagerMixin:
                             decision,
                             self._segment_topic_entry_for_session(session),
                         ),
+                        **self._episode_metadata_after_turn(session, state, decision),
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})

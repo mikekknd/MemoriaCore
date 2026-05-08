@@ -473,3 +473,98 @@ class EpisodePlanManagerMixin:
             }
         }
         return patch, "\n".join(part for part in (context_text, topic_context) if part)
+
+    def _episode_plan_next_decision(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan, planned_state = self._episode_plan_and_state(session, state)
+        if not plan:
+            return None
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        interrupt_state = (
+            metadata.get("interrupt_state")
+            if isinstance(metadata.get("interrupt_state"), dict)
+            else {}
+        )
+        if (
+            interrupt_state.get("status") == "handling_audience"
+            and int(interrupt_state.get("remaining_interrupt_turns") or 0) > 0
+        ):
+            return self._episode_planned_turn_decision(session, state)
+
+        handled_event_ids = {
+            int(event_id)
+            for event_id in (
+                (planned_state.get("segment_memory") or {}).get("audience_reactions")
+                or []
+            )
+            if str(event_id).isdigit()
+        }
+        recent_events = self.storage.list_events(session["session_id"], limit=20)
+        completed_events = [
+            event
+            for event in recent_events
+            if int(event.get("id") or 0) not in handled_event_ids
+            and str(event.get("safety_status") or "") == "completed"
+            and str(event.get("status") or "active") == "active"
+            and str(event.get("safe_message_text") or "").strip()
+        ]
+        for event in reversed(completed_events):
+            decision = self._episode_interrupt_decision_for_event(plan, planned_state, event)
+            if decision:
+                return decision
+        return self._episode_planned_turn_decision(session, state)
+
+    def _episode_metadata_after_turn(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
+        if not payload:
+            return {}
+        plan, planned_state = self._episode_plan_and_state(session, state)
+        if not plan:
+            return {}
+        mode = str(payload.get("mode") or "")
+        if mode == "audience_interrupt":
+            interrupt_state = (
+                payload.get("interrupt_state")
+                if isinstance(payload.get("interrupt_state"), dict)
+                else {}
+            )
+            interrupt_state = dict(interrupt_state)
+            interrupt_state["remaining_interrupt_turns"] = max(
+                0,
+                int(interrupt_state.get("remaining_interrupt_turns") or 1) - 1,
+            )
+            if interrupt_state["remaining_interrupt_turns"] <= 0:
+                interrupt_state["status"] = "idle"
+            memory = dict(planned_state.get("segment_memory") or initial_segment_memory())
+            memory.setdefault("audience_reactions", []).extend(
+                interrupt_state.get("source_event_ids") or []
+            )
+            planned_state["segment_memory"] = memory
+            return {
+                "planned_state": planned_state,
+                "interrupt_state": interrupt_state,
+            }
+
+        turn = (
+            payload.get("turn_contract")
+            if isinstance(payload.get("turn_contract"), dict)
+            else self._episode_current_turn_contract(plan, planned_state)
+        )
+        if not turn:
+            return {
+                "planned_state": planned_state,
+                "interrupt_state": {"status": "idle"},
+            }
+        next_state = self._planned_state_after_episode_turn(plan, planned_state, turn)
+        return {
+            "planned_state": next_state,
+            "interrupt_state": {"status": "idle"},
+        }
