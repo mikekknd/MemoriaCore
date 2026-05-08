@@ -1,6 +1,7 @@
 """YouTubeBridge director 決策 helper mixin。"""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -85,19 +86,85 @@ class DirectorManagerMixin:
         return max(1, min(value, 12))
 
     @staticmethod
-    def _program_segment_entries(session: dict[str, Any] | None = None) -> list[str]:
+    def _program_segment_items(session: dict[str, Any] | None = None) -> list[dict[str, str]]:
         raw = str((session or {}).get("program_segment_plan") or "").replace("\r", "\n")
-        entries: list[str] = []
+        numbered_items: list[dict[str, str]] = []
+        numbered_pattern = re.compile(r"^\s*(?:\d+|[一二三四五六七八九十]+)[\.\)、．、]\s*(.+?)\s*$")
+        current: dict[str, Any] | None = None
+        description_lines: list[str] = []
+
+        def split_name_description(value: str) -> tuple[str, str]:
+            text = " ".join(str(value or "").strip().strip("-*•").split())
+            for separator in ("：", ":"):
+                if separator in text:
+                    name, description = text.split(separator, 1)
+                    return name.strip(), description.strip()
+            return text.rstrip(":：").strip(), ""
+
+        def flush_current() -> None:
+            if not current:
+                return
+            name = str(current.get("name") or "").strip()
+            if not name:
+                return
+            description_parts = []
+            inline_description = str(current.get("description") or "").strip()
+            if inline_description:
+                description_parts.append(inline_description)
+            description_parts.extend(
+                " ".join(line.strip().strip("-*•").split())
+                for line in description_lines
+                if line.strip() and not line.strip().startswith("#")
+            )
+            numbered_items.append({
+                "name": name[:160],
+                "description": " ".join(part for part in description_parts if part)[:500],
+            })
+
+        for line in raw.splitlines():
+            match = numbered_pattern.match(line)
+            if match:
+                flush_current()
+                description_lines = []
+                name, inline_description = split_name_description(match.group(1))
+                current = {"name": name, "description": inline_description}
+                continue
+            if current is not None:
+                description_lines.append(line)
+        flush_current()
+        if numbered_items:
+            return numbered_items[:20]
+
+        items: list[dict[str, str]] = []
         for line in raw.splitlines():
             item = " ".join(line.strip().strip("-*•").split())
+            if item.startswith("#"):
+                continue
             if item:
-                entries.append(item[:160])
-        return entries[:20]
+                name, description = split_name_description(item)
+                if name:
+                    items.append({"name": name[:160], "description": description[:500]})
+        return items[:20]
+
+    @classmethod
+    def _program_segment_entries(cls, session: dict[str, Any] | None = None) -> list[str]:
+        return [item["name"] for item in cls._program_segment_items(session)]
+
+    @classmethod
+    def _program_segment_steps(cls, session: dict[str, Any] | None = None) -> list[dict[str, str]]:
+        return [
+            {
+                "step_id": f"step_{index + 1:02d}",
+                "name": item["name"],
+                "description": item.get("description", ""),
+            }
+            for index, item in enumerate(cls._program_segment_items(session))
+        ]
 
     @classmethod
     def _current_program_segment(cls, session: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
-        entries = cls._program_segment_entries(session)
-        if not entries:
+        items = cls._program_segment_items(session)
+        if not items:
             return None
         metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
         raw_segment = metadata.get("program_segment") if isinstance(metadata.get("program_segment"), dict) else {}
@@ -109,13 +176,14 @@ class DirectorManagerMixin:
             turns_in_segment = int(raw_segment.get("turns_in_segment", 0) or 0)
         except (TypeError, ValueError):
             turns_in_segment = 0
-        index = max(0, min(index, len(entries) - 1))
+        index = max(0, min(index, len(items) - 1))
         return {
             "index": index,
-            "name": entries[index],
+            "name": items[index]["name"],
+            "description": items[index].get("description", ""),
             "turns_in_segment": max(0, turns_in_segment),
             "turns_per_segment": cls._program_segment_turns(session),
-            "total_segments": len(entries),
+            "total_segments": len(items),
         }
 
     @classmethod
@@ -134,9 +202,16 @@ class DirectorManagerMixin:
         reset = action in {"opening", "post_opening_topic_anchor", "transition_topic"} or (
             bool(previous_topic and next_topic) and previous_topic != next_topic
         )
-        entries = cls._program_segment_entries(session)
+        items = cls._program_segment_items(session)
         if reset:
-            return {**current, "index": 0, "name": entries[0], "turns_in_segment": 1, "topic": next_topic}
+            return {
+                **current,
+                "index": 0,
+                "name": items[0]["name"],
+                "description": items[0].get("description", ""),
+                "turns_in_segment": 1,
+                "topic": next_topic,
+            }
         turns = int(current.get("turns_in_segment", 0) or 0) + 1
         index = int(current.get("index", 0) or 0)
         if turns >= cls._program_segment_turns(session) and index < int(current.get("total_segments", 1) or 1) - 1:
@@ -145,25 +220,189 @@ class DirectorManagerMixin:
         return {
             **current,
             "index": index,
-            "name": entries[index],
+            "name": items[index]["name"],
+            "description": items[index].get("description", ""),
             "turns_in_segment": turns,
             "topic": next_topic,
         }
 
+    @staticmethod
+    def _segment_step_summary(step: dict[str, Any] | None, include_description: bool = False) -> dict[str, Any]:
+        if not isinstance(step, dict):
+            return {}
+        item = {
+            "step_id": str(step.get("step_id") or "").strip()[:40],
+            "name": str(step.get("name") or "").strip()[:160],
+        }
+        description = str(step.get("description") or "").strip()[:500]
+        if include_description and description:
+            item["description"] = description
+        return item if item["step_id"] and item["name"] else {}
+
+    @classmethod
+    def _sanitize_segment_state(cls, value: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        current_step = cls._segment_step_summary(value.get("current_step"), include_description=True)
+        if not current_step:
+            return {}
+        try:
+            topic_entry_id = int(value.get("topic_entry_id") or 0)
+        except (TypeError, ValueError):
+            topic_entry_id = 0
+        try:
+            turns_in_step = int(value.get("turns_in_step", 0) or 0)
+        except (TypeError, ValueError):
+            turns_in_step = 0
+        completed_steps = [
+            step
+            for raw_step in value.get("completed_steps") or []
+            if isinstance(raw_step, dict)
+            if (step := cls._segment_step_summary(raw_step, include_description=False))
+        ][:20]
+        remaining_steps = [
+            step
+            for raw_step in value.get("remaining_steps") or []
+            if isinstance(raw_step, dict)
+            if (step := cls._segment_step_summary(raw_step, include_description=True))
+        ][:20]
+        sanitized: dict[str, Any] = {
+            "topic": str(value.get("topic") or "").strip()[:200],
+            "topic_entry_id": max(0, topic_entry_id),
+            "current_step": current_step,
+            "completed_steps": completed_steps,
+            "remaining_steps": remaining_steps,
+            "turns_in_step": max(0, turns_in_step),
+            "last_transition_reason": str(value.get("last_transition_reason") or "").strip()[:200],
+        }
+        if "turns_per_step" in value:
+            try:
+                sanitized["turns_per_step"] = max(1, min(int(value.get("turns_per_step") or 1), 12))
+            except (TypeError, ValueError):
+                sanitized["turns_per_step"] = 1
+        if "total_steps" in value:
+            try:
+                sanitized["total_steps"] = max(0, int(value.get("total_steps") or 0))
+            except (TypeError, ValueError):
+                sanitized["total_steps"] = 0
+        if "step_index" in value:
+            try:
+                sanitized["step_index"] = max(0, int(value.get("step_index") or 0))
+            except (TypeError, ValueError):
+                sanitized["step_index"] = 0
+        if bool(value.get("all_steps_completed")):
+            sanitized["all_steps_completed"] = True
+        return sanitized
+
+    @classmethod
+    def _current_segment_state(cls, session: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        current = cls._sanitize_segment_state(metadata.get("segment_state"))
+        if current:
+            return current
+        steps = cls._program_segment_steps(session)
+        if not steps:
+            return None
+        return {
+            "topic": str(state.get("current_topic") or session.get("director_guidance") or "").strip()[:200],
+            "topic_entry_id": 0,
+            "current_step": steps[0],
+            "completed_steps": [],
+            "remaining_steps": steps[1:],
+            "turns_in_step": 0,
+            "turns_per_step": cls._program_segment_turns(session),
+            "total_steps": len(steps),
+            "step_index": 0,
+            "last_transition_reason": "initialized",
+        }
+
+    @classmethod
+    def _segment_state_after_turn(
+        cls,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        decision: dict[str, Any],
+        topic_entry: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        steps = cls._program_segment_steps(session)
+        if not steps:
+            return None
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        current = cls._sanitize_segment_state(metadata.get("segment_state"))
+        action = str(decision.get("action") or "").strip()
+        previous_topic = str((current or {}).get("topic") or state.get("current_topic") or "").strip()
+        next_topic = str(decision.get("current_topic") or previous_topic or session.get("director_guidance") or "").strip()
+        topic_entry_id = 0
+        if isinstance(topic_entry, dict) and topic_entry.get("id"):
+            try:
+                topic_entry_id = int(topic_entry.get("id") or 0)
+            except (TypeError, ValueError):
+                topic_entry_id = 0
+            if str(topic_entry.get("title") or "").strip():
+                next_topic = str(topic_entry.get("title") or "").strip()
+        else:
+            try:
+                topic_entry_id = int((current or {}).get("topic_entry_id") or 0)
+            except (TypeError, ValueError):
+                topic_entry_id = 0
+        reset = (
+            not current
+            or action in {"opening", "post_opening_topic_anchor", "transition_topic"}
+            or bool(previous_topic and next_topic and previous_topic != next_topic)
+        )
+
+        def build(index: int, turns: int, reason: str, completed_until: int = -1) -> dict[str, Any]:
+            index = max(0, min(index, len(steps) - 1))
+            completed = steps[: max(0, completed_until + 1)]
+            return {
+                "topic": next_topic[:200],
+                "topic_entry_id": max(0, topic_entry_id),
+                "current_step": steps[index],
+                "completed_steps": completed,
+                "remaining_steps": steps[index + 1 :],
+                "turns_in_step": max(0, turns),
+                "turns_per_step": cls._program_segment_turns(session),
+                "total_steps": len(steps),
+                "step_index": index,
+                "last_transition_reason": reason,
+                "all_steps_completed": bool(completed and len(completed) >= len(steps)),
+            }
+
+        if reset:
+            return build(0, 1, "topic_reset" if current else "initialized", completed_until=-1)
+
+        step_id = str((current.get("current_step") or {}).get("step_id") or steps[0]["step_id"])
+        index = next((idx for idx, step in enumerate(steps) if step["step_id"] == step_id), 0)
+        turns = int(current.get("turns_in_step", 0) or 0) + 1
+        turns_per_step = cls._program_segment_turns(session)
+        if turns >= turns_per_step:
+            if index < len(steps) - 1:
+                return build(index + 1, 0, "step_advanced", completed_until=index)
+            return build(index, turns, "steps_completed", completed_until=index)
+        return build(index, turns, "step_hold", completed_until=index - 1)
+
+    def _segment_topic_entry_for_session(self, session: dict[str, Any]) -> dict[str, Any] | None:
+        session_id = str(session.get("session_id") or "")
+        if not session_id or not hasattr(self, "_topic_pack_sequence_entries_for_session"):
+            return None
+        try:
+            entries = self._topic_pack_sequence_entries_for_session(session_id)
+        except Exception:
+            return None
+        return entries[0] if entries else None
+
     @classmethod
     def _live_hosting_context_for_session(cls, session: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         host_rules = str(session.get("host_interaction_rules") or "").replace("\r", "\n").strip()[:4000]
-        segment_plan = str(session.get("program_segment_plan") or "").replace("\r", "\n").strip()[:4000]
-        if not host_rules and not segment_plan:
+        segment_state = cls._current_segment_state(session, state)
+        if not host_rules and not segment_state:
             return {}
         payload: dict[str, Any] = {
             "host_interaction_rules": host_rules,
-            "program_segment_plan": segment_plan,
             "program_segment_turns": cls._program_segment_turns(session),
         }
-        current_segment = cls._current_program_segment(session, state)
-        if current_segment:
-            payload["current_segment"] = current_segment
+        if segment_state:
+            payload["segment_state"] = segment_state
         return payload
 
     @staticmethod
@@ -172,20 +411,39 @@ class DirectorManagerMixin:
             return ""
         lines = ["主持結構："]
         host_rules = str(live_hosting.get("host_interaction_rules") or "").strip()
-        segment_plan = str(live_hosting.get("program_segment_plan") or "").strip()
         if host_rules:
             lines.append("主持互動規則：")
             lines.append(host_rules)
-        if segment_plan:
-            lines.append("節目段落流程：")
-            lines.append(segment_plan)
-        current = live_hosting.get("current_segment") if isinstance(live_hosting.get("current_segment"), dict) else {}
+        segment_state = live_hosting.get("segment_state") if isinstance(live_hosting.get("segment_state"), dict) else {}
+        current = segment_state.get("current_step") if isinstance(segment_state.get("current_step"), dict) else {}
         if current:
-            lines.append(
-                "目前節目段落："
-                f"{str(current.get('name') or '').strip()}"
-                f"（{int(current.get('index', 0) or 0) + 1}/{int(current.get('total_segments', 1) or 1)}）"
-            )
+            topic = str(segment_state.get("topic") or "").strip()
+            if topic:
+                lines.append(f"目前討論主題：{topic}")
+            current_name = str(current.get("name") or "").strip()
+            if current_name:
+                lines.append(f"目前節目步驟：{current_name}")
+            description = str(current.get("description") or "").strip()
+            if description:
+                lines.append(f"目前步驟說明：{description}")
+            completed = [
+                str(item.get("name") or "").strip()
+                for item in segment_state.get("completed_steps") or []
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            remaining = [
+                str(item.get("name") or "").strip()
+                for item in segment_state.get("remaining_steps") or []
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            if completed:
+                lines.append("已完成步驟：" + "、".join(completed[:8]))
+            if remaining:
+                lines.append("剩餘步驟：" + "、".join(remaining[:8]))
+            turns = int(segment_state.get("turns_in_step", 0) or 0)
+            turns_per_step = int(segment_state.get("turns_per_step", live_hosting.get("program_segment_turns", 0)) or 0)
+            if turns_per_step:
+                lines.append(f"目前步驟回合：{turns}/{turns_per_step}")
         return "\n".join(line for line in lines if line)
 
     @staticmethod

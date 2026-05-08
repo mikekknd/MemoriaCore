@@ -1,9 +1,9 @@
-import { $, SINGLE_CONNECTOR_ID, state, api, clearLog, log, summarizeSsePayload } from "./core.js";
+import { $, SINGLE_CONNECTOR_ID, state, api, clearLog, escapeHtml, log, summarizeSsePayload } from "./core.js";
 import { defaultLiveSession, isSelectedSessionRunning, selectedSessionId, selectedSessionInfo } from "./selectors.js";
 import { bindSessionTopicPack, refreshTopicPacks, scheduleTopicGraphTraceRefresh } from "./topic-packs.js";
-import { scheduleChatPreviewRefresh, selectedCharacterIds, syncCharacterSelectionLimit, validateSelectedCharacters } from "./memoria-control.js?v=topic-graph-sources-v2";
-import { refreshEvents, renderEvents, testEventControlsDisabled, updateTestEventControls } from "./events-control.js?v=topic-graph-sources-v2";
-import { refreshDirector, refreshQueue, refreshSummary, renderNoSummary, renderSummary, setDirector, updateDirectorControls } from "./summary-director-control.js?v=topic-graph-sources-v2";
+import { scheduleChatPreviewRefresh, selectedCharacterIds, syncCharacterSelectionLimit, validateSelectedCharacters } from "./memoria-control.js?v=hosting-segments-v1";
+import { refreshEvents, renderEvents, testEventControlsDisabled, updateTestEventControls } from "./events-control.js?v=hosting-segments-v1";
+import { refreshDirector, refreshQueue, refreshSummary, renderNoSummary, renderSummary, setDirector, updateDirectorControls } from "./summary-director-control.js?v=hosting-segments-v1";
 function sessionIsFinalized(session = selectedSessionInfo()) {
   return !!(
     session?.finalized_at
@@ -58,6 +58,123 @@ export function injectMinIntervalSeconds() {
   const baseSeconds = Number($("injectInterval").value || 30);
   const minSeconds = Number($("injectMinIntervalSeconds").value || 10);
   return Math.max(5, Math.min(minSeconds, baseSeconds || 600));
+}
+
+function splitProgramSegmentLine(value = "") {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  for (const separator of ["：", ":"]) {
+    if (text.includes(separator)) {
+      const [name, ...rest] = text.split(separator);
+      return {
+        name: name.trim().replace(/^[\-\*\u2022]\s*/, ""),
+        description: rest.join(separator).trim(),
+      };
+    }
+  }
+  return {
+    name: text.replace(/^[\-\*\u2022]\s*/, "").replace(/[：:]$/, "").trim(),
+    description: "",
+  };
+}
+
+export function parseProgramSegmentPlan(markdown = "") {
+  const rows = [];
+  const numberedPattern = /^\s*(?:\d+|[一二三四五六七八九十]+)[\.\)、．、]\s*(.+?)\s*$/;
+  const lines = String(markdown || "").replace(/\r/g, "\n").split("\n");
+  const hasNumberedRows = lines.some((line) => numberedPattern.test(line));
+  let current = null;
+  const descriptionLines = [];
+  const flushCurrent = () => {
+    if (!current?.name) return;
+    rows.push({
+      name: current.name,
+      description: [current.description, ...descriptionLines.map((line) => line.trim().replace(/^[\-\*\u2022]\s*/, ""))]
+        .filter(Boolean)
+        .join(" "),
+    });
+  };
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const match = numberedPattern.exec(line);
+    if (match) {
+      flushCurrent();
+      descriptionLines.length = 0;
+      current = splitProgramSegmentLine(match[1]);
+      continue;
+    }
+    if (current) {
+      if (line && !line.startsWith("#")) descriptionLines.push(line);
+      continue;
+    }
+    if (!hasNumberedRows && line && !line.startsWith("#")) {
+      const item = splitProgramSegmentLine(line);
+      if (item.name) rows.push(item);
+    }
+  }
+  flushCurrent();
+  return rows;
+}
+
+export function serializeProgramSegmentRows() {
+  const container = $("programSegmentRows");
+  if (!container) return "";
+  const rows = [];
+  for (const row of container.querySelectorAll(".program-segment-row")) {
+    const name = row.querySelector(".program-segment-name")?.value.trim() || "";
+    const description = row.querySelector(".program-segment-description")?.value.trim() || "";
+    if (!name && !description) continue;
+    if (!name) throw new Error("每個節目段落都需要填入段落名稱");
+    rows.push({ name, description });
+  }
+  return rows.map((row, index) => {
+    const header = `${index + 1}. ${row.name}：`;
+    return row.description ? `${header}\n   ${row.description}` : header;
+  }).join("\n\n");
+}
+
+function syncProgramSegmentPlanField() {
+  const field = $("programSegmentPlan");
+  if (field) field.value = serializeProgramSegmentRows();
+}
+
+function renderProgramSegmentEmpty() {
+  const container = $("programSegmentRows");
+  if (!container) return;
+  if (container.querySelector(".program-segment-row")) return;
+  container.innerHTML = '<div class="program-segment-empty muted">尚未設定節目段落；未設定時不會注入段落狀態。</div>';
+}
+
+export function addProgramSegmentRow(name = "", description = "") {
+  const container = $("programSegmentRows");
+  if (!container) return;
+  container.querySelector(".program-segment-empty")?.remove();
+  const row = document.createElement("div");
+  row.className = "program-segment-row";
+  row.innerHTML = `
+    <input class="program-segment-name" placeholder="例：事件 Hook" value="${escapeHtml(name)}">
+    <textarea class="program-segment-description" placeholder="例：先說明這個事件為何值得聊。">${escapeHtml(description)}</textarea>
+    <button type="button" class="danger program-segment-delete" aria-label="刪除節目段落">X</button>
+  `;
+  row.querySelector(".program-segment-delete").addEventListener("click", () => {
+    row.remove();
+    renderProgramSegmentEmpty();
+    syncProgramSegmentPlanField();
+  });
+  row.querySelector(".program-segment-name").addEventListener("input", syncProgramSegmentPlanField);
+  row.querySelector(".program-segment-description").addEventListener("input", syncProgramSegmentPlanField);
+  container.append(row);
+  syncProgramSegmentPlanField();
+}
+
+export function renderProgramSegmentRows(markdown = "") {
+  const container = $("programSegmentRows");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const row of parseProgramSegmentPlan(markdown)) {
+    addProgramSegmentRow(row.name, row.description);
+  }
+  renderProgramSegmentEmpty();
+  syncProgramSegmentPlanField();
 }
 
 export async function loadHealth() {
@@ -120,7 +237,7 @@ export function fillSessionForm(session) {
   $("autoDeleteProcessed").checked = !!session.auto_delete_after_processed;
   $("directorGuidance").value = session.director_guidance || "";
   $("hostInteractionRules").value = session.host_interaction_rules || "";
-  $("programSegmentPlan").value = session.program_segment_plan || "";
+  renderProgramSegmentRows(session.program_segment_plan || "");
   $("programSegmentTurns").value = session.program_segment_turns || 3;
   $("researchEnabled").checked = !!session.research_enabled;
   $("autoTestEvents").checked = !!session.auto_test_events_enabled;
@@ -158,7 +275,7 @@ export function newSessionDraft() {
   $("autoDeleteProcessed").checked = true;
   $("directorGuidance").value = "";
   $("hostInteractionRules").value = "";
-  $("programSegmentPlan").value = "";
+  renderProgramSegmentRows("");
   $("programSegmentTurns").value = 3;
   $("researchEnabled").checked = false;
   $("autoTestEvents").checked = false;
@@ -207,6 +324,7 @@ export async function saveConnector() {
 
 export function liveSessionPayload({ createNew = false } = {}) {
   const blockTestEvents = testEventControlsDisabled();
+  syncProgramSegmentPlanField();
   return {
     session_id: createNew ? "" : $("sessionId").value.trim(),
     connector_id: state.connector?.connector_id || SINGLE_CONNECTOR_ID,

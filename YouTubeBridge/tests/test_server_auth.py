@@ -277,8 +277,8 @@ def test_control_ui_honors_requested_session_id_on_initial_load():
 def test_control_ui_loads_external_css_and_module_script():
     index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
 
-    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=topic-graph-sources-v2">' in index_html
-    assert '<script type="module" src="/ui-assets/app.js?v=topic-graph-sources-v2"></script>' in index_html
+    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=hosting-segments-v1">' in index_html
+    assert '<script type="module" src="/ui-assets/app.js?v=hosting-segments-v1"></script>' in index_html
     assert "<style>" not in index_html
     assert "<script>\n" not in index_html
 
@@ -515,7 +515,7 @@ def test_events_pane_is_grouped_as_test_comment_tool():
 def test_control_ui_checkbox_inputs_keep_native_compact_size():
     index_html = _control_ui_source()
 
-    assert 'href="/ui-assets/index.css?v=topic-graph-sources-v2"' in index_html
+    assert 'href="/ui-assets/index.css?v=hosting-segments-v1"' in index_html
     assert '\ninput[type="checkbox"] {' in index_html
     checkbox_block = index_html[
         index_html.index('\ninput[type="checkbox"] {'):
@@ -1034,6 +1034,8 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "directorIdle": "角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。",
         "directorAnchorEveryTurns": "同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。",
         "directorGuidance": "本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。",
+        "hostInteractionRules": "本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。",
+        "programSegmentTurns": "同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。",
     }
 
     for field_id, tooltip in expected_fields.items():
@@ -1052,6 +1054,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         ("幾批留言後回主軸", "directorMaxChatBatches"),
         ("角色停頓後續話秒數", "directorIdle"),
         ("本場直播方向", "directorGuidance"),
+        ("主持互動規則", "hostInteractionRules"),
     ]:
         pattern = (
             rf'<label[^>]*>\s*<span class="field-label">{re.escape(label_text)}\s*'
@@ -1059,6 +1062,13 @@ def test_live_session_core_fields_have_detailed_tooltips():
             rf'<(?:input|select|textarea)[^>]*id="{field_id}"'
         )
         assert re.search(pattern, live_session_block, flags=re.DOTALL), field_id
+
+    assert 'id="programSegmentRows"' in live_session_block
+    assert 'id="addProgramSegmentRow"' in live_session_block
+    assert 'id="programSegmentPlan" type="hidden"' in live_session_block
+    assert 'id="directorSegmentState"' in live_session_block
+    assert "function renderDirectorSegmentState" in index_html
+    assert ".director-segment-state" in index_html
 
 
 def test_control_ui_uses_single_live_session_flow():

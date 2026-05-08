@@ -396,9 +396,14 @@ def test_youtube_live_router_prompt_includes_hosting_rules():
         discussion_mode="youtube_live",
         live_hosting={
             "host_interaction_rules": "可可提出觀眾視角；白蓮負責分析收束。",
-            "program_segment_plan": "事件 Hook\n核心分析\n反方觀點",
             "program_segment_turns": 3,
-            "current_segment": {"index": 1, "name": "核心分析"},
+            "segment_state": {
+                "topic": "魔法帽的工作室",
+                "current_step": {"step_id": "step_02", "name": "核心分析", "description": "拆解作品與市場因素。"},
+                "completed_steps": [{"step_id": "step_01", "name": "事件 Hook"}],
+                "remaining_steps": [{"step_id": "step_03", "name": "反方觀點"}],
+                "turns_in_step": 1,
+            },
         },
     )
 
@@ -406,7 +411,9 @@ def test_youtube_live_router_prompt_includes_hosting_rules():
     prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
     assert "<youtube_live_hosting_router_rules>" in prompt_text
     assert "可可提出觀眾視角" in prompt_text
-    assert "目前節目段落：核心分析" in prompt_text
+    assert "目前討論主題：魔法帽的工作室" in prompt_text
+    assert "目前節目步驟：核心分析" in prompt_text
+    assert "節目段落流程" not in prompt_text
 
 
 def test_default_discussion_mode_keeps_normal_stop_policy():

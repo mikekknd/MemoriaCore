@@ -128,7 +128,12 @@ class DirectorRuntimeManagerMixin:
                     "opening_decision": decision,
                     "post_opening_decision": post_opening_decision,
                     "chat_batches_since_anchor": 0,
-                    "program_segment": self._program_segment_after_turn(session, state, final_decision),
+                    "segment_state": self._segment_state_after_turn(
+                        session,
+                        state,
+                        final_decision,
+                        self._segment_topic_entry_for_session(session),
+                    ),
                 },
             )
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
@@ -252,7 +257,12 @@ class DirectorRuntimeManagerMixin:
                         "last_decision": decision,
                         "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
                         "chat_batches_since_anchor": 0,
-                        "program_segment": self._program_segment_after_turn(session, state, decision),
+                        "segment_state": self._segment_state_after_turn(
+                            session,
+                            state,
+                            decision,
+                            self._segment_topic_entry_for_session(session),
+                        ),
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})

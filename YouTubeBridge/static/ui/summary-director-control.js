@@ -59,6 +59,7 @@ export async function refreshDirector() {
     $("directorJson").textContent = "{}";
     $("directorState").textContent = "stopped";
     $("directorState").className = "status";
+    renderDirectorSegmentState(null);
     updateDirectorControls({ director_enabled: false, status: "stopped" });
     return null;
   }
@@ -66,8 +67,32 @@ export async function refreshDirector() {
   $("directorJson").textContent = JSON.stringify(data, null, 2);
   $("directorState").textContent = data.status || "stopped";
   $("directorState").className = data.director_enabled ? "status good" : "status";
+  renderDirectorSegmentState(data);
   updateDirectorControls(data);
   return data;
+}
+
+export function renderDirectorSegmentState(data) {
+  const target = $("directorSegmentState");
+  if (!target) return;
+  const metadata = data?.metadata || {};
+  const segment = metadata.segment_state || {};
+  const current = segment.current_step || {};
+  if (!current.name) {
+    target.textContent = "尚無段落狀態";
+    target.className = "director-segment-state muted";
+    return;
+  }
+  const topic = segment.topic ? `主題：${segment.topic}` : "主題：未指定";
+  const turns = Number(segment.turns_in_step || 0);
+  const turnsPerStep = Number(segment.turns_per_step || data?.program_segment_turns || 0);
+  const remaining = Array.isArray(segment.remaining_steps) ? segment.remaining_steps.length : 0;
+  const completed = Array.isArray(segment.completed_steps) ? segment.completed_steps.length : 0;
+  const turnText = turnsPerStep > 0 ? `回合 ${turns}/${turnsPerStep}` : `回合 ${turns}`;
+  target.textContent = `${topic} / 目前步驟：${current.name} / ${turnText} / 已完成 ${completed} / 剩餘 ${remaining}`;
+  target.className = segment.all_steps_completed
+    ? "director-segment-state status good"
+    : "director-segment-state status warn";
 }
 
 export function updateDirectorControls(data) {

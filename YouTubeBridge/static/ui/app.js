@@ -5,16 +5,17 @@ import {
   loadMemoriaConfig, loadMemoriaRefs, loadSessions, makeSummary,
   refreshDirector, refreshEvents, refreshSummary, replySuperChats, saveConnector, saveMemoriaConfig,
   addLivePersonaAddressingRow, fillLivePersonaOverlayForm, livePersonaOverlayFor, saveLivePersonaOverlay,
+  addProgramSegmentRow,
   testMemoriaAuth, toggleAutoTestEvents, toggleSession,
   syncCharacterSelectionLimit, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
-} from "./control.js?v=topic-graph-sources-v2";
+} from "./control.js?v=hosting-segments-v1";
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
   closeTopicGraphModal, openTopicGraphModal, rebuildTopicGraph, refreshTopicEntries, refreshTopicGraph, refreshTopicGraphTrace,
   refreshTopicPacks, resetTopicGraphView, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
-} from "./topic-packs.js?v=topic-graph-sources-v2";
+} from "./topic-packs.js?v=hosting-segments-v1";
 
 async function refreshAll() {
   await loadHealth();
@@ -112,6 +113,7 @@ $("saveMemoriaConfig").onclick = () => saveMemoriaConfig().catch((error) => {
 });
 $("saveLivePersonaOverlay").onclick = () => saveLivePersonaOverlay().catch((error) => log("直播角色設定儲存失敗", String(error)));
 $("addLivePersonaAddressingRow").onclick = () => addLivePersonaAddressingRow();
+$("addProgramSegmentRow").onclick = () => addProgramSegmentRow();
 $("testMemoriaAuth").onclick = () => testMemoriaAuth().catch((error) => {
   $("memoriaAuthState").textContent = "連線失敗";
   $("memoriaAuthState").className = "status bad";

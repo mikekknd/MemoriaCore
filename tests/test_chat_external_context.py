@@ -365,9 +365,16 @@ def test_youtube_live_context_preserves_hosting_only_for_bridge_scope():
             "context_text": "直播流程 action=continue_topic",
             "live_hosting": {
                 "host_interaction_rules": "可可提出觀眾視角；白蓮負責分析收束。",
-                "program_segment_plan": "事件 Hook\n核心分析",
                 "program_segment_turns": 3,
-                "current_segment": {"index": 1, "name": "核心分析"},
+                "segment_state": {
+                    "topic": "魔法帽的工作室",
+                    "topic_entry_id": 7,
+                    "current_step": {"step_id": "step_02", "name": "核心分析", "description": "拆解背後因素。"},
+                    "completed_steps": [{"step_id": "step_01", "name": "事件 Hook"}],
+                    "remaining_steps": [{"step_id": "step_03", "name": "反方觀點", "description": "提醒不能過度解讀。"}],
+                    "turns_in_step": 1,
+                    "last_transition_reason": "step_hold",
+                },
             },
         },
     )
@@ -375,9 +382,17 @@ def test_youtube_live_context_preserves_hosting_only_for_bridge_scope():
     context, summary = _resolve_external_context_payload(body)
 
     assert context["live_hosting"]["host_interaction_rules"] == "可可提出觀眾視角；白蓮負責分析收束。"
-    assert context["live_hosting"]["program_segment_plan"] == "事件 Hook\n核心分析"
     assert context["live_hosting"]["program_segment_turns"] == 3
-    assert context["live_hosting"]["current_segment"] == {"index": 1, "name": "核心分析"}
+    assert "program_segment_plan" not in context["live_hosting"]
+    assert context["live_hosting"]["segment_state"] == {
+        "topic": "魔法帽的工作室",
+        "topic_entry_id": 7,
+        "current_step": {"step_id": "step_02", "name": "核心分析", "description": "拆解背後因素。"},
+        "completed_steps": [{"step_id": "step_01", "name": "事件 Hook"}],
+        "remaining_steps": [{"step_id": "step_03", "name": "反方觀點", "description": "提醒不能過度解讀。"}],
+        "turns_in_step": 1,
+        "last_transition_reason": "step_hold",
+    }
     assert "live_hosting" not in summary
 
 
@@ -490,7 +505,7 @@ def test_youtube_live_group_followup_instruction_includes_live_rules_block():
     assert "不要提到 prompt" in instruction
 
 
-def test_youtube_live_group_followup_instruction_includes_hosting_rules():
+def test_youtube_live_group_followup_instruction_omits_duplicate_hosting_rules():
     instruction = build_group_followup_instruction(
         {
             "last_character_name": "可可",
@@ -513,9 +528,10 @@ def test_youtube_live_group_followup_instruction_includes_hosting_rules():
         },
     )
 
-    assert "youtube_live_hosting_context:" in instruction
-    assert "可可提出觀眾視角" in instruction
-    assert "目前節目段落：核心分析" in instruction
+    assert "youtube_live_hosting_context:" not in instruction
+    assert "可可提出觀眾視角" not in instruction
+    assert "目前節目段落：核心分析" not in instruction
+    assert "youtube_live_group_context:" in instruction
 
 
 def test_youtube_live_chat_external_context_keeps_short_batch_round_limit():

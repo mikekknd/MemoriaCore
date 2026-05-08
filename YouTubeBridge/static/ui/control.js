@@ -16,7 +16,7 @@ export {
   maxSessionCharacters,
   validateSelectedCharacters,
   syncCharacterSelectionLimit,
-} from "./memoria-control.js?v=topic-graph-sources-v2";
+} from "./memoria-control.js?v=hosting-segments-v1";
 export {
   renderLivePersonaCharacterOptions,
   addLivePersonaAddressingRow,
@@ -25,7 +25,7 @@ export {
   loadLivePersonaOverlays,
   livePersonaOverlayPayload,
   saveLivePersonaOverlay,
-} from "./live-persona-control.js?v=topic-graph-sources-v2";
+} from "./live-persona-control.js?v=hosting-segments-v1";
 export {
   isRealYoutubeLiveSession,
   testEventControlsDisabled,
@@ -37,7 +37,7 @@ export {
   toggleAutoTestEvents,
   replySuperChats,
   interruptNow,
-} from "./events-control.js?v=topic-graph-sources-v2";
+} from "./events-control.js?v=hosting-segments-v1";
 export {
   refreshSummary,
   renderSummary,
@@ -48,7 +48,7 @@ export {
   updateDirectorGuidance,
   setDirector,
   refreshQueue,
-} from "./summary-director-control.js?v=topic-graph-sources-v2";
+} from "./summary-director-control.js?v=hosting-segments-v1";
 export {
   updateLiveSessionControls,
   injectMinIntervalSeconds,
@@ -58,6 +58,10 @@ export {
   loadSessions,
   fillSessionForm,
   newSessionDraft,
+  addProgramSegmentRow,
+  parseProgramSegmentPlan,
+  renderProgramSegmentRows,
+  serializeProgramSegmentRows,
   saveConnector,
   liveSessionPayload,
   saveSession,
@@ -67,4 +71,4 @@ export {
   finalizeCurrentSession,
   toggleSession,
   subscribeEvents,
-} from "./session-control.js?v=topic-graph-sources-v2";
+} from "./session-control.js?v=hosting-segments-v1";

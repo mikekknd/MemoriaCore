@@ -185,14 +185,31 @@ def _youtube_live_hosting_router_rules(live_hosting: dict | None = None) -> str:
         return ""
     parts: list[str] = []
     host_rules = str(live_hosting.get("host_interaction_rules") or "").strip()
-    segment_plan = str(live_hosting.get("program_segment_plan") or "").strip()
-    current = live_hosting.get("current_segment") if isinstance(live_hosting.get("current_segment"), dict) else {}
+    segment_state = live_hosting.get("segment_state") if isinstance(live_hosting.get("segment_state"), dict) else {}
     if host_rules:
         parts.append("主持互動規則：\n" + host_rules)
+    current = segment_state.get("current_step") if isinstance(segment_state.get("current_step"), dict) else {}
+    if segment_state and str(segment_state.get("topic") or "").strip():
+        parts.append(f"目前討論主題：{str(segment_state.get('topic') or '').strip()}")
     if current and str(current.get("name") or "").strip():
-        parts.append(f"目前節目段落：{str(current.get('name') or '').strip()}")
-    if segment_plan:
-        parts.append("節目段落流程：\n" + segment_plan)
+        parts.append(f"目前節目步驟：{str(current.get('name') or '').strip()}")
+        description = str(current.get("description") or "").strip()
+        if description:
+            parts.append(f"目前步驟說明：{description}")
+    completed = [
+        str(item.get("name") or "").strip()
+        for item in segment_state.get("completed_steps") or []
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
+    remaining = [
+        str(item.get("name") or "").strip()
+        for item in segment_state.get("remaining_steps") or []
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
+    if completed:
+        parts.append("已完成步驟：" + "、".join(completed[:8]))
+    if remaining:
+        parts.append("剩餘步驟：" + "、".join(remaining[:8]))
     try:
         turns = int(live_hosting.get("program_segment_turns", 0) or 0)
     except (TypeError, ValueError):

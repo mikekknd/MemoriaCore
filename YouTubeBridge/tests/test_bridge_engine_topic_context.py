@@ -504,6 +504,72 @@ def test_sequential_topic_context_advances_after_three_recalls():
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
+def test_sequential_topic_context_stays_on_entry_until_segment_state_completes():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "director_guidance": "本場只聊動畫新番。",
+            "program_segment_plan": "事件 Hook\n核心分析\n收束金句",
+            "program_segment_turns": 2,
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        first = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話開場演出",
+            "body": "第一話用長鏡頭建立舞台與角色關係。",
+            "source_type": "factcards_folder",
+        })
+        second = storage.create_topic_pack_entry(pack["id"], {
+            "title": "第二話作畫變化",
+            "body": "第二話戰鬥段落的遠景線條簡化。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        for _ in range(3):
+            storage.record_topic_pack_entry_usages(
+                "live-a",
+                [{"id": first["id"], "pack_id": pack["id"], "similarity": 0.0}],
+                query_text="topic sequence",
+                usage_source="external_context",
+            )
+        storage.update_director_state(
+            "live-a",
+            metadata={
+                "segment_state": {
+                    "topic": first["title"],
+                    "topic_entry_id": first["id"],
+                    "current_step": {"step_id": "step_02", "name": "核心分析"},
+                    "completed_steps": [{"step_id": "step_01", "name": "事件 Hook"}],
+                    "remaining_steps": [{"step_id": "step_03", "name": "收束金句"}],
+                    "turns_in_step": 1,
+                }
+            },
+        )
+
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
+        context = manager._topic_pack_sequence_context_for_session(
+            "live-a",
+            "topic sequence",
+            usage_source="director",
+        )
+
+        assert "第一話用長鏡頭" in context
+        assert "第二話戰鬥段落" not in context
+        assert second["id"] != first["id"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 def test_audience_query_detection_uses_prompt_schema_contract():
     tmp_dir = _tmp_dir()
     try:

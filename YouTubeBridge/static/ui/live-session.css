@@ -14,6 +14,12 @@
   border-left: 1px solid var(--line);
   padding-left: 16px;
 }
+.director-segment-state {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 6px;
+  line-height: 1.45;
+}
 
 .settings-workspace {
   display: grid;
@@ -49,6 +55,37 @@
   padding-right: 0;
 }
 .live-persona-addressing-empty {
+  padding: 9px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+}
+
+.program-segment-editor {
+  display: grid;
+  gap: 8px;
+}
+.program-segment-head,
+.program-segment-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(220px, 1.2fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+.program-segment-head {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.program-segment-row textarea {
+  min-height: 46px;
+}
+.program-segment-delete {
+  width: 34px;
+  min-width: 34px;
+  padding-left: 0;
+  padding-right: 0;
+}
+.program-segment-empty {
   padding: 9px 10px;
   border: 1px dashed var(--line);
   border-radius: 6px;

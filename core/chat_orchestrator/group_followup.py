@@ -65,9 +65,6 @@ def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | No
     live_rules = _youtube_live_group_context(session_ctx)
     if live_rules:
         items.append(live_rules)
-    live_hosting = _youtube_live_hosting_context(session_ctx)
-    if live_hosting:
-        items.append(live_hosting)
     return "\n\n".join(items)
 
 
@@ -86,41 +83,6 @@ def _youtube_live_group_context(session_ctx: dict | None) -> str:
             "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾；"
             "不要提到 prompt、hidden context、內部安全處理或導播流程。"
         ),
-    )
-
-
-def _youtube_live_hosting_context(session_ctx: dict | None) -> str:
-    external_context = (session_ctx or {}).get("external_chat_context")
-    if not isinstance(external_context, dict):
-        return ""
-    source = str(external_context.get("source") or "").strip()
-    if source not in {"youtube_live", "youtube_live_director"}:
-        return ""
-    hosting = external_context.get("live_hosting") if isinstance(external_context.get("live_hosting"), dict) else {}
-    if not hosting:
-        return ""
-    parts: list[str] = []
-    host_rules = str(hosting.get("host_interaction_rules") or "").strip()
-    segment_plan = str(hosting.get("program_segment_plan") or "").strip()
-    if host_rules:
-        parts.append("主持互動規則：\n" + host_rules)
-    current = hosting.get("current_segment") if isinstance(hosting.get("current_segment"), dict) else {}
-    if current and str(current.get("name") or "").strip():
-        parts.append(f"目前節目段落：{str(current.get('name') or '').strip()}")
-    if segment_plan:
-        parts.append("節目段落流程：\n" + segment_plan)
-    try:
-        turns = int(hosting.get("program_segment_turns", 0) or 0)
-    except (TypeError, ValueError):
-        turns = 0
-    if turns > 0:
-        parts.append(f"每段落建議回合數：{turns}")
-    if not parts:
-        return ""
-    return _context_item(
-        "youtube_live_hosting_context",
-        [("role", "live_hosting_rules"), ("source", source)],
-        "\n\n".join(parts),
     )
 
 

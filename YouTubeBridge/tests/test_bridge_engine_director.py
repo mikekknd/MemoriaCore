@@ -177,50 +177,94 @@ async def test_director_turn_includes_live_hosting_context_without_visible_event
         assert external_context["visible_events"] == []
         assert external_context["live_hosting"]["host_interaction_rules"] == "可可提出觀眾視角；白蓮拆解與收束。"
         assert external_context["live_hosting"]["program_segment_turns"] == 2
-        assert external_context["live_hosting"]["current_segment"]["name"] == "事件 Hook"
+        assert "program_segment_plan" not in external_context["live_hosting"]
+        assert external_context["live_hosting"]["segment_state"]["current_step"]["name"] == "事件 Hook"
+        assert external_context["live_hosting"]["segment_state"]["remaining_steps"][0]["name"] == "觀眾驚訝點"
         assert "主持互動規則" in external_context["context_text"]
         assert "可可提出觀眾視角" in external_context["context_text"]
-        assert "目前節目段落：事件 Hook" in external_context["context_text"]
+        assert "目前節目步驟：事件 Hook" in external_context["context_text"]
+        assert "節目段落流程：" not in external_context["context_text"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_program_segment_state_advances_and_resets_on_topic_change():
+def test_segment_state_advances_and_resets_on_topic_change():
     session = {
         "program_segment_plan": "事件 Hook\n核心分析\n收束金句",
         "program_segment_turns": 2,
     }
 
-    first = YouTubeBridgeManager._program_segment_after_turn(
+    first = YouTubeBridgeManager._segment_state_after_turn(
         session,
         {"current_topic": "動畫新番", "metadata": {}},
         {"action": "continue_topic", "current_topic": "動畫新番"},
     )
-    second = YouTubeBridgeManager._program_segment_after_turn(
+    second = YouTubeBridgeManager._segment_state_after_turn(
         session,
-        {"current_topic": "動畫新番", "metadata": {"program_segment": first}},
+        {"current_topic": "動畫新番", "metadata": {"segment_state": first}},
         {"action": "continue_topic", "current_topic": "動畫新番"},
     )
-    third = YouTubeBridgeManager._program_segment_after_turn(
+    third = YouTubeBridgeManager._segment_state_after_turn(
         session,
-        {"current_topic": "動畫新番", "metadata": {"program_segment": second}},
+        {"current_topic": "動畫新番", "metadata": {"segment_state": second}},
         {"action": "continue_topic", "current_topic": "動畫新番"},
     )
-    reset = YouTubeBridgeManager._program_segment_after_turn(
+    reset = YouTubeBridgeManager._segment_state_after_turn(
         session,
-        {"current_topic": "動畫新番", "metadata": {"program_segment": third}},
+        {"current_topic": "動畫新番", "metadata": {"segment_state": third}},
         {"action": "transition_topic", "current_topic": "下一個作品"},
     )
 
-    assert first["name"] == "事件 Hook"
-    assert first["turns_in_segment"] == 1
-    assert second["name"] == "核心分析"
-    assert second["turns_in_segment"] == 0
-    assert third["name"] == "核心分析"
-    assert third["turns_in_segment"] == 1
-    assert reset["name"] == "事件 Hook"
-    assert reset["turns_in_segment"] == 1
+    assert first["current_step"]["step_id"] == "step_01"
+    assert first["current_step"]["name"] == "事件 Hook"
+    assert first["completed_steps"] == []
+    assert [item["name"] for item in first["remaining_steps"]] == ["核心分析", "收束金句"]
+    assert first["turns_in_step"] == 1
+    assert second["current_step"]["step_id"] == "step_02"
+    assert second["current_step"]["name"] == "核心分析"
+    assert [item["name"] for item in second["completed_steps"]] == ["事件 Hook"]
+    assert second["turns_in_step"] == 0
+    assert third["current_step"]["name"] == "核心分析"
+    assert third["turns_in_step"] == 1
+    assert reset["current_step"]["name"] == "事件 Hook"
+    assert reset["turns_in_step"] == 1
     assert reset["topic"] == "下一個作品"
+    assert reset["last_transition_reason"] == "topic_reset"
+
+
+def test_program_segment_entries_extract_numbered_markdown_headings_only():
+    session = {
+        "program_segment_plan": """
+# 節目段落狀態
+每段討論依序推進：
+
+1. 事件 Hook：
+   先說明今天討論的事件為何值得聊。
+
+2. 觀眾驚訝點：
+   說明一般觀眾為何會覺得意外、有趣或想吐槽。
+
+3. 核心分析：
+   拆解事件背後的作品、觀眾、市場或平台因素。
+
+4. 反方觀點：
+   提醒不能過度解讀的地方，製造討論張力。
+
+5. 延伸問題：
+   把話題推到更大的趨勢、產業或觀眾習慣。
+
+6. 收束金句：
+   用一句有記憶點的話總結本段。
+""",
+    }
+
+    entries = YouTubeBridgeManager._program_segment_entries(session)
+    current = YouTubeBridgeManager._current_program_segment(session, {"metadata": {}})
+
+    assert entries == ["事件 Hook", "觀眾驚訝點", "核心分析", "反方觀點", "延伸問題", "收束金句"]
+    assert current["name"] == "事件 Hook"
+    assert current["description"] == "先說明今天討論的事件為何值得聊。"
+    assert current["total_segments"] == 6
 
 
 @pytest.mark.asyncio

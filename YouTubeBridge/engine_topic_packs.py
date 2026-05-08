@@ -416,6 +416,9 @@ class TopicPackManagerMixin:
         if not entries:
             return []
         entries = self._topic_pack_entry_points(entries)
+        locked_entry = self._segment_locked_topic_entry_for_session(session_id, entries)
+        if locked_entry:
+            return [locked_entry]
         threshold = max(1, int(turns_per_entry or TOPIC_SEQUENCE_TURNS_PER_ENTRY))
         stats = self.storage.get_topic_pack_usage_stats(session_id, recent_limit=50)
         usage_counts = {
@@ -431,6 +434,27 @@ class TopicPackManagerMixin:
             if usage_counts.get(int(entry["id"]), 0) == min_usage:
                 return [entry]
         return [entries[0]]
+
+    def _segment_locked_topic_entry_for_session(
+        self,
+        session_id: str,
+        entries: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        try:
+            state = self.storage.get_director_state(session_id)
+        except Exception:
+            return None
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        segment_state = metadata.get("segment_state") if isinstance(metadata.get("segment_state"), dict) else {}
+        if not segment_state or bool(segment_state.get("all_steps_completed")):
+            return None
+        try:
+            locked_entry_id = int(segment_state.get("topic_entry_id") or 0)
+        except (TypeError, ValueError):
+            locked_entry_id = 0
+        if locked_entry_id <= 0:
+            return None
+        return next((entry for entry in entries if int(entry.get("id") or 0) == locked_entry_id), None)
 
     def _topic_pack_entries_for_query(
         self,

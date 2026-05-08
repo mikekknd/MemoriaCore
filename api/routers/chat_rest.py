@@ -106,40 +106,73 @@ def _normalize_live_hosting(raw_hosting) -> dict:
     if not isinstance(raw_hosting, dict):
         return {}
     host_rules = str(raw_hosting.get("host_interaction_rules") or "").replace("\r", "\n").strip()[:4000]
-    segment_plan = str(raw_hosting.get("program_segment_plan") or "").replace("\r", "\n").strip()[:4000]
     try:
         segment_turns = int(raw_hosting.get("program_segment_turns", 3) or 3)
     except (TypeError, ValueError):
         segment_turns = 3
     segment_turns = max(1, min(segment_turns, 12))
-    current_segment = {}
-    raw_segment = raw_hosting.get("current_segment") if isinstance(raw_hosting.get("current_segment"), dict) else {}
-    if raw_segment:
-        try:
-            index = int(raw_segment.get("index", 0) or 0)
-        except (TypeError, ValueError):
-            index = 0
-        current_segment = {
-            "index": max(0, index),
-            "name": str(raw_segment.get("name") or "").strip()[:160],
-        }
-        for key in ("turns_in_segment", "turns_per_segment", "total_segments"):
-            if key in raw_segment:
-                try:
-                    current_segment[key] = max(0, int(raw_segment.get(key, 0) or 0))
-                except (TypeError, ValueError):
-                    current_segment[key] = 0
-        if not current_segment["name"]:
-            current_segment = {}
-    if not host_rules and not segment_plan and not current_segment:
+    segment_state = _normalize_live_segment_state(raw_hosting.get("segment_state"))
+    if not host_rules and not segment_state:
         return {}
     normalized = {
         "host_interaction_rules": host_rules,
-        "program_segment_plan": segment_plan,
         "program_segment_turns": segment_turns,
     }
-    if current_segment:
-        normalized["current_segment"] = current_segment
+    if segment_state:
+        normalized["segment_state"] = segment_state
+    return normalized
+
+
+def _normalize_live_segment_step(raw_step, *, include_description: bool = False) -> dict:
+    if not isinstance(raw_step, dict):
+        return {}
+    step = {
+        "step_id": str(raw_step.get("step_id") or "").strip()[:40],
+        "name": str(raw_step.get("name") or "").strip()[:160],
+    }
+    description = str(raw_step.get("description") or "").replace("\r", "\n").strip()[:500]
+    if include_description and description:
+        step["description"] = description
+    return step if step["step_id"] and step["name"] else {}
+
+
+def _normalize_live_segment_state(raw_state) -> dict:
+    if not isinstance(raw_state, dict):
+        return {}
+    current_step = _normalize_live_segment_step(raw_state.get("current_step"), include_description=True)
+    if not current_step:
+        return {}
+    try:
+        topic_entry_id = int(raw_state.get("topic_entry_id") or 0)
+    except (TypeError, ValueError):
+        topic_entry_id = 0
+    try:
+        turns_in_step = int(raw_state.get("turns_in_step", 0) or 0)
+    except (TypeError, ValueError):
+        turns_in_step = 0
+    completed_steps = [
+        step
+        for raw_step in raw_state.get("completed_steps") or []
+        if isinstance(raw_step, dict)
+        if (step := _normalize_live_segment_step(raw_step, include_description=False))
+    ][:20]
+    remaining_steps = [
+        step
+        for raw_step in raw_state.get("remaining_steps") or []
+        if isinstance(raw_step, dict)
+        if (step := _normalize_live_segment_step(raw_step, include_description=True))
+    ][:20]
+    normalized = {
+        "topic": str(raw_state.get("topic") or "").strip()[:200],
+        "topic_entry_id": max(0, topic_entry_id),
+        "current_step": current_step,
+        "completed_steps": completed_steps,
+        "remaining_steps": remaining_steps,
+        "turns_in_step": max(0, turns_in_step),
+        "last_transition_reason": str(raw_state.get("last_transition_reason") or "").strip()[:200],
+    }
+    if raw_state.get("all_steps_completed"):
+        normalized["all_steps_completed"] = True
     return normalized
 
 
