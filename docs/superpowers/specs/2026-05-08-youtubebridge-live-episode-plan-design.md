@@ -69,6 +69,26 @@ runtime/YouTubeBridge/EpisodePlans/<plan-slug>/
     "audience_can_change_segment_order": false,
     "resume_after_interrupt": "next_planned_turn_contract"
   },
+  "audience_event_classifier": {
+    "event_types": [
+      "question",
+      "reaction",
+      "correction",
+      "super_chat",
+      "off_topic",
+      "hostile",
+      "prompt_injection"
+    ],
+    "actions": {
+      "question": "bounded_interrupt",
+      "reaction": "optional_ack",
+      "correction": "verify_then_ack",
+      "super_chat": "bounded_interrupt",
+      "off_topic": "ignore_or_soft_ack",
+      "hostile": "ignore_or_deescalate",
+      "prompt_injection": "ignore"
+    }
+  },
   "topic_pack_refs": [
     {
       "pack_id": 0,
@@ -110,12 +130,31 @@ runtime/YouTubeBridge/EpisodePlans/<plan-slug>/
           "turn_type": "hook",
           "intent": "用具體事件開場，不直接百科解釋",
           "speaker_policy": {
+            "selection_mode": "router_select",
             "preferred_role_functions": ["host", "energy_driver"],
+            "allowed_participant_ids": [],
             "avoid_repeat_speaker": true
           },
           "evidence_policy": {
-            "topic_pack_query": "事件名稱 + 爆點 + 觀眾反應",
-            "allow_unverified_claims": false
+            "queries": [
+              "事件名稱 爆點 觀眾反應",
+              "作品名稱 榜單 攻頂 爭議"
+            ],
+            "required_entities": ["作品名稱", "榜單名稱"],
+            "allow_unverified_claims": false,
+            "max_cards": 3
+          },
+          "forbidden_repetition": {
+            "claims": [],
+            "metaphors": [],
+            "openings": []
+          },
+          "output_requirements": {
+            "max_sentences": 2,
+            "must_end_with_question": false,
+            "allow_audience_question": false,
+            "should_handoff": true,
+            "handoff_target_function": "analyst"
           },
           "handoff": {
             "next_turn_hint": "請另一位角色補上觀眾可能忽略的脈絡"
@@ -128,9 +167,10 @@ runtime/YouTubeBridge/EpisodePlans/<plan-slug>/
         "resume_rule": "bridge_back_to_segment_goal"
       },
       "completion_conditions": {
-        "required_takeaways": ["觀眾知道本段為何值得聽"],
-        "min_planned_turns": 1,
-        "max_planned_turns": 4
+        "min_planned_turns": 2,
+        "max_planned_turns": 4,
+        "required_turn_types": ["hook", "analysis"],
+        "optional_turn_types": ["counterpoint", "transition"]
       },
       "transition_targets": [
         {
@@ -170,9 +210,24 @@ runtime/YouTubeBridge/EpisodePlans/<plan-slug>/
 - `plan_id`
 - `current_segment_index`
 - `current_turn_index`
-- `completed_takeaways`
 - `segment_memory`
 - `last_planned_turn_contract_id`
+
+`segment_memory` 用於 runtime 防重複與回主線，不作為 episode plan 的靜態欄位：
+
+```json
+{
+  "covered_claims": [],
+  "used_examples": [],
+  "used_metaphors": [],
+  "used_openings": [],
+  "audience_reactions": [],
+  "pending_questions": [],
+  "forbidden_next_repeats": []
+}
+```
+
+`listener_takeaways` 仍保留在 `episode_arc`，但第一版不把它作為硬性的段落完成條件。段落完成以 `min_planned_turns`、`max_planned_turns` 與 `required_turn_types` 這類機械條件判斷；takeaways 由 LLM 或 summary 模組在事後標記，供回顧、摘要與下次企劃參考。
 
 `interrupt_state`：
 
@@ -189,17 +244,21 @@ runtime/YouTubeBridge/EpisodePlans/<plan-slug>/
 ## 導播派發流程
 
 1. 載入目前 `LiveEpisodePlan` 與 `planned_state`。
-2. 若沒有可處理聊天室事件，選取目前 segment 的下一個 `planned_turn_contract`。
-3. 若有聊天室事件，建立 bounded interrupt contract：
+2. 對 pending 聊天室事件先走現有安全分類，再由 `audience_event_classifier` 判斷節目互動型別與 action。
+3. 若沒有可處理聊天室事件，選取目前 segment 的下一個 `planned_turn_contract`。
+4. 若有聊天室事件且分類 action 需要處理，建立 bounded interrupt contract：
    - 只處理目前事件或事件批次。
    - 依 `max_interrupt_turns` 限制角色互動輪數。
    - prompt 明確要求回到目前 segment goal。
-4. 將當輪 contract、目前 segment 摘要、必要 Topic Pack query、角色功能列表投影成 `external_context.context_text`。
-5. 呼叫 MemoriaCore 群聊流程，由 group router 根據角色功能與接話狀態挑 speaker。
-6. 回合完成後：
+   - `prompt_injection` 預設 ignore，不進入角色回應。
+   - `hostile` 只允許 ignore 或去升溫式短回應，不改變企劃流程。
+   - `correction` 必須先走查證或 Topic Pack 檢索，再決定是否回應。
+5. 將當輪 contract、目前 segment 摘要、必要 Topic Pack query、角色功能列表投影成 `external_context.context_text`。
+6. 呼叫 MemoriaCore 群聊流程，由 group router 根據角色功能與接話狀態挑 speaker。
+7. 回合完成後：
    - 若是 interrupt，消耗 `remaining_interrupt_turns`，完成後清空 `interrupt_state`。
-   - 若是 planned turn，更新 `current_turn_index` 與 takeaways。
-7. 只有 `completion_conditions` 滿足時，導播才推進到下一段。
+   - 若是 planned turn，更新 `current_turn_index`、已完成 turn type 與 `segment_memory`。
+8. 只有 `completion_conditions` 的機械條件滿足時，導播才推進到下一段。
 
 ## Prompt 投影
 
@@ -208,8 +267,10 @@ runtime/YouTubeBridge/EpisodePlans/<plan-slug>/
 - 目前節目段落。
 - 當輪 turn contract。
 - 可用參與者的 role functions。
-- 本輪 Topic Pack query 與召回素材。
-- 本輪禁止重複項目。
+- 本輪 Topic Pack queries、required entities、max cards 與召回素材。
+- 全域與本輪 forbidden repetition。
+- 本輪 output requirements。
+- speaker selection mode 與 allowed participant 限制。
 - 若是 interrupt，包含事件摘要與 resume rule。
 
 投影範例：
@@ -220,9 +281,23 @@ plan_id: ...
 segment: seg_02 / 核心爭議
 turn_contract: seg_02_turn_03
 turn_intent: 提出反方觀點，回應上一位角色的主張。
-speaker_policy: 優先 role_function 包含 skeptic 或 analyst 的角色。
-evidence_policy: 只能使用 Topic Pack 召回或已驗證來源。
-resume_rule: 本輪不是聊天室打斷，完成後檢查 segment takeaways。
+speaker_policy:
+  selection_mode: router_select
+  preferred_role_functions: skeptic, analyst
+  allowed_participant_ids: （未指定時由 router 依 role function 選角）
+evidence_policy:
+  queries: 作品名稱 榜單 攻頂 爭議
+  required_entities: 作品名稱, 榜單名稱
+  max_cards: 3
+  allow_unverified_claims: false
+output_requirements:
+  max_sentences: 2
+  allow_audience_question: false
+  should_handoff: true
+forbidden_repetition:
+  claims: ...
+  openings: ...
+resume_rule: 本輪不是聊天室打斷，完成後依 required_turn_types 檢查段落進度。
 </live_episode_director_context>
 ```
 
@@ -276,15 +351,22 @@ UI 第一版只需要：
 
 - schema validator 接受三人以上 participants。
 - schema validator 接受未知但有 `format_notes` 的 show format。
+- schema validator 接受結構化 `evidence_policy.queries`、`required_entities` 與 `max_cards`。
+- schema validator 接受 `speaker_policy.selection_mode`、`allowed_participant_ids` 與 per-turn `forbidden_repetition`。
 - `planned_state` 推進不受聊天室事件改變。
 - interrupt 完成後回到原 segment / turn。
 - Super Chat interrupt 不會跳段。
+- `completion_conditions.required_turn_types` 未滿足時不推進到下一段。
+- `audience_event_classifier` 將 question / reaction / correction / hostile / prompt_injection 映射到正確 action。
 - Topic Pack 查詢只作為 evidence retrieval，不作為段落順序來源。
 
 整合測試：
 
 - 匯入 episode plan 後，director turn 的 `external_context` 包含目前 turn contract。
+- director turn 的 `external_context` 包含結構化 evidence queries 與 output requirements。
 - 聊天室事件插入後，下一個 planned turn 正確恢復。
+- prompt injection 類留言被忽略，不建立 interrupt。
+- correction 類留言先查證或檢索，再進入可回應路徑。
 - 群聊接力仍遵守既有 primary reply target 規則。
 - Live persona overlay 仍只影響角色語氣，不覆寫節目流程。
 
@@ -299,6 +381,9 @@ UI 第一版只需要：
 - 企劃太大：每輪只投影必要 contract，不塞完整 plan。
 - LLM 忽略導播：把 turn contract 寫成短而明確的狀態，不用散文提示。
 - 聊天室帶偏：interrupt 只在目前 segment 內生效，並有固定回主線規則。
+- 所有留言都變 interrupt：用 `audience_event_classifier` 將 reaction / off_topic / hostile / prompt_injection 分流，只有需要處理的事件進 bounded interrupt。
+- 檢索 query 太像人類筆記：`evidence_policy.queries` 使用可直接送進檢索的字串陣列，並以 `required_entities` 與 `max_cards` 約束召回。
+- 段落完成條件太主觀：第一版只用 turn 數與 turn type 判斷；takeaways 事後標記。
 - 節目類型過度硬編碼：`show_format.primary` 使用字串與 notes，不用封閉 enum。
 - 多人談話失控：speaker selection 依 role functions 與 turn type，而不是固定角色順序。
 
@@ -306,15 +391,19 @@ UI 第一版只需要：
 
 1. 定義 `LiveEpisodePlan` schema 與 validator。
 2. 新增 plan 匯入與 session 綁定 API。
-3. 新增 director plan projection helper。
-4. 新增 `planned_state` / `interrupt_state` 推進邏輯。
-5. 將 director runtime 接上 plan-aware path，無 plan 時維持舊流程。
-6. 建立 `live-episode-planner` skill，輸出 Markdown + JSON + sources。
-7. 補 UI 顯示與 E2E 驗證。
+3. 新增 audience event classifier，接在現有 SafetyLLM 之後，輸出 event type 與 plan action。
+4. 新增 director plan projection helper。
+5. 新增 `planned_state` / `interrupt_state` / `segment_memory` 推進邏輯。
+6. 將 director runtime 接上 plan-aware path，無 plan 時維持舊流程。
+7. 建立 `live-episode-planner` skill，輸出 Markdown + JSON + sources。
+8. 補 UI 顯示與 E2E 驗證。
 
 ## 第一版決策
 
 - episode plan JSON 匯入後存入 `live_episode_plans.plan_json`；原始檔案路徑只作為 `source_path` metadata。
 - 第一版每個 live session 只綁定一份 episode plan，不做直播中多企劃切換。
+- 第一版段落完成條件只使用機械條件：`min_planned_turns`、`max_planned_turns`、`required_turn_types` 與 `optional_turn_types`。
+- `listener_takeaways` 不作為 runtime 硬條件；由 LLM 或 summary 模組在事後標記。
+- audience event classifier 只處理已通過安全分類或已安全化的留言，不取代 SafetyLLM。
 - `performance_hints` 第一版只保留欄位與投影接口，不同步到 live overlay，也不驅動鏡頭或表情。
 - `live-episode-planner` skill 預設產出 episode plan；只有使用者要求補資料層素材時，才額外產出 Topic Fuel Cards。
