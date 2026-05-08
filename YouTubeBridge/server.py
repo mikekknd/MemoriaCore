@@ -30,7 +30,8 @@ from bridge_engine import YouTubeBridgeManager
 from memoria_client import MemoriaClient
 from models import (
     CleanupRequest, ConnectorConfig, DirectorGuidanceRequest, DirectorStartRequest,
-    E2ECheckpointRequest, FactCardGenerateRequest, FactCardImportRequest, InterruptRequest,
+    E2ECheckpointRequest, EpisodePlanBindRequest, EpisodePlanImportRequest,
+    FactCardGenerateRequest, FactCardImportRequest, InterruptRequest,
     LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
     ResearchRequest, SummarizeRequest, TestChatGenerateRequest, TopicPackCreateRequest,
     TopicPackEntryCreateRequest, TopicPackEntryUpdateRequest,
@@ -51,6 +52,7 @@ from server_security import (
 from server_routes import (
     connectors as _connectors_routes,
     director as _director_routes,
+    episode_plans as _episode_plans_routes,
     fact_cards as _fact_cards_routes,
     memoria as _memoria_routes,
     register_routes,
@@ -221,6 +223,7 @@ _ROUTE_MODULES_FOR_SYNC = (
     _connectors_routes,
     _sessions_routes,
     _director_routes,
+    _episode_plans_routes,
     _testing_routes,
     _topic_packs_routes,
     _fact_cards_routes,
@@ -321,6 +324,13 @@ get_director_state = _route_handler(_director_routes.get_director_state)
 start_director = _route_handler(_director_routes.start_director)
 stop_director = _route_handler(_director_routes.stop_director)
 update_director_guidance = _route_handler(_director_routes.update_director_guidance)
+
+list_episode_plans = _route_handler(_episode_plans_routes.list_episode_plans)
+import_episode_plan = _route_handler(_episode_plans_routes.import_episode_plan)
+get_episode_plan = _route_handler(_episode_plans_routes.get_episode_plan)
+delete_episode_plan = _route_handler(_episode_plans_routes.delete_episode_plan)
+bind_episode_plan = _route_handler(_episode_plans_routes.bind_episode_plan)
+unbind_episode_plan = _route_handler(_episode_plans_routes.unbind_episode_plan)
 
 cleanup_ended_live_sessions = _route_handler(_testing_routes.cleanup_ended_live_sessions)
 bootstrap_live_session = _route_handler(_testing_routes.bootstrap_live_session)

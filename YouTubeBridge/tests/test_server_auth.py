@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from test_live_episode_plan_contract import sample_plan
+
 
 BRIDGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BRIDGE_ROOT))
@@ -1668,6 +1670,44 @@ async def test_topic_pack_edit_endpoints_update_entry_and_reindex(monkeypatch, t
     assert "embedding" not in updated_entry
     assert indexed == [entry["id"]]
     assert storage.get_topic_pack_entry_embedding(entry["id"])["embedding_model"] == "fake"
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_import_and_bind_endpoints(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "display_name": "Live A",
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    saved = await server_module.import_episode_plan(
+        server_module.EpisodePlanImportRequest(
+            plan_json=sample_plan(),
+            source_path="episode-plan.json",
+        )
+    )
+    listed = await server_module.list_episode_plans()
+    bound = await server_module.bind_episode_plan(
+        "live-a",
+        server_module.EpisodePlanBindRequest(plan_id="plan-general-panel"),
+    )
+    fetched = await server_module.get_episode_plan("plan-general-panel")
+    unbound = await server_module.unbind_episode_plan("live-a")
+    deleted = await server_module.delete_episode_plan("plan-general-panel")
+
+    assert saved["plan_id"] == "plan-general-panel"
+    assert listed[0]["plan_id"] == "plan-general-panel"
+    assert bound["episode_plan_id"] == "plan-general-panel"
+    assert fetched["plan_json"]["plan_id"] == "plan-general-panel"
+    assert unbound["episode_plan_id"] == ""
+    assert deleted == {"deleted": True, "plan_id": "plan-general-panel"}
 
 
 @pytest.mark.asyncio

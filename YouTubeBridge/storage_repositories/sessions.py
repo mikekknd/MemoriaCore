@@ -54,6 +54,13 @@ class SessionRepositoryMixin:
                 "video_id": video_id,
                 "live_chat_id": live_chat_id,
                 "target_memoria_session_id": str(config.get("target_memoria_session_id", "") or ""),
+                "episode_plan_id": str(
+                    config.get(
+                        "episode_plan_id",
+                        existing.get("episode_plan_id", "") if existing else "",
+                    )
+                    or ""
+                ),
                 "character_ids_json": self._json_dump(config.get("character_ids") if isinstance(config.get("character_ids"), list) else []),
                 "status": str(config.get("status", existing.get("status", "stopped") if existing else "stopped") or "stopped"),
                 "auto_connect": 1 if config.get("auto_connect", True) else 0,

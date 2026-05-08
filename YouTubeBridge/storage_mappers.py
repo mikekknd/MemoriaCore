@@ -86,6 +86,7 @@ def row_to_session(row: sqlite3.Row | None) -> dict | None:
         "video_id": row["video_id"] or "",
         "live_chat_id": row["live_chat_id"] or "",
         "target_memoria_session_id": row["target_memoria_session_id"] or "",
+        "episode_plan_id": row_value(row, "episode_plan_id", "") or "",
         "character_ids": json_load(row["character_ids_json"], []),
         "status": row["status"] or "stopped",
         "auto_connect": bool(row["auto_connect"]),
@@ -131,6 +132,22 @@ def row_to_session(row: sqlite3.Row | None) -> dict | None:
         "summary_id": row_value(row, "summary_id", None),
         "summary_error": row_value(row, "summary_error", "") or "",
         "summary_updated_at": row_value(row, "summary_updated_at", "") or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def row_to_episode_plan(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "plan_id": row["plan_id"],
+        "schema_version": row["schema_version"],
+        "title": row["title"],
+        "language": row["language"] or "zh-TW",
+        "show_format": json_load(row["show_format_json"], {}),
+        "plan_json": json_load(row["plan_json"], {}),
+        "source_path": row["source_path"] or "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

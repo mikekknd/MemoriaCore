@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from . import (
     connectors,
     director,
+    episode_plans,
     fact_cards,
     memoria,
     persona_overlays,
@@ -23,6 +24,7 @@ _ROUTE_MODULES = (
     connectors,
     sessions,
     director,
+    episode_plans,
     testing,
     topic_packs,
     fact_cards,

@@ -27,6 +27,18 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS live_episode_plans (
+            plan_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL,
+            title TEXT NOT NULL,
+            language TEXT DEFAULT 'zh-TW',
+            show_format_json TEXT DEFAULT '{}',
+            plan_json TEXT NOT NULL,
+            source_path TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS live_sessions (
             session_id TEXT PRIMARY KEY,
             connector_id TEXT NOT NULL,
@@ -34,6 +46,7 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             video_id TEXT DEFAULT '',
             live_chat_id TEXT DEFAULT '',
             target_memoria_session_id TEXT DEFAULT '',
+            episode_plan_id TEXT DEFAULT '',
             character_ids_json TEXT DEFAULT '[]',
             status TEXT NOT NULL DEFAULT 'stopped',
             auto_connect INTEGER NOT NULL DEFAULT 1,
@@ -324,6 +337,12 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_live_session_columns(conn)
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_live_sessions_episode_plan
+            ON live_sessions(episode_plan_id)
+        """
+    )
     ensure_live_event_columns(conn)
     ensure_live_persona_overlay_columns(conn)
     conn.commit()
@@ -333,6 +352,7 @@ def ensure_live_session_columns(conn: sqlite3.Connection) -> None:
     existing = {row[1] for row in conn.execute("PRAGMA table_info(live_sessions)").fetchall()}
     columns = {
         "auto_inject": "auto_inject INTEGER NOT NULL DEFAULT 0",
+        "episode_plan_id": "episode_plan_id TEXT DEFAULT ''",
         "inject_interval_seconds": "inject_interval_seconds INTEGER NOT NULL DEFAULT 30",
         "inject_min_interval_seconds": "inject_min_interval_seconds INTEGER NOT NULL DEFAULT 10",
         "inject_min_interval_ratio": "inject_min_interval_ratio REAL NOT NULL DEFAULT 0.32",

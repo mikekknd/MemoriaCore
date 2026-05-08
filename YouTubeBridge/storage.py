@@ -12,6 +12,7 @@ from storage_event_utils import classify_live_event_safety, infer_super_chat_tie
 from storage_repositories import (
     ConnectorRepositoryMixin,
     DirectorStateRepositoryMixin,
+    EpisodePlanRepositoryMixin,
     EventRepositoryMixin,
     InteractionRepositoryMixin,
     LivePersonaRepositoryMixin,
@@ -33,6 +34,7 @@ DEFAULT_DB_PATH = RUNTIME_ROOT / "youtube_live.db"
 
 class BridgeStorage(
     ConnectorRepositoryMixin,
+    EpisodePlanRepositoryMixin,
     SessionRepositoryMixin,
     EventRepositoryMixin,
     TopicPackRepositoryMixin,
@@ -115,6 +117,10 @@ class BridgeStorage(
     @classmethod
     def _row_to_session(cls, row: sqlite3.Row | None) -> dict | None:
         return mappers.row_to_session(row)
+
+    @classmethod
+    def _row_to_episode_plan(cls, row: sqlite3.Row | None) -> dict | None:
+        return mappers.row_to_episode_plan(row)
 
     @classmethod
     def _row_to_event(cls, row: sqlite3.Row | None) -> dict | None:

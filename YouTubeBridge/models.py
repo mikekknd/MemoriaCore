@@ -26,6 +26,7 @@ class LiveSessionConfig(BaseModel):
     video_id: str = ""
     live_chat_id: str = ""
     target_memoria_session_id: str = ""
+    episode_plan_id: str = Field("", max_length=120)
     character_ids: list[str] = Field(default_factory=list)
     status: str = "stopped"
     auto_connect: bool = True
@@ -106,6 +107,15 @@ class SummarizeRequest(BaseModel):
 
 class InterruptRequest(BaseModel):
     reason: str = "manual_interrupt"
+
+
+class EpisodePlanImportRequest(BaseModel):
+    plan_json: dict = Field(default_factory=dict)
+    source_path: str = Field("", max_length=1000)
+
+
+class EpisodePlanBindRequest(BaseModel):
+    plan_id: str = Field("", max_length=120)
 
 
 class DirectorStartRequest(BaseModel):
