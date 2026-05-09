@@ -93,6 +93,8 @@ class SessionRepositoryMixin:
                 "max_sc_per_batch": int(config.get("max_sc_per_batch", 5) or 5),
                 "director_anchor_every_turns": int(config.get("director_anchor_every_turns", 2) or 2),
                 "director_group_turn_limit": int(config.get("director_group_turn_limit", 3) or 3),
+                "episode_plan_handoff_gap_seconds": max(1, min(int(config.get("episode_plan_handoff_gap_seconds", 2) or 2), 5)),
+                "episode_plan_turn_gap_seconds": max(1, min(int(config.get("episode_plan_turn_gap_seconds", 8) or 8), 30)),
                 "director_max_chat_batches_before_anchor": int(config.get("director_max_chat_batches_before_anchor", 2) or 2),
                 "director_offtopic_policy": str(config.get("director_offtopic_policy", "defer") or "defer"),
                 "director_sc_burst_policy": str(config.get("director_sc_burst_policy", "summarize_batch") or "summarize_batch"),

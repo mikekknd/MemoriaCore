@@ -70,6 +70,8 @@ def test_connector_and_session_roundtrip():
             "max_sc_per_batch": 6,
             "director_anchor_every_turns": 3,
             "director_group_turn_limit": 5,
+            "episode_plan_handoff_gap_seconds": 4,
+            "episode_plan_turn_gap_seconds": 11,
             "director_max_chat_batches_before_anchor": 2,
             "director_offtopic_policy": "defer",
             "director_sc_burst_policy": "summarize_batch",
@@ -104,6 +106,8 @@ def test_connector_and_session_roundtrip():
         assert session["max_sc_per_batch"] == 6
         assert session["director_anchor_every_turns"] == 3
         assert session["director_group_turn_limit"] == 5
+        assert session["episode_plan_handoff_gap_seconds"] == 4
+        assert session["episode_plan_turn_gap_seconds"] == 11
         assert session["director_max_chat_batches_before_anchor"] == 2
         assert session["director_offtopic_policy"] == "defer"
         assert session["director_sc_burst_policy"] == "summarize_batch"

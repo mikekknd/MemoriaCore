@@ -2,6 +2,7 @@
 chcp 65001 >nul 2>&1
 title YouTubeBridge API Launcher
 color 0B
+setlocal
 
 echo ============================================
 echo   YouTubeBridge - API Launcher
@@ -9,6 +10,21 @@ echo ============================================
 echo.
 
 cd /d "%~dp0"
+
+set API_PORT=8091
+set "LOG_DIR=%~dp0..\runtime\log"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+
+echo [INFO] Cleaning any current listener/process tree on port %API_PORT% before start...
+call "%~dp0stop_8091.bat"
+if errorlevel 1 (
+    color 0C
+    echo [ERROR] Port %API_PORT% is still occupied after cleanup.
+    pause
+    exit /b 1
+)
+echo [OK] Port %API_PORT% is free. Preparing YouTubeBridge API...
+echo.
 
 set PARENT_VENV=%~dp0..\venv_ai_memory\Scripts\python.exe
 set LOCAL_VENV=%~dp0venv\Scripts\python.exe
@@ -30,6 +46,8 @@ if exist "%PARENT_VENV%" (
     )
     set PYTHON=python
 )
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 
 "%PYTHON%" -c "import fastapi, pydantic, requests, uvicorn" >nul 2>&1
 if %errorlevel% neq 0 (
@@ -43,51 +61,13 @@ if %errorlevel% neq 0 (
     )
 )
 
-set API_PORT=8091
-set API_STARTED=0
-set "LOG_DIR=%~dp0..\runtime\log"
-if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-
 :: Local dev default: if MemoriaCore has admin bypass enabled, let the bridge use it.
 :: MemoriaCore still enforces its own admin_bypass_enabled and loopback checks.
 if "%MEMORIACORE_ADMIN_BYPASS%"=="" set MEMORIACORE_ADMIN_BYPASS=1
 
-echo [INFO] Cleaning existing YouTubeBridge process tree on port %API_PORT%...
-call "%~dp0stop_8091.bat"
-if %errorlevel% neq 0 (
-    color 0C
-    echo [ERROR] Port %API_PORT% is still occupied after cleanup.
-    pause
-    exit /b 1
-)
-
-echo [1/1] Starting YouTubeBridge API server on port %API_PORT% ...
-echo      stdout: %LOG_DIR%\youtube_bridge_8091.out.log
-echo      stderr: %LOG_DIR%\youtube_bridge_8091.err.log
-start "YouTubeBridge API" /B cmd /c ""%PYTHON%" server.py 1>>"%LOG_DIR%\youtube_bridge_8091.out.log" 2>>"%LOG_DIR%\youtube_bridge_8091.err.log""
-set API_STARTED=1
-
-echo      Waiting for API server to be ready ...
-set RETRIES=0
-:wait_loop
-if %RETRIES% geq 20 (
-    color 0E
-    echo [WARN] API server did not respond within 20 seconds.
-    goto :after_api
-)
-timeout /t 1 /nobreak >nul
-"%PYTHON%" -c "import requests; r=requests.get('http://localhost:%API_PORT%/health',timeout=2); exit(0 if r.ok else 1)" >nul 2>&1
-if %errorlevel% neq 0 (
-    set /a RETRIES+=1
-    goto :wait_loop
-)
-echo      API server is ready!
-
-:after_api
-
 echo.
 echo ============================================
-echo   YouTubeBridge started!
+echo   Starting YouTubeBridge in foreground mode
 echo.
 echo   Control UI   : http://localhost:%API_PORT%/ui/
 echo   Live page    : http://localhost:%API_PORT%/live/
@@ -95,11 +75,16 @@ echo   API server   : http://localhost:%API_PORT%
 echo   API docs     : http://localhost:%API_PORT%/docs
 echo ============================================
 echo.
-start "" "http://localhost:%API_PORT%/ui/"
+echo [INFO] Keep this window open while using the API. Close it or press Ctrl+C to stop.
+echo [INFO] Console output is mirrored to: %LOG_DIR%\youtube_bridge_8091.foreground.log
+echo [INFO] Open the Control UI after the server reports that it is running.
 
-echo Press any key to stop services started by this launcher ...
-pause >nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $ProgressPreference='SilentlyContinue'; $env:MEMORIACORE_ADMIN_BYPASS='%MEMORIACORE_ADMIN_BYPASS%'; $env:PYTHONUTF8='%PYTHONUTF8%'; $env:PYTHONIOENCODING='%PYTHONIOENCODING%'; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; $OutputEncoding = [Console]::OutputEncoding; $cmdLine = [char]34 + '%PYTHON%' + [char]34 + ' server.py 2>&1'; cmd /d /s /c $cmdLine | Tee-Object -FilePath '%LOG_DIR%\youtube_bridge_8091.foreground.log' -Append; $code = $LASTEXITCODE; exit $code }"
+set EXIT_CODE=%errorlevel%
 
-echo Stopping services...
-if "%API_STARTED%"=="1" call "%~dp0stop_8091.bat"
-exit /b 0
+echo.
+echo [INFO] YouTubeBridge API exited with code %EXIT_CODE%.
+echo [INFO] Cleaning any remaining listener on port %API_PORT%...
+call "%~dp0stop_8091.bat"
+pause
+exit /b %EXIT_CODE%

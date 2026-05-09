@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import shutil
 import subprocess
 import threading
@@ -34,6 +35,70 @@ from bridge_engine_test_support import (
     normalize_message,
 )
 import engine_closing
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_completed_finalize_runs_formal_final_closing(monkeypatch, caplog):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "auto_sc_thanks_on_finalize": False,
+            "character_ids": ["koko", "byakuren"],
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        planned_state = {
+            "plan_id": "plan-general-panel",
+            "plan_status": "completed",
+            "current_segment_index": 0,
+            "current_turn_index": 1,
+            "completed_segment_ids": ["seg_01"],
+            "completed_turn_ids": ["seg_01_turn_01", "seg_01_turn_02"],
+            "completed_turn_types": ["hook", "closing"],
+        }
+        actions: list[str] = []
+
+        async def fake_send_director_turn(session_arg, state_arg, decision_arg):
+            actions.append(decision_arg["action"])
+            assert decision_arg["action"] == "final_closing"
+            assert "正式道別" in decision_arg["reason"]
+            return {"interaction": {"job_id": "final-closing", "status": "completed"}}
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        caplog.set_level(logging.INFO, logger="youtube_bridge")
+
+        await manager._finalize_for_episode_plan_completed(runtime, session, planned_state)
+
+        saved = storage.get_session("live-a")
+        director_state = storage.get_director_state("live-a")
+        assert actions == ["final_closing"]
+        assert saved["status"] == "ended"
+        assert saved["finalized_at"]
+        assert runtime.running is False
+        assert director_state["director_enabled"] is False
+        assert director_state["status"] == "ended"
+        assert director_state["metadata"]["finalized_by"] == "episode_plan_complete"
+        assert director_state["metadata"]["final_closing"] == {
+            "status": "completed",
+            "interaction": {"job_id": "final-closing", "status": "completed"},
+        }
+        log_output = "\n".join(record.getMessage() for record in caplog.records)
+        assert "episode plan completed; auto finalizing live session session_id=live-a" in log_output
+        assert "live session finalized session_id=live-a finalized_by=episode_plan_complete status=ended" in log_output
+        assert "final_closing_status=completed" in log_output
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio

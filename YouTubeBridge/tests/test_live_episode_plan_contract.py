@@ -213,6 +213,13 @@ def test_validate_live_episode_plan_accepts_generalized_plan():
     assert plan["plan_id"] == "plan-general-panel"
     assert len(plan["participants"]) == 3
     assert plan["show_format"]["primary"] == "open_panel"
+    assert plan["segments"][0]["planned_turn_contracts"][0]["dialogue_policy"] == {
+        "min_replies": 1,
+        "max_replies": 2,
+        "autonomy": "guided",
+        "preferred_flow": [],
+    }
+    assert plan["segments"][0]["planned_turn_contracts"][1]["dialogue_policy"]["max_replies"] == 3
     assert plan["segments"][0]["completion_conditions"]["required_turn_types"] == [
         "hook",
         "analysis",
@@ -258,6 +265,115 @@ def test_validate_live_episode_plan_rejects_speaker_policy_outside_participants(
         validate_live_episode_plan(plan)
 
 
+def test_validate_live_episode_plan_rejects_invalid_dialogue_policy_bounds():
+    plan = sample_plan()
+    plan["segments"][0]["planned_turn_contracts"][0]["dialogue_policy"] = {
+        "min_replies": 3,
+        "max_replies": 2,
+        "autonomy": "guided",
+        "preferred_flow": [],
+    }
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="dialogue reply bounds"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_accepts_audience_event_policy():
+    plan = sample_plan()
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["turn_type"] = "chat_bridge"
+    turn["audience_event_policy"] = {
+        "requires_real_events": True,
+        "event_types": ["reaction", "super_chat"],
+        "min_events": 1,
+        "max_events": 2,
+        "empty_behavior": "fallback_without_audience_quotes",
+        "empty_fallback_intent": "沒有真實留言時，不要引用聊天室，改用一般偏好差異收束。",
+    }
+    plan["segments"][0]["completion_conditions"]["required_turn_types"] = ["chat_bridge"]
+
+    validated = validate_live_episode_plan(plan)
+
+    assert validated["segments"][0]["planned_turn_contracts"][0]["audience_event_policy"]["requires_real_events"] is True
+
+
+def test_validate_live_episode_plan_accepts_turn_budget_and_claim_policy():
+    plan = sample_plan()
+    plan["turn_budget"] = {
+        "target_planned_turns": 4,
+        "opening_turns": 1,
+        "content_turns": 3,
+        "planning_note": "短測試節目只驗證一個主軸。",
+    }
+    plan["claim_ledger"] = {
+        "semantic_claims": [
+            {
+                "claim_id": "ranking_shift",
+                "meaning": "近期榜單名次發生變化，形成新的討論入口。",
+                "ban_paraphrase": True,
+            },
+            {
+                "claim_id": "ranking_is_entry",
+                "meaning": "排行榜可以作為找作品入口，但不能替觀眾做最終判決。",
+                "ban_paraphrase": True,
+            },
+        ]
+    }
+    first_turn = plan["segments"][0]["planned_turn_contracts"][0]
+    first_turn["claim_policy"] = {
+        "new_claim_ids": ["ranking_shift"],
+        "forbidden_claim_ids": [],
+        "must_not_paraphrase_used_claims": True,
+    }
+    second_turn = plan["segments"][0]["planned_turn_contracts"][1]
+    second_turn["claim_policy"] = {
+        "new_claim_ids": ["ranking_is_entry"],
+        "forbidden_claim_ids": ["ranking_shift"],
+        "must_not_paraphrase_used_claims": True,
+    }
+
+    validated = validate_live_episode_plan(plan)
+
+    assert validated["turn_budget"]["target_planned_turns"] == 4
+    assert validated["claim_ledger"]["semantic_claims"][0]["claim_id"] == "ranking_shift"
+    assert validated["segments"][0]["planned_turn_contracts"][1]["claim_policy"][
+        "forbidden_claim_ids"
+    ] == ["ranking_shift"]
+
+
+def test_validate_live_episode_plan_rejects_unknown_claim_policy_id():
+    plan = sample_plan()
+    plan["claim_ledger"] = {
+        "semantic_claims": [
+            {
+                "claim_id": "known_claim",
+                "meaning": "已知語義主張。",
+                "ban_paraphrase": True,
+            }
+        ]
+    }
+    plan["segments"][0]["planned_turn_contracts"][0]["claim_policy"] = {
+        "new_claim_ids": ["missing_claim"],
+        "forbidden_claim_ids": [],
+        "must_not_paraphrase_used_claims": True,
+    }
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="claim_policy.new_claim_ids"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_rejects_invalid_audience_empty_behavior():
+    plan = sample_plan()
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["audience_event_policy"] = {
+        "requires_real_events": True,
+        "empty_behavior": "simulate_chat",
+    }
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="empty_behavior"):
+        validate_live_episode_plan(plan)
+
+
 def test_initial_planned_state_targets_first_turn_contract():
     plan = validate_live_episode_plan(sample_plan())
     state = initial_planned_state(plan)
@@ -273,7 +389,8 @@ def test_initial_planned_state_targets_first_turn_contract():
 def test_current_turn_contract_returns_none_after_plan_complete():
     plan = validate_live_episode_plan(sample_plan())
     state = initial_planned_state(plan)
-    state["current_segment_index"] = 9
+    state["plan_status"] = "completed"
+    state["current_turn_index"] = 1
 
     assert current_turn_contract(plan, state) is None
 

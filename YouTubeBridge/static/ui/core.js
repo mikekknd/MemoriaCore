@@ -31,6 +31,7 @@ export const state = {
   eventSource: null,
   chatPreviewRefreshTimer: null,
   selectedEventIds: new Set(),
+  youtubeLiveGlobalSuffix: null,
 };
 
 export const $ = (id) => document.getElementById(id);
@@ -114,7 +115,7 @@ export function summarizeSsePayload(payload) {
 export function installTestIds() {
   [
     "sessionId", "videoId", "characterSelect", "characterLimitState",
-    "episodePlanFile", "importEpisodePlan", "episodePlanSelect", "bindEpisodePlan", "unbindEpisodePlan", "episodePlanStatus",
+    "episodePlanFile", "importEpisodePlan", "syncLocalEpisodePlans", "episodePlanSelect", "bindEpisodePlan", "importEpisodePlanEvidence", "unbindEpisodePlan", "episodePlanStatus",
     "injectInterval", "injectMinIntervalSeconds", "plannedDuration", "scInterruptCooldown", "sessionTopicPackSelect", "autoInject", "autoFinalize",
     "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession",
     "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",
@@ -130,6 +131,7 @@ export function installTestIds() {
     "livePersonaCharacterSelect", "livePersonaEnabled", "livePersonaMode", "livePersonaSelfAddress",
     "livePersonaSystemPrompt", "livePersonaOpeningIntro", "livePersonaAddressingRows",
     "addLivePersonaAddressingRow", "livePersonaReplyRules", "saveLivePersonaOverlay", "livePersonaOverlayState",
+    "youtubeLiveGlobalSuffix", "reloadYoutubeLiveGlobalSuffix", "saveYoutubeLiveGlobalSuffix", "youtubeLiveGlobalSuffixState",
     "log"
   ].forEach((id) => {
     const element = $(id);

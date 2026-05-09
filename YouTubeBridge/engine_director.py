@@ -539,10 +539,16 @@ class DirectorManagerMixin:
             "開場後讓角色彼此先拋出一個可延伸觀點，不要把問題丟回聊天室。",
         ])
 
-    def _opening_intro_context_for_session(self, session: dict[str, Any]) -> str:
+    def _opening_intro_context_for_session(
+        self,
+        session: dict[str, Any],
+        *,
+        character_ids: list[str] | None = None,
+    ) -> str:
+        source_ids = character_ids if character_ids is not None else session.get("character_ids") or []
         character_ids = [
             str(character_id or "").strip()
-            for character_id in (session.get("character_ids") or [])
+            for character_id in source_ids
             if str(character_id or "").strip()
         ]
         if not character_ids:
@@ -625,12 +631,14 @@ class DirectorManagerMixin:
         idle_seconds: int,
         session: dict[str, Any] | None = None,
     ) -> bool:
+        if session and str(session.get("episode_plan_id") or "").strip():
+            return False
         if not DirectorManagerMixin._director_topic_turn_limit_reached(session, state):
             return False
         last_action_at = DirectorManagerMixin._parse_iso_datetime(state.get("last_director_action_at"))
         if not last_action_at:
             return True
-        return (datetime.now() - last_action_at).total_seconds() < max(10, int(idle_seconds or 60))
+        return (datetime.now() - last_action_at).total_seconds() < max(1, int(idle_seconds or 60))
 
     @staticmethod
     def _director_idle_continue_decision(

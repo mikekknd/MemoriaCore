@@ -2,27 +2,29 @@ import { $, state, escapeHtml, initBridgeKey, installTestIds, installTooltipPosi
 import { requestedSessionIdFromUrl, selectedTopicEntry } from "./selectors.js";
 import {
   generateTestEvents, injectEvents, interruptNow, loadConnectors, loadHealth,
-  loadMemoriaConfig, loadMemoriaRefs, loadSessions, makeSummary,
-  bindSelectedEpisodePlan, importEpisodePlanFromFile,
+  loadMemoriaConfig, loadMemoriaRefs, loadSessions, loadYoutubeLiveGlobalSuffix, makeSummary,
+  bindSelectedEpisodePlan, importEpisodePlanFromFile, syncLocalEpisodePlans,
   refreshDirector, refreshEpisodePlans, refreshEvents, refreshSummary,
-  replySuperChats, saveConnector, saveMemoriaConfig,
+  replySuperChats, saveConnector, saveMemoriaConfig, saveYoutubeLiveGlobalSuffix,
   addLivePersonaAddressingRow, fillLivePersonaOverlayForm, livePersonaOverlayFor, saveLivePersonaOverlay,
   addProgramSegmentRow,
+  showEpisodePlanError,
   testMemoriaAuth, toggleAutoTestEvents, toggleSession,
-  syncCharacterSelectionLimit, unbindEpisodePlan, updateDirectorGuidance, updateLiveSessionControls, updateSessionSettings,
-} from "./control.js?v=hosting-segments-v1";
+  syncCharacterSelectionLimit, unbindEpisodePlan, updateDirectorGuidance, updateEpisodePlanModeControls, updateLiveSessionControls, updateSessionSettings,
+} from "./control.js?v=global-suffix-v1";
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
-  fillTopicEntryForm, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
+  fillTopicEntryForm, importEpisodePlanEvidence, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
   closeTopicGraphModal, openTopicGraphModal, rebuildTopicGraph, refreshTopicEntries, refreshTopicGraph, refreshTopicGraphTrace,
   refreshTopicPacks, resetTopicGraphView, updateTopicActionVisibility,
   updateTopicEntry, updateTopicPack,
-} from "./topic-packs.js?v=hosting-segments-v1";
+} from "./topic-packs.js?v=episode-evidence-v1";
 
 async function refreshAll() {
   await loadHealth();
   await loadConnectors();
   await loadMemoriaConfig();
+  await loadYoutubeLiveGlobalSuffix();
   await loadMemoriaRefs();
   await refreshEpisodePlans();
   await loadSessions(requestedSessionIdFromUrl());
@@ -99,6 +101,13 @@ export async function loadRuntimeRules() {
   }
 }
 
+function handleLiveSessionError(message, error) {
+  if (($("episodePlanSelect")?.value || "").trim() && String(error).includes("企劃")) {
+    showEpisodePlanError(error);
+  }
+  log(message, String(error));
+}
+
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
@@ -114,6 +123,8 @@ $("saveMemoriaConfig").onclick = () => saveMemoriaConfig().catch((error) => {
   $("memoriaAuthState").className = "status bad";
   log("MemoriaCore 設定儲存失敗", String(error));
 });
+$("reloadYoutubeLiveGlobalSuffix").onclick = () => loadYoutubeLiveGlobalSuffix().catch((error) => log("YouTube Live 全域 suffix 載入失敗", String(error)));
+$("saveYoutubeLiveGlobalSuffix").onclick = () => saveYoutubeLiveGlobalSuffix().catch((error) => log("YouTube Live 全域 suffix 儲存失敗", String(error)));
 $("saveLivePersonaOverlay").onclick = () => saveLivePersonaOverlay().catch((error) => log("直播角色設定儲存失敗", String(error)));
 $("addLivePersonaAddressingRow").onclick = () => addLivePersonaAddressingRow();
 $("addProgramSegmentRow").onclick = () => addProgramSegmentRow();
@@ -123,8 +134,8 @@ $("testMemoriaAuth").onclick = () => testMemoriaAuth().catch((error) => {
   log("MemoriaCore 連線測試失敗", String(error));
 });
 $("reloadRuntimeRules").onclick = () => loadRuntimeRules();
-$("toggleSession").onclick = () => toggleSession().catch((error) => log("直播操作失敗", String(error)));
-$("updateSession").onclick = () => updateSessionSettings().catch((error) => log("直播設定更新失敗", String(error)));
+$("toggleSession").onclick = () => toggleSession().catch((error) => handleLiveSessionError("直播操作失敗", error));
+$("updateSession").onclick = () => updateSessionSettings().catch((error) => handleLiveSessionError("直播設定更新失敗", error));
 $("refreshEvents").onclick = () => refreshEvents().catch((error) => log("留言更新失敗", String(error)));
 $("generateTestEvents").onclick = () => generateTestEvents().catch((error) => log("測試留言生成失敗", String(error)));
 $("toggleAutoTestEvents").onclick = () => toggleAutoTestEvents().catch((error) => log("自動測試留言切換失敗", String(error)));
@@ -136,7 +147,13 @@ $("makeSummary").onclick = () => makeSummary(false).catch((error) => log("摘要
 $("forceSummary").onclick = () => makeSummary(true).catch((error) => log("強制摘要失敗", String(error)));
 $("updateDirectorGuidance").onclick = () => updateDirectorGuidance().catch((error) => log("導播方向更新失敗", String(error)));
 $("importEpisodePlan").onclick = () => importEpisodePlanFromFile().catch((error) => log("匯入企劃失敗", { error: String(error) }));
-$("bindEpisodePlan").onclick = () => bindSelectedEpisodePlan().catch((error) => log("綁定企劃失敗", { error: String(error) }));
+$("syncLocalEpisodePlans").onclick = () => syncLocalEpisodePlans().then(() => refreshEpisodePlans({ syncLocal: false })).catch((error) => log("本地企劃同步失敗", { error: String(error) }));
+$("episodePlanSelect").onchange = () => {
+  updateEpisodePlanModeControls();
+  refreshDirector().catch((error) => log("企劃 Debug 更新失敗", String(error)));
+};
+$("bindEpisodePlan").onclick = () => bindSelectedEpisodePlan().catch((error) => { showEpisodePlanError(error); log("綁定企劃失敗", { error: String(error) }); });
+$("importEpisodePlanEvidence").onclick = () => importEpisodePlanEvidence().catch((error) => log("企劃 Evidence 匯入失敗", String(error)));
 $("unbindEpisodePlan").onclick = () => unbindEpisodePlan().catch((error) => log("解除企劃失敗", { error: String(error) }));
 $("refreshTopicPacks").onclick = () => refreshTopicPacks().catch((error) => log("資料包更新失敗", String(error)));
 $("createTopicPack").onclick = () => createTopicPack().catch((error) => log("資料包建立失敗", String(error)));

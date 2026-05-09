@@ -1,9 +1,9 @@
 import { $, SINGLE_CONNECTOR_ID, state, api, clearLog, escapeHtml, log, summarizeSsePayload } from "./core.js";
 import { defaultLiveSession, isSelectedSessionRunning, selectedSessionId, selectedSessionInfo } from "./selectors.js";
-import { bindSessionTopicPack, refreshTopicPacks, scheduleTopicGraphTraceRefresh } from "./topic-packs.js";
+import { bindSessionTopicPack, refreshTopicPacks, scheduleTopicGraphTraceRefresh, updateEpisodePlanEvidenceImportButton } from "./topic-packs.js?v=episode-evidence-v1";
 import { scheduleChatPreviewRefresh, selectedCharacterIds, syncCharacterSelectionLimit, validateSelectedCharacters } from "./memoria-control.js?v=hosting-segments-v1";
 import { refreshEvents, renderEvents, testEventControlsDisabled, updateTestEventControls } from "./events-control.js?v=hosting-segments-v1";
-import { refreshDirector, refreshQueue, refreshSummary, renderNoSummary, renderSummary, setDirector, updateDirectorControls } from "./summary-director-control.js?v=hosting-segments-v1";
+import { refreshDirector, refreshQueue, refreshSummary, renderNoSummary, renderSummary, setDirector, updateDirectorControls } from "./summary-director-control.js?v=plan-debug-v1";
 function sessionIsFinalized(session = selectedSessionInfo()) {
   return !!(
     session?.finalized_at
@@ -177,6 +177,38 @@ export function renderProgramSegmentRows(markdown = "") {
   syncProgramSegmentPlanField();
 }
 
+export function updateEpisodePlanModeControls() {
+  const hasEpisodePlan = !!($("episodePlanSelect")?.value || "").trim();
+  const legacyFields = $("legacyDirectorFields");
+  const notice = $("legacyDirectorNotice");
+  if (legacyFields) {
+    legacyFields.open = !hasEpisodePlan;
+    legacyFields.classList.toggle("legacy-disabled", hasEpisodePlan);
+    legacyFields.setAttribute("aria-disabled", hasEpisodePlan ? "true" : "false");
+  }
+  if (notice) {
+    notice.textContent = hasEpisodePlan
+      ? "已選用新版節目企劃；以下 Legacy 欄位會保留但不會帶入角色上下文。"
+      : "未選用新版節目企劃時，以下欄位作為舊版導播 fallback 使用。";
+  }
+  [
+    $("characterSelect"),
+    $("hostInteractionRules"),
+    $("programSegmentTurns"),
+    $("addProgramSegmentRow"),
+    $("programSegmentPlan"),
+    ...Array.from($("programSegmentRows")?.querySelectorAll("input, textarea, button") || []),
+  ].forEach((control) => {
+    if (control) control.disabled = hasEpisodePlan;
+  });
+  if (hasEpisodePlan && $("characterLimitState")) {
+    $("characterLimitState").textContent = "新版企劃會依參與者名稱自動對應角色";
+    $("characterLimitState").className = "muted";
+  }
+  if (!hasEpisodePlan) syncCharacterSelectionLimit();
+  updateEpisodePlanEvidenceImportButton();
+}
+
 export async function loadHealth() {
   try {
     const data = await api("/health");
@@ -229,6 +261,8 @@ export function fillSessionForm(session) {
   $("scInterruptCooldown").value = session.sc_interrupt_cooldown_seconds || 30;
   $("maxScPerBatch").value = session.max_sc_per_batch || 5;
   $("directorAnchorEveryTurns").value = session.director_anchor_every_turns || 2;
+  $("episodePlanHandoffGapSeconds").value = session.episode_plan_handoff_gap_seconds || 2;
+  $("episodePlanTurnGapSeconds").value = session.episode_plan_turn_gap_seconds || 8;
   $("directorGroupTurnLimit").value = session.director_group_turn_limit || 3;
   $("directorMaxChatBatches").value = session.director_max_chat_batches_before_anchor || 2;
   $("autoInject").checked = !!session.auto_inject;
@@ -240,6 +274,7 @@ export function fillSessionForm(session) {
   if ($("episodePlanSelect")) $("episodePlanSelect").value = session.episode_plan_id || "";
   renderProgramSegmentRows(session.program_segment_plan || "");
   $("programSegmentTurns").value = session.program_segment_turns || 3;
+  updateEpisodePlanModeControls();
   $("researchEnabled").checked = !!session.research_enabled;
   $("autoTestEvents").checked = !!session.auto_test_events_enabled;
   $("testEventMinSeconds").value = session.test_event_min_seconds || 20;
@@ -268,6 +303,8 @@ export function newSessionDraft() {
   $("scInterruptCooldown").value = 30;
   $("maxScPerBatch").value = 5;
   $("directorAnchorEveryTurns").value = 2;
+  $("episodePlanHandoffGapSeconds").value = 2;
+  $("episodePlanTurnGapSeconds").value = 8;
   $("directorGroupTurnLimit").value = 3;
   $("directorMaxChatBatches").value = 2;
   $("autoInject").checked = true;
@@ -279,6 +316,7 @@ export function newSessionDraft() {
   if ($("episodePlanSelect")) $("episodePlanSelect").value = "";
   renderProgramSegmentRows("");
   $("programSegmentTurns").value = 3;
+  updateEpisodePlanModeControls();
   $("researchEnabled").checked = false;
   $("autoTestEvents").checked = false;
   $("testEventMinSeconds").value = 20;
@@ -292,6 +330,18 @@ export function newSessionDraft() {
   $("directorState").textContent = "stopped";
   $("directorState").className = "status";
   $("directorJson").textContent = "{}";
+  if ($("episodePlanDebugState")) {
+    $("episodePlanDebugState").textContent = "未綁定";
+    $("episodePlanDebugState").className = "status";
+  }
+  if ($("episodePlanDebugList")) {
+    $("episodePlanDebugList").className = "episode-plan-debug-list muted";
+    $("episodePlanDebugList").innerHTML = "尚未綁定節目企劃。";
+  }
+  if ($("episodePlanDebugWait")) {
+    $("episodePlanDebugWait").className = "episode-plan-debug-wait muted";
+    $("episodePlanDebugWait").textContent = "下一輪等待：未啟動";
+  }
   updateDirectorControls({ director_enabled: false, status: "stopped" });
   renderNoSummary();
   $("topicPackSelect").value = "";
@@ -334,7 +384,7 @@ export function liveSessionPayload({ createNew = false } = {}) {
     video_id: $("videoId").value.trim(),
     target_memoria_session_id: "",
     episode_plan_id: $("episodePlanSelect")?.value || "",
-    character_ids: selectedCharacterIds(),
+    character_ids: $("episodePlanSelect")?.value ? [] : selectedCharacterIds(),
     auto_connect: true,
     auto_inject: $("autoInject").checked,
     inject_interval_seconds: Number($("injectInterval").value || 30),
@@ -346,6 +396,8 @@ export function liveSessionPayload({ createNew = false } = {}) {
     sc_interrupt_cooldown_seconds: Number($("scInterruptCooldown").value || 30),
     max_sc_per_batch: Number($("maxScPerBatch").value || 5),
     director_anchor_every_turns: Number($("directorAnchorEveryTurns").value || 2),
+    episode_plan_handoff_gap_seconds: Number($("episodePlanHandoffGapSeconds").value || 2),
+    episode_plan_turn_gap_seconds: Number($("episodePlanTurnGapSeconds").value || 8),
     director_group_turn_limit: Number($("directorGroupTurnLimit").value || 3),
     director_max_chat_batches_before_anchor: Number($("directorMaxChatBatches").value || 2),
     auto_finalize_on_duration: $("autoFinalize").checked,
@@ -452,6 +504,11 @@ export function subscribeEvents() {
   state.eventSource = new EventSource(`/sessions/${encodeURIComponent(id)}/events`);
   state.eventSource.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
+    if (payload.type === "status") {
+      await loadSessions(id);
+      await refreshDirector();
+      updateLiveSessionControls();
+    }
     if (payload.type === "youtube_live_event") {
       state.events.push(payload.event);
       renderEvents();

@@ -32,7 +32,7 @@ class DirectorRuntimeManagerMixin:
             self.storage.update_session_fields(session_id, director_guidance=guidance[:2000])
         state_fields: dict[str, Any] = {
             "director_enabled": True,
-            "idle_seconds": max(10, min(int(idle_seconds or 60), 3600)),
+            "idle_seconds": max(1, min(int(idle_seconds or 60), 3600)),
             "status": "running",
         }
         if guidance_changed:
@@ -78,6 +78,70 @@ class DirectorRuntimeManagerMixin:
                 return
             if self.storage.get_active_interaction(runtime.session_id):
                 next_state = self.storage.update_director_state(runtime.session_id, status="waiting_active_interaction")
+                await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                return
+            episode_decision = self._episode_plan_next_decision(session, state)
+            if episode_decision is not None:
+                if not episode_decision:
+                    _, planned_state = self._episode_plan_and_state(session, state)
+                    completed = str(planned_state.get("plan_status") or "") == "completed"
+                    if completed:
+                        await self._finalize_for_episode_plan_completed(runtime, session, planned_state)
+                        return
+                    wait_decision = {
+                        "action": "wait",
+                        "reason": "episode plan has no runnable planned turn",
+                        "episode_plan": {
+                            "mode": "no_runnable_turn",
+                            "planned_state": planned_state,
+                        },
+                    }
+                    next_state = self.storage.update_director_state(
+                        runtime.session_id,
+                        status="running",
+                        last_director_action_at=datetime.now().isoformat(),
+                        metadata={
+                            "last_decision": wait_decision,
+                            "opening_decision": None,
+                            "post_opening_decision": None,
+                            "segment_state": {},
+                        },
+                    )
+                    await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                    return
+                episode_state = self.storage.update_director_state(
+                    runtime.session_id,
+                    status="episode_planned_turn",
+                    metadata={
+                        "last_decision": episode_decision,
+                        "opening_decision": None,
+                        "post_opening_decision": None,
+                        "segment_state": {},
+                    },
+                )
+                await self._broadcast(runtime.session_id, {"type": "director_state", "director": episode_state})
+                result = await self._send_director_turn(session, state, episode_decision)
+                episode_mode = str((episode_decision.get("episode_plan") or {}).get("mode") or "")
+                next_state = self.storage.update_director_state(
+                    runtime.session_id,
+                    status="running",
+                    last_director_action_at=datetime.now().isoformat(),
+                    consecutive_ai_turns=(
+                        0
+                        if episode_mode == "planned_turn"
+                        else int(state.get("consecutive_ai_turns", 0) or 0) + 1
+                    ),
+                    current_topic=str(episode_decision.get("current_topic") or state.get("current_topic") or ""),
+                    metadata={
+                        "last_decision": episode_decision,
+                        "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
+                        "opening_decision": None,
+                        "post_opening_decision": None,
+                        "chat_batches_since_anchor": 0,
+                        "segment_state": {},
+                        **self._episode_metadata_after_turn(session, state, episode_decision),
+                    },
+                )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                 return
             decision = self._director_opening_decision(session, state)
@@ -151,7 +215,7 @@ class DirectorRuntimeManagerMixin:
                 state = self.storage.get_director_state(runtime.session_id)
                 if not state.get("director_enabled"):
                     return
-                idle_seconds = max(10, min(int(state.get("idle_seconds", 60) or 60), 3600))
+                idle_seconds = max(1, min(int(state.get("idle_seconds", 60) or 60), 3600))
                 session = self.storage.get_session(runtime.session_id)
                 if not session:
                     return
@@ -183,7 +247,31 @@ class DirectorRuntimeManagerMixin:
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
                     continue
-                if self._director_should_pause_for_turn_limit(state, idle_seconds, session):
+                episode_decision = self._episode_plan_next_decision(session, state)
+                has_episode_decision = isinstance(episode_decision, dict) and bool(episode_decision)
+                if episode_decision is not None and not has_episode_decision:
+                    _, planned_state = self._episode_plan_and_state(session, state)
+                    completed = str(planned_state.get("plan_status") or "") == "completed"
+                    if completed:
+                        await self._finalize_for_episode_plan_completed(runtime, session, planned_state)
+                        return
+                    wait_decision = {
+                        "action": "wait",
+                        "reason": "episode plan has no runnable planned turn",
+                        "episode_plan": {
+                            "mode": "no_runnable_turn",
+                            "planned_state": planned_state,
+                        },
+                    }
+                    next_state = self.storage.update_director_state(
+                        runtime.session_id,
+                        status="episode_plan_wait",
+                        metadata={"last_decision": wait_decision},
+                    )
+                    await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                    await asyncio.sleep(1.0)
+                    continue
+                if not has_episode_decision and self._director_should_pause_for_turn_limit(state, idle_seconds, session):
                     update_fields = {"status": "turn_limit_wait"}
                     if not state.get("last_director_action_at"):
                         update_fields["last_director_action_at"] = datetime.now().isoformat()
@@ -191,7 +279,7 @@ class DirectorRuntimeManagerMixin:
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
                     continue
-                if self._director_topic_turn_limit_reached(session, state):
+                if not has_episode_decision and self._director_topic_turn_limit_reached(session, state):
                     state = self.storage.update_director_state(
                         runtime.session_id,
                         status="turn_limit_released",
@@ -201,7 +289,17 @@ class DirectorRuntimeManagerMixin:
 
                 last_action_at = self._parse_iso_datetime(state.get("last_director_action_at"))
                 if last_action_at:
-                    remaining_seconds = idle_seconds - (datetime.now() - last_action_at).total_seconds()
+                    delay_seconds = (
+                        self._episode_plan_director_delay_seconds(
+                            session,
+                            state,
+                            episode_decision,
+                            idle_seconds,
+                        )
+                        if has_episode_decision
+                        else idle_seconds
+                    )
+                    remaining_seconds = delay_seconds - (datetime.now() - last_action_at).total_seconds()
                     if remaining_seconds > 0:
                         await asyncio.sleep(min(1.0, max(0.2, remaining_seconds)))
                         continue
@@ -209,7 +307,7 @@ class DirectorRuntimeManagerMixin:
                     await asyncio.sleep(1.0)
                     continue
 
-                decision = self._episode_plan_next_decision(session, state)
+                decision = episode_decision
                 if decision is None:
                     decision = await asyncio.to_thread(self._director_decision, session, state)
                 action = str(decision.get("action") or "wait").strip()
@@ -248,7 +346,12 @@ class DirectorRuntimeManagerMixin:
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     continue
                 result = await self._send_director_turn(session, state, decision)
-                next_count = int(state.get("consecutive_ai_turns", 0) or 0) + 1
+                episode_mode = str((decision.get("episode_plan") or {}).get("mode") or "")
+                next_count = (
+                    0
+                    if episode_mode == "planned_turn"
+                    else int(state.get("consecutive_ai_turns", 0) or 0) + 1
+                )
                 next_state = self.storage.update_director_state(
                     runtime.session_id,
                     status="running",
@@ -289,46 +392,85 @@ class DirectorRuntimeManagerMixin:
         target_character_ids = session.get("character_ids", [])
         action = str(decision.get("action") or "continue_topic")
         prompt = str(decision.get("prompt") or "").strip()
+        has_episode_plan = self._episode_plan_for_session(session) is not None
         public_prompt = self._public_director_prompt(action, session, state)
         if action == "opening":
             public_prompt = self._public_director_opening_prompt(session, state)
         public_topic = self._public_director_topic(session, state)
         elapsed_minutes, elapsed_percent, remaining_minutes = self._session_elapsed(session)
-        group_turn_limit = self._director_group_turn_limit_for_action(session, action)
         if not prompt:
             prompt = f"目前適合執行 {action}，請自然延續直播對話，不要提到幕後流程。"
         topic_context = ""
-        if action == "opening":
-            topic_context = self._topic_pack_sequence_preview_context_for_session(session_id)
-        else:
-            topic_context = self._topic_pack_sequence_context_for_session(
-                session_id,
-                "\n".join([
-                    str(public_topic or ""),
-                    str(public_prompt or ""),
-                    str(state.get("current_topic") or ""),
-                ]),
-                usage_source="director",
-            )
-        context_parts = [
-            f"直播流程 action={action}",
-            f"直播進度：{elapsed_percent}%（已 {elapsed_minutes} 分鐘，剩餘約 {remaining_minutes} 分鐘）",
-            f"處理提示：{public_prompt}",
-        ]
-        if action not in {"reply_chat_batch", "reply_super_chat_batch"}:
+        if not has_episode_plan:
+            if action == "opening":
+                topic_context = self._topic_pack_sequence_preview_context_for_session(session_id)
+            else:
+                topic_context = self._topic_pack_sequence_context_for_session(
+                    session_id,
+                    "\n".join([
+                        str(public_topic or ""),
+                        str(public_prompt or ""),
+                        str(state.get("current_topic") or ""),
+                    ]),
+                    usage_source="director",
+                )
+        context_parts = [f"直播流程 action={action}"]
+        if not has_episode_plan:
+            context_parts.append(f"直播進度：{elapsed_percent}%（已 {elapsed_minutes} 分鐘，剩餘約 {remaining_minutes} 分鐘）")
+        context_parts.append(f"處理提示：{public_prompt}")
+        if not has_episode_plan and action not in {"reply_chat_batch", "reply_super_chat_batch"}:
             context_parts.append(
                 "直播互動規則：目前不是回應留言批次；請讓角色彼此接話、補充、反駁或提出下一個切入點，不要把問題丟回聊天室。"
             )
         if action == "closing_super_chat_thanks" and prompt:
             context_parts.append("本場 Super Chat 參考內容：\n" + prompt[:3000])
-        episode_patch, episode_context_text = self._episode_plan_external_context_patch(
+        episode_patch, episode_context_text, episode_topic_context = self._episode_plan_external_context_patch(
             session,
             state,
             decision,
         )
         if episode_context_text:
             context_parts.append(episode_context_text)
-        if action == "opening":
+        allowed_turn_character_ids: list[str] = []
+        if episode_patch:
+            turn_contract = (
+                (decision.get("episode_plan") or {}).get("turn_contract")
+                if isinstance(decision.get("episode_plan"), dict)
+                else {}
+            )
+            if not isinstance(turn_contract, dict) or not turn_contract:
+                turn_contract = (
+                    (episode_patch.get("live_episode_plan") or {}).get("turn_contract")
+                    if isinstance(episode_patch.get("live_episode_plan"), dict)
+                    else {}
+                )
+            # Keep the full episode roster in MemoriaCore so the session starts
+            # as a group. Per-turn speaker limits are projected in
+            # live_episode_plan.speaker_policy.allowed_character_ids.
+            allowed_turn_character_ids = self._episode_character_ids_for_turn(session, turn_contract or {})
+            target_character_ids = self._episode_character_ids_for_session(session)
+        group_turn_limit = self._director_group_turn_limit_for_action(session, action)
+        live_episode_plan = episode_patch.get("live_episode_plan") if isinstance(episode_patch, dict) else {}
+        planned_turn_type = ""
+        if isinstance(live_episode_plan, dict) and str(live_episode_plan.get("mode") or "") == "planned_turn":
+            planned_turn_type = str(live_episode_plan.get("turn_type") or "").strip()
+            dialogue_policy = (
+                live_episode_plan.get("dialogue_policy")
+                if isinstance(live_episode_plan.get("dialogue_policy"), dict)
+                else {}
+            )
+            group_turn_limit = self._episode_plan_group_turn_limit(
+                session,
+                planned_turn_type,
+                dialogue_policy,
+            )
+            if prompt:
+                public_prompt = prompt
+                context_parts = [
+                    part for part in context_parts
+                    if not str(part).startswith("處理提示：")
+                ]
+        if action == "opening" and not has_episode_plan:
             opening_intro_context = self._opening_intro_context_for_session(session)
             if opening_intro_context:
                 context_parts.append(opening_intro_context)
@@ -337,7 +479,16 @@ class DirectorRuntimeManagerMixin:
                     "開場後話題導入資料：以下 <topic_pack_fact_cards> 只能在固定開場白與自我介紹完成後使用；"
                     "請用其中一個具體切入點帶入討論，不得自行捏造資料卡未提供的作品、集數或事件。"
                 )
-        if action == "post_opening_topic_anchor":
+        elif planned_turn_type in {"opening", "cohost_intro"}:
+            opening_intro_context = self._opening_intro_context_for_session(
+                session,
+                character_ids=allowed_turn_character_ids or target_character_ids,
+            )
+            if opening_intro_context:
+                context_parts.append(opening_intro_context)
+        if episode_topic_context:
+            context_parts.append(episode_topic_context)
+        if action == "post_opening_topic_anchor" and not has_episode_plan:
             if topic_context:
                 context_parts.append(
                     "話題導入規則：開場已完成，接下來必須優先使用下方 <topic_pack_fact_cards> "
@@ -347,7 +498,9 @@ class DirectorRuntimeManagerMixin:
                 context_parts.append(
                     "話題導入規則：目前沒有可用話題資料卡；請延續開場與既有直播方向，不得自行捏造具體作品、集數或事件。"
                 )
-        live_hosting = self._live_hosting_context_for_session(session, state)
+        live_hosting = {}
+        if not has_episode_plan and not episode_patch:
+            live_hosting = self._live_hosting_context_for_session(session, state)
         if live_hosting:
             context_parts.append(self._live_hosting_context_text(live_hosting))
         if topic_context:
@@ -380,6 +533,13 @@ class DirectorRuntimeManagerMixin:
             external_context["summary"]["episode_plan_turn_id"] = live_episode_plan.get("turn_id", "")
             external_context["summary"]["episode_plan_mode"] = live_episode_plan.get("mode", "")
         external_context = self._attach_live_persona_overrides(session, external_context)
+        display_content = self._director_display_content(action)
+        if isinstance(live_episode_plan, dict) and str(live_episode_plan.get("mode") or "") == "planned_turn":
+            turn_type = planned_turn_type
+            if turn_type == "opening":
+                display_content = "直播開場。"
+            elif turn_type == "cohost_intro":
+                display_content = "共同主持開場。"
         interaction = self.storage.create_interaction(
             {
                 "session_id": session_id,
@@ -413,7 +573,7 @@ class DirectorRuntimeManagerMixin:
             result = await asyncio.to_thread(
                 self._memoria_client().chat_stream_sync,
                 content=public_prompt,
-                display_content=self._director_display_content(action),
+                display_content=display_content,
                 session_id=target_session_id,
                 character_ids=target_character_ids,
                 external_context=external_context,

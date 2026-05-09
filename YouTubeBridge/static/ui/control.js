@@ -11,12 +11,14 @@ export {
   scheduleChatPreviewRefresh,
   saveMemoriaConfig,
   testMemoriaAuth,
+  loadYoutubeLiveGlobalSuffix,
+  saveYoutubeLiveGlobalSuffix,
   loadMemoriaRefs,
   selectedCharacterIds,
   maxSessionCharacters,
   validateSelectedCharacters,
   syncCharacterSelectionLimit,
-} from "./memoria-control.js?v=hosting-segments-v1";
+} from "./memoria-control.js?v=global-suffix-v1";
 export {
   renderLivePersonaCharacterOptions,
   addLivePersonaAddressingRow,
@@ -45,6 +47,8 @@ export {
   makeSummary,
   refreshDirector,
   refreshEpisodePlans,
+  showEpisodePlanError,
+  syncLocalEpisodePlans,
   updateDirectorControls,
   updateDirectorGuidance,
   setDirector,
@@ -52,7 +56,7 @@ export {
   importEpisodePlanFromFile,
   bindSelectedEpisodePlan,
   unbindEpisodePlan,
-} from "./summary-director-control.js?v=hosting-segments-v1";
+} from "./summary-director-control.js?v=plan-debug-v1";
 export {
   updateLiveSessionControls,
   injectMinIntervalSeconds,
@@ -69,10 +73,11 @@ export {
   saveConnector,
   liveSessionPayload,
   saveSession,
+  updateEpisodePlanModeControls,
   sessionAction,
   updateSessionSettings,
   startCurrentSession,
   finalizeCurrentSession,
   toggleSession,
   subscribeEvents,
-} from "./session-control.js?v=hosting-segments-v1";
+} from "./session-control.js?v=finalize-status-v1";

@@ -24,6 +24,7 @@ from core.chat_orchestrator.generation_context import (
     build_chat_response_schema,
     build_final_chat_context,
     build_history_preview,
+    memory_lookup_skip_reason,
     resolve_orchestration_scope,
 )
 from core.xml_prompt import format_tool_context_xml, format_tool_results_xml
@@ -94,77 +95,91 @@ def _run_chat_orchestration(
     pipeline_data: PipelineContext | None = None
     timer = StepTimer()
 
+    memory_skip_reason = memory_lookup_skip_reason(ctx)
+
     # ─── 提取 Active UIDs ───
     # 主路徑：debug_info["cited_uids"]；缺值時 fallback 到 content regex（相容舊資料）
     active_uids = set()
-    for m in session_messages[-4:]:
-        for uid in collect_cited_uids(m):
-            active_uids.add(uid)
+    if not memory_skip_reason:
+        for m in session_messages[-4:]:
+            for uid in collect_cited_uids(m):
+                active_uids.add(uid)
+    if memory_skip_reason:
+        expand_res = {"original_query": user_prompt, "expanded_keywords": "", "entity_confidence": 0.0}
+        if isinstance(shared_expand_state, SharedExpandState):
+            shared_expand_state.expand_result = dict(expand_res)
+            shared_expand_state.executed = True
+        blocks = []
+        mem_ctx = ""
+        block_details = []
+        core_debug_text = ""
+        profile_debug_text = ""
+        f_base = max(0.50, memory_hard_base)
+    else:
+        # ─── 話題偏移偵測 ───
+        with timer.step("話題偏移偵測 (Topic Shift Detection)"):
+            is_shift, cohesion_score = analyzer.detect_topic_shift(
+                session_messages, embed_model, threshold=shift_threshold,
+            )
 
-    # ─── 話題偏移偵測 ───
-    with timer.step("話題偏移偵測 (Topic Shift Detection)"):
-        is_shift, cohesion_score = analyzer.detect_topic_shift(
-            session_messages, embed_model, threshold=shift_threshold,
+        if is_shift:
+            topic_shifted = True
+            # 準備背景管線所需的資料快照（不在此處執行管線）
+            import copy
+            msgs_to_extract = snapshot_messages_for_pipeline(session_messages[:-1])
+            _user_blocks = ms._get_memory_blocks(user_id, character_id, write_visibility)
+            last_block = copy.deepcopy(_user_blocks[-1]) if _user_blocks else None
+            pipeline_data = PipelineContext(
+                msgs_to_extract=msgs_to_extract,
+                last_block=last_block,
+                session_ctx=session_ctx or {},
+            )
+
+        # ─── 雙軌檢索 ───
+        with timer.step("查詢擴展 (Query Expansion LLM)"):
+            if isinstance(shared_expand_state, SharedExpandState) and shared_expand_state.executed:
+                expand_res = dict(shared_expand_state.expand_result or {})
+            else:
+                expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
+                if isinstance(shared_expand_state, SharedExpandState):
+                    shared_expand_state.expand_result = dict(expand_res)
+                    shared_expand_state.executed = True
+        inherited_str = " ".join(last_entities)
+        combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
+
+        f_alpha = ui_alpha
+        f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
+
+        with timer.step("情境記憶檢索 (Memory Block Search)"):
+            raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base,
+                                          user_id=user_id, character_id=character_id, visibility_filter=visibility_filter)
+            blocks = [b for b in raw_blocks if b.get("block_id") not in active_uids]
+
+        with timer.step("核心認知檢索 (Core Memory Search)"):
+            core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45,
+                                                    user_id=user_id, character_id=character_id,
+                                                    visibility_filter=visibility_filter)
+
+        with timer.step("使用者偏好檢索 (Profile Search)"):
+            profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5,
+                                                         user_id=user_id,
+                                                         visibility_filter=visibility_filter)
+
+        static_profile = ms.get_static_profile_prompt(user_id=user_id, visibility_filter=visibility_filter)
+        proactive_topics_block = ms.get_proactive_topics_prompt(limit=1, user_id=user_id, character_id=character_id,
+                                                                 visibility_filter=visibility_filter)
+        retrieved_memory = build_retrieved_memory_context(
+            static_profile=static_profile,
+            core_insights=core_insights,
+            profile_matches=profile_matches,
+            proactive_topics=proactive_topics_block,
+            blocks=blocks,
+            force_group=force_group,
         )
-
-    if is_shift:
-        topic_shifted = True
-        # 準備背景管線所需的資料快照（不在此處執行管線）
-        import copy
-        msgs_to_extract = snapshot_messages_for_pipeline(session_messages[:-1])
-        _user_blocks = ms._get_memory_blocks(user_id, character_id, write_visibility)
-        last_block = copy.deepcopy(_user_blocks[-1]) if _user_blocks else None
-        pipeline_data = PipelineContext(
-            msgs_to_extract=msgs_to_extract,
-            last_block=last_block,
-            session_ctx=session_ctx or {},
-        )
-
-    # ─── 雙軌檢索 ───
-    with timer.step("查詢擴展 (Query Expansion LLM)"):
-        if isinstance(shared_expand_state, SharedExpandState) and shared_expand_state.executed:
-            expand_res = dict(shared_expand_state.expand_result or {})
-        else:
-            expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
-            if isinstance(shared_expand_state, SharedExpandState):
-                shared_expand_state.expand_result = dict(expand_res)
-                shared_expand_state.executed = True
-    inherited_str = " ".join(last_entities)
-    combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
-
-    f_alpha = ui_alpha
-    f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
-
-    with timer.step("情境記憶檢索 (Memory Block Search)"):
-        raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base,
-                                      user_id=user_id, character_id=character_id, visibility_filter=visibility_filter)
-        blocks = [b for b in raw_blocks if b.get("block_id") not in active_uids]
-
-    with timer.step("核心認知檢索 (Core Memory Search)"):
-        core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45,
-                                                user_id=user_id, character_id=character_id,
-                                                visibility_filter=visibility_filter)
-
-    with timer.step("使用者偏好檢索 (Profile Search)"):
-        profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5,
-                                                     user_id=user_id,
-                                                     visibility_filter=visibility_filter)
-
-    static_profile = ms.get_static_profile_prompt(user_id=user_id, visibility_filter=visibility_filter)
-    proactive_topics_block = ms.get_proactive_topics_prompt(limit=1, user_id=user_id, character_id=character_id,
-                                                             visibility_filter=visibility_filter)
-    retrieved_memory = build_retrieved_memory_context(
-        static_profile=static_profile,
-        core_insights=core_insights,
-        profile_matches=profile_matches,
-        proactive_topics=proactive_topics_block,
-        blocks=blocks,
-        force_group=force_group,
-    )
-    mem_ctx = retrieved_memory.prompt
-    block_details = retrieved_memory.block_details
-    core_debug_text = retrieved_memory.core_debug_text
-    profile_debug_text = retrieved_memory.profile_debug_text
+        mem_ctx = retrieved_memory.prompt
+        block_details = retrieved_memory.block_details
+        core_debug_text = retrieved_memory.core_debug_text
+        profile_debug_text = retrieved_memory.profile_debug_text
 
     # 動態角色載入（evolved_prompt 優先，否則使用 system_prompt）
     char_mgr = get_character_manager()
@@ -231,6 +246,8 @@ def _run_chat_orchestration(
         "dynamic_prompt": sys_prompt + _history_preview,
         "context_messages_count": len(clean_history),
     }
+    if memory_skip_reason:
+        retrieval_ctx["memory_lookup_skipped"] = memory_skip_reason
 
     # 由系統直接標記引用的 UIDs，不依賴 LLM 回傳以避免降智或格式錯誤
     cited_uids = [b.get("block_id") for b in blocks if "block_id" in b] if blocks else []
@@ -241,7 +258,7 @@ def _run_chat_orchestration(
     with timer.step("LLM 對話生成 (Chat Generation LLM)"):
         try:
             from tools.tavily import execute_tool_call
-            tools_list = build_available_tools(user_prefs)
+            tools_list = build_available_tools(user_prefs, ctx)
 
             # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call。
             # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
@@ -260,7 +277,7 @@ def _run_chat_orchestration(
                         **api_messages[-1],
                         "content": api_messages[-1]["content"] + tool_notice,
                     }
-            elif not is_group_followup_turn:
+            elif tools_list and not is_group_followup_turn:
                 # ── 第一輪：輕量工具偵測（共用 run_router_agent）──────
                 # clean_history 末尾含當前 user_prompt，傳 [:-1] 避免重複追加。
                 try:

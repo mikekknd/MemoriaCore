@@ -1144,9 +1144,93 @@ class YouTubeBridgeManager(
             "detail": "深挖",
             "related": "關聯",
         }
+        char_budget = 2200
         for entry in entries[-8:]:
             role = str(entry.get("topic_graph_role") or "").strip()
             label = f"[{role_labels[role]}] " if role in role_labels else ""
-            lines.append(f"- {label}{entry.get('title')}: {entry.get('body')}".strip())
+            entry_lines = [f"- {label}{entry.get('title')}".strip()]
+            entry_lines.extend(YouTubeBridgeManager._topic_pack_evidence_lines(entry))
+            next_text = "\n".join([*lines, *entry_lines, "</topic_pack_fact_cards>"])
+            if len(next_text) > char_budget and len(lines) > 2:
+                break
+            if len(next_text) > char_budget:
+                entry_lines = entry_lines[:2]
+                if len(entry_lines) == 1:
+                    entry_lines.append("  - 可驗證事實：資料卡內容過長，請只依標題與本輪問題保守回應。")
+            lines.extend(entry_lines)
         lines.append("</topic_pack_fact_cards>")
         return "\n".join(lines)
+
+    @staticmethod
+    def _topic_pack_evidence_lines(entry: dict[str, Any]) -> list[str]:
+        body = str(entry.get("body") or "").replace("\r", "\n").strip()
+        if not body:
+            return ["  - 可驗證事實：資料卡未提供可用正文，請只依標題保守回應。"]
+        blocked_labels = {
+            "正方觀點",
+            "反方觀點",
+            "第三種觀點",
+            "觀眾互動問題",
+            "延伸話題",
+            "爆點句",
+            "資料邊界",
+            "可用切角",
+            "不可主張",
+            "來源提示",
+        }
+        label_map = {
+            "基礎背景": "可驗證事實",
+            "背景細節": "可驗證事實",
+            "核心進展": "可驗證事實",
+            "具體事實": "可驗證事實",
+            "summary": "可驗證事實",
+            "facts": "可驗證事實",
+            "可驗證事實": "可驗證事實",
+            "社群討論角度": "網路意見看法",
+            "網路意見": "網路意見看法",
+            "網路意見看法": "網路意見看法",
+            "網路看法": "網路意見看法",
+            "公開評論": "網路意見看法",
+            "討論氛圍": "網路意見看法",
+        }
+        buckets: dict[str, list[str]] = {
+            "可驗證事實": [],
+            "網路意見看法": [],
+        }
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("- "):
+                line = line[2:].strip()
+            label, separator, content = line.partition("：")
+            if not separator:
+                label, separator, content = line.partition(":")
+            clean_label = label.strip()
+            clean_content = content.strip() if separator else line
+            if clean_label in blocked_labels:
+                continue
+            mapped = label_map.get(clean_label)
+            if not mapped:
+                if not any(bad in line for bad in blocked_labels):
+                    buckets["可驗證事實"].append(line)
+                continue
+            if clean_content:
+                buckets[mapped].append(clean_content)
+        if not any(buckets.values()):
+            buckets["可驗證事實"].append(body)
+        lines: list[str] = []
+        for label in ("可驗證事實", "網路意見看法"):
+            values = buckets[label]
+            if not values:
+                continue
+            content = "；".join(values)
+            lines.append(f"  - {label}：{YouTubeBridgeManager._truncate_topic_pack_line(content)}")
+        return lines[:2] or ["  - 可驗證事實：資料卡未提供可用 evidence 欄位。"]
+
+    @staticmethod
+    def _truncate_topic_pack_line(text: str, max_chars: int = 260) -> str:
+        compact = " ".join(str(text or "").split())
+        if len(compact) <= max_chars:
+            return compact
+        return compact[: max(0, max_chars - 1)].rstrip() + "…"

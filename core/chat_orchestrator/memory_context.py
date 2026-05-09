@@ -179,7 +179,7 @@ def build_retrieved_memory_context(
         sections.append(episodic_text)
 
     return RetrievedMemoryContext(
-        prompt="\n\n".join(sections) if sections else "無相關記憶。",
+        prompt="\n\n".join(sections),
         block_details=block_details,
         core_debug_text=core_debug_text,
         profile_debug_text=profile_debug_text,

@@ -30,9 +30,10 @@ from bridge_engine import YouTubeBridgeManager
 from memoria_client import MemoriaClient
 from models import (
     CleanupRequest, ConnectorConfig, DirectorGuidanceRequest, DirectorStartRequest,
-    E2ECheckpointRequest, EpisodePlanBindRequest, EpisodePlanImportRequest,
+    E2ECheckpointRequest, EpisodePlanBindRequest, EpisodePlanEvidenceImportRequest, EpisodePlanImportRequest,
     FactCardGenerateRequest, FactCardImportRequest, InterruptRequest,
     LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
+    YouTubeLiveGlobalSuffixRequest,
     ResearchRequest, SummarizeRequest, TestChatGenerateRequest, TopicPackCreateRequest,
     TopicPackEntryCreateRequest, TopicPackEntryUpdateRequest,
     TopicPackUpdateRequest, WriteMemoryRequest,
@@ -326,11 +327,13 @@ stop_director = _route_handler(_director_routes.stop_director)
 update_director_guidance = _route_handler(_director_routes.update_director_guidance)
 
 list_episode_plans = _route_handler(_episode_plans_routes.list_episode_plans)
+sync_local_episode_plans = _route_handler(_episode_plans_routes.sync_local_episode_plans)
 import_episode_plan = _route_handler(_episode_plans_routes.import_episode_plan)
 get_episode_plan = _route_handler(_episode_plans_routes.get_episode_plan)
 delete_episode_plan = _route_handler(_episode_plans_routes.delete_episode_plan)
 bind_episode_plan = _route_handler(_episode_plans_routes.bind_episode_plan)
 unbind_episode_plan = _route_handler(_episode_plans_routes.unbind_episode_plan)
+import_episode_plan_evidence = _route_handler(_episode_plans_routes.import_episode_plan_evidence)
 
 cleanup_ended_live_sessions = _route_handler(_testing_routes.cleanup_ended_live_sessions)
 bootstrap_live_session = _route_handler(_testing_routes.bootstrap_live_session)
@@ -381,6 +384,8 @@ test_memoria_auth = _route_handler(_memoria_routes.test_memoria_auth)
 memoria_refs = _route_handler(_memoria_routes.memoria_refs)
 memoria_characters = _route_handler(_memoria_routes.memoria_characters)
 memoria_sessions = _route_handler(_memoria_routes.memoria_sessions)
+get_youtube_live_global_suffix = _route_handler(_memoria_routes.get_youtube_live_global_suffix)
+update_youtube_live_global_suffix = _route_handler(_memoria_routes.update_youtube_live_global_suffix)
 
 
 @app.exception_handler(ValueError)

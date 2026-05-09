@@ -71,6 +71,12 @@ def _live_chat_source() -> str:
     return "\n".join(parts)
 
 
+def _assert_launcher_uses_runtime_log_dir(source: str, legacy_runtime_prefix: str) -> None:
+    assert r"runtime\log" in source
+    assert ".foreground.log" in source or (".out.log" in source and ".err.log" in source)
+    assert legacy_runtime_prefix not in source.lower()
+
+
 def test_bridge_key_is_required_even_for_loopback(monkeypatch):
     monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
 
@@ -152,10 +158,7 @@ def test_bridge_launchers_write_process_logs_under_runtime_log():
     hot_reload_script = (BRIDGE_ROOT / "start_hot_reload.bat").read_text(encoding="utf-8")
 
     for source in (start_script, hot_reload_script):
-        assert r"runtime\log" in source
-        assert ".out.log" in source
-        assert ".err.log" in source
-        assert r"runtime\youtube_bridge" not in source.lower()
+        _assert_launcher_uses_runtime_log_dir(source, r"runtime\youtube_bridge")
 
 
 def test_memoriacore_launchers_write_process_logs_under_runtime_log():
@@ -168,10 +171,24 @@ def test_memoriacore_launchers_write_process_logs_under_runtime_log():
 
     for script in scripts:
         source = script.read_text(encoding="utf-8")
-        assert r"runtime\log" in source
-        assert ".out.log" in source
-        assert ".err.log" in source
-        assert r"runtime\api_8088" not in source.lower()
+        _assert_launcher_uses_runtime_log_dir(source, r"runtime\api_8088")
+
+
+def test_foreground_launchers_force_utf8_without_powershell_native_stderr_wrapper():
+    root = BRIDGE_ROOT.parent
+    scripts = [
+        root / "start.bat",
+        BRIDGE_ROOT / "start.bat",
+    ]
+
+    for script in scripts:
+        source = script.read_text(encoding="utf-8")
+        assert "PYTHONUTF8" in source
+        assert "PYTHONIOENCODING" in source
+        assert "[Console]::OutputEncoding" in source
+        assert "cmd /d /s /c $cmdLine | Tee-Object" in source
+        assert "& '%PYTHON%'" not in source
+        assert "2>&1 | Tee-Object" not in source
 
 
 def test_bridge_launcher_is_api_only_without_streamlit():
@@ -279,8 +296,8 @@ def test_control_ui_honors_requested_session_id_on_initial_load():
 def test_control_ui_loads_external_css_and_module_script():
     index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
 
-    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=hosting-segments-v1">' in index_html
-    assert '<script type="module" src="/ui-assets/app.js?v=hosting-segments-v1"></script>' in index_html
+    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=plan-debug-v1">' in index_html
+    assert '<script type="module" src="/ui-assets/app.js?v=global-suffix-v1"></script>' in index_html
     assert "<style>" not in index_html
     assert "<script>\n" not in index_html
 
@@ -332,6 +349,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     index_html = _control_ui_source()
 
     assert 'id="importFactCardsFolder"' in index_html
+    assert 'id="importEpisodePlanEvidence"' in index_html
     assert 'id="generateGeminiFactCards"' not in index_html
     assert 'id="topicAutoBuildControls"' not in index_html
     assert 'id="autoBuildTopicPack"' not in index_html
@@ -354,6 +372,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "PUT" in index_html
     assert "DELETE" in index_html
     assert "/topic-packs/fact-cards/import-folder" in index_html
+    assert "/episode-plan/evidence/import" in index_html
     assert "/topic-packs/fact-cards/generate" not in index_html
     assert "/topic-packs/${packId}" in index_html
     assert 'api("/topic-packs", { method: "DELETE" })' in index_html
@@ -368,6 +387,7 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
     assert "依主題生成 Fact Cards" not in index_html
     assert "補卡與狀態" not in index_html
     assert "匯入 FactCards 資料夾" in index_html
+    assert "匯入企劃 Evidence" in index_html
     assert 'id="factCardImportOverlay"' in index_html
     assert 'id="factCardImportMessage"' in index_html
     assert 'role="progressbar"' in index_html
@@ -441,6 +461,44 @@ async def test_memoria_refs_exposes_backend_character_limit(monkeypatch):
     assert len(result["characters"]) == 8
 
 
+@pytest.mark.asyncio
+async def test_youtube_live_global_suffix_proxy_uses_dedicated_prompt_key(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def get_prompt_metadata(self, key):
+            calls.append(("get", key))
+            return {
+                "key": key,
+                "current_template": "old suffix",
+                "has_user_override": False,
+            }
+
+        def update_prompt_template(self, key, template):
+            calls.append(("update", key, template))
+            return {
+                "key": key,
+                "template": template,
+                "has_user_override": True,
+            }
+
+    monkeypatch.setattr(server_module._memoria_routes, "MemoriaClient", lambda *args, **kwargs: FakeClient())
+
+    current = await server_module.get_youtube_live_global_suffix()
+    updated = await server_module.update_youtube_live_global_suffix(
+        server_module.YouTubeLiveGlobalSuffixRequest(template="new suffix")
+    )
+
+    assert current["key"] == "chat_system_suffix_youtube_live"
+    assert current["template"] == "old suffix"
+    assert updated["key"] == "chat_system_suffix_youtube_live"
+    assert updated["template"] == "new suffix"
+    assert calls == [
+        ("get", "chat_system_suffix_youtube_live"),
+        ("update", "chat_system_suffix_youtube_live", "new suffix"),
+    ]
+
+
 def test_control_ui_limits_character_selection_and_blocks_start_without_character():
     index_html = _control_ui_source()
 
@@ -475,6 +533,20 @@ def test_control_ui_exposes_live_persona_overlay_editor():
     assert 'id="livePersonaAddressing"' not in source
     assert 'id="saveLivePersonaOverlay"' in source
     assert "/persona-overlays" in source
+
+
+def test_control_ui_exposes_youtube_live_global_suffix_editor():
+    source = _control_ui_source()
+
+    assert "YouTube Live 全域 suffix" in source
+    assert 'id="youtubeLiveGlobalSuffix"' in source
+    assert 'id="reloadYoutubeLiveGlobalSuffix"' in source
+    assert 'id="saveYoutubeLiveGlobalSuffix"' in source
+    assert 'id="youtubeLiveGlobalSuffixState"' in source
+    assert 'api("/memoria/youtube-live/global-suffix")' in source
+    assert '`/memoria/youtube-live/global-suffix`' in source
+    assert "loadYoutubeLiveGlobalSuffix" in source
+    assert "saveYoutubeLiveGlobalSuffix" in source
 
 
 def test_events_pane_is_grouped_as_test_comment_tool():
@@ -517,7 +589,7 @@ def test_events_pane_is_grouped_as_test_comment_tool():
 def test_control_ui_checkbox_inputs_keep_native_compact_size():
     index_html = _control_ui_source()
 
-    assert 'href="/ui-assets/index.css?v=hosting-segments-v1"' in index_html
+    assert 'href="/ui-assets/index.css?v=plan-debug-v1"' in index_html
     assert '\ninput[type="checkbox"] {' in index_html
     checkbox_block = index_html[
         index_html.index('\ninput[type="checkbox"] {'):
@@ -828,6 +900,10 @@ def test_fact_cards_folder_import_shows_blocking_progress_feedback():
         index_html.index("async function importFactCardsFolder"):
         index_html.index("async function rebuildTopicEmbeddings")
     ]
+    evidence_import_block = index_html[
+        index_html.index("async function importEpisodePlanEvidence"):
+        index_html.index("async function rebuildTopicEmbeddings")
+    ]
 
     assert 'id="factCardImportOverlay"' in index_html
     assert 'id="factCardImportMessage"' in index_html
@@ -837,10 +913,14 @@ def test_fact_cards_folder_import_shows_blocking_progress_feedback():
     assert "function setFactCardImportBusy(isBusy" in index_html
     assert '$("factCardImportOverlay").classList.toggle("is-hidden", !busy);' in index_html
     assert "setFactCardImportBusy(true);" in import_block
+    assert "setFactCardImportBusy(true, \"正在讀取節目企劃 factcards/、建立 Evidence 資料包並重建向量，請稍候。\");" in evidence_import_block
+    assert 'log("企劃 Evidence 已匯入", data);' in evidence_import_block
     assert "匯入完成，但關係圖建立失敗" in import_block
     assert "請查看 Log 或點重建關係圖" in import_block
     assert "finally {" in import_block
     assert "setFactCardImportBusy(false);" in import_block
+    assert "finally {" in evidence_import_block
+    assert "setFactCardImportBusy(false);" in evidence_import_block
 
 
 def test_topic_pack_entry_save_clears_editor_after_success():
@@ -923,13 +1003,26 @@ def test_control_ui_exposes_episode_plan_import_and_binding_controls():
     assert 'id="episodePlanFile"' in live_session_block
     assert 'id="importEpisodePlan"' in live_session_block
     assert 'id="episodePlanSelect"' in live_session_block
+    assert 'id="syncLocalEpisodePlans"' in live_session_block
     assert 'id="bindEpisodePlan"' in live_session_block
     assert 'id="unbindEpisodePlan"' in live_session_block
     assert 'id="episodePlanStatus"' in live_session_block
+    assert 'id="episodePlanHandoffGapSeconds"' in live_session_block
+    assert 'id="episodePlanTurnGapSeconds"' in live_session_block
+    assert 'id="episodePlanDebugWait"' in live_session_block
+    assert 'id="episodePlanDebugList"' in live_session_block
+    assert "節目清單 Debug" in live_session_block
+    assert "下一輪等待" in live_session_block
     assert "function refreshEpisodePlans" in index_html
+    assert 'api("/episode-plans/sync-local", { method: "POST" })' in index_html
     assert "function importEpisodePlanFromFile" in index_html
     assert "function bindSelectedEpisodePlan" in index_html
     assert "function renderDirectorSegmentState" in index_html
+    assert "function renderEpisodePlanDebugList" in index_html
+    assert "episodePlanDebugWait" in index_html
+    assert "function episodePlanSelectLabel" in index_html
+    assert "${folder}/${title}" in index_html
+    assert ".episode-plan-turn.active" in index_html
     assert "planned_state" in index_html
     assert "interrupt_state" in index_html
 
@@ -957,7 +1050,7 @@ def test_live_session_places_director_below_selected_roles_and_runtime_settings_
     assert 'id="videoId"' in left_panel
     assert 'id="characterSelect"' in left_panel
     assert 'id="directorControls"' in left_panel
-    assert left_panel.index('id="characterLimitState"') < left_panel.index('id="directorControls"')
+    assert left_panel.index('id="characterLimitState"') > left_panel.index('id="legacyDirectorFields"')
     assert 'id="toggleSession"' in director_block
     assert 'id="injectInterval"' not in left_panel
     assert 'id="sessionTopicPackSelect"' not in left_panel
@@ -1006,7 +1099,7 @@ def test_live_session_automation_options_have_clear_labels_and_tooltips():
 
     expected_options = {
         "autoInject": ("自動注入待處理留言", "每隔一段時間把 pending 留言送進角色回應流程"),
-        "autoFinalize": ("到達預計直播時間後自動收尾", "預計直播分鐘到達後執行結束與摘要收尾流程"),
+        "autoFinalize": ("到達時間上限後自動收尾", "未使用 EpisodePlan 時依預計分鐘收尾；使用 EpisodePlan 時以企劃完成為主，分鐘只作為保護上限。"),
         "autoScThanksOnFinalize": ("收尾時逐一感謝未處理 SC", "結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat"),
         "autoDeleteProcessed": ("摘要與記憶完成後清除 runtime session", "摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session"),
         "researchEnabled": ("觀眾提問啟用安全搜尋補充", "觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文"),
@@ -1048,7 +1141,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "injectMinIntervalSeconds": "pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。",
         "minPending": "pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。",
         "maxPending": "單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。",
-        "plannedDuration": "大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。",
+        "plannedDuration": "未使用 EpisodePlan 時代表預計直播長度；使用 EpisodePlan 時只是保護上限，企劃完成會優先結束。",
         "scInterruptCooldown": "Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。",
         "maxScPerBatch": "每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。",
         "sessionTopicPackSelect": "本場直播啟動或更新時要綁定的 Topic Pack；直播中只讀取已綁定資料，不執行 Fact Card 生成或匯入。",
@@ -1056,6 +1149,8 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "directorMaxChatBatches": "連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。",
         "directorIdle": "角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。",
         "directorAnchorEveryTurns": "同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。",
+        "episodePlanHandoffGapSeconds": "EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。",
+        "episodePlanTurnGapSeconds": "EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。",
         "directorGuidance": "本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。",
         "hostInteractionRules": "本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。",
         "programSegmentTurns": "同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。",
@@ -1070,9 +1165,12 @@ def test_live_session_core_fields_have_detailed_tooltips():
         ("YouTube video_id 或 URL", "videoId"),
         ("角色", "characterSelect"),
         ("注入間隔秒數", "injectInterval"),
+        ("預計/保護上限分鐘", "plannedDuration"),
         ("動態注入最短秒數", "injectMinIntervalSeconds"),
         ("話題資料包", "sessionTopicPackSelect"),
         ("單一話題持續回合數", "directorAnchorEveryTurns"),
+        ("企劃交接等待秒數", "episodePlanHandoffGapSeconds"),
+        ("企劃一般等待秒數", "episodePlanTurnGapSeconds"),
         ("導播回合上限", "directorGroupTurnLimit"),
         ("幾批留言後回主軸", "directorMaxChatBatches"),
         ("角色停頓後續話秒數", "directorIdle"),
@@ -1089,6 +1187,17 @@ def test_live_session_core_fields_have_detailed_tooltips():
     assert 'id="programSegmentRows"' in live_session_block
     assert 'id="addProgramSegmentRow"' in live_session_block
     assert 'id="programSegmentPlan" type="hidden"' in live_session_block
+    assert 'id="legacyDirectorFields"' in live_session_block
+    assert "Legacy 主持/段落流程" in live_session_block
+    assert live_session_block.index('id="characterSelect"') > live_session_block.index('id="legacyDirectorFields"')
+    assert "function updateEpisodePlanModeControls" in index_html
+    assert "function showEpisodePlanError" in index_html
+    assert "legacyDirectorFields" in index_html
+    assert "legacyFields.open = !hasEpisodePlan" in index_html
+    assert "legacyFields.classList.toggle(\"legacy-disabled\", hasEpisodePlan)" in index_html
+    assert "新版企劃會依參與者名稱自動對應角色" in index_html
+    assert "企劃角色對應失敗" in index_html
+    assert 'character_ids: $("episodePlanSelect")?.value ? [] : selectedCharacterIds()' in index_html
     assert 'id="directorSegmentState"' in live_session_block
     assert "function renderDirectorSegmentState" in index_html
     assert ".director-segment-state" in index_html
@@ -1169,8 +1278,21 @@ def test_control_ui_uses_single_primary_start_or_finalize_action():
     assert "開始全新直播" in index_html
     assert "startCurrentSession" in index_html
     assert "finalizeCurrentSession" in index_html
-    assert 'log("直播操作失敗", String(error))' in index_html
+    assert 'handleLiveSessionError("直播操作失敗", error)' in index_html
     assert 'log("直播收尾失敗", String(error))' not in index_html
+
+
+def test_control_ui_refreshes_selected_session_when_status_sse_arrives():
+    index_html = _control_ui_source()
+
+    assert 'if (payload.type === "status") {' in index_html
+    status_block = index_html[
+        index_html.index('if (payload.type === "status") {'):
+        index_html.index('if (payload.type === "youtube_live_event")')
+    ]
+    assert "await loadSessions(id);" in status_block
+    assert "await refreshDirector();" in status_block
+    assert "updateLiveSessionControls();" in status_block
 
 
 def test_live_session_can_bind_topic_pack_from_session_tab():
@@ -1708,6 +1830,16 @@ async def test_episode_plan_import_and_bind_endpoints(monkeypatch, tmp_path):
     })
     monkeypatch.setattr(server_module, "storage", storage)
 
+    class FakeMemoriaClient:
+        def list_characters(self):
+            return [
+                {"character_id": "host-a", "name": "主持A"},
+                {"character_id": "analyst-b", "name": "分析B"},
+                {"character_id": "skeptic-c", "name": "質疑C"},
+            ]
+
+    monkeypatch.setattr(server_module._episode_plans_routes, "MemoriaClient", FakeMemoriaClient, raising=False)
+
     saved = await server_module.import_episode_plan(
         server_module.EpisodePlanImportRequest(
             plan_json=sample_plan(),
@@ -1726,9 +1858,509 @@ async def test_episode_plan_import_and_bind_endpoints(monkeypatch, tmp_path):
     assert saved["plan_id"] == "plan-general-panel"
     assert listed[0]["plan_id"] == "plan-general-panel"
     assert bound["episode_plan_id"] == "plan-general-panel"
+    assert bound["character_ids"] == ["host-a", "analyst-b", "skeptic-c"]
+    assert bound["episode_plan_character_binding"]["character_ids"] == [
+        "host-a",
+        "analyst-b",
+        "skeptic-c",
+    ]
     assert fetched["plan_json"]["plan_id"] == "plan-general-panel"
     assert unbound["episode_plan_id"] == ""
     assert deleted == {"deleted": True, "plan_id": "plan-general-panel"}
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_bind_reports_missing_character_name(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "display_name": "Live A",
+    })
+    storage.upsert_live_episode_plan(sample_plan())
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    class FakeMemoriaClient:
+        def list_characters(self):
+            return [
+                {"character_id": "host-a", "name": "主持A"},
+                {"character_id": "analyst-b", "name": "分析B"},
+            ]
+
+    monkeypatch.setattr(server_module._episode_plans_routes, "MemoriaClient", FakeMemoriaClient, raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await server_module.bind_episode_plan(
+            "live-a",
+            server_module.EpisodePlanBindRequest(plan_id="plan-general-panel"),
+        )
+
+    assert exc.value.status_code == 400
+    assert "找不到企劃角色「質疑C」" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_session_upsert_with_episode_plan_resolves_characters_by_name(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_live_episode_plan(sample_plan())
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    class FakeMemoriaClient:
+        def list_characters(self):
+            return [
+                {"character_id": "host-a", "name": "主持A"},
+                {"character_id": "analyst-b", "name": "分析B"},
+                {"character_id": "skeptic-c", "name": "質疑C"},
+            ]
+
+    monkeypatch.setattr(server_module._sessions_routes, "MemoriaClient", FakeMemoriaClient, raising=False)
+
+    saved = await server_module.upsert_session(
+        server_module.LiveSessionConfig(
+            session_id="live-a",
+            connector_id="yt-main",
+            display_name="Live A",
+            episode_plan_id="plan-general-panel",
+            character_ids=["wrong-manual-selection"],
+        )
+    )
+
+    assert saved["episode_plan_id"] == "plan-general-panel"
+    assert saved["character_ids"] == ["host-a", "analyst-b", "skeptic-c"]
+
+
+@pytest.mark.asyncio
+async def test_start_current_session_with_episode_plan_resolves_characters_by_name(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    storage.upsert_live_episode_plan(sample_plan())
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    class FakeMemoriaClient:
+        def list_characters(self):
+            return [
+                {"character_id": "host-a", "name": "主持A"},
+                {"character_id": "analyst-b", "name": "分析B"},
+                {"character_id": "skeptic-c", "name": "質疑C"},
+            ]
+
+    class FakeManager:
+        async def start_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="running", started_at="2026-05-06T10:20:00")
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        async def stop_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="stopped")
+            return self.get_status(session_id)
+
+        def get_status(self, session_id: str):
+            session = storage.get_session(session_id)
+            return {
+                "session_id": session_id,
+                "status": session.get("status") if session else "missing",
+                "running": bool(session and session.get("status") == "running"),
+            }
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+    monkeypatch.setattr(server_module._sessions_routes, "MemoriaClient", FakeMemoriaClient, raising=False)
+
+    result = await server_module.start_current_session(
+        server_module.LiveSessionConfig(
+            video_id="",
+            episode_plan_id="plan-general-panel",
+            character_ids=[],
+        )
+    )
+
+    assert result["episode_plan_id"] == "plan-general-panel"
+    assert result["character_ids"] == ["host-a", "analyst-b", "skeptic-c"]
+    assert storage.get_session(result["session_id"])["character_ids"] == [
+        "host-a",
+        "analyst-b",
+        "skeptic-c",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("characters", "expected"),
+    [
+        ([], "角色清單為空"),
+        (
+            [
+                {"character_id": "host-a", "name": "主持A"},
+                {"character_id": "analyst-b", "name": "分析B"},
+            ],
+            "找不到企劃角色「質疑C」",
+        ),
+        (
+            [
+                {"character_id": "host-a", "name": "主持A"},
+                {"character_id": "analyst-b", "name": "分析B"},
+                {"character_id": "skeptic-a", "name": "質疑C"},
+                {"character_id": "skeptic-b", "name": "質疑C"},
+            ],
+            "對應到多個 MemoriaCore 角色",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_start_current_session_reports_episode_plan_character_binding_errors(
+    monkeypatch,
+    tmp_path,
+    characters,
+    expected,
+):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    storage.upsert_live_episode_plan(sample_plan())
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    class FakeMemoriaClient:
+        def list_characters(self):
+            return list(characters)
+
+    monkeypatch.setattr(server_module._sessions_routes, "MemoriaClient", FakeMemoriaClient, raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await server_module.start_current_session(
+            server_module.LiveSessionConfig(
+                video_id="",
+                episode_plan_id="plan-general-panel",
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert "企劃角色對應失敗" in str(exc.value.detail)
+    assert expected in str(exc.value.detail)
+    assert storage.list_sessions() == []
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_sync_local_folder_imports_child_packages(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "display_name": "Live A",
+    })
+    root = tmp_path / "EpisodePlans"
+    plan_dir = root / "Test"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "episode-plan.json").write_text(
+        server_module.json.dumps(sample_plan(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "EPISODE_PLANS_ROOT", root)
+
+    class FakeMemoriaClient:
+        def list_characters(self):
+            return [
+                {"character_id": "host-a", "name": "主持A"},
+                {"character_id": "analyst-b", "name": "分析B"},
+                {"character_id": "skeptic-c", "name": "質疑C"},
+            ]
+
+    monkeypatch.setattr(server_module._episode_plans_routes, "MemoriaClient", FakeMemoriaClient, raising=False)
+
+    synced = await server_module.sync_local_episode_plans()
+    listed = await server_module.list_episode_plans()
+    bound = await server_module.bind_episode_plan(
+        "live-a",
+        server_module.EpisodePlanBindRequest(plan_id="plan-general-panel"),
+    )
+
+    assert synced["imported_count"] == 1
+    assert synced["skipped_count"] == 0
+    assert synced["plans"][0]["source_path"] == "Test/episode-plan.json"
+    assert listed[0]["plan_id"] == "plan-general-panel"
+    assert listed[0]["source_path"] == "Test/episode-plan.json"
+    assert bound["episode_plan_id"] == "plan-general-panel"
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_sync_local_prunes_deleted_child_packages(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "display_name": "Live A",
+    })
+    root = tmp_path / "EpisodePlans"
+    plan_dir = root / "DeletedPlan"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "episode-plan.json").write_text(
+        server_module.json.dumps(sample_plan(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "EPISODE_PLANS_ROOT", root)
+
+    await server_module.sync_local_episode_plans()
+    storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+    assert storage.get_session("live-a")["episode_plan_id"] == "plan-general-panel"
+
+    (plan_dir / "episode-plan.json").unlink()
+
+    synced = await server_module.sync_local_episode_plans()
+    listed = await server_module.list_episode_plans()
+
+    assert synced["removed_count"] == 1
+    assert synced["removed_plan_ids"] == ["plan-general-panel"]
+    assert listed == []
+    assert storage.get_session("live-a")["episode_plan_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_sync_local_preserves_manual_file_import(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_live_episode_plan(sample_plan(), source_path="episode-plan.json")
+    root = tmp_path / "EpisodePlans"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "EPISODE_PLANS_ROOT", root)
+
+    synced = await server_module.sync_local_episode_plans()
+    listed = await server_module.list_episode_plans()
+
+    assert synced["removed_count"] == 0
+    assert [item["plan_id"] for item in listed] == ["plan-general-panel"]
+    assert listed[0]["source_path"] == "episode-plan.json"
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_sync_local_prunes_replaced_plan_id_for_same_source(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    root = tmp_path / "EpisodePlans"
+    plan_dir = root / "ReplacedPlan"
+    plan_dir.mkdir(parents=True)
+    original_plan = sample_plan()
+    replaced_plan = sample_plan()
+    replaced_plan["plan_id"] = "plan-general-panel-replaced"
+    replaced_plan["title"] = "替換後企劃"
+    plan_file = plan_dir / "episode-plan.json"
+    plan_file.write_text(
+        server_module.json.dumps(original_plan, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "EPISODE_PLANS_ROOT", root)
+
+    await server_module.sync_local_episode_plans()
+    plan_file.write_text(
+        server_module.json.dumps(replaced_plan, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    synced = await server_module.sync_local_episode_plans()
+    listed = await server_module.list_episode_plans()
+
+    assert synced["removed_count"] == 1
+    assert synced["removed_plan_ids"] == ["plan-general-panel"]
+    assert [item["plan_id"] for item in listed] == ["plan-general-panel-replaced"]
+    assert listed[0]["source_path"] == "ReplacedPlan/episode-plan.json"
+
+
+@pytest.mark.asyncio
+async def test_director_state_includes_episode_plan_debug_outline(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_live_episode_plan(sample_plan())
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "display_name": "Live A",
+        "episode_plan_id": "plan-general-panel",
+        "episode_plan_handoff_gap_seconds": 4,
+        "episode_plan_turn_gap_seconds": 11,
+    })
+    storage.update_director_state(
+        "live-a",
+        director_enabled=True,
+        status="running",
+        last_director_action_at="2026-05-09T00:00:00",
+        metadata={
+            "last_decision": {
+                "episode_plan": {
+                    "mode": "planned_turn",
+                    "turn_contract": {
+                        "output_requirements": {
+                            "should_handoff": True,
+                            "handoff_target_function": "analyst",
+                            "allow_audience_question": False,
+                            "must_end_with_question": False,
+                        }
+                    },
+                }
+            },
+            "planned_state": {
+                "plan_id": "plan-general-panel",
+                "plan_status": "running",
+                "current_segment_index": 0,
+                "current_turn_index": 1,
+                "completed_segment_ids": [],
+                "completed_turn_ids": ["seg_01_turn_01"],
+                "completed_turn_types": ["hook"],
+                "segment_memory": {},
+            }
+        },
+    )
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._director_routes, "storage", storage)
+
+    director = await server_module.get_director_state("live-a")
+
+    debug = director["episode_plan_debug"]
+    assert debug["plan_id"] == "plan-general-panel"
+    assert debug["plan_status"] == "running"
+    assert debug["segments"][0]["status"] == "active"
+    assert debug["segments"][0]["turns"][0]["status"] == "completed"
+    assert debug["segments"][0]["turns"][1]["status"] == "active"
+    assert debug["segments"][0]["turns"][1]["reply_budget"] == {
+        "min_replies": 2,
+        "max_replies": 3,
+        "autonomy": "guided",
+    }
+    assert debug["next_wait"]["delay_seconds"] == 4
+    assert debug["next_wait"]["reason"] == "handoff_gap"
+    assert debug["next_wait"]["label"] == "交接等待"
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_evidence_import_creates_linked_pack_from_plan_factcards(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "display_name": "Live A",
+    })
+    root = tmp_path / "EpisodePlans"
+    plan_dir = root / "Test"
+    factcards_dir = plan_dir / "factcards"
+    factcards_dir.mkdir(parents=True)
+    (plan_dir / "episode-plan.json").write_text(
+        server_module.json.dumps(sample_plan(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (factcards_dir / "evidence.md").write_text(
+        "\n".join([
+            "# Topic Evidence Card：春番公開排名",
+            "",
+            "## Summary",
+            "本卡只整理可查證資料與網路意見看法，供導播在內容段落選擇資料，不替角色決定立場。",
+            "",
+            "## Facts",
+            "",
+            "### 公開週榜：新作聲量是否能支撐內容段落",
+            "- 可驗證事實：Anime Corner 第 4 週公開榜單顯示特定新作取得週榜第一，這只能代表該週投票結果。",
+            "- 網路意見看法：榜單留言與社群轉貼常把新作聲量視為看點，但這仍只是公開討論氛圍。",
+        ]),
+        encoding="utf-8",
+    )
+    storage.upsert_live_episode_plan(
+        sample_plan(),
+        source_path="Test/episode-plan.json",
+    )
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "storage", storage)
+    monkeypatch.setattr(server_module._episode_plans_routes, "EPISODE_PLANS_ROOT", root)
+
+    calls: list[dict] = []
+
+    class FakeManager:
+        def get_status(self, session_id: str):
+            return {"session_id": session_id, "status": "stopped", "running": False}
+
+        def import_fact_cards_folder(self, session_id: str, *, fact_cards_dir, pack_id=None, max_files=50):
+            calls.append({
+                "session_id": session_id,
+                "fact_cards_dir": str(fact_cards_dir),
+                "pack_id": pack_id,
+                "max_files": max_files,
+            })
+            storage.link_topic_pack_to_session(session_id, int(pack_id))
+            entry = storage.create_topic_pack_entry(int(pack_id), {
+                "title": "公開週榜：新作聲量是否能支撐內容段落",
+                "body": "可驗證事實與網路意見看法。",
+                "source_type": "episode_plan_evidence",
+            })
+            return {
+                "status": "completed",
+                "pack_id": int(pack_id),
+                "file_count": 1,
+                "parsed_file_count": 1,
+                "created_count": 1,
+                "entries": [entry],
+                "graph": {"status": "completed"},
+            }
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+    monkeypatch.setattr(server_module._episode_plans_routes, "manager", server_module.manager)
+
+    result = await server_module.import_episode_plan_evidence(
+        "live-a",
+        server_module.EpisodePlanEvidenceImportRequest(
+            plan_id="plan-general-panel",
+            max_files=25,
+        ),
+    )
+
+    assert calls == [{
+        "session_id": "live-a",
+        "fact_cards_dir": str(factcards_dir.resolve()),
+        "pack_id": result["pack_id"],
+        "max_files": 25,
+    }]
+    pack = storage.get_topic_pack(result["pack_id"])
+    assert pack["title"] == "Evidence - 泛用多人節目企劃"
+    assert "plan-general-panel" in pack["description"]
+    assert result["plan_id"] == "plan-general-panel"
+    assert result["fact_cards_dir"] == str(factcards_dir.resolve())
+    assert result["created_count"] == 1
+    assert [item["id"] for item in storage.list_session_topic_packs("live-a")] == [result["pack_id"]]
 
 
 @pytest.mark.asyncio
@@ -2103,6 +2735,13 @@ async def test_fact_card_generation_and_import_endpoints_reject_while_live_runni
             server_module.FactCardGenerateRequest(topic="動畫新番最新話")
         )
     assert generate_exc.value.status_code == 409
+
+    with pytest.raises(HTTPException) as evidence_exc:
+        await server_module.import_episode_plan_evidence(
+            "live-a",
+            server_module.EpisodePlanEvidenceImportRequest(plan_id="plan-general-panel"),
+        )
+    assert evidence_exc.value.status_code == 409
 
 
 def test_chat_preview_message_sanitizer_removes_debug_info():

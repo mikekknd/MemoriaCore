@@ -11,6 +11,9 @@ export function maxSessionCharacters() {
 }
 
 export function validateSelectedCharacters() {
+  if (($("episodePlanSelect")?.value || "").trim()) {
+    return { ok: true, count: 0, max: maxSessionCharacters(), message: "新版企劃會依參與者名稱自動對應角色" };
+  }
   const count = selectedCharacterIds().length;
   const max = maxSessionCharacters();
   if (count < 1) {
@@ -26,6 +29,12 @@ export function syncCharacterSelectionLimit() {
   const select = $("characterSelect");
   const stateLabel = $("characterLimitState");
   if (!select || !stateLabel) return;
+  if (($("episodePlanSelect")?.value || "").trim()) {
+    const validation = validateSelectedCharacters();
+    stateLabel.textContent = validation.message;
+    stateLabel.className = "muted";
+    return;
+  }
   const max = maxSessionCharacters();
   const selected = Array.from(select.selectedOptions).filter((option) => option.value);
   if (selected.length > max) {
@@ -57,6 +66,36 @@ export async function loadMemoriaConfig() {
     $("memoriaAuthState").textContent = "設定讀取失敗";
     $("memoriaAuthState").className = "status bad";
     log("MemoriaCore 設定讀取失敗", String(error));
+  }
+}
+
+export async function loadYoutubeLiveGlobalSuffix({ silent = false } = {}) {
+  const field = $("youtubeLiveGlobalSuffix");
+  const stateLabel = $("youtubeLiveGlobalSuffixState");
+  const reloadButton = $("reloadYoutubeLiveGlobalSuffix");
+  if (!field || !stateLabel) return;
+  if (!silent) {
+    stateLabel.textContent = "載入中";
+    stateLabel.className = "status";
+    if (reloadButton) reloadButton.disabled = true;
+  }
+  try {
+    const data = await api("/memoria/youtube-live/global-suffix");
+    state.youtubeLiveGlobalSuffix = data;
+    field.value = data.template || "";
+    stateLabel.textContent = data.has_user_override ? "已載入自訂 override" : "已載入預設";
+    stateLabel.className = data.has_user_override ? "status warn" : "status good";
+    if (!silent) log("YouTube Live 全域 suffix 已載入", {
+      key: data.key,
+      has_user_override: !!data.has_user_override,
+      template_length: (data.template || "").length,
+    });
+  } catch (error) {
+    stateLabel.textContent = "讀取失敗";
+    stateLabel.className = "status bad";
+    if (!silent) log("YouTube Live 全域 suffix 讀取失敗", String(error));
+  } finally {
+    if (!silent && reloadButton) reloadButton.disabled = false;
   }
 }
 
@@ -214,6 +253,7 @@ export async function saveMemoriaConfig() {
   log("MemoriaCore 設定已儲存", data);
   await loadMemoriaConfig();
   await loadMemoriaRefs();
+  await loadYoutubeLiveGlobalSuffix({ silent: true });
   await refreshChatPreview({ silent: true });
 }
 
@@ -226,7 +266,39 @@ export async function testMemoriaAuth() {
   $("memoriaAuthState").className = "status good";
   log("MemoriaCore 連線測試成功", data);
   await loadMemoriaRefs();
+  await loadYoutubeLiveGlobalSuffix({ silent: true });
   await refreshChatPreview({ silent: true });
+}
+
+export async function saveYoutubeLiveGlobalSuffix() {
+  const field = $("youtubeLiveGlobalSuffix");
+  const stateLabel = $("youtubeLiveGlobalSuffixState");
+  const saveButton = $("saveYoutubeLiveGlobalSuffix");
+  if (!field || !stateLabel || !saveButton) return;
+  saveButton.disabled = true;
+  stateLabel.textContent = "儲存中";
+  stateLabel.className = "status";
+  try {
+    const data = await api(`/memoria/youtube-live/global-suffix`, {
+      method: "PUT",
+      body: JSON.stringify({ template: field.value }),
+    });
+    state.youtubeLiveGlobalSuffix = data;
+    field.value = data.template || "";
+    stateLabel.textContent = "已儲存 override";
+    stateLabel.className = "status good";
+    log("YouTube Live 全域 suffix 已儲存", {
+      key: data.key,
+      has_user_override: !!data.has_user_override,
+      template_length: (data.template || "").length,
+    });
+  } catch (error) {
+    stateLabel.textContent = `儲存失敗：${String(error?.message || error).slice(0, 80)}`;
+    stateLabel.className = "status bad";
+    throw error;
+  } finally {
+    saveButton.disabled = false;
+  }
 }
 
 export async function loadMemoriaRefs() {

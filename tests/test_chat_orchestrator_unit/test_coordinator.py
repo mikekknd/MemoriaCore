@@ -329,6 +329,84 @@ class TestDualLayerCoordinator:
         ]
         assert router_calls == []
 
+    def test_dual_layer_youtube_live_external_context_disables_tool_router(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """直播 external_context 已提供資料時，不應再觸發一般工具路由。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        prefs = {**sample_user_prefs, "tavily_api_key": "test-key"}
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請比較 Re:ZERO 與 Witch Hat Atelier 最新排名"}],
+            last_entities=[],
+            user_prompt="請比較 Re:ZERO 與 Witch Hat Atelier 最新排名",
+            user_prefs=prefs,
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic\n本輪目標：比較已提供資料。",
+                },
+            },
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        assert router_calls == []
+
+    def test_dual_layer_youtube_live_external_context_skips_memory_lookup(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, mock_analyzer, sample_user_prefs
+    ):
+        """直播流程由 EpisodePlan/Topic Pack 提供上下文，不應再跑使用者記憶檢索。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        memory_calls = []
+
+        def record_memory_call(name):
+            def _inner(*args, **kwargs):
+                memory_calls.append(name)
+                if name == "expand_query":
+                    return {"expanded_keywords": "不該出現", "entity_confidence": 1.0}
+                return []
+            return _inner
+
+        mock_analyzer.detect_topic_shift.side_effect = AssertionError("youtube live should skip topic shift")
+        mock_memory_system.expand_query = record_memory_call("expand_query")
+        mock_memory_system.search_blocks = record_memory_call("search_blocks")
+        mock_memory_system.search_core_memories = record_memory_call("search_core_memories")
+        mock_memory_system.search_profile_by_query = record_memory_call("search_profile_by_query")
+        mock_memory_system.get_static_profile_prompt = record_memory_call("get_static_profile_prompt")
+        mock_memory_system.get_proactive_topics_prompt = record_memory_call("get_proactive_topics_prompt")
+
+        result = run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請根據流程繼續直播"}],
+            last_entities=["舊標籤"],
+            user_prompt="請根據流程繼續直播",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic",
+                },
+            },
+        )
+
+        retrieval_ctx = result[2]
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+
+        assert memory_calls == []
+        assert retrieval_ctx["expanded_keywords"] == ""
+        assert retrieval_ctx["has_memory"] is False
+        assert retrieval_ctx["block_count"] == 0
+        assert retrieval_ctx["memory_lookup_skipped"] == "youtube_live_director"
+        assert result[3] is False
+        assert result[4] is None
+        assert "<retrieved_memory_context>" not in latest_user
+
     def test_dual_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
     ):
@@ -518,6 +596,112 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_single_layer_youtube_live_external_context_disables_tool_router(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排在直播 external_context 下也不得呼叫工具路由。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        prefs = {**sample_user_prefs, "dual_layer_enabled": False, "tavily_api_key": "test-key"}
+        orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請查最新動畫排名"}],
+            last_entities=[],
+            user_prompt="請查最新動畫排名",
+            user_prefs=prefs,
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic\n本輪目標：依據已提供資料回應。",
+                },
+            },
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        assert router_calls == []
+
+    def test_single_layer_youtube_live_external_context_skips_memory_lookup(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層直播流程也不應執行任何使用者記憶檢索步驟。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        memory_calls = []
+
+        def record_memory_call(name):
+            def _inner(*args, **kwargs):
+                memory_calls.append(name)
+                if name == "expand_query":
+                    return {"expanded_keywords": "不該出現", "entity_confidence": 1.0}
+                return []
+            return _inner
+
+        mock_analyzer.detect_topic_shift.side_effect = AssertionError("youtube live should skip topic shift")
+        mock_memory_system.expand_query = record_memory_call("expand_query")
+        mock_memory_system.search_blocks = record_memory_call("search_blocks")
+        mock_memory_system.search_core_memories = record_memory_call("search_core_memories")
+        mock_memory_system.search_profile_by_query = record_memory_call("search_profile_by_query")
+        mock_memory_system.get_static_profile_prompt = record_memory_call("get_static_profile_prompt")
+        mock_memory_system.get_proactive_topics_prompt = record_memory_call("get_proactive_topics_prompt")
+
+        result = orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請根據流程繼續直播"}],
+            last_entities=["舊標籤"],
+            user_prompt="請根據流程繼續直播",
+            user_prefs={**sample_user_prefs, "dual_layer_enabled": False},
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic",
+                },
+            },
+        )
+
+        retrieval_ctx = result[2]
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+
+        assert memory_calls == []
+        assert retrieval_ctx["expanded_keywords"] == ""
+        assert retrieval_ctx["has_memory"] is False
+        assert retrieval_ctx["block_count"] == 0
+        assert retrieval_ctx["memory_lookup_skipped"] == "youtube_live_director"
+        assert result[3] is False
+        assert result[4] is None
+        assert "<retrieved_memory_context>" not in latest_user
 
     def test_single_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self,

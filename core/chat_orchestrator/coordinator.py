@@ -26,6 +26,7 @@ from core.chat_orchestrator.generation_context import (
     build_chat_response_schema,
     build_final_chat_context,
     build_history_preview,
+    memory_lookup_skip_reason,
     resolve_orchestration_scope,
 )
 from core.chat_orchestrator.group_context import (
@@ -118,11 +119,14 @@ def run_dual_layer_orchestration(
 
     main_timer = StepTimer()
 
+    memory_skip_reason = memory_lookup_skip_reason(_ctx)
+
     # active_uids 主路徑讀 message["debug_info"]["cited_uids"]，缺則 fallback 到 content regex（相容舊資料）
     active_uids = set()
-    for m in session_messages[-context_window:]:
-        for uid in collect_cited_uids(m):
-            active_uids.add(uid)
+    if not memory_skip_reason:
+        for m in session_messages[-context_window:]:
+            for uid in collect_cited_uids(m):
+                active_uids.add(uid)
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Pre-fork — 載入角色資訊 + 判斷可用工具
@@ -159,13 +163,61 @@ def run_dual_layer_orchestration(
         user_prefs=user_prefs,
     )
 
-    tools_list = build_available_tools(user_prefs)
+    tools_list = build_available_tools(user_prefs, _ctx)
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Branch A — 記憶檢索管線
     # ════════════════════════════════════════════════════════════
     def _memory_branch():
         t = StepTimer()
+
+        if memory_skip_reason:
+            expand_res = {"original_query": user_prompt, "expanded_keywords": "", "entity_confidence": 0.0}
+            if isinstance(shared_expand_state, SharedExpandState):
+                shared_expand_state.expand_result = dict(expand_res)
+                shared_expand_state.executed = True
+            mem_ctx = ""
+            with t.step("System Prompt 組裝 (Prompt Assembly)"):
+                api_messages, clean_history, sys_prompt = build_final_chat_context(
+                    char_sys_prompt=char_sys_prompt,
+                    group_participants_block=group_participants_block,
+                    mem_ctx=mem_ctx,
+                    reply_rules=reply_rules,
+                    session_messages=session_messages,
+                    context_window=context_window,
+                    user_prefs=user_prefs,
+                    session_ctx=_ctx,
+                    force_group=force_group,
+                )
+
+            _history_preview = build_history_preview(clean_history)
+            retrieval_ctx = {
+                "original_query": user_prompt,
+                "expanded_keywords": "",
+                "inherited_tags": last_entities,
+                "has_memory": False,
+                "block_count": 0,
+                "threshold": memory_threshold,
+                "hard_base": max(0.50, memory_hard_base),
+                "confidence": 0.0,
+                "block_details": [],
+                "core_debug_text": "",
+                "profile_debug_text": "",
+                "dynamic_prompt": sys_prompt + _history_preview,
+                "cited_uids": [],
+                "context_messages_count": len(clean_history),
+                "memory_lookup_skipped": memory_skip_reason,
+            }
+            chat_schema = build_chat_response_schema()
+            return {
+                "topic_shifted": False,
+                "pipeline_data": None,
+                "api_messages": api_messages,
+                "retrieval_ctx": retrieval_ctx,
+                "memory_context_prompt": mem_ctx,
+                "chat_schema": chat_schema,
+                "timer_steps": t._steps,
+            }
 
         # 話題偏移偵測
         with t.step("話題偏移偵測 (Topic Shift Detection)"):

@@ -139,7 +139,7 @@ def test_audience_question_uses_completed_research_fact_card_on_next_injection()
         payload, summary = manager.build_external_context("live-a")
 
         assert "最新一話的聲優陣容有什麼看點？" in payload["context_text"]
-        assert "summary: 官方與社群討論" in payload["context_text"]
+        assert "可驗證事實：官方與社群討論" in payload["context_text"]
         assert "拉麵湯頭" not in payload["context_text"]
         assert summary["query_resolution"]["local_answerable"] is True
         assert summary["query_resolution"]["research_status"] == "not_needed"
@@ -321,7 +321,7 @@ def test_completed_audience_research_card_is_used_even_without_embedding(monkeyp
 
         payload, summary = manager.build_external_context("live-a")
 
-        assert "summary: worker 已整理出聲優陣容" in payload["context_text"]
+        assert "可驗證事實：worker 已整理出聲優陣容" in payload["context_text"]
         assert summary["query_resolution"]["research_status"] == "completed_with_results"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

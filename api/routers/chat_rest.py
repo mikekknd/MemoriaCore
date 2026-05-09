@@ -123,6 +123,188 @@ def _normalize_live_hosting(raw_hosting) -> dict:
     return normalized
 
 
+def _normalize_live_episode_plan(raw_plan) -> dict:
+    if not isinstance(raw_plan, dict):
+        return {}
+    turn_contract = _normalize_live_episode_turn_contract(raw_plan.get("turn_contract"))
+    speaker_policy = _normalize_live_episode_speaker_policy(raw_plan.get("speaker_policy"))
+    if not speaker_policy and turn_contract:
+        speaker_policy = turn_contract.get("speaker_policy") or {}
+
+    normalized = {
+        "plan_id": str(raw_plan.get("plan_id") or "").strip()[:120],
+        "title": str(raw_plan.get("title") or "").strip()[:200],
+        "mode": str(raw_plan.get("mode") or "").strip()[:40],
+        "segment_id": str(raw_plan.get("segment_id") or "").strip()[:120],
+        "turn_id": str(raw_plan.get("turn_id") or "").strip()[:120],
+        "turn_type": str(raw_plan.get("turn_type") or "").strip()[:80],
+    }
+    try:
+        max_turns_override = int(raw_plan.get("max_turns_override"))
+    except (TypeError, ValueError):
+        max_turns_override = None
+    if max_turns_override is not None:
+        normalized["max_turns_override"] = max(1, min(max_turns_override, 12))
+    if turn_contract:
+        normalized["turn_contract"] = turn_contract
+    if speaker_policy:
+        normalized["speaker_policy"] = speaker_policy
+    dialogue_policy = _normalize_live_episode_dialogue_policy(raw_plan.get("dialogue_policy"))
+    if dialogue_policy:
+        normalized["dialogue_policy"] = dialogue_policy
+    output_requirements = _normalize_live_episode_output_requirements(raw_plan.get("output_requirements"))
+    if output_requirements:
+        normalized["output_requirements"] = output_requirements
+    evidence_policy = _normalize_live_episode_evidence_policy(raw_plan.get("evidence_policy"))
+    if evidence_policy:
+        normalized["evidence_policy"] = evidence_policy
+    interrupt_state = _normalize_live_episode_interrupt_state(raw_plan.get("interrupt_state"))
+    if interrupt_state:
+        normalized["interrupt_state"] = interrupt_state
+    return {key: value for key, value in normalized.items() if value not in ("", [], {})}
+
+
+def _normalize_live_episode_turn_contract(raw_turn) -> dict:
+    if not isinstance(raw_turn, dict):
+        return {}
+    normalized = {
+        "turn_id": str(raw_turn.get("turn_id") or "").strip()[:120],
+        "turn_type": str(raw_turn.get("turn_type") or "").strip()[:80],
+        "intent": str(raw_turn.get("intent") or "").replace("\r", "\n").strip()[:500],
+    }
+    speaker_policy = _normalize_live_episode_speaker_policy(raw_turn.get("speaker_policy"))
+    if speaker_policy:
+        normalized["speaker_policy"] = speaker_policy
+    return {key: value for key, value in normalized.items() if value not in ("", [], {})}
+
+
+def _normalize_live_episode_speaker_policy(raw_policy) -> dict:
+    if not isinstance(raw_policy, dict):
+        return {}
+    selection_mode = str(raw_policy.get("selection_mode") or "").strip()
+    if selection_mode not in {"router_select", "fixed", "function_router"}:
+        selection_mode = ""
+    allowed_raw = raw_policy.get("allowed_character_ids")
+    if not isinstance(allowed_raw, list):
+        allowed_raw = []
+    allowed_character_ids = [
+        cid
+        for raw in (allowed_raw or [])[:20]
+        if (cid := str(raw or "").strip()[:120])
+    ]
+    preferred_role_functions = [
+        role
+        for raw in (raw_policy.get("preferred_role_functions") or [])[:20]
+        if (role := str(raw or "").strip()[:120])
+    ] if isinstance(raw_policy.get("preferred_role_functions"), list) else []
+    normalized = {}
+    if selection_mode:
+        normalized["selection_mode"] = selection_mode
+    if allowed_character_ids:
+        normalized["allowed_character_ids"] = allowed_character_ids
+    if preferred_role_functions:
+        normalized["preferred_role_functions"] = preferred_role_functions
+    if isinstance(raw_policy.get("avoid_repeat_speaker"), bool):
+        normalized["avoid_repeat_speaker"] = raw_policy.get("avoid_repeat_speaker")
+    return normalized
+
+
+def _normalize_live_episode_dialogue_policy(raw_policy) -> dict:
+    if not isinstance(raw_policy, dict):
+        return {}
+    normalized = {}
+    try:
+        min_replies = int(raw_policy.get("min_replies"))
+    except (TypeError, ValueError):
+        min_replies = None
+    try:
+        max_replies = int(raw_policy.get("max_replies"))
+    except (TypeError, ValueError):
+        max_replies = None
+    if min_replies is not None:
+        normalized["min_replies"] = max(1, min(min_replies, 4))
+    if max_replies is not None:
+        normalized["max_replies"] = max(1, min(max_replies, 4))
+    autonomy = str(raw_policy.get("autonomy") or "").strip()
+    if autonomy in {"strict", "guided", "open"}:
+        normalized["autonomy"] = autonomy
+    preferred_flow = [
+        item
+        for raw in (raw_policy.get("preferred_flow") or [])[:10]
+        if (item := str(raw or "").strip()[:200])
+    ] if isinstance(raw_policy.get("preferred_flow"), list) else []
+    if preferred_flow:
+        normalized["preferred_flow"] = preferred_flow
+    return normalized
+
+
+def _normalize_live_episode_output_requirements(raw_output) -> dict:
+    if not isinstance(raw_output, dict):
+        return {}
+    normalized = {}
+    try:
+        max_sentences = int(raw_output.get("max_sentences"))
+    except (TypeError, ValueError):
+        max_sentences = None
+    if max_sentences is not None:
+        normalized["max_sentences"] = max(1, min(max_sentences, 8))
+    for key in ("must_end_with_question", "allow_audience_question", "should_handoff"):
+        if isinstance(raw_output.get(key), bool):
+            normalized[key] = raw_output.get(key)
+    handoff = str(raw_output.get("handoff_target_function") or "").strip()[:120]
+    if handoff:
+        normalized["handoff_target_function"] = handoff
+    return normalized
+
+
+def _normalize_live_episode_evidence_policy(raw_evidence) -> dict:
+    if not isinstance(raw_evidence, dict):
+        return {}
+    queries = [
+        query
+        for raw in (raw_evidence.get("queries") or [])[:12]
+        if (query := str(raw or "").replace("\r", "\n").strip()[:300])
+    ] if isinstance(raw_evidence.get("queries"), list) else []
+    required_entities = [
+        entity
+        for raw in (raw_evidence.get("required_entities") or [])[:20]
+        if (entity := str(raw or "").strip()[:160])
+    ] if isinstance(raw_evidence.get("required_entities"), list) else []
+    try:
+        max_cards = int(raw_evidence.get("max_cards"))
+    except (TypeError, ValueError):
+        max_cards = None
+    normalized = {}
+    if queries:
+        normalized["queries"] = queries
+    if required_entities:
+        normalized["required_entities"] = required_entities
+    if max_cards is not None:
+        normalized["max_cards"] = max(0, min(max_cards, 8))
+    if isinstance(raw_evidence.get("allow_unverified_claims"), bool):
+        normalized["allow_unverified_claims"] = raw_evidence.get("allow_unverified_claims")
+    return normalized
+
+
+def _normalize_live_episode_interrupt_state(raw_state) -> dict:
+    if not isinstance(raw_state, dict):
+        return {}
+    normalized = {}
+    status = str(raw_state.get("status") or "").strip()[:80]
+    if status:
+        normalized["status"] = status
+    try:
+        remaining = int(raw_state.get("remaining_interrupt_turns"))
+    except (TypeError, ValueError):
+        remaining = None
+    if remaining is not None:
+        normalized["remaining_interrupt_turns"] = max(0, min(remaining, 12))
+    source_event_id = str(raw_state.get("source_event_id") or "").strip()[:120]
+    if source_event_id:
+        normalized["source_event_id"] = source_event_id
+    return normalized
+
+
 def _normalize_live_segment_step(raw_step, *, include_description: bool = False) -> dict:
     if not isinstance(raw_step, dict):
         return {}
@@ -278,9 +460,15 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
     visible_events = _normalize_visible_events(raw.get("visible_events"))
     character_prompt_overrides = {}
     live_hosting = {}
+    live_episode_plan = {}
     if source in YOUTUBE_LIVE_EXTERNAL_SOURCES and _body_declares_youtube_live_scope(body):
         character_prompt_overrides = _normalize_character_prompt_overrides(raw.get("character_prompt_overrides"))
         live_hosting = _normalize_live_hosting(raw.get("live_hosting"))
+        live_episode_plan = _normalize_live_episode_plan(raw.get("live_episode_plan"))
+    for key in ("episode_plan_id", "episode_plan_turn_id", "episode_plan_mode"):
+        value = raw_summary.get(key)
+        if value is not None:
+            summary[key] = str(value or "").strip()[:120]
     context = {
         "source": source,
         "context_text": context_text,
@@ -293,6 +481,8 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         context["character_prompt_overrides"] = character_prompt_overrides
     if live_hosting:
         context["live_hosting"] = live_hosting
+    if live_episode_plan:
+        context["live_episode_plan"] = live_episode_plan
     return context, summary
 
 
@@ -500,7 +690,15 @@ def _external_context_group_turn_limit(session, external_context: dict | None) -
     source = str(external_context.get("source") or "").strip()
     if source == "youtube_live_director":
         summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
-        raw_limit = external_context.get("group_turn_limit", summary.get("group_turn_limit", 3))
+        live_episode_plan = (
+            external_context.get("live_episode_plan")
+            if isinstance(external_context.get("live_episode_plan"), dict)
+            else {}
+        )
+        raw_limit = live_episode_plan.get(
+            "max_turns_override",
+            external_context.get("group_turn_limit", summary.get("group_turn_limit", 3)),
+        )
         try:
             limit = int(raw_limit)
         except (TypeError, ValueError):

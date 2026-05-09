@@ -11,6 +11,7 @@ class LiveEpisodePlanValidationError(ValueError):
 
 SEGMENT_MEMORY_TEMPLATE = {
     "covered_claims": [],
+    "used_claim_ids": [],
     "used_examples": [],
     "used_metaphors": [],
     "used_openings": [],
@@ -29,6 +30,24 @@ REQUIRED_CLASSIFIER_ACTIONS = {
     "hostile": "ignore_or_deescalate",
     "prompt_injection": "ignore",
 }
+
+DEFAULT_DIALOGUE_REPLY_BOUNDS = {
+    "opening": (1, 1),
+    "cohost_intro": (1, 1),
+    "handoff": (1, 1),
+    "hook": (1, 2),
+    "background": (1, 2),
+    "transition": (1, 2),
+    "analysis": (2, 3),
+    "counterpoint": (2, 3),
+    "chat_bridge": (2, 3),
+    "audience_answer": (2, 3),
+    "closing": (1, 2),
+    "final_closing": (2, 2),
+}
+
+ALLOWED_DIALOGUE_AUTONOMY = {"strict", "guided", "open"}
+ALLOWED_AUDIENCE_EMPTY_BEHAVIOR = {"fallback_without_audience_quotes"}
 
 
 def _require_dict(value: Any, path: str) -> dict[str, Any]:
@@ -169,6 +188,138 @@ def _validate_output_requirements(output: dict[str, Any], path: str) -> None:
         raise LiveEpisodePlanValidationError(f"{path}.handoff_target_function is required")
 
 
+def _validate_audience_event_policy(policy: dict[str, Any], path: str) -> None:
+    if not isinstance(policy, dict) or not policy:
+        return
+    if "requires_real_events" in policy:
+        _require_bool(policy.get("requires_real_events"), f"{path}.requires_real_events")
+    if "event_types" in policy:
+        _require_list(policy.get("event_types"), f"{path}.event_types")
+    if "min_events" in policy:
+        _require_int(policy.get("min_events"), f"{path}.min_events", minimum=0)
+    if "max_events" in policy:
+        _require_int(policy.get("max_events"), f"{path}.max_events", minimum=1)
+    empty_behavior = str(policy.get("empty_behavior") or "").strip()
+    if empty_behavior and empty_behavior not in ALLOWED_AUDIENCE_EMPTY_BEHAVIOR:
+        raise LiveEpisodePlanValidationError(
+            f"{path}.empty_behavior must be fallback_without_audience_quotes"
+        )
+    if "empty_fallback_intent" in policy:
+        _require_text(policy.get("empty_fallback_intent"), f"{path}.empty_fallback_intent")
+
+
+def _validate_turn_budget(data: dict[str, Any]) -> None:
+    raw_budget = data.get("turn_budget")
+    if raw_budget is None:
+        return
+    budget = _require_dict(raw_budget, "turn_budget")
+    if "target_planned_turns" in budget:
+        _require_int(budget.get("target_planned_turns"), "turn_budget.target_planned_turns", minimum=1)
+    if "opening_turns" in budget:
+        _require_int(budget.get("opening_turns"), "turn_budget.opening_turns", minimum=0)
+    if "content_turns" in budget:
+        _require_int(budget.get("content_turns"), "turn_budget.content_turns", minimum=0)
+    if "planning_note" in budget:
+        _require_text(budget.get("planning_note"), "turn_budget.planning_note")
+
+
+def _claim_ledger_ids(data: dict[str, Any]) -> set[str]:
+    raw_ledger = data.get("claim_ledger")
+    if raw_ledger is None:
+        return set()
+    ledger = _require_dict(raw_ledger, "claim_ledger")
+    raw_claims = ledger.get("semantic_claims", ledger.get("used_claims", []))
+    claims = _require_list(raw_claims, "claim_ledger.semantic_claims")
+    claim_ids: set[str] = set()
+    for index, raw_claim in enumerate(claims):
+        claim = _require_dict(raw_claim, f"claim_ledger.semantic_claims[{index}]")
+        claim_id = _require_text(
+            claim.get("claim_id"),
+            f"claim_ledger.semantic_claims[{index}].claim_id",
+        )
+        if claim_id in claim_ids:
+            raise LiveEpisodePlanValidationError(
+                f"claim_ledger.semantic_claims[{index}].claim_id must be unique"
+            )
+        claim_ids.add(claim_id)
+        _require_text(
+            claim.get("meaning"),
+            f"claim_ledger.semantic_claims[{index}].meaning",
+        )
+        if "ban_paraphrase" in claim:
+            _require_bool(
+                claim.get("ban_paraphrase"),
+                f"claim_ledger.semantic_claims[{index}].ban_paraphrase",
+            )
+    return claim_ids
+
+
+def _validate_claim_policy(policy: dict[str, Any], known_claim_ids: set[str], path: str) -> None:
+    if not isinstance(policy, dict) or not policy:
+        return
+    if not known_claim_ids:
+        raise LiveEpisodePlanValidationError(
+            f"{path} requires claim_ledger.semantic_claims"
+        )
+    for key in ("new_claim_ids", "forbidden_claim_ids"):
+        values = [
+            _require_text(item, f"{path}.{key}[]")
+            for item in _require_list(policy.get(key, []), f"{path}.{key}")
+        ]
+        missing_ids = sorted({item for item in values if item not in known_claim_ids})
+        if missing_ids:
+            raise LiveEpisodePlanValidationError(
+                f"{path}.{key} contains unknown claim ids: {missing_ids}"
+            )
+    if "must_not_paraphrase_used_claims" in policy:
+        _require_bool(
+            policy.get("must_not_paraphrase_used_claims"),
+            f"{path}.must_not_paraphrase_used_claims",
+        )
+
+
+def dialogue_policy_for_turn(turn: dict[str, Any]) -> dict[str, Any]:
+    turn_type = str(turn.get("turn_type") or "").strip()
+    min_default, max_default = DEFAULT_DIALOGUE_REPLY_BOUNDS.get(turn_type, (1, 2))
+    raw = turn.get("dialogue_policy")
+    if raw is None:
+        return {
+            "min_replies": min_default,
+            "max_replies": max_default,
+            "autonomy": "guided",
+            "preferred_flow": [],
+        }
+    policy = _require_dict(raw, "dialogue_policy")
+    min_replies = _require_int(
+        policy.get("min_replies", min_default),
+        "dialogue_policy.min_replies",
+        minimum=1,
+    )
+    max_replies = _require_int(
+        policy.get("max_replies", max_default),
+        "dialogue_policy.max_replies",
+        minimum=1,
+    )
+    if max_replies < min_replies:
+        raise LiveEpisodePlanValidationError("dialogue reply bounds are invalid")
+    if max_replies > 4:
+        raise LiveEpisodePlanValidationError("dialogue_policy.max_replies must be <= 4")
+    autonomy = str(policy.get("autonomy") or "guided").strip()
+    if autonomy not in ALLOWED_DIALOGUE_AUTONOMY:
+        raise LiveEpisodePlanValidationError("dialogue_policy.autonomy must be strict, guided, or open")
+    preferred_flow = [
+        str(item).strip()
+        for item in _require_list(policy.get("preferred_flow", []), "dialogue_policy.preferred_flow")
+        if str(item).strip()
+    ]
+    return {
+        "min_replies": min_replies,
+        "max_replies": max_replies,
+        "autonomy": autonomy,
+        "preferred_flow": preferred_flow[:6],
+    }
+
+
 def _validate_completion_conditions(
     completion: dict[str, Any],
     turn_types: set[str],
@@ -224,6 +375,8 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
     _validate_classifier(
         _require_dict(data.get("audience_event_classifier"), "audience_event_classifier")
     )
+    _validate_turn_budget(data)
+    claim_ids = _claim_ledger_ids(data)
     participant_ids = _participant_ids(
         _require_list(data.get("participants"), "participants", min_items=1)
     )
@@ -245,6 +398,10 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
             _require_text(turn_obj.get("turn_id"), f"{turn_path}.turn_id")
             turn_types.add(_require_text(turn_obj.get("turn_type"), f"{turn_path}.turn_type"))
             _require_text(turn_obj.get("intent"), f"{turn_path}.intent")
+            try:
+                turn_obj["dialogue_policy"] = dialogue_policy_for_turn(turn_obj)
+            except LiveEpisodePlanValidationError as exc:
+                raise LiveEpisodePlanValidationError(f"{turn_path}.{exc}") from exc
             _validate_speaker_policy(
                 _require_dict(turn_obj.get("speaker_policy"), f"{turn_path}.speaker_policy"),
                 participant_ids,
@@ -264,6 +421,15 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
                     f"{turn_path}.output_requirements",
                 ),
                 f"{turn_path}.output_requirements",
+            )
+            _validate_audience_event_policy(
+                turn_obj.get("audience_event_policy") if isinstance(turn_obj.get("audience_event_policy"), dict) else {},
+                f"{turn_path}.audience_event_policy",
+            )
+            _validate_claim_policy(
+                turn_obj.get("claim_policy") if isinstance(turn_obj.get("claim_policy"), dict) else {},
+                claim_ids,
+                f"{turn_path}.claim_policy",
             )
         _validate_completion_conditions(
             _require_dict(
@@ -311,6 +477,8 @@ def current_turn_contract(
     plan: dict[str, Any],
     planned_state: dict[str, Any],
 ) -> dict[str, Any] | None:
+    if str(planned_state.get("plan_status") or "") == "completed":
+        return None
     segment = current_segment(plan, planned_state)
     if not segment:
         return None

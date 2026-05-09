@@ -26,9 +26,11 @@ export {
 } from "./topic-pack-crud.js?v=topic-graph-sources-v2";
 export {
   setFactCardImportBusy,
+  updateEpisodePlanEvidenceImportButton,
   importFactCardsFolder,
+  importEpisodePlanEvidence,
   rebuildTopicEmbeddings,
-} from "./fact-card-import.js?v=topic-graph-sources-v2";
+} from "./fact-card-import.js?v=episode-evidence-v1";
 export {
   setTopicGraphBusy,
   setTopicGraphLoadedState,

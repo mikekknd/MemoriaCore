@@ -105,6 +105,71 @@ class ClosingManagerMixin:
             except Exception as exc:
                 logger.warning("auto finalize archive failed session_id=%s error=%s", runtime.session_id, exc)
 
+    async def _finalize_for_episode_plan_completed(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        planned_state: dict[str, Any],
+    ) -> None:
+        async with runtime.closing_lock:
+            session = self.storage.get_session(runtime.session_id) or session
+            if not runtime.running or runtime.status in {"closing", "ended"} or session.get("status") == "ended":
+                return
+            completed_at = datetime.now().isoformat()
+            logger.info(
+                "episode plan completed; auto finalizing live session session_id=%s plan_id=%s completed_turn_count=%s",
+                runtime.session_id,
+                planned_state.get("plan_id") or session.get("episode_plan_id") or "",
+                len(planned_state.get("completed_turn_ids") or []),
+            )
+            runtime.status = "closing"
+            self.storage.update_session_fields(
+                runtime.session_id,
+                status="closing",
+                auto_inject=False,
+                auto_test_events_enabled=False,
+            )
+            director_state = self.storage.update_director_state(
+                runtime.session_id,
+                status="episode_plan_completed_closing",
+                metadata={
+                    "episode_plan_completed_at": completed_at,
+                    "episode_plan_completed_state": planned_state,
+                    "duration_closing_reason": "episode_plan_completed",
+                },
+            )
+            await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
+            await self._broadcast(
+                runtime.session_id,
+                {
+                    "type": "status",
+                    "status": "closing",
+                    "message": "episode plan completed; closing live session",
+                },
+            )
+            await self._wait_for_active_interaction_before_duration_closing(runtime)
+            finalized = await self._finalize_live_session(
+                runtime,
+                self.storage.get_session(runtime.session_id) or session,
+                finalized_by="episode_plan_complete",
+                closing_message="episode plan completed; closing live session",
+                ended_message="episode plan completed",
+                metadata={
+                    "episode_plan_completed": {
+                        "completed_at": completed_at,
+                        "planned_state": planned_state,
+                    }
+                },
+            )
+            try:
+                await self._run_auto_finalize_archive_callback(
+                    runtime.session_id,
+                    finalized_by="episode_plan_complete",
+                    finalized=finalized,
+                )
+            except Exception as exc:
+                logger.warning("auto finalize archive failed session_id=%s error=%s", runtime.session_id, exc)
+
     async def finalize_session(self, session_id: str) -> dict[str, Any]:
         session = self.storage.get_session(session_id)
         if not session:
@@ -217,6 +282,16 @@ class ClosingManagerMixin:
                 "final_closing": final_closing_result,
                 "closing_safety_resolution": safety_closing_result,
             },
+        )
+        closing_super_chat_status = closing_result.get("status") if isinstance(closing_result, dict) else "none"
+        final_closing_status = final_closing_result.get("status") if isinstance(final_closing_result, dict) else "none"
+        logger.info(
+            "live session finalized session_id=%s finalized_by=%s status=ended finalized_at=%s closing_super_chat_status=%s final_closing_status=%s",
+            runtime.session_id,
+            finalized_by,
+            finalized_at,
+            closing_super_chat_status,
+            final_closing_status,
         )
         await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
         await self._broadcast(

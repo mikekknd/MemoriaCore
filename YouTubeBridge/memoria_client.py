@@ -232,6 +232,31 @@ class MemoriaClient:
         data = response.json()
         return data if isinstance(data, dict) else {}
 
+    def get_prompt_metadata(self, key: str) -> dict[str, Any]:
+        self.ensure_auth()
+        response = self.session.get(
+            f"{self.base_url}/prompts/{key}",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"MemoriaCore prompt fetch failed: HTTP {response.status_code} {response.text[:500]}")
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    def update_prompt_template(self, key: str, template: str) -> dict[str, Any]:
+        self.ensure_auth()
+        response = self.session.put(
+            f"{self.base_url}/prompts/{key}",
+            json={"template": template},
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"MemoriaCore prompt update failed: HTTP {response.status_code} {response.text[:500]}")
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
     def list_sessions(self, *, limit: int = 100) -> list[dict[str, Any]]:
         self.ensure_auth()
         response = self.session.get(

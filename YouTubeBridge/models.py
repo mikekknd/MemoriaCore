@@ -59,6 +59,8 @@ class LiveSessionConfig(BaseModel):
     max_sc_per_batch: int = Field(5, ge=1, le=30)
     director_anchor_every_turns: int = Field(2, ge=1, le=10)
     director_group_turn_limit: int = Field(3, ge=1, le=12)
+    episode_plan_handoff_gap_seconds: int = Field(2, ge=1, le=5)
+    episode_plan_turn_gap_seconds: int = Field(8, ge=1, le=30)
     director_max_chat_batches_before_anchor: int = Field(2, ge=1, le=10)
     director_offtopic_policy: str = Field("defer", max_length=40)
     director_sc_burst_policy: str = Field("summarize_batch", max_length=40)
@@ -118,8 +120,13 @@ class EpisodePlanBindRequest(BaseModel):
     plan_id: str = Field("", max_length=120)
 
 
+class EpisodePlanEvidenceImportRequest(BaseModel):
+    plan_id: str = Field("", max_length=120)
+    max_files: int = Field(50, ge=1, le=200)
+
+
 class DirectorStartRequest(BaseModel):
-    idle_seconds: int = Field(60, ge=10, le=3600)
+    idle_seconds: int = Field(60, ge=1, le=3600)
     guidance: str = Field("", max_length=2000)
     kickoff: bool = False
 
@@ -193,6 +200,10 @@ class MemoriaAuthConfig(BaseModel):
     username: str = Field("", max_length=128)
     password: str = Field("", max_length=512)
     admin_bypass: bool = True
+
+
+class YouTubeLiveGlobalSuffixRequest(BaseModel):
+    template: str = Field("", max_length=20000)
 
 
 class LivePersonaOverlayRequest(BaseModel):

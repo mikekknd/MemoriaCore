@@ -54,7 +54,36 @@ def build_chat_response_schema() -> dict:
     }
 
 
-def build_available_tools(user_prefs: dict) -> list[dict]:
+def _tool_calls_disabled_for_context(session_ctx: dict | None) -> bool:
+    if not isinstance(session_ctx, dict):
+        return False
+    if str(session_ctx.get("channel") or "").strip() == "youtube_live":
+        return True
+    external_context = session_ctx.get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return False
+    source = str(external_context.get("source") or "").strip()
+    return source in {"youtube_live", "youtube_live_director"}
+
+
+def memory_lookup_skip_reason(session_ctx: dict | None) -> str | None:
+    """回傳記憶檢索應跳過的原因；None 表示照常跑記憶檢索。"""
+    if not isinstance(session_ctx, dict):
+        return None
+    external_context = session_ctx.get("external_chat_context")
+    source = ""
+    if isinstance(external_context, dict):
+        source = str(external_context.get("source") or "").strip()
+    if source in {"youtube_live", "youtube_live_director"}:
+        return source
+    if str(session_ctx.get("channel") or "").strip() == "youtube_live":
+        return "youtube_live"
+    return None
+
+
+def build_available_tools(user_prefs: dict, session_ctx: dict | None = None) -> list[dict]:
+    if _tool_calls_disabled_for_context(session_ctx):
+        return []
     tools_list: list[dict] = []
     try:
         from tools.tavily import TAVILY_SEARCH_SCHEMA

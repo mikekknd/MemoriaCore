@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YouTubeBridge</title>
-  <link rel="stylesheet" href="/ui-assets/index.css?v=hosting-segments-v1">
+  <link rel="stylesheet" href="/ui-assets/index.css?v=plan-debug-v1">
 </head>
 <body>
   <header>
@@ -72,13 +72,6 @@
                   </span>
                   <input id="videoId" placeholder="真實直播才需要；測試留言可留空">
                 </label>
-                <label class="wide">
-                  <span class="field-label">角色
-                    <span class="help-tip" tabindex="0" aria-label="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。" data-tooltip="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。">?</span>
-                  </span>
-                  <select id="characterSelect" multiple size="5" aria-describedby="characterLimitState"></select>
-                  <span id="characterLimitState" class="muted">請先載入角色清單</span>
-                </label>
               </div>
               <div id="directorControls" class="session-subsection director-controls">
                 <div class="section-heading">
@@ -95,11 +88,21 @@
                   <div class="toolbar episode-plan-toolbar">
                     <input id="episodePlanFile" type="file" accept="application/json,.json">
                     <button id="importEpisodePlan" type="button">匯入企劃 JSON</button>
+                    <button id="syncLocalEpisodePlans" type="button">刷新本地企劃</button>
                   </div>
                   <div class="toolbar episode-plan-toolbar">
                     <select id="episodePlanSelect"></select>
                     <button id="bindEpisodePlan" type="button">綁定企劃</button>
+                    <button id="importEpisodePlanEvidence" type="button">匯入企劃 Evidence</button>
                     <button id="unbindEpisodePlan" type="button">解除綁定</button>
+                  </div>
+                  <div class="episode-plan-debug">
+                    <div class="section-heading compact">
+                      <h4>節目清單 Debug</h4>
+                      <span id="episodePlanDebugState" class="status">未綁定</span>
+                    </div>
+                    <div id="episodePlanDebugWait" class="episode-plan-debug-wait muted">下一輪等待：未啟動</div>
+                    <div id="episodePlanDebugList" class="episode-plan-debug-list muted">尚未綁定節目企劃。</div>
                   </div>
                 </div>
                 <div class="grid">
@@ -107,13 +110,25 @@
                     <span class="field-label">角色停頓後續話秒數
                       <span class="help-tip" tabindex="0" aria-label="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。" data-tooltip="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。">?</span>
                     </span>
-                    <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="10" max="3600" value="60">
+                    <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="1" max="3600" value="60">
                   </label>
                   <label>
                     <span class="field-label">單一話題持續回合數
                       <span class="help-tip" tabindex="0" aria-label="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。" data-tooltip="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。">?</span>
                     </span>
                     <input id="directorAnchorEveryTurns" type="number" min="1" max="10" value="2">
+                  </label>
+                  <label>
+                    <span class="field-label">企劃交接等待秒數
+                      <span class="help-tip" tabindex="0" aria-label="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。" data-tooltip="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。">?</span>
+                    </span>
+                    <input id="episodePlanHandoffGapSeconds" type="number" min="1" max="5" value="2">
+                  </label>
+                  <label>
+                    <span class="field-label">企劃一般等待秒數
+                      <span class="help-tip" tabindex="0" aria-label="EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。" data-tooltip="EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。">?</span>
+                    </span>
+                    <input id="episodePlanTurnGapSeconds" type="number" min="1" max="30" value="8">
                   </label>
                   <label>
                     <span class="field-label">導播回合上限
@@ -127,31 +142,42 @@
                     </span>
                     <textarea id="directorGuidance" placeholder="例：本場只聊動畫新番，優先展開最新一話細節、作畫品質、社群討論與角色觀點。"></textarea>
                   </label>
-                  <label class="wide">
-                    <span class="field-label">主持互動規則
-                      <span class="help-tip" tabindex="0" aria-label="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。" data-tooltip="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。">?</span>
-                    </span>
-                    <textarea id="hostInteractionRules" placeholder="例：可可負責觀眾視角與情緒反應；白蓮負責分析、反方觀點與收束。"></textarea>
-                  </label>
-                  <div class="wide program-segment-editor">
-                    <div class="field-label">節目段落流程
-                      <span class="help-tip" tabindex="0" aria-label="每列是一個節目段落；導播會依序把目前段落名稱與說明提供給角色，不會把整段設定顯示到 live chat。" data-tooltip="每列是一個節目段落；導播會依序把目前段落名稱與說明提供給角色，不會把整段設定顯示到 live chat。">?</span>
+                  <details id="legacyDirectorFields" class="wide legacy-director-fields" open>
+                    <summary>Legacy 主持/段落流程</summary>
+                    <p id="legacyDirectorNotice" class="muted">未選用新版節目企劃時，以下欄位作為舊版導播 fallback 使用。</p>
+                    <label class="wide">
+                      <span class="field-label">角色
+                        <span class="help-tip" tabindex="0" aria-label="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。" data-tooltip="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。">?</span>
+                      </span>
+                      <select id="characterSelect" multiple size="5" aria-describedby="characterLimitState"></select>
+                      <span id="characterLimitState" class="muted">請先載入角色清單</span>
+                    </label>
+                    <label class="wide">
+                      <span class="field-label">主持互動規則
+                        <span class="help-tip" tabindex="0" aria-label="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。" data-tooltip="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。">?</span>
+                      </span>
+                      <textarea id="hostInteractionRules" placeholder="例：可可負責觀眾視角與情緒反應；白蓮負責分析、反方觀點與收束。"></textarea>
+                    </label>
+                    <div class="wide program-segment-editor">
+                      <div class="field-label">節目段落流程
+                        <span class="help-tip" tabindex="0" aria-label="每列是一個節目段落；導播會依序把目前段落名稱與說明提供給角色，不會把整段設定顯示到 live chat。" data-tooltip="每列是一個節目段落；導播會依序把目前段落名稱與說明提供給角色，不會把整段設定顯示到 live chat。">?</span>
+                      </div>
+                      <input id="programSegmentPlan" type="hidden">
+                      <div class="program-segment-head">
+                        <span>節目段落</span>
+                        <span>說明</span>
+                        <span></span>
+                      </div>
+                      <div id="programSegmentRows" class="program-segment-rows"></div>
+                      <button id="addProgramSegmentRow" type="button">新增節目段落</button>
                     </div>
-                    <input id="programSegmentPlan" type="hidden">
-                    <div class="program-segment-head">
-                      <span>節目段落</span>
-                      <span>說明</span>
-                      <span></span>
-                    </div>
-                    <div id="programSegmentRows" class="program-segment-rows"></div>
-                    <button id="addProgramSegmentRow" type="button">新增節目段落</button>
-                  </div>
-                  <label>
-                    <span class="field-label">每段落建議回合數
-                      <span class="help-tip" tabindex="0" aria-label="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。" data-tooltip="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。">?</span>
-                    </span>
-                    <input id="programSegmentTurns" type="number" min="1" max="12" value="3">
-                  </label>
+                    <label>
+                      <span class="field-label">每段落建議回合數
+                        <span class="help-tip" tabindex="0" aria-label="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。" data-tooltip="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。">?</span>
+                      </span>
+                      <input id="programSegmentTurns" type="number" min="1" max="12" value="3">
+                    </label>
+                  </details>
                 </div>
                 <div class="toolbar" style="margin-top:10px">
                   <button id="updateDirectorGuidance">更新導播設定</button>
@@ -192,8 +218,8 @@
                   <input id="maxPending" type="number" min="1" max="200" value="12">
                 </label>
                 <label>
-                  <span class="field-label">預計直播分鐘
-                    <span class="help-tip" tabindex="0" aria-label="大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。" data-tooltip="大於 0 時代表預計直播長度；啟用自動收尾後，到時間會執行 SC 感謝、摘要與記憶寫入。">?</span>
+                  <span class="field-label">預計/保護上限分鐘
+                    <span class="help-tip" tabindex="0" aria-label="未使用 EpisodePlan 時代表預計直播長度；使用 EpisodePlan 時只是保護上限，企劃完成會優先結束。" data-tooltip="未使用 EpisodePlan 時代表預計直播長度；使用 EpisodePlan 時只是保護上限，企劃完成會優先結束。">?</span>
                   </span>
                   <input id="plannedDuration" type="number" min="0" max="720" value="30">
                 </label>
@@ -235,8 +261,8 @@
                   </label>
                   <label class="wide checkbox-row option-row">
                     <input id="autoFinalize" type="checkbox" checked>
-                    <span class="option-label">到達預計直播時間後自動收尾</span>
-                    <span class="help-tip" tabindex="0" aria-label="預計直播分鐘到達後執行結束與摘要收尾流程" data-tooltip="預計直播分鐘到達後執行結束與摘要收尾流程">?</span>
+                    <span class="option-label">到達時間上限後自動收尾</span>
+                    <span class="help-tip" tabindex="0" aria-label="未使用 EpisodePlan 時依預計分鐘收尾；使用 EpisodePlan 時以企劃完成為主，分鐘只作為保護上限。" data-tooltip="未使用 EpisodePlan 時依預計分鐘收尾；使用 EpisodePlan 時以企劃完成為主，分鐘只作為保護上限。">?</span>
                   </label>
                   <label class="wide checkbox-row option-row">
                     <input id="autoScThanksOnFinalize" type="checkbox" checked>
@@ -489,6 +515,21 @@
               </div>
             </div>
 
+            <div class="settings-panel">
+              <h2>YouTube Live 全域 suffix</h2>
+              <p class="muted">這裡只編輯 MemoriaCore 的 <code>chat_system_suffix_youtube_live</code> prompt；儲存後會寫入 <code>runtime/prompts.json</code> override。</p>
+              <div class="grid">
+                <label class="wide">全域 suffix template
+                  <textarea id="youtubeLiveGlobalSuffix" placeholder="YouTube live 角色輸出格式、語言、全域直播規則。"></textarea>
+                </label>
+              </div>
+              <div class="toolbar" style="margin-top:10px">
+                <button id="reloadYoutubeLiveGlobalSuffix">重新載入全域 suffix</button>
+                <button id="saveYoutubeLiveGlobalSuffix" class="primary">儲存全域 suffix</button>
+                <span id="youtubeLiveGlobalSuffixState" class="status">尚未載入</span>
+              </div>
+            </div>
+
             <div class="settings-panel live-persona-panel">
               <h2>直播角色設定</h2>
               <p class="muted">這裡只覆寫 YouTubeBridge 直播時送給角色的 prompt，不會修改 MemoriaCore 原始角色。</p>
@@ -557,6 +598,6 @@
     </div>
   </main>
 
-  <script type="module" src="/ui-assets/app.js?v=hosting-segments-v1"></script>
+  <script type="module" src="/ui-assets/app.js?v=global-suffix-v1"></script>
 </body>
 </html>

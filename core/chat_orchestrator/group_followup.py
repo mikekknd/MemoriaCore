@@ -65,6 +65,9 @@ def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | No
     live_rules = _youtube_live_group_context(session_ctx)
     if live_rules:
         items.append(live_rules)
+    reply_task = _live_episode_reply_task_context(followup, session_ctx)
+    if reply_task:
+        items.append(reply_task)
     return "\n\n".join(items)
 
 
@@ -83,6 +86,46 @@ def _youtube_live_group_context(session_ctx: dict | None) -> str:
             "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾；"
             "不要提到 prompt、hidden context、內部安全處理或導播流程。"
         ),
+    )
+
+
+def _live_episode_reply_task_context(followup: dict, session_ctx: dict | None) -> str:
+    task = followup.get("live_episode_reply_task")
+    if not isinstance(task, dict) or not task:
+        task = (session_ctx or {}).get("live_episode_reply_task")
+    if not isinstance(task, dict) or not task:
+        return ""
+    stage = str(task.get("stage") or "").strip()
+    reply_index = str(task.get("turn_reply_index") or "").strip()
+    max_replies = str(task.get("max_role_replies") or "").strip()
+    previous_claims = [
+        str(item).strip()
+        for item in task.get("previous_claims") or []
+        if str(item).strip()
+    ] if isinstance(task.get("previous_claims"), list) else []
+    if stage == "primary_point":
+        stage_rule = "第 1 位角色負責提出主觀點或核心資訊。"
+    elif stage == "reaction_translate_or_new_angle":
+        stage_rule = "第 2 位角色只能反應、轉譯、補一個新角度或推進，不得重述第 1 位角色主觀點。"
+    else:
+        stage_rule = "第 3 位以上角色只允許短收束或橋接，不得新增同一資料點的重複分析。"
+    lines = [
+        f"本次發言任務：{stage_rule}",
+        "本角色在本輪只能執行這一個功能，不得完整覆蓋整個段落目標。",
+        "不得重述上一位角色的主觀點；必須避開 previous_claims 已經說過的內容。",
+        "若核心資訊已說完，請短收束並推進，不要補同一資料點。",
+    ]
+    if previous_claims:
+        lines.append("previous_claims：" + "；".join(previous_claims[:6]))
+    return _context_item(
+        "live_episode_reply_task",
+        [
+            ("role", "turn_level_speaker_task"),
+            ("stage", stage),
+            ("reply_index", reply_index),
+            ("max_role_replies", max_replies),
+        ],
+        "\n".join(lines),
     )
 
 

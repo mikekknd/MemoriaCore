@@ -6,7 +6,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 
 from memoria_client import MemoriaClient
-from models import MemoriaAuthConfig
+from models import MemoriaAuthConfig, YouTubeLiveGlobalSuffixRequest
 
 
 router = APIRouter()
@@ -18,6 +18,7 @@ chat_preview_cache = None
 STATIC_ROOT = ""
 UI_ASSETS_ROOT = None
 E2E_CHECKPOINT_PATH = None
+YOUTUBE_LIVE_GLOBAL_SUFFIX_KEY = "chat_system_suffix_youtube_live"
 
 
 def configure(state):
@@ -107,6 +108,42 @@ async def memoria_refs():
             }
 
         return await asyncio.to_thread(_load_refs)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/memoria/youtube-live/global-suffix")
+async def get_youtube_live_global_suffix():
+    try:
+        data = await asyncio.to_thread(MemoriaClient().get_prompt_metadata, YOUTUBE_LIVE_GLOBAL_SUFFIX_KEY)
+        return {
+            "key": data.get("key") or YOUTUBE_LIVE_GLOBAL_SUFFIX_KEY,
+            "template": data.get("current_template") or data.get("template") or "",
+            "default_template": data.get("default_template") or "",
+            "label": data.get("label") or "",
+            "description": data.get("description") or "",
+            "has_user_override": bool(data.get("has_user_override")),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.put("/memoria/youtube-live/global-suffix")
+async def update_youtube_live_global_suffix(body: YouTubeLiveGlobalSuffixRequest):
+    try:
+        data = await asyncio.to_thread(
+            MemoriaClient().update_prompt_template,
+            YOUTUBE_LIVE_GLOBAL_SUFFIX_KEY,
+            body.template,
+        )
+        return {
+            "key": data.get("key") or YOUTUBE_LIVE_GLOBAL_SUFFIX_KEY,
+            "template": data.get("current_template") or data.get("template") or body.template,
+            "default_template": data.get("default_template") or "",
+            "label": data.get("label") or "",
+            "description": data.get("description") or "",
+            "has_user_override": bool(data.get("has_user_override", True)),
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

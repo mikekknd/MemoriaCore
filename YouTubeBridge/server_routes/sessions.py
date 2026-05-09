@@ -8,6 +8,10 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from episode_plan_character_binding import (
+    EpisodePlanCharacterBindingError,
+    resolve_episode_plan_character_ids,
+)
 from memoria_client import MemoriaClient
 from models import InterruptRequest, LiveSessionConfig, ReplyRecentRequest
 from server_presenters import sanitize_chat_preview_message, sanitize_chat_preview_session, sanitize_interaction
@@ -43,6 +47,31 @@ def _require_state():
     if _state is None:
         raise RuntimeError("server route state is not configured")
     return _state
+
+
+def _resolve_episode_plan_characters(plan_id: str) -> list[str]:
+    plan_id = str(plan_id or "").strip()
+    if not plan_id:
+        return []
+    record = storage.get_live_episode_plan(plan_id)
+    if not record:
+        raise ValueError("episode plan 不存在")
+    try:
+        return resolve_episode_plan_character_ids(
+            record.get("plan_json") or {},
+            MemoriaClient().list_characters(),
+        )
+    except EpisodePlanCharacterBindingError as exc:
+        raise ValueError(f"企劃角色對應失敗：{exc}") from exc
+
+
+async def _apply_episode_plan_character_binding(config: dict) -> dict:
+    plan_id = str(config.get("episode_plan_id") or "").strip()
+    if not plan_id:
+        return config
+    config = dict(config)
+    config["character_ids"] = await asyncio.to_thread(_resolve_episode_plan_characters, plan_id)
+    return config
 
 
 def _session_has_runtime_content(session: dict) -> bool:
@@ -202,6 +231,7 @@ async def _prepare_current_session_start_config(config: dict) -> dict:
     config["status"] = "stopped"
     storage.ensure_single_connector()
     config["video_id"] = extract_video_id(config.get("video_id", ""))
+    config = await _apply_episode_plan_character_binding(config)
 
     needs_youtube_polling = bool(
         str(config.get("live_chat_id") or "").strip()
@@ -241,11 +271,17 @@ async def list_sessions():
 
 @router.post("/sessions")
 async def upsert_session(body: LiveSessionConfig):
-    config = body.model_dump(exclude_unset=True)
-    config["connector_id"] = DEFAULT_CONNECTOR_ID
-    storage.ensure_single_connector()
-    config["video_id"] = extract_video_id(config.get("video_id", ""))
-    return storage.upsert_session(config)
+    try:
+        config = body.model_dump(exclude_unset=True)
+        config["connector_id"] = DEFAULT_CONNECTOR_ID
+        storage.ensure_single_connector()
+        config["video_id"] = extract_video_id(config.get("video_id", ""))
+        config = await _apply_episode_plan_character_binding(config)
+        return storage.upsert_session(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"企劃角色對應失敗：{exc}") from exc
 
 
 @router.post("/sessions/current/start")

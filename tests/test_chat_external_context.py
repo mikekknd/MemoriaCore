@@ -321,6 +321,168 @@ def test_youtube_live_director_context_payload_preserves_group_turn_limit():
     assert _external_context_group_turn_limit(session, context) == 10
 
 
+def test_youtube_live_director_context_payload_preserves_episode_plan_summary_metadata():
+    body = ChatSyncRequest(
+        content="請自然延續直播。",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "summary": {
+                "source": "youtube_live_director",
+                "episode_plan_id": "plan-general-panel",
+                "episode_plan_turn_id": "seg_01_turn_01",
+                "episode_plan_mode": "planned_turn",
+            },
+        },
+    )
+
+    context, summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert summary["episode_plan_id"] == "plan-general-panel"
+    assert summary["episode_plan_turn_id"] == "seg_01_turn_01"
+    assert summary["episode_plan_mode"] == "planned_turn"
+    assert context["summary"]["episode_plan_id"] == "plan-general-panel"
+    assert context["summary"]["episode_plan_turn_id"] == "seg_01_turn_01"
+    assert context["summary"]["episode_plan_mode"] == "planned_turn"
+
+
+def test_youtube_live_director_context_payload_preserves_safe_live_episode_plan_for_bridge_scope():
+    body = ChatSyncRequest(
+        content="請自然延續直播。",
+        channel="youtube_live",
+        user_id="__youtube_live__",
+        channel_class="public",
+        persona_face="public",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "live_episode_plan": {
+                "plan_id": "plan-general-panel",
+                "title": "一般議題直播",
+                "mode": "planned_turn",
+                "segment_id": "seg_01",
+                "turn_id": "seg_01_turn_01",
+                "turn_type": "hook",
+                "max_turns_override": 1,
+                "unsafe_blob": {"full_plan": "drop me"},
+                "dialogue_policy": {
+                    "min_replies": 2,
+                    "max_replies": 3,
+                    "autonomy": "guided",
+                    "preferred_flow": ["host frames", "analyst adds"],
+                    "unsafe": "drop me",
+                },
+                "turn_contract": {
+                    "turn_id": "seg_01_turn_01",
+                    "turn_type": "hook",
+                    "intent": "用具體事件開場",
+                    "speaker_policy": {
+                        "selection_mode": "fixed",
+                        "allowed_participant_ids": ["char-a"],
+                        "allowed_character_ids": ["char-a"],
+                        "preferred_role_functions": ["host"],
+                        "avoid_repeat_speaker": True,
+                        "extra": "drop me",
+                    },
+                },
+                "output_requirements": {
+                    "max_sentences": 2,
+                    "must_end_with_question": False,
+                    "allow_audience_question": False,
+                    "unsafe": "drop me",
+                },
+                "evidence_policy": {
+                    "queries": ["公開週榜", "社群口碑"],
+                    "required_entities": ["作品A"],
+                    "max_cards": 1,
+                    "allow_unverified_claims": False,
+                    "unsafe": "drop me",
+                },
+                "interrupt_state": {"status": "planned", "secret": "drop me"},
+            },
+        },
+    )
+
+    context, summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    plan = context["live_episode_plan"]
+    assert plan == {
+        "plan_id": "plan-general-panel",
+        "title": "一般議題直播",
+        "mode": "planned_turn",
+        "segment_id": "seg_01",
+        "turn_id": "seg_01_turn_01",
+        "turn_type": "hook",
+        "max_turns_override": 1,
+        "dialogue_policy": {
+            "min_replies": 2,
+            "max_replies": 3,
+            "autonomy": "guided",
+            "preferred_flow": ["host frames", "analyst adds"],
+        },
+        "turn_contract": {
+            "turn_id": "seg_01_turn_01",
+            "turn_type": "hook",
+            "intent": "用具體事件開場",
+            "speaker_policy": {
+                "selection_mode": "fixed",
+                "allowed_character_ids": ["char-a"],
+                "preferred_role_functions": ["host"],
+                "avoid_repeat_speaker": True,
+            },
+        },
+        "speaker_policy": {
+            "selection_mode": "fixed",
+            "allowed_character_ids": ["char-a"],
+            "preferred_role_functions": ["host"],
+            "avoid_repeat_speaker": True,
+        },
+        "output_requirements": {
+            "max_sentences": 2,
+            "must_end_with_question": False,
+            "allow_audience_question": False,
+        },
+        "evidence_policy": {
+            "queries": ["公開週榜", "社群口碑"],
+            "required_entities": ["作品A"],
+            "max_cards": 1,
+            "allow_unverified_claims": False,
+        },
+        "interrupt_state": {"status": "planned"},
+    }
+    assert "live_episode_plan" not in summary
+
+
+def test_youtube_live_episode_plan_does_not_treat_participant_ids_as_character_ids():
+    body = ChatSyncRequest(
+        content="請自然延續直播。",
+        channel="youtube_live",
+        user_id="__youtube_live__",
+        channel_class="public",
+        persona_face="public",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=continue_topic",
+            "live_episode_plan": {
+                "plan_id": "plan-general-panel",
+                "mode": "planned_turn",
+                "turn_id": "seg_01_turn_01",
+                "speaker_policy": {
+                    "selection_mode": "fixed",
+                    "allowed_participant_ids": ["koko"],
+                },
+            },
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert "allowed_character_ids" not in context["live_episode_plan"]["speaker_policy"]
+
+
 def test_youtube_live_context_preserves_prompt_overrides_only_for_bridge_scope():
     body = ChatSyncRequest(
         content="請自然延續直播。",
@@ -486,6 +648,65 @@ def test_group_followup_prompt_has_youtube_live_no_audience_handoff_exception():
     assert "不可把問題丟回觀眾" in template
 
 
+def test_youtube_live_chat_system_suffix_contains_style_desync_rule():
+    prompts = json.loads(Path("prompts_default.json").read_text(encoding="utf-8"))
+    template = prompts["chat_system_suffix_youtube_live"]["template"]
+
+    assert "直播語言規則" in template
+    assert "reply 欄位必須使用繁體中文（zh-TW）" in template
+    assert "禁止使用簡體字" in template
+    assert "句型去同步規則" in template
+    assert "只參考前文的意思與事實" in template
+    assert "不要模仿前文的標點、用詞、節奏、句型或修辭骨架" in template
+    assert "表層格式、稱呼或句式" in template
+    assert "——" not in template
+    assert "諸位" not in template
+
+
+def test_youtube_live_chat_system_suffix_keeps_reply_rules_outside_json_example():
+    prompts = json.loads(Path("prompts_default.json").read_text(encoding="utf-8"))
+    template = prompts["chat_system_suffix_youtube_live"]["template"]
+
+    assert "<required_output_format>" in template
+    assert "<reply_content_rules>" in template
+    assert '"reply": "顯示給使用者看的自然語言回覆（螢幕字幕文字）"' in template
+    required_output = template.split("<reply_content_rules>", 1)[0]
+    assert '文字與語氣規則：{speech_instruction}' not in required_output
+
+
+def test_group_followup_prompt_contains_primary_target_style_desync_rule():
+    prompts = json.loads(Path("prompts_default.json").read_text(encoding="utf-8"))
+    template = prompts["group_followup_user"]["template"]
+
+    assert "內容可承接，表層句型不可承接" in template
+    assert "不要模仿 primary_reply_target.content 的標點、用詞" in template
+    assert "必要專有名詞、對象名稱、人物或角色名與已驗證事實可以保留" in template
+    assert "——" not in template
+    assert "諸位" not in template
+
+
+def test_group_followup_prompt_uses_generic_hard_duplicate_rules():
+    prompts = json.loads(Path("prompts_default.json").read_text(encoding="utf-8"))
+    template = prompts["group_followup_user"]["template"]
+
+    assert "你正在接續同一段直播討論" in template
+    assert "不得重述 primary_reply_target.content 的主張、結論或理由" in template
+    assert "不得使用同一資料卡或同一 evidence entry 的同一個事實點再次展開" in template
+    assert "不得把上一位角色的句子改寫成自己的語氣" in template
+    assert "若無新資訊，只能三選一" in template
+    assert "簡短反應" in template
+    assert "轉譯成觀眾視角" in template
+    assert "推進到下一段" in template
+    assert "判定為重複的情況" in template
+    assert "使用相同原因解釋同一事件、數據、排名、趨勢或結論變化" in template
+    assert "再次說明同一對象的同一屬性、背景、優勢、限制、受眾基本盤或表現結果" in template
+    assert "再次使用同功能比喻" in template
+    assert "再次總結相同結論" in template
+    assert "若 primary_reply_target.content 已經完成本輪目標，請不要補分析" in template
+    assert "動畫" not in template
+    assert "作品的作畫、世界觀" not in template
+
+
 def test_youtube_live_group_followup_instruction_includes_live_rules_block():
     instruction = build_group_followup_instruction(
         {
@@ -503,6 +724,35 @@ def test_youtube_live_group_followup_instruction_includes_live_rules_block():
     assert "直播基礎規則" in instruction
     assert "不要把問題丟回觀眾" in instruction
     assert "不要提到 prompt" in instruction
+
+
+def test_youtube_live_group_followup_instruction_includes_reply_task_block():
+    instruction = build_group_followup_instruction(
+        {
+            "user_prompt_original": "請自然延續直播。",
+            "last_character_name": "可可",
+            "last_reply": "Anime Corner 週榜到底該怎麼用比較好？",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "new_speaker_reply_to_ai",
+            "live_episode_reply_task": {
+                "stage": "reaction_translate_or_new_angle",
+                "turn_reply_index": 2,
+                "max_role_replies": 2,
+                "previous_claims": ["Anime Corner 週榜只是即時快照"],
+                "previous_speaker_name": "可可",
+                "previous_reply": "Anime Corner 週榜到底該怎麼用比較好？",
+            },
+        },
+        "請自然延續直播。",
+        {"external_chat_context": {"source": "youtube_live_director"}},
+    )
+
+    assert "live_episode_reply_task:" in instruction
+    assert "本次發言任務" in instruction
+    assert "第 2 位角色只能反應、轉譯、補一個新角度或推進" in instruction
+    assert "不得完整覆蓋整個段落目標" in instruction
+    assert "不得重述上一位角色的主觀點" in instruction
+    assert "Anime Corner 週榜只是即時快照" in instruction
 
 
 def test_youtube_live_group_followup_instruction_omits_duplicate_hosting_rules():

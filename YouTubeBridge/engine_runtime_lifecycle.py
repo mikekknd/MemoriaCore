@@ -77,6 +77,15 @@ class RuntimeLifecycleManagerMixin:
             if hasattr(self.storage, "ensure_single_connector"):
                 self.storage.ensure_single_connector()
                 session = self.storage.get_session(session_id) or session
+            if session.get("episode_plan_id"):
+                try:
+                    bound_character_ids = self._episode_character_ids_for_session(session)
+                except RuntimeError as exc:
+                    raise ValueError(str(exc)) from exc
+                session = self.storage.update_session_fields(
+                    session_id,
+                    character_ids=bound_character_ids,
+                ) or session
             connector = self.storage.get_connector(session["connector_id"])
             if not connector:
                 raise ValueError("connector 不存在")

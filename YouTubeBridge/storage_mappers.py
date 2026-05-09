@@ -119,6 +119,8 @@ def row_to_session(row: sqlite3.Row | None) -> dict | None:
         "max_sc_per_batch": int(row_value(row, "max_sc_per_batch", 5) or 5),
         "director_anchor_every_turns": int(row_value(row, "director_anchor_every_turns", 2) or 2),
         "director_group_turn_limit": int(row_value(row, "director_group_turn_limit", 3) or 3),
+        "episode_plan_handoff_gap_seconds": int(row_value(row, "episode_plan_handoff_gap_seconds", 2) or 2),
+        "episode_plan_turn_gap_seconds": int(row_value(row, "episode_plan_turn_gap_seconds", 8) or 8),
         "director_max_chat_batches_before_anchor": int(row_value(row, "director_max_chat_batches_before_anchor", 2) or 2),
         "director_offtopic_policy": row_value(row, "director_offtopic_policy", "defer") or "defer",
         "director_sc_burst_policy": row_value(row, "director_sc_burst_policy", "summarize_batch") or "summarize_batch",
