@@ -136,6 +136,66 @@ async def test_director_turn_includes_episode_plan_context(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_director_turn_reuses_memoria_client_and_character_resolution(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+
+        class CountingStreamClient:
+            instance_count = 0
+            list_character_calls = 0
+            chat_calls = 0
+
+            def __init__(self):
+                self.__class__.instance_count += 1
+
+            def list_characters(self):
+                self.__class__.list_character_calls += 1
+                return _episode_plan_characters()
+
+            def chat_stream_sync(self, **kwargs):
+                self.__class__.chat_calls += 1
+                return {
+                    "session_id": kwargs.get("session_id") or "mem-a",
+                    "message_id": 42,
+                    "reply": "續話完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CountingStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        result = await manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            manager._episode_planned_turn_decision(
+                session,
+                storage.get_director_state("live-a"),
+            ),
+        )
+
+        assert result["interaction"]["status"] == "completed"
+        assert CountingStreamClient.instance_count == 1
+        assert CountingStreamClient.list_character_calls == 1
+        assert CountingStreamClient.chat_calls == 1
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_turn_suppresses_legacy_hosting_context_when_episode_plan_bound(monkeypatch):
     tmp_dir = _tmp_dir()
     try:

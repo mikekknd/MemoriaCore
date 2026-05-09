@@ -40,24 +40,39 @@ class EpisodePlanManagerMixin:
             return None
         return validate_live_episode_plan(record.get("plan_json") or {})
 
-    def _episode_character_ids_for_session(self, session: dict[str, Any]) -> list[str]:
+    def _episode_character_ids_for_session(
+        self,
+        session: dict[str, Any],
+        *,
+        character_records: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
         plan = self._episode_plan_for_session(session)
         if not plan:
             return list(session.get("character_ids") or [])
         try:
             return resolve_episode_plan_character_ids(
                 plan,
-                self._memoria_client().list_characters(),
+                character_records
+                if character_records is not None
+                else self._memoria_client().list_characters(),
             )
         except EpisodePlanCharacterBindingError as exc:
             raise RuntimeError(f"企劃角色對應失敗：{exc}") from exc
 
-    def _episode_participant_character_map_for_session(self, session: dict[str, Any]) -> dict[str, str]:
+    def _episode_participant_character_map_for_session(
+        self,
+        session: dict[str, Any],
+        *,
+        character_records: list[dict[str, Any]] | None = None,
+    ) -> dict[str, str]:
         plan = self._episode_plan_for_session(session)
         if not plan:
             return {}
         participants = plan.get("participants") if isinstance(plan.get("participants"), list) else []
-        character_ids = self._episode_character_ids_for_session(session)
+        character_ids = self._episode_character_ids_for_session(
+            session,
+            character_records=character_records,
+        )
         mapping: dict[str, str] = {}
         for index, participant in enumerate(participants):
             if not isinstance(participant, dict) or index >= len(character_ids):
@@ -72,6 +87,8 @@ class EpisodePlanManagerMixin:
         self,
         session: dict[str, Any],
         turn: dict[str, Any],
+        *,
+        character_records: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         speaker = turn.get("speaker_policy") if isinstance(turn.get("speaker_policy"), dict) else {}
         projected = copy.deepcopy(speaker)
@@ -83,7 +100,10 @@ class EpisodePlanManagerMixin:
         if not allowed_participant_ids:
             projected.setdefault("allowed_character_ids", [])
             return projected
-        mapping = self._episode_participant_character_map_for_session(session)
+        mapping = self._episode_participant_character_map_for_session(
+            session,
+            character_records=character_records,
+        )
         allowed_character_ids = [
             mapping[participant_id]
             for participant_id in allowed_participant_ids
@@ -102,8 +122,13 @@ class EpisodePlanManagerMixin:
         self,
         session: dict[str, Any],
         turn: dict[str, Any],
+        *,
+        character_records: list[dict[str, Any]] | None = None,
     ) -> list[str]:
-        all_character_ids = self._episode_character_ids_for_session(session)
+        all_character_ids = self._episode_character_ids_for_session(
+            session,
+            character_records=character_records,
+        )
         speaker = turn.get("speaker_policy") if isinstance(turn.get("speaker_policy"), dict) else {}
         allowed_participant_ids = [
             str(item).strip()
@@ -112,7 +137,11 @@ class EpisodePlanManagerMixin:
         ]
         if not allowed_participant_ids:
             return all_character_ids
-        projected = self._episode_speaker_policy_for_turn(session, turn)
+        projected = self._episode_speaker_policy_for_turn(
+            session,
+            turn,
+            character_records=character_records,
+        )
         allowed_character_ids = [
             str(item).strip()
             for item in projected.get("allowed_character_ids") or []
@@ -826,6 +855,8 @@ class EpisodePlanManagerMixin:
         session: dict[str, Any],
         state: dict[str, Any],
         decision: dict[str, Any],
+        *,
+        character_records: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], str, str]:
         payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
         if not payload:
@@ -858,7 +889,11 @@ class EpisodePlanManagerMixin:
             )
         segment_payload = payload.get("segment") if isinstance(payload.get("segment"), dict) else {}
         current = self._episode_current_segment(plan, planned_state) or {}
-        speaker_policy = self._episode_speaker_policy_for_turn(session, turn)
+        speaker_policy = self._episode_speaker_policy_for_turn(
+            session,
+            turn,
+            character_records=character_records,
+        )
         dialogue_policy = self._episode_dialogue_policy(turn)
         next_turn_preview = self._episode_next_turn_preview(plan, planned_state)
         context_text = self._episode_plan_context_text(

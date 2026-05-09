@@ -394,4 +394,4 @@ async def value_error_handler(_request: Request, exc: ValueError):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8091)
+    uvicorn.run(app, host="127.0.0.1", port=8091, access_log=False)

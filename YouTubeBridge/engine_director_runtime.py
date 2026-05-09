@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
+import time
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +14,19 @@ from memoria_client import GenerationInterrupted
 
 
 logger = logging.getLogger("youtube_bridge")
+
+
+def _director_timing_log(event: str, **fields: Any) -> None:
+    payload = {
+        "event": event,
+        "at": datetime.now().isoformat(),
+        **fields,
+    }
+    try:
+        message = json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:
+        message = str(payload)
+    logger.warning("DIRECTOR_TIMING %s", message)
 
 
 class DirectorRuntimeManagerMixin:
@@ -220,9 +235,16 @@ class DirectorRuntimeManagerMixin:
                 if not session:
                     return
                 if runtime.status == "closing" or session.get("status") == "closing":
+                    _director_timing_log(
+                        "loop_blocked_closing",
+                        session_id=runtime.session_id,
+                        runtime_status=runtime.status,
+                        session_status=session.get("status"),
+                    )
                     await asyncio.sleep(1.0)
                     continue
                 if self._duration_reached(session):
+                    _director_timing_log("loop_duration_reached", session_id=runtime.session_id)
                     await self._finalize_for_duration(runtime, session)
                     return
                 pending = [
@@ -231,6 +253,12 @@ class DirectorRuntimeManagerMixin:
                 ]
                 if pending:
                     latest = max(int(event["id"]) for event in pending)
+                    _director_timing_log(
+                        "loop_blocked_pending_events",
+                        session_id=runtime.session_id,
+                        pending_count=len(pending),
+                        latest_event_id=latest,
+                    )
                     next_state = self.storage.update_director_state(
                         runtime.session_id,
                         last_seen_event_id=latest,
@@ -239,7 +267,15 @@ class DirectorRuntimeManagerMixin:
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
                     continue
-                if self.storage.get_active_interaction(runtime.session_id):
+                active_interaction = self.storage.get_active_interaction(runtime.session_id)
+                if active_interaction:
+                    _director_timing_log(
+                        "loop_blocked_active_interaction",
+                        session_id=runtime.session_id,
+                        job_id=active_interaction.get("job_id"),
+                        status=active_interaction.get("status"),
+                        source=active_interaction.get("source"),
+                    )
                     next_state = self.storage.update_director_state(
                         runtime.session_id,
                         status="waiting_active_interaction",
@@ -249,10 +285,29 @@ class DirectorRuntimeManagerMixin:
                     continue
                 episode_decision = self._episode_plan_next_decision(session, state)
                 has_episode_decision = isinstance(episode_decision, dict) and bool(episode_decision)
+                if has_episode_decision:
+                    episode_payload = (
+                        episode_decision.get("episode_plan")
+                        if isinstance(episode_decision.get("episode_plan"), dict)
+                        else {}
+                    )
+                    turn_contract = (
+                        episode_payload.get("turn_contract")
+                        if isinstance(episode_payload.get("turn_contract"), dict)
+                        else {}
+                    )
+                    _director_timing_log(
+                        "loop_episode_decision_ready",
+                        session_id=runtime.session_id,
+                        mode=episode_payload.get("mode"),
+                        action=episode_decision.get("action"),
+                        turn_id=turn_contract.get("turn_id"),
+                    )
                 if episode_decision is not None and not has_episode_decision:
                     _, planned_state = self._episode_plan_and_state(session, state)
                     completed = str(planned_state.get("plan_status") or "") == "completed"
                     if completed:
+                        _director_timing_log("loop_episode_plan_completed", session_id=runtime.session_id)
                         await self._finalize_for_episode_plan_completed(runtime, session, planned_state)
                         return
                     wait_decision = {
@@ -268,6 +323,12 @@ class DirectorRuntimeManagerMixin:
                         status="episode_plan_wait",
                         metadata={"last_decision": wait_decision},
                     )
+                    _director_timing_log(
+                        "loop_episode_plan_wait",
+                        session_id=runtime.session_id,
+                        plan_status=planned_state.get("plan_status"),
+                        current_turn_id=planned_state.get("current_turn_id"),
+                    )
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
                     continue
@@ -275,6 +336,12 @@ class DirectorRuntimeManagerMixin:
                     update_fields = {"status": "turn_limit_wait"}
                     if not state.get("last_director_action_at"):
                         update_fields["last_director_action_at"] = datetime.now().isoformat()
+                    _director_timing_log(
+                        "loop_turn_limit_wait",
+                        session_id=runtime.session_id,
+                        consecutive_ai_turns=state.get("consecutive_ai_turns"),
+                        idle_seconds=idle_seconds,
+                    )
                     next_state = self.storage.update_director_state(runtime.session_id, **update_fields)
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
@@ -285,31 +352,64 @@ class DirectorRuntimeManagerMixin:
                         status="turn_limit_released",
                         consecutive_ai_turns=0,
                     )
+                    _director_timing_log("loop_turn_limit_released", session_id=runtime.session_id)
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": state})
 
                 last_action_at = self._parse_iso_datetime(state.get("last_director_action_at"))
                 if last_action_at:
-                    delay_seconds = (
-                        self._episode_plan_director_delay_seconds(
+                    if has_episode_decision:
+                        delay_info = self._episode_plan_director_delay_info(
                             session,
                             state,
                             episode_decision,
                             idle_seconds,
                         )
-                        if has_episode_decision
-                        else idle_seconds
-                    )
-                    remaining_seconds = delay_seconds - (datetime.now() - last_action_at).total_seconds()
+                        delay_seconds = int(delay_info.get("delay_seconds") or 0)
+                    else:
+                        delay_info = {
+                            "delay_seconds": idle_seconds,
+                            "reason": "legacy_idle",
+                            "label": "導播 idle",
+                        }
+                        delay_seconds = idle_seconds
+                    elapsed_since_last_action = (datetime.now() - last_action_at).total_seconds()
+                    remaining_seconds = delay_seconds - elapsed_since_last_action
                     if remaining_seconds > 0:
+                        _director_timing_log(
+                            "loop_delay_wait",
+                            session_id=runtime.session_id,
+                            delay_seconds=delay_seconds,
+                            elapsed_since_last_action=round(elapsed_since_last_action, 3),
+                            remaining_seconds=round(remaining_seconds, 3),
+                            delay_reason=delay_info.get("reason"),
+                            last_action_at=last_action_at.isoformat(),
+                        )
                         await asyncio.sleep(min(1.0, max(0.2, remaining_seconds)))
                         continue
+                    _director_timing_log(
+                        "loop_delay_ready",
+                        session_id=runtime.session_id,
+                        delay_seconds=delay_seconds,
+                        elapsed_since_last_action=round(elapsed_since_last_action, 3),
+                        delay_reason=delay_info.get("reason"),
+                        last_action_at=last_action_at.isoformat(),
+                    )
                 elif runtime.director_kickoff_task and not runtime.director_kickoff_task.done():
+                    _director_timing_log("loop_waiting_kickoff_task", session_id=runtime.session_id)
                     await asyncio.sleep(1.0)
                     continue
 
                 decision = episode_decision
                 if decision is None:
+                    decision_started = time.perf_counter()
+                    _director_timing_log("loop_legacy_director_decision_start", session_id=runtime.session_id)
                     decision = await asyncio.to_thread(self._director_decision, session, state)
+                    _director_timing_log(
+                        "loop_legacy_director_decision_done",
+                        session_id=runtime.session_id,
+                        duration_ms=round((time.perf_counter() - decision_started) * 1000, 1),
+                        action=decision.get("action"),
+                    )
                 action = str(decision.get("action") or "wait").strip()
                 if action == "closing_super_chat_thanks":
                     decision = self._director_idle_continue_decision(session, state)
@@ -337,6 +437,11 @@ class DirectorRuntimeManagerMixin:
                     decision = self._director_idle_continue_decision(session, state)
                     action = str(decision.get("action") or "continue_topic").strip()
                 if action == "wait":
+                    _director_timing_log(
+                        "loop_decision_wait",
+                        session_id=runtime.session_id,
+                        reason=decision.get("reason"),
+                    )
                     next_state = self.storage.update_director_state(
                         runtime.session_id,
                         status="waiting",
@@ -345,7 +450,24 @@ class DirectorRuntimeManagerMixin:
                     )
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     continue
+                send_started = time.perf_counter()
+                episode_payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
+                turn_contract = episode_payload.get("turn_contract") if isinstance(episode_payload.get("turn_contract"), dict) else {}
+                _director_timing_log(
+                    "loop_send_start",
+                    session_id=runtime.session_id,
+                    action=action,
+                    episode_mode=episode_payload.get("mode"),
+                    turn_id=turn_contract.get("turn_id"),
+                )
                 result = await self._send_director_turn(session, state, decision)
+                _director_timing_log(
+                    "loop_send_done",
+                    session_id=runtime.session_id,
+                    duration_ms=round((time.perf_counter() - send_started) * 1000, 1),
+                    job_id=result.get("interaction", {}).get("job_id"),
+                    interaction_status=result.get("interaction", {}).get("status"),
+                )
                 episode_mode = str((decision.get("episode_plan") or {}).get("mode") or "")
                 next_count = (
                     0
@@ -388,6 +510,7 @@ class DirectorRuntimeManagerMixin:
         decision: dict[str, Any],
     ) -> dict[str, Any]:
         session_id = session["session_id"]
+        send_started = time.perf_counter()
         target_session_id = session.get("target_memoria_session_id", "")
         target_character_ids = session.get("character_ids", [])
         action = str(decision.get("action") or "continue_topic")
@@ -424,10 +547,19 @@ class DirectorRuntimeManagerMixin:
             )
         if action == "closing_super_chat_thanks" and prompt:
             context_parts.append("本場 Super Chat 參考內容：\n" + prompt[:3000])
+        decision_episode_payload = (
+            decision.get("episode_plan")
+            if isinstance(decision.get("episode_plan"), dict)
+            else {}
+        )
+        episode_character_records: list[dict[str, Any]] | None = None
+        if has_episode_plan and decision_episode_payload:
+            episode_character_records = self._memoria_client().list_characters()
         episode_patch, episode_context_text, episode_topic_context = self._episode_plan_external_context_patch(
             session,
             state,
             decision,
+            character_records=episode_character_records,
         )
         if episode_context_text:
             context_parts.append(episode_context_text)
@@ -447,8 +579,15 @@ class DirectorRuntimeManagerMixin:
             # Keep the full episode roster in MemoriaCore so the session starts
             # as a group. Per-turn speaker limits are projected in
             # live_episode_plan.speaker_policy.allowed_character_ids.
-            allowed_turn_character_ids = self._episode_character_ids_for_turn(session, turn_contract or {})
-            target_character_ids = self._episode_character_ids_for_session(session)
+            allowed_turn_character_ids = self._episode_character_ids_for_turn(
+                session,
+                turn_contract or {},
+                character_records=episode_character_records,
+            )
+            target_character_ids = self._episode_character_ids_for_session(
+                session,
+                character_records=episode_character_records,
+            )
         group_turn_limit = self._director_group_turn_limit_for_action(session, action)
         live_episode_plan = episode_patch.get("live_episode_plan") if isinstance(episode_patch, dict) else {}
         planned_turn_type = ""
@@ -540,6 +679,19 @@ class DirectorRuntimeManagerMixin:
                 display_content = "直播開場。"
             elif turn_type == "cohost_intro":
                 display_content = "共同主持開場。"
+        _director_timing_log(
+            "send_prepared_context",
+            session_id=session_id,
+            action=action,
+            target_memoria_session_id=target_session_id,
+            target_character_count=len(target_character_ids or []),
+            allowed_turn_character_count=len(allowed_turn_character_ids or []),
+            group_turn_limit=group_turn_limit,
+            episode_mode=live_episode_plan.get("mode") if isinstance(live_episode_plan, dict) else "",
+            episode_turn_id=live_episode_plan.get("turn_id") if isinstance(live_episode_plan, dict) else "",
+            planned_turn_type=planned_turn_type,
+            context_chars=len(external_context.get("context_text") or ""),
+        )
         interaction = self.storage.create_interaction(
             {
                 "session_id": session_id,
@@ -553,8 +705,22 @@ class DirectorRuntimeManagerMixin:
                 "metadata": {"decision": decision},
             }
         )
+        _director_timing_log(
+            "send_interaction_created",
+            session_id=session_id,
+            job_id=interaction.get("job_id"),
+            elapsed_ms=round((time.perf_counter() - send_started) * 1000, 1),
+        )
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        claim_started = time.perf_counter()
         claimed = await self._claim_interaction_for_execution(runtime, interaction)
+        _director_timing_log(
+            "send_interaction_claimed",
+            session_id=session_id,
+            job_id=(claimed or interaction).get("job_id"),
+            status=(claimed or interaction).get("status"),
+            duration_ms=round((time.perf_counter() - claim_started) * 1000, 1),
+        )
         if not claimed or claimed.get("status") != "running":
             return {"interaction": claimed or interaction, "memoria_result": {}}
         interaction = claimed
@@ -570,6 +736,14 @@ class DirectorRuntimeManagerMixin:
             self._broadcast_stream_chat_message(loop, session_id, event, source="director")
 
         try:
+            memoria_started = time.perf_counter()
+            _director_timing_log(
+                "send_memoria_call_start",
+                session_id=session_id,
+                job_id=interaction.get("job_id"),
+                target_memoria_session_id=target_session_id,
+                group_turn_limit=group_turn_limit,
+            )
             result = await asyncio.to_thread(
                 self._memoria_client().chat_stream_sync,
                 content=public_prompt,
@@ -581,7 +755,21 @@ class DirectorRuntimeManagerMixin:
                 cancel_event=cancel_event,
                 on_result=on_stream_result,
             )
+            _director_timing_log(
+                "send_memoria_call_done",
+                session_id=session_id,
+                job_id=interaction.get("job_id"),
+                duration_ms=round((time.perf_counter() - memoria_started) * 1000, 1),
+                result_session_id=result.get("session_id"),
+                result_message_id=result.get("message_id"),
+            )
         except GenerationInterrupted:
+            _director_timing_log(
+                "send_memoria_call_interrupted",
+                session_id=session_id,
+                job_id=interaction.get("job_id"),
+                duration_ms=round((time.perf_counter() - memoria_started) * 1000, 1),
+            )
             updated = self.storage.update_interaction(
                 interaction["job_id"],
                 status="interrupted",
@@ -595,6 +783,15 @@ class DirectorRuntimeManagerMixin:
             current = self.storage.get_interaction(interaction["job_id"])
             was_interrupted = cancel_event.is_set() or bool(current and current.get("status") == "interrupt_requested")
             reason = self._normalized_interrupt_reason(current, exc)
+            _director_timing_log(
+                "send_memoria_call_failed",
+                session_id=session_id,
+                job_id=interaction.get("job_id"),
+                duration_ms=round((time.perf_counter() - memoria_started) * 1000, 1),
+                was_interrupted=was_interrupted,
+                reason=reason,
+                error=str(exc)[:300],
+            )
             updated = self.storage.update_interaction(
                 interaction["job_id"],
                 status="interrupted" if was_interrupted else "failed",
@@ -658,4 +855,11 @@ class DirectorRuntimeManagerMixin:
             "interaction": updated,
             "memoria_session_id": result.get("session_id") or target_session_id,
         })
+        _director_timing_log(
+            "send_completed",
+            session_id=session_id,
+            job_id=interaction.get("job_id"),
+            status=interaction_status,
+            total_duration_ms=round((time.perf_counter() - send_started) * 1000, 1),
+        )
         return {"interaction": updated, "memoria_result": result}

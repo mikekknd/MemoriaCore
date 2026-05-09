@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 import threading
+import time
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -11,6 +14,20 @@ import requests
 
 CSRF_HEADER_NAME = "X-CSRF-Token"
 AUTH_COOKIE_NAME = "mc_auth"
+logger = logging.getLogger("youtube_bridge")
+
+
+def _director_timing_log(event: str, **fields: Any) -> None:
+    payload = {
+        "event": event,
+        "at": datetime.now().isoformat(),
+        **fields,
+    }
+    try:
+        message = json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:
+        message = str(payload)
+    logger.warning("DIRECTOR_TIMING %s", message)
 
 
 class GenerationInterrupted(RuntimeError):
@@ -146,7 +163,35 @@ class MemoriaClient:
         若 should_cancel 回傳 True，會關閉 HTTP stream。MemoriaCore 端的 generator
         會停止等待結果，因此不會把未完成 assistant reply 寫回 session。
         """
-        self.ensure_auth()
+        trace_director = (
+            isinstance(external_context, dict)
+            and str(external_context.get("source") or "").strip() == "youtube_live_director"
+        )
+        client_started = time.perf_counter()
+        if trace_director:
+            _director_timing_log(
+                "memoria_client_start",
+                base_url=self.base_url,
+                session_id=session_id,
+                character_count=len(character_ids or []),
+                group_turn_limit=external_context.get("group_turn_limit"),
+            )
+        auth_started = time.perf_counter()
+        try:
+            self.ensure_auth()
+        except Exception as exc:
+            if trace_director:
+                _director_timing_log(
+                    "memoria_client_auth_failed",
+                    duration_ms=round((time.perf_counter() - auth_started) * 1000, 1),
+                    error=str(exc)[:300],
+                )
+            raise
+        if trace_director:
+            _director_timing_log(
+                "memoria_client_auth_done",
+                duration_ms=round((time.perf_counter() - auth_started) * 1000, 1),
+            )
         payload = {
             "content": content,
             "display_content": display_content or None,
@@ -159,6 +204,7 @@ class MemoriaClient:
         payload.update(self._live_scope_payload(external_context))
         last_result: dict[str, Any] | None = None
         watcher_done = threading.Event()
+        request_started = time.perf_counter()
         with self.session.post(
             f"{self.base_url}/chat/stream-sync",
             json=payload,
@@ -166,7 +212,20 @@ class MemoriaClient:
             timeout=self.timeout,
             stream=True,
         ) as response:
+            if trace_director:
+                _director_timing_log(
+                    "memoria_client_headers_received",
+                    duration_ms=round((time.perf_counter() - request_started) * 1000, 1),
+                    status_code=response.status_code,
+                )
             if response.status_code >= 400:
+                if trace_director:
+                    _director_timing_log(
+                        "memoria_client_http_error",
+                        duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                        status_code=response.status_code,
+                        body=response.text[:300],
+                    )
                 raise RuntimeError(f"MemoriaCore stream chat failed: HTTP {response.status_code} {response.text[:500]}")
             watcher: threading.Thread | None = None
             if cancel_event is not None:
@@ -179,6 +238,7 @@ class MemoriaClient:
                 watcher = threading.Thread(target=_close_when_cancelled, daemon=True)
                 watcher.start()
             try:
+                first_result_logged = False
                 for raw_line in response.iter_lines(decode_unicode=True):
                     if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
                         response.close()
@@ -193,9 +253,23 @@ class MemoriaClient:
                     except Exception:
                         continue
                     if event.get("type") == "error":
+                        if trace_director:
+                            _director_timing_log(
+                                "memoria_client_stream_error",
+                                duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                                message=str(event.get("message") or "")[:300],
+                            )
                         raise RuntimeError(str(event.get("message") or "MemoriaCore stream chat failed"))
                     if event.get("type") == "result":
                         last_result = event
+                        if trace_director and not first_result_logged:
+                            first_result_logged = True
+                            _director_timing_log(
+                                "memoria_client_first_result",
+                                duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                                message_id=event.get("message_id"),
+                                result_session_id=event.get("session_id"),
+                            )
                         if callable(on_result):
                             on_result(event)
             finally:
@@ -203,9 +277,26 @@ class MemoriaClient:
                 if watcher:
                     watcher.join(timeout=0.2)
         if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
+            if trace_director:
+                _director_timing_log(
+                    "memoria_client_cancelled_after_stream",
+                    duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                )
             raise GenerationInterrupted("generation interrupted")
         if not last_result:
+            if trace_director:
+                _director_timing_log(
+                    "memoria_client_no_result",
+                    duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                )
             raise RuntimeError("MemoriaCore stream chat ended without result")
+        if trace_director:
+            _director_timing_log(
+                "memoria_client_done",
+                duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                message_id=last_result.get("message_id"),
+                result_session_id=last_result.get("session_id"),
+            )
         return last_result
 
     def list_characters(self) -> list[dict[str, Any]]:

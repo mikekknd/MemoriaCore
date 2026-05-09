@@ -86,12 +86,18 @@ class YouTubeBridgeManager(
         self.storage = storage
         self.youtube_client = youtube_client or YouTubeClient()
         self.memoria_client_factory = memoria_client_factory or MemoriaClient
+        self._memoria_client_cache = None
         self.auto_finalize_archive_callback = None
         self._runtimes: dict[str, LiveRuntime] = {}
         self._lock = asyncio.Lock()
 
     def _memoria_client(self):
-        return self.memoria_client_factory()
+        if self._memoria_client_cache is None:
+            self._memoria_client_cache = self.memoria_client_factory()
+        return self._memoria_client_cache
+
+    def reset_memoria_client(self) -> None:
+        self._memoria_client_cache = None
 
     async def _run_auto_finalize_archive_callback(
         self,

@@ -37,4 +37,4 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
 
     # 直接傳入 app 物件，嚴禁使用 "api.main:app" 字串
-    uvicorn.run(app, host="0.0.0.0", port=8088)
+    uvicorn.run(app, host="0.0.0.0", port=8088, access_log=False)

@@ -51,6 +51,8 @@ async def update_memoria_config(body: MemoriaAuthConfig):
     saved = storage.upsert_memoria_config(body.model_dump())
     if state.apply_memoria_config:
         state.apply_memoria_config()
+    if manager and hasattr(manager, "reset_memoria_client"):
+        manager.reset_memoria_client()
     summary_manager.memoria_client = MemoriaClient()
     return storage.get_public_memoria_config() | {
         "auth_mode": "admin_bypass" if saved.get("admin_bypass") else "password",
