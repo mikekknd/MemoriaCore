@@ -56,6 +56,7 @@ async def test_group_loop_passes_target_character_id(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
@@ -77,6 +78,392 @@ async def test_group_loop_passes_target_character_id(monkeypatch):
     assert turns[-1]["is_final"] is True
     assert session.messages[-2]["character_id"] == "char-a"
     assert session.messages[-1]["character_id"] == "char-b"
+
+
+@pytest.mark.asyncio
+async def test_group_loop_uses_transient_user_anchor_without_persisting_it(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-group-transient",
+        messages=[{
+            "role": "system_event",
+            "content": "YouTube Live 留言注入：1 則\n觀眾A: 這段怎麼看？",
+            "debug_info": {"event_type": "youtube_live_chat_batch", "llm_visible": False},
+        }],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions["sid-group-transient"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    captured_router_messages = []
+    captured_orchestration_messages = []
+
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(False, None, "done"),
+    ]
+
+    def fake_group_router(messages, *_args, **_kwargs):
+        captured_router_messages.append(list(messages))
+        return route_results.pop(0)
+
+    def fake_orchestration(messages, *_args, **kwargs):
+        captured_orchestration_messages.append(list(messages))
+        return (
+            "回覆 transient anchor",
+            [],
+            {},
+            False,
+            None,
+            "內在想法",
+            None,
+            None,
+            None,
+            "",
+            [],
+            None,
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="隱藏的外部上下文控制 prompt",
+            user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            transient_user_content="請根據已帶入的 YouTube 直播留言上下文回應。",
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_router_messages[0][-1] == {
+        "role": "user",
+        "content": "請根據已帶入的 YouTube 直播留言上下文回應。",
+        "debug_info": {"transient_external_context_anchor": True},
+    }
+    assert captured_orchestration_messages[0][-1]["role"] == "user"
+    assert session.messages[0]["role"] == "system_event"
+    assert all(m.get("content") != "請根據已帶入的 YouTube 直播留言上下文回應。" for m in session.messages)
+
+
+@pytest.mark.asyncio
+async def test_group_loop_passes_youtube_live_discussion_mode_to_router(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-live-discussion-mode",
+        messages=[{"role": "system_event", "content": "直播節奏提示"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions["sid-live-discussion-mode"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    captured_modes = []
+    captured_session_ctx = []
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(False, None, "done", "stop_all_spoken", "continue_group_discussion"),
+    ]
+
+    def fake_group_router(*args, **kwargs):
+        captured_modes.append(kwargs.get("discussion_mode"))
+        return route_results.pop(0)
+
+    def fake_orchestration(*args, **kwargs):
+        captured_session_ctx.append(dict(kwargs["session_ctx"]))
+        return (
+            f"回覆 {kwargs['session_ctx']['character_id']}",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 2, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            extra_session_ctx={"external_chat_context": {"source": "youtube_live_director"}},
+            transient_user_content="請根據已提供的直播流程提示回應。",
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_modes == ["youtube_live", "youtube_live"]
+    assert captured_session_ctx[0]["group_discussion_mode"] == "youtube_live"
+
+
+@pytest.mark.asyncio
+async def test_group_loop_passes_live_episode_plan_to_router(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-live-episode-plan",
+        messages=[{"role": "system_event", "content": "直播節奏提示"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions["sid-live-episode-plan"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    live_episode_plan = {
+        "plan_id": "plan-general-panel",
+        "mode": "planned_turn",
+        "turn_id": "seg_01_turn_01",
+        "speaker_policy": {
+            "selection_mode": "router_select",
+            "allowed_character_ids": ["char-b"],
+        },
+    }
+    captured_plans = []
+
+    def fake_group_router(*args, **kwargs):
+        captured_plans.append(kwargs.get("live_episode_plan"))
+        return GroupRouterResult(True, "char-b", "planned", "new_speaker_add", "group_discussion")
+
+    def fake_orchestration(*args, **kwargs):
+        return (
+            "回覆 char-b",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            extra_session_ctx={
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "live_episode_plan": live_episode_plan,
+                }
+            },
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_plans == [live_episode_plan]
+
+
+@pytest.mark.asyncio
+async def test_group_loop_adds_live_episode_reply_task_to_session_context_and_followup(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-live-reply-task",
+        messages=[{"role": "system_event", "content": "直播節奏提示"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions["sid-live-reply-task"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    route_results = [
+        GroupRouterResult(True, "char-a", "primary", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(True, "char-b", "handoff", "new_speaker_reply_to_ai", "continue_group_discussion"),
+    ]
+    captured_session_ctx = []
+
+    def fake_group_router(*args, **kwargs):
+        return route_results.pop(0)
+
+    def fake_orchestration(*args, **kwargs):
+        ctx = kwargs["session_ctx"]
+        captured_session_ctx.append(dict(ctx))
+        return (
+            f"回覆 {ctx['character_id']}",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 2, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            extra_session_ctx={
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "live_episode_plan": {
+                        "mode": "planned_turn",
+                        "turn_id": "seg_01_turn_02",
+                        "turn_type": "analysis",
+                        "turn_contract": {
+                            "turn_id": "seg_01_turn_02",
+                            "turn_type": "analysis",
+                            "intent": "分析作品討論點",
+                        },
+                        "dialogue_policy": {
+                            "min_replies": 1,
+                            "max_replies": 2,
+                            "autonomy": "guided",
+                        },
+                        "segment_memory": {
+                            "covered_claims": ["Anime Corner 週榜只是即時快照"],
+                        },
+                    },
+                }
+            },
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    first_task = captured_session_ctx[0]["live_episode_reply_task"]
+    second_task = captured_session_ctx[1]["live_episode_reply_task"]
+    assert first_task["stage"] == "primary_point"
+    assert first_task["turn_reply_index"] == 1
+    assert first_task["max_role_replies"] == 2
+    assert "Anime Corner 週榜只是即時快照" in first_task["previous_claims"]
+    assert second_task["stage"] == "reaction_translate_or_new_angle"
+    assert second_task["turn_reply_index"] == 2
+    assert second_task["previous_speaker_name"] == "角色A"
+    assert second_task["previous_reply"] == "回覆 char-a"
+    assert captured_session_ctx[1]["followup_instruction"]["live_episode_reply_task"] == second_task
+
+
+@pytest.mark.asyncio
+async def test_group_loop_planned_turn_max_turns_override_calls_router_once(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-planned-one-turn",
+        messages=[{"role": "system_event", "content": "直播節奏提示"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions["sid-planned-one-turn"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": character_id,
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    router_calls = 0
+
+    def fake_group_router(*args, **kwargs):
+        nonlocal router_calls
+        router_calls += 1
+        return GroupRouterResult(True, "char-a", "planned", "new_speaker_add", "group_discussion")
+
+    def fake_orchestration(*args, **kwargs):
+        return (
+            "回覆 char-a",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 3, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            extra_session_ctx={
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "live_episode_plan": {
+                        "mode": "planned_turn",
+                        "max_turns_override": 1,
+                    },
+                }
+            },
+            max_turns_override=1,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert router_calls == 1
+    assert len(turns) == 1
 
 
 @pytest.mark.asyncio
@@ -131,6 +518,7 @@ async def test_group_loop_emits_each_turn_before_next_route(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     async def fake_sleep(_seconds):
@@ -207,6 +595,7 @@ async def test_group_loop_uses_configured_turn_delay(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     slept = []
@@ -278,6 +667,7 @@ async def test_group_loop_emits_typing_event_before_orchestration(monkeypatch):
             None,
             "",
             [],
+            None,
         )
 
     monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())

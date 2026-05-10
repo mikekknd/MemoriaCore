@@ -80,6 +80,56 @@ class PersonaResult:
 
 
 # ════════════════════════════════════════════════════════════
+# SECTION: 對外編排輸出
+# ════════════════════════════════════════════════════════════
+
+@dataclass
+class OrchestrationResult:
+    """單層 / 雙層對話編排的統一回傳型別。
+
+    新程式碼應優先讀具名欄位；`as_tuple()` 僅供 endpoint / group loop
+    解構最新 12-slot contract。
+    """
+    reply_text: str
+    new_entities: list[str] = field(default_factory=list)
+    retrieval_context: dict = field(default_factory=dict)
+    topic_shifted: bool = False
+    pipeline_data: object | None = None
+    inner_thought: str | None = None
+    status_metrics: dict | None = None
+    tone: str | None = None
+    speech: str | None = None
+    thinking_speech: str = ""
+    cited_uids: list[str] = field(default_factory=list)
+    tool_state_export: object | None = None
+
+    def as_tuple(self) -> tuple:
+        return (
+            self.reply_text,
+            self.new_entities,
+            self.retrieval_context,
+            self.topic_shifted,
+            self.pipeline_data,
+            self.inner_thought,
+            self.status_metrics,
+            self.tone,
+            self.speech,
+            self.thinking_speech,
+            self.cited_uids,
+            self.tool_state_export,
+        )
+
+    def __iter__(self):
+        return iter(self.as_tuple())
+
+    def __len__(self) -> int:
+        return 12
+
+    def __getitem__(self, index):
+        return self.as_tuple()[index]
+
+
+# ════════════════════════════════════════════════════════════
 # SECTION: 記憶管線上下文
 # ════════════════════════════════════════════════════════════
 

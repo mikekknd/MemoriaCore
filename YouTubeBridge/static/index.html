@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTubeBridge</title>
+  <link rel="stylesheet" href="/ui-assets/index.css?v=plan-debug-v1">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>YouTubeBridge</h1>
+      <div class="muted">Phase 2 測試 UI</div>
+    </div>
+    <div class="toolbar">
+      <span id="health" class="status">尚未連線</span>
+      <button id="refreshAll">更新</button>
+    </div>
+  </header>
+
+  <div id="factCardImportOverlay" class="blocking-overlay is-hidden" aria-hidden="true">
+    <div class="blocking-dialog" role="dialog" aria-modal="true" aria-labelledby="factCardImportTitle">
+      <h3 id="factCardImportTitle">正在匯入 FactCards</h3>
+      <p id="factCardImportMessage" class="muted" aria-live="polite">正在讀取 FactCards 資料夾、建立資料卡並重建向量，請稍候。</p>
+      <div class="progress-track" role="progressbar" aria-label="FactCards 匯入進度">
+        <span></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="topicGraphModal" class="topic-graph-modal is-hidden" aria-hidden="true">
+    <div class="topic-graph-modal-shell" role="dialog" aria-modal="true" aria-labelledby="topicGraphModalTitle">
+      <div class="topic-graph-modal-header">
+        <div>
+          <h3 id="topicGraphModalTitle">關係圖 Debug</h3>
+          <p class="muted">滾輪縮放、拖曳空白處平移、拖曳節點調整位置；點節點可高亮一階關聯。</p>
+        </div>
+        <div class="toolbar">
+          <button id="closeTopicGraphModal">關閉</button>
+        </div>
+      </div>
+      <div class="topic-graph-modal-body">
+        <svg id="topicGraphModalSvg" viewBox="0 0 720 520" role="img" aria-label="Fact Card topic graph fullscreen"></svg>
+        <aside id="topicGraphModalDetails" class="topic-graph-modal-details item">尚未選擇節點</aside>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <div class="stack workspace-stack">
+      <section>
+        <div class="tabs">
+          <button class="tab active" data-pane="liveSessionPane">Live Session</button>
+          <button class="tab" data-pane="eventsPane">留言測試</button>
+          <button class="tab" data-pane="summaryPane">Summary</button>
+          <button class="tab" data-pane="topicPackPane">Topic Pack</button>
+          <button class="tab" data-pane="systemSettingsPane">系統設定</button>
+          <button class="tab" data-pane="runtimeRulesPane">規則說明</button>
+        </div>
+
+        <div id="liveSessionPane" class="pane active">
+          <div class="section-heading">
+            <h2>Live Session</h2>
+          </div>
+          <div class="live-session-workspace">
+            <div class="live-session-panel live-session-main-panel">
+              <div class="grid">
+                <input id="sessionId" type="hidden">
+                <label class="wide">
+                  <span class="field-label">YouTube video_id 或 URL
+                    <span class="help-tip" tabindex="0" aria-label="留空時使用測試直播；填入 YouTube video_id 或 URL 時會連到真實直播聊天室，並停用測試留言功能。" data-tooltip="留空時使用測試直播；填入 YouTube video_id 或 URL 時會連到真實直播聊天室，並停用測試留言功能。">?</span>
+                  </span>
+                  <input id="videoId" placeholder="真實直播才需要；測試留言可留空">
+                </label>
+              </div>
+              <div id="directorControls" class="session-subsection director-controls">
+                <div class="section-heading">
+                  <h3>導播設定</h3>
+                  <span id="directorState" class="status">stopped</span>
+                </div>
+                <p class="muted">直播開始後會自動啟動導播與開場；此區只調整導播節奏與方向。</p>
+                <div id="directorSegmentState" class="director-segment-state muted">尚無段落狀態</div>
+                <div class="episode-plan-controls">
+                  <div class="section-heading compact">
+                    <h4>節目企劃</h4>
+                    <span id="episodePlanStatus" class="status">未綁定</span>
+                  </div>
+                  <div class="toolbar episode-plan-toolbar">
+                    <input id="episodePlanFile" type="file" accept="application/json,.json">
+                    <button id="importEpisodePlan" type="button">匯入企劃 JSON</button>
+                    <button id="syncLocalEpisodePlans" type="button">刷新本地企劃</button>
+                  </div>
+                  <div class="toolbar episode-plan-toolbar">
+                    <select id="episodePlanSelect"></select>
+                    <button id="bindEpisodePlan" type="button">綁定企劃</button>
+                    <button id="importEpisodePlanEvidence" type="button">匯入企劃 Evidence</button>
+                    <button id="unbindEpisodePlan" type="button">解除綁定</button>
+                  </div>
+                  <div class="episode-plan-debug">
+                    <div class="section-heading compact">
+                      <h4>節目清單 Debug</h4>
+                      <span id="episodePlanDebugState" class="status">未綁定</span>
+                    </div>
+                    <div id="episodePlanDebugWait" class="episode-plan-debug-wait muted">下一輪等待：未啟動</div>
+                    <div id="episodePlanDebugList" class="episode-plan-debug-list muted">尚未綁定節目企劃。</div>
+                  </div>
+                </div>
+                <div class="grid">
+                  <label>
+                    <span class="field-label">角色停頓後續話秒數
+                      <span class="help-tip" tabindex="0" aria-label="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。" data-tooltip="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。">?</span>
+                    </span>
+                    <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="1" max="3600" value="60">
+                  </label>
+                  <label>
+                    <span class="field-label">單一話題持續回合數
+                      <span class="help-tip" tabindex="0" aria-label="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。" data-tooltip="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。">?</span>
+                    </span>
+                    <input id="directorAnchorEveryTurns" type="number" min="1" max="10" value="2">
+                  </label>
+                  <label>
+                    <span class="field-label">企劃交接等待秒數
+                      <span class="help-tip" tabindex="0" aria-label="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。" data-tooltip="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。">?</span>
+                    </span>
+                    <input id="episodePlanHandoffGapSeconds" type="number" min="1" max="5" value="2">
+                  </label>
+                  <label>
+                    <span class="field-label">企劃一般等待秒數
+                      <span class="help-tip" tabindex="0" aria-label="EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。" data-tooltip="EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。">?</span>
+                    </span>
+                    <input id="episodePlanTurnGapSeconds" type="number" min="1" max="30" value="8">
+                  </label>
+                  <label>
+                    <span class="field-label">導播回合上限
+                      <span class="help-tip" tabindex="0" aria-label="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。" data-tooltip="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。">?</span>
+                    </span>
+                    <input id="directorGroupTurnLimit" type="number" min="1" max="12" value="3">
+                  </label>
+                  <label class="wide">
+                    <span class="field-label">本場直播方向
+                      <span class="help-tip" tabindex="0" aria-label="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。" data-tooltip="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。">?</span>
+                    </span>
+                    <textarea id="directorGuidance" placeholder="例：本場只聊動畫新番，優先展開最新一話細節、作畫品質、社群討論與角色觀點。"></textarea>
+                  </label>
+                  <details id="legacyDirectorFields" class="wide legacy-director-fields" open>
+                    <summary>Legacy 主持/段落流程</summary>
+                    <p id="legacyDirectorNotice" class="muted">未選用新版節目企劃時，以下欄位作為舊版導播 fallback 使用。</p>
+                    <label class="wide">
+                      <span class="field-label">角色
+                        <span class="help-tip" tabindex="0" aria-label="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。" data-tooltip="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。">?</span>
+                      </span>
+                      <select id="characterSelect" multiple size="5" aria-describedby="characterLimitState"></select>
+                      <span id="characterLimitState" class="muted">請先載入角色清單</span>
+                    </label>
+                    <label class="wide">
+                      <span class="field-label">主持互動規則
+                        <span class="help-tip" tabindex="0" aria-label="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。" data-tooltip="本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。">?</span>
+                      </span>
+                      <textarea id="hostInteractionRules" placeholder="例：可可負責觀眾視角與情緒反應；白蓮負責分析、反方觀點與收束。"></textarea>
+                    </label>
+                    <div class="wide program-segment-editor">
+                      <div class="field-label">節目段落流程
+                        <span class="help-tip" tabindex="0" aria-label="每列是一個節目段落；導播會依序把目前段落名稱與說明提供給角色，不會把整段設定顯示到 live chat。" data-tooltip="每列是一個節目段落；導播會依序把目前段落名稱與說明提供給角色，不會把整段設定顯示到 live chat。">?</span>
+                      </div>
+                      <input id="programSegmentPlan" type="hidden">
+                      <div class="program-segment-head">
+                        <span>節目段落</span>
+                        <span>說明</span>
+                        <span></span>
+                      </div>
+                      <div id="programSegmentRows" class="program-segment-rows"></div>
+                      <button id="addProgramSegmentRow" type="button">新增節目段落</button>
+                    </div>
+                    <label>
+                      <span class="field-label">每段落建議回合數
+                        <span class="help-tip" tabindex="0" aria-label="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。" data-tooltip="同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。">?</span>
+                      </span>
+                      <input id="programSegmentTurns" type="number" min="1" max="12" value="3">
+                    </label>
+                  </details>
+                </div>
+                <div class="toolbar" style="margin-top:10px">
+                  <button id="updateDirectorGuidance">更新導播設定</button>
+                </div>
+                <details class="director-debug">
+                  <summary>導播除錯資訊</summary>
+                  <pre id="directorJson">{}</pre>
+                </details>
+                <div id="primarySessionAction" class="session-actions single">
+                  <button id="toggleSession" class="blue">開始直播</button>
+                </div>
+              </div>
+            </div>
+            <div class="live-session-panel live-session-settings-panel">
+              <div class="grid">
+                <label>
+                  <span class="field-label">注入間隔秒數
+                    <span class="help-tip" tabindex="0" aria-label="自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。" data-tooltip="自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。">?</span>
+                  </span>
+                  <input id="injectInterval" type="number" min="5" max="600" value="30">
+                </label>
+                <label>
+                  <span class="field-label">動態注入最短秒數
+                    <span class="help-tip" tabindex="0" aria-label="pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。" data-tooltip="pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。">?</span>
+                  </span>
+                  <input id="injectMinIntervalSeconds" type="number" min="5" max="600" value="10">
+                </label>
+                <label>
+                  <span class="field-label">最少 pending 留言
+                    <span class="help-tip" tabindex="0" aria-label="pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。" data-tooltip="pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。">?</span>
+                  </span>
+                  <input id="minPending" type="number" min="1" max="100" value="1">
+                </label>
+                <label>
+                  <span class="field-label">pending 強制注入上限
+                    <span class="help-tip" tabindex="0" aria-label="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。" data-tooltip="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。">?</span>
+                  </span>
+                  <input id="maxPending" type="number" min="1" max="200" value="12">
+                </label>
+                <label>
+                  <span class="field-label">預計/保護上限分鐘
+                    <span class="help-tip" tabindex="0" aria-label="未使用 EpisodePlan 時代表預計直播長度；使用 EpisodePlan 時只是保護上限，企劃完成會優先結束。" data-tooltip="未使用 EpisodePlan 時代表預計直播長度；使用 EpisodePlan 時只是保護上限，企劃完成會優先結束。">?</span>
+                  </span>
+                  <input id="plannedDuration" type="number" min="0" max="720" value="30">
+                </label>
+                <label>
+                  <span class="field-label">SC 打斷冷卻秒數
+                    <span class="help-tip" tabindex="0" aria-label="Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。" data-tooltip="Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。">?</span>
+                  </span>
+                  <input id="scInterruptCooldown" type="number" min="0" max="600" value="30">
+                </label>
+                <label>
+                  <span class="field-label">每批 SC 上限
+                    <span class="help-tip" tabindex="0" aria-label="每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。" data-tooltip="每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。">?</span>
+                  </span>
+                  <input id="maxScPerBatch" type="number" min="1" max="30" value="5">
+                </label>
+                <label class="wide">
+                  <span class="field-label">話題資料包
+                    <span class="help-tip" tabindex="0" aria-label="本場直播啟動或更新時要綁定的 Topic Pack；直播中只讀取已綁定資料，不執行 Fact Card 生成或匯入。" data-tooltip="本場直播啟動或更新時要綁定的 Topic Pack；直播中只讀取已綁定資料，不執行 Fact Card 生成或匯入。">?</span>
+                  </span>
+                  <select id="sessionTopicPackSelect"></select>
+                </label>
+                <label>
+                  <span class="field-label">幾批留言後回主軸
+                    <span class="help-tip" tabindex="0" aria-label="連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。" data-tooltip="連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。">?</span>
+                  </span>
+                  <input id="directorMaxChatBatches" type="number" min="1" max="10" value="2">
+                </label>
+              </div>
+              <div class="session-subsection live-automation-options">
+                <div>
+                  <h3>直播自動化選項</h3>
+                  <p class="muted">控制直播期間哪些流程由 Bridge 自動執行；滑過問號可查看詳細影響。</p>
+                </div>
+                <div class="checkbox-grid">
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoInject" type="checkbox">
+                    <span class="option-label">自動注入待處理留言</span>
+                    <span class="help-tip" tabindex="0" aria-label="每隔一段時間把 pending 留言送進角色回應流程" data-tooltip="每隔一段時間把 pending 留言送進角色回應流程">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoFinalize" type="checkbox" checked>
+                    <span class="option-label">到達時間上限後自動收尾</span>
+                    <span class="help-tip" tabindex="0" aria-label="未使用 EpisodePlan 時依預計分鐘收尾；使用 EpisodePlan 時以企劃完成為主，分鐘只作為保護上限。" data-tooltip="未使用 EpisodePlan 時依預計分鐘收尾；使用 EpisodePlan 時以企劃完成為主，分鐘只作為保護上限。">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoScThanksOnFinalize" type="checkbox" checked>
+                    <span class="option-label">收尾時逐一感謝未處理 SC</span>
+                    <span class="help-tip" tabindex="0" aria-label="結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat" data-tooltip="結束前以片尾名單方式逐一點名感謝尚未處理的 Super Chat">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="autoDeleteProcessed" type="checkbox" checked>
+                    <span class="option-label">摘要與記憶完成後清除 runtime session</span>
+                    <span class="help-tip" tabindex="0" aria-label="摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session" data-tooltip="摘要和 shared memory 完成後刪除 Bridge 暫存 runtime session">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="researchEnabled" type="checkbox">
+                    <span class="option-label">觀眾提問啟用安全搜尋補充</span>
+                    <span class="help-tip" tabindex="0" aria-label="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文" data-tooltip="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文">?</span>
+                  </label>
+                </div>
+              </div>
+              <div id="sessionActions" class="session-actions">
+                <button id="updateSession">更新設定</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="eventsPane" class="pane">
+          <p id="testEventsModeNotice" class="muted"></p>
+          <div class="event-tool-group manual-events">
+            <div class="event-tool-header">
+              <div>
+                <h3>手動生成</h3>
+                <p class="muted">立即產生一批測試留言或 SC，用來驗證安全處理與角色回應。</p>
+              </div>
+              <button id="generateTestEvents" class="primary">生成測試留言</button>
+            </div>
+            <div class="grid compact-grid">
+              <label>一般留言數
+                <input id="testCommentCount" type="number" min="1" max="30" value="5">
+              </label>
+              <label>SC 數
+                <input id="testSuperChatCount" type="number" min="0" max="30" value="0">
+              </label>
+              <label class="wide">測試留言方向
+                <textarea id="testTopicHint" placeholder="可留空；留空時會根據直播方向、近期留言與 AI 回覆生成。"></textarea>
+              </label>
+              <label class="checkbox-row">
+                <input id="testUseLlm" type="checkbox" checked>
+                <span>使用 LLM 生成測試留言</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="testMaliciousSc" type="checkbox">
+                <span>加入惡意 SC 測試</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="testScBurst" type="checkbox">
+                <span>大量 SC 壓力模式</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="event-tool-group auto-events">
+            <div class="event-tool-header">
+              <div>
+                <h3>自動測試</h3>
+                <p class="muted">直播期間週期性注入測試留言，適合 10 分鐘 E2E 長跑。</p>
+              </div>
+              <button id="toggleAutoTestEvents">啟動自動測試</button>
+            </div>
+            <div class="grid compact-grid">
+              <label>間隔最短秒數
+                <input id="testEventMinSeconds" type="number" min="1" max="3600" value="20">
+              </label>
+              <label>間隔最長秒數
+                <input id="testEventMaxSeconds" type="number" min="1" max="3600" value="45">
+              </label>
+              <label>每輪一般留言數
+                <input id="testEventCountPerTick" type="number" min="1" max="30" value="3">
+              </label>
+              <label>每輪 SC 數
+                <input id="testSuperChatCountPerTick" type="number" min="0" max="30" value="0">
+              </label>
+              <label class="checkbox-row wide">
+                <input id="autoTestEvents" type="checkbox">
+                <span>建立或更新 session 時啟用自動測試留言</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="event-tool-group pending-events">
+            <div class="event-tool-header">
+              <div>
+                <h3>待處理留言</h3>
+                <p class="muted">查看目前 live session 內尚未注入或已處理的留言。</p>
+              </div>
+              <div class="toolbar">
+                <button id="refreshEvents">更新留言</button>
+                <span id="eventState" class="status">尚未選擇 session</span>
+              </div>
+            </div>
+            <div class="toolbar event-action-row">
+              <button id="injectSelected" class="primary">注入勾選留言</button>
+              <button id="injectPending" class="blue">注入未處理留言</button>
+              <button id="replySuperChats" class="primary">回應未處理 SC</button>
+              <button id="interruptNow" class="danger">中斷目前回應</button>
+            </div>
+            <details class="advanced-inject">
+              <summary>進階注入提示</summary>
+              <textarea id="injectContent">請根據導播提供的 Topic Pack / fact card / 已帶入的 YouTube 直播留言上下文回應。不要自行開啟瀏覽器或搜尋網頁。</textarea>
+            </details>
+            <div id="eventsList" class="list"></div>
+          </div>
+        </div>
+
+        <div id="summaryPane" class="pane">
+          <div class="toolbar">
+            <button id="makeSummary" class="primary">產生摘要</button>
+            <button id="forceSummary">強制重跑</button>
+            <span id="summaryState" class="status">尚無摘要</span>
+          </div>
+          <div id="summaryView" class="item"></div>
+        </div>
+
+        <div id="topicPackPane" class="pane">
+          <div class="topic-workspace">
+            <div class="topic-panel topic-pack-panel">
+              <div class="topic-panel-header">
+                <h3>資料包</h3>
+                <span id="topicPackState" class="status">尚未載入</span>
+              </div>
+              <label>目前資料包
+                <select id="topicPackSelect"></select>
+              </label>
+              <label>名稱
+                <input id="topicPackTitle" placeholder="例：四月新番資料包">
+              </label>
+              <label>管理備註
+                <textarea id="topicPackDescription" placeholder="只供管理辨識，不會影響檢索或直播內容"></textarea>
+              </label>
+              <div class="topic-form-actions">
+                <button id="refreshTopicPacks">重新載入清單</button>
+                <button id="createTopicPack" class="primary" disabled>建立</button>
+                <button id="updateTopicPack" class="is-hidden">儲存</button>
+                <button id="linkTopicPack" class="blue is-hidden">綁定本場</button>
+              </div>
+              <div class="topic-form-actions">
+                <button id="deleteTopicPack" class="danger is-hidden">刪除資料包</button>
+                <button id="rebuildTopicEmbeddings" class="is-hidden">重建向量</button>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="deleteAllTopicPacks" class="danger is-hidden">清空所有資料包</button>
+              </div>
+            </div>
+
+            <div id="topicEntryPanel" class="topic-panel topic-entry-panel is-hidden">
+              <div class="topic-panel-header">
+                <h3>Fact Cards</h3>
+                <span class="status">可編輯</span>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>
+              </div>
+              <p id="topicFactCardLiveLockNotice" class="status warn is-hidden">直播中不產生或匯入 Fact Cards；本場只讀取已綁定資料包。</p>
+              <label id="topicEntrySelectorRow" class="is-hidden">選擇 fact card
+                <select id="topicEntrySelect"></select>
+              </label>
+              <p class="muted">從下方資料包清單選一張卡片編輯；未選卡片時可直接填寫標題與內容新增。</p>
+              <label>標題
+                <input id="topicEntryTitle" placeholder="例：作品 A 製作資訊">
+              </label>
+              <div id="topicEntryMetadataFields" class="is-hidden" aria-hidden="true">
+                <input id="topicEntrySourceType" type="hidden" value="manual">
+                <input id="topicEntryTags" type="hidden">
+                <input id="topicEntrySourceUrl" type="hidden">
+              </div>
+              <label>內容
+                <textarea id="topicEntryBody" placeholder="貼上直播中可以引用的客觀資料。"></textarea>
+              </label>
+              <div class="topic-form-actions">
+                <button id="addTopicEntry" class="primary is-hidden">新增</button>
+                <button id="updateTopicEntry" class="is-hidden">儲存</button>
+                <button id="cancelTopicEntryEdit" class="is-hidden">取消</button>
+              </div>
+              <div id="topicPackEntries" class="list topic-entry-list"></div>
+            </div>
+
+            <div id="topicGraphPanel" class="topic-panel topic-graph-panel is-hidden">
+              <div class="topic-panel-header">
+                <h3>關係圖 Debug</h3>
+                <span id="topicGraphState" class="status">尚未載入</span>
+              </div>
+              <div class="topic-form-actions">
+                <button id="refreshTopicGraph" class="is-hidden">刷新關係圖</button>
+                <button id="rebuildTopicGraph" class="is-hidden">重建關係圖</button>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="refreshTopicGraphTrace" class="is-hidden">刷新召回路徑</button>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="resetTopicGraphView" class="is-hidden">重置視圖</button>
+              </div>
+              <div class="topic-form-actions single">
+                <button id="openTopicGraphModal" class="is-hidden">放大檢視</button>
+              </div>
+              <svg id="topicGraphSvg" viewBox="0 0 720 520" role="img" aria-label="Fact Card topic graph"></svg>
+              <div class="topic-graph-details">
+                <div id="topicGraphSelectedNode" class="item">尚未選擇節點</div>
+                <div id="topicGraphLatestTrace" class="item">尚無召回路徑</div>
+              </div>
+              <div id="topicGraphTraces" class="list topic-graph-trace-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="systemSettingsPane" class="pane">
+          <div class="settings-workspace">
+            <div class="settings-panel">
+              <h2>Connector</h2>
+              <div class="grid">
+                <label class="wide">YouTube Data API Key
+                  <input id="apiKey" type="password" placeholder="留空代表沿用已儲存 key">
+                </label>
+              </div>
+              <p class="muted">只要 API key 正確，connector 會自動啟用；測試直播可不設定 API key。</p>
+              <div class="toolbar" style="margin-top:10px">
+                <button id="saveConnector" class="primary">儲存 Connector</button>
+                <span id="connectorState" class="status">尚未載入</span>
+              </div>
+            </div>
+
+            <div class="settings-panel">
+              <h2>MemoriaCore Auth</h2>
+              <div class="grid">
+                <label class="wide">API base URL
+                  <input id="memoriaBaseUrl" value="http://localhost:8088/api/v1">
+                </label>
+                <label>admin username
+                  <input id="memoriaUsername" autocomplete="username">
+                </label>
+                <label>admin password
+                  <input id="memoriaPassword" type="password" autocomplete="current-password" placeholder="留空代表沿用已儲存密碼">
+                </label>
+                <label class="wide">
+                  <span><input id="memoriaAdminBypass" type="checkbox" checked style="width:auto;min-height:auto"> 使用本機 admin bypass</span>
+                </label>
+              </div>
+              <div class="toolbar" style="margin-top:10px">
+                <button id="saveMemoriaConfig" class="primary">儲存 MemoriaCore 設定</button>
+                <button id="testMemoriaAuth">測試連線並更新角色與 Session 清單</button>
+                <span id="memoriaAuthState" class="status">尚未測試</span>
+              </div>
+            </div>
+
+            <div class="settings-panel">
+              <h2>YouTube Live 全域 suffix</h2>
+              <p class="muted">這裡只編輯 MemoriaCore 的 <code>chat_system_suffix_youtube_live</code> prompt；儲存後會寫入 <code>runtime/prompts.json</code> override。</p>
+              <div class="grid">
+                <label class="wide">全域 suffix template
+                  <textarea id="youtubeLiveGlobalSuffix" placeholder="YouTube live 角色輸出格式、語言、全域直播規則。"></textarea>
+                </label>
+              </div>
+              <div class="toolbar" style="margin-top:10px">
+                <button id="reloadYoutubeLiveGlobalSuffix">重新載入全域 suffix</button>
+                <button id="saveYoutubeLiveGlobalSuffix" class="primary">儲存全域 suffix</button>
+                <span id="youtubeLiveGlobalSuffixState" class="status">尚未載入</span>
+              </div>
+            </div>
+
+            <div class="settings-panel live-persona-panel">
+              <h2>直播角色設定</h2>
+              <p class="muted">這裡只覆寫 YouTubeBridge 直播時送給角色的 prompt，不會修改 MemoriaCore 原始角色。</p>
+              <div class="grid">
+                <label class="wide">角色
+                  <select id="livePersonaCharacterSelect"></select>
+                </label>
+                <label class="checkbox-row wide">
+                  <input id="livePersonaEnabled" type="checkbox">
+                  <span>啟用直播專用 prompt 覆寫</span>
+                </label>
+                <label>覆寫模式
+                  <select id="livePersonaMode">
+                    <option value="replace">replace：直播時取代原角色 prompt</option>
+                    <option value="append">append：附加在原角色 prompt 後</option>
+                  </select>
+                </label>
+                <label>固定自稱
+                  <input id="livePersonaSelfAddress" placeholder="例：本小姐、老身、在下">
+                </label>
+                <label class="wide">直播用角色 prompt
+                  <textarea id="livePersonaSystemPrompt" placeholder="描述直播專用人格、口吻、互動方式與禁止事項。"></textarea>
+                </label>
+                <label class="wide">開場自我介紹
+                  <textarea id="livePersonaOpeningIntro" placeholder="例：本小姐是今天的主持可可，這場會陪大家聊最新新番。"></textarea>
+                </label>
+                <div class="wide live-persona-addressing-editor">
+                  <div class="field-label">對其他角色稱呼</div>
+                  <div id="livePersonaAddressingRows" class="live-persona-addressing-rows"></div>
+                  <button id="addLivePersonaAddressingRow" type="button">新增稱呼</button>
+                </div>
+                <label class="wide">直播回覆規則
+                  <textarea id="livePersonaReplyRules" placeholder="例：不要把問題丟回觀眾；接住上一位角色的觀點並補充細節。"></textarea>
+                </label>
+              </div>
+              <div class="toolbar" style="margin-top:10px">
+                <button id="saveLivePersonaOverlay" class="primary">儲存直播角色設定</button>
+                <span id="livePersonaOverlayState" class="status">尚未載入</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="runtimeRulesPane" class="pane">
+          <div class="rules-header">
+            <div>
+              <h2>直播底層規則</h2>
+              <p class="muted">這裡直接讀取 YouTubeBridge 的規則文件，記錄 dashboard 欄位背後的實際運作。</p>
+            </div>
+            <div class="toolbar">
+              <button id="reloadRuntimeRules">重新載入規則</button>
+              <span id="runtimeRulesState" class="status">尚未載入</span>
+            </div>
+          </div>
+          <div id="runtimeRulesContent" class="rules-content item">規則說明尚未載入。</div>
+        </div>
+
+      </section>
+    </div>
+
+    <div class="stack right-rail">
+      <section>
+        <h2>Log</h2>
+        <pre id="log"></pre>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="/ui-assets/app.js?v=global-suffix-v1"></script>
+</body>
+</html>

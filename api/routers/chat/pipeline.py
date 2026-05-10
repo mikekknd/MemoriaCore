@@ -30,6 +30,9 @@ def _run_memory_pipeline_sync(ctx: PipelineContext) -> list[dict]:
     包含：記憶管線 LLM → 區塊寫入 → 畫像提取 → 偏好聚合。
     回傳 pipeline_events 列表。
     """
+    if str((ctx.session_ctx or {}).get("memory_write_policy") or "normal") == "transient":
+        return [{"type": "system_event", "action": "pipeline_skipped_transient"}]
+
     ms = get_memory_sys()
     analyzer = get_analyzer()
     rtr = get_router()

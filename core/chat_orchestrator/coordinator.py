@@ -8,28 +8,33 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
-from core.prompt_manager import get_prompt_manager
 from core.storage_manager import DEFAULT_SYSTEM_PROMPT
-from core.prompt_utils import build_user_prefix, format_latest_user_message_for_llm
+from core.prompt_manager import get_prompt_manager
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.middleware import run_middleware
 from core.chat_orchestrator.persona_agent import run_persona_agent, _parse_persona_response
-from core.chat_orchestrator.dataclasses import PipelineContext, SharedExpandState, SharedToolState, ToolContext
+from core.chat_orchestrator.dataclasses import OrchestrationResult, PipelineContext, SharedExpandState, SharedToolState, ToolContext
 from core.chat_orchestrator.dialogue_format import (
-    format_history_for_llm,
-    format_dialogue_for_analysis,
     collect_cited_uids,
     snapshot_messages_for_pipeline,
     strip_system_events,
 )
+from core.chat_orchestrator.memory_context import build_retrieved_memory_context
 from core.chat_orchestrator.router_hints import build_router_context_hints
+from core.chat_orchestrator.generation_context import (
+    build_available_tools,
+    build_chat_response_schema,
+    build_final_chat_context,
+    build_history_preview,
+    memory_lookup_skip_reason,
+    resolve_orchestration_scope,
+)
 from core.chat_orchestrator.group_context import (
     build_group_participants_block,
     build_llm_log_context,
-    is_group_context,
 )
 from core.chat_orchestrator.group_followup import inject_group_followup_instruction
-from core.xml_prompt import xml_attr
+from core.chat_orchestrator.live_persona import resolve_live_persona_prompt
 from core.opening_penalty import get_opening_penalty_manager
 
 
@@ -70,9 +75,8 @@ def run_dual_layer_orchestration(
     異步雙層 Agent 對話編排 — 取代舊版 _run_chat_orchestration()。
 
     記憶檢索管線與工具路由管線平行執行，兩邊完成後再進入 Module C。
-    回傳 12-tuple：(reply_text, new_entities, retrieval_ctx, topic_shifted,
-                    pipeline_data, inner_thought, status_metrics, tone,
-                    speech, thinking_speech, cited_uids, tool_state_export)
+    回傳 OrchestrationResult；endpoint / group loop 若需舊解構格式，統一經由
+    _unpack_orchestration_result() 轉成最新 12-slot tuple。
     session_ctx: {"user_id": str, "character_id": str, "persona_face": str,
                   "shared_tool_state": SharedToolState | None,
                   "followup_instruction": dict | None}
@@ -90,13 +94,14 @@ def run_dual_layer_orchestration(
     embed_model = get_embed_model()
     char_mgr = get_character_manager()
 
-    _ctx = session_ctx or {}
-    user_id = _ctx.get("user_id", "default")
-    character_id = _ctx.get("character_id", "default")
-    persona_face = _ctx.get("persona_face", "public")
-    write_visibility = persona_face
-    visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
-    force_group = is_group_context(_ctx)
+    scope = resolve_orchestration_scope(session_ctx)
+    _ctx = scope.ctx
+    user_id = scope.user_id
+    character_id = scope.character_id
+    persona_face = scope.persona_face
+    write_visibility = scope.write_visibility
+    visibility_filter = scope.visibility_filter
+    force_group = scope.force_group
     is_group_followup_turn = bool(_ctx.get("followup_instruction"))
     cached_shared_tool_state = _ctx.get("shared_tool_state")
     shared_expand_state = _ctx.get("shared_expand_state")
@@ -114,11 +119,14 @@ def run_dual_layer_orchestration(
 
     main_timer = StepTimer()
 
+    memory_skip_reason = memory_lookup_skip_reason(_ctx)
+
     # active_uids 主路徑讀 message["debug_info"]["cited_uids"]，缺則 fallback 到 content regex（相容舊資料）
     active_uids = set()
-    for m in session_messages[-context_window:]:
-        for uid in collect_cited_uids(m):
-            active_uids.add(uid)
+    if not memory_skip_reason:
+        for m in session_messages[-context_window:]:
+            for uid in collect_cited_uids(m):
+                active_uids.add(uid)
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Pre-fork — 載入角色資訊 + 判斷可用工具
@@ -138,6 +146,12 @@ def run_dual_layer_orchestration(
     tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
     char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or DEFAULT_SYSTEM_PROMPT
+    char_sys_prompt, reply_rules = resolve_live_persona_prompt(
+        character_id=character_id,
+        base_prompt=char_sys_prompt,
+        base_reply_rules=reply_rules,
+        session_ctx=_ctx,
+    )
     char_name = active_char.get("name", "助理")
     group_participants_block = build_group_participants_block(_ctx, char_mgr, character_id)
     log_context = build_llm_log_context(_ctx, char_mgr, character_id)
@@ -149,44 +163,61 @@ def run_dual_layer_orchestration(
         user_prefs=user_prefs,
     )
 
-    tools_list = []
-    try:
-        from tools.tavily import TAVILY_SEARCH_SCHEMA
-        if user_prefs.get("tavily_api_key"):
-            tools_list.append(TAVILY_SEARCH_SCHEMA)
-    except ImportError:
-        pass
-    try:
-        from tools.weather import WEATHER_SCHEMA
-        if user_prefs.get("openweather_api_key"):
-            tools_list.append(WEATHER_SCHEMA)
-    except ImportError:
-        pass
-    try:
-        from tools.bash_tool import BASH_TOOL_SCHEMA
-        if user_prefs.get("bash_tool_enabled"):
-            tools_list.append(BASH_TOOL_SCHEMA)
-    except ImportError:
-        pass
-    try:
-        from tools.browser_agent import BROWSER_AGENT_SCHEMA
-        if user_prefs.get("browser_agent_enabled"):
-            tools_list.append(BROWSER_AGENT_SCHEMA)
-    except ImportError:
-        pass
-    try:
-        from tools.minimax_image import GENERATE_IMAGE_SCHEMA, GENERATE_SELF_PORTRAIT_SCHEMA
-        if user_prefs.get("image_generation_enabled") and user_prefs.get("minimax_api_key"):
-            tools_list.append(GENERATE_IMAGE_SCHEMA)
-            tools_list.append(GENERATE_SELF_PORTRAIT_SCHEMA)
-    except ImportError:
-        pass
+    tools_list = build_available_tools(user_prefs, _ctx)
 
     # ════════════════════════════════════════════════════════════
     # SECTION: Branch A — 記憶檢索管線
     # ════════════════════════════════════════════════════════════
     def _memory_branch():
         t = StepTimer()
+
+        if memory_skip_reason:
+            expand_res = {"original_query": user_prompt, "expanded_keywords": "", "entity_confidence": 0.0}
+            if isinstance(shared_expand_state, SharedExpandState):
+                shared_expand_state.expand_result = dict(expand_res)
+                shared_expand_state.executed = True
+            mem_ctx = ""
+            with t.step("System Prompt 組裝 (Prompt Assembly)"):
+                api_messages, clean_history, sys_prompt = build_final_chat_context(
+                    char_sys_prompt=char_sys_prompt,
+                    group_participants_block=group_participants_block,
+                    mem_ctx=mem_ctx,
+                    reply_rules=reply_rules,
+                    session_messages=session_messages,
+                    context_window=context_window,
+                    user_prefs=user_prefs,
+                    session_ctx=_ctx,
+                    force_group=force_group,
+                )
+
+            _history_preview = build_history_preview(clean_history)
+            retrieval_ctx = {
+                "original_query": user_prompt,
+                "expanded_keywords": "",
+                "inherited_tags": last_entities,
+                "has_memory": False,
+                "block_count": 0,
+                "threshold": memory_threshold,
+                "hard_base": max(0.50, memory_hard_base),
+                "confidence": 0.0,
+                "block_details": [],
+                "core_debug_text": "",
+                "profile_debug_text": "",
+                "dynamic_prompt": sys_prompt + _history_preview,
+                "cited_uids": [],
+                "context_messages_count": len(clean_history),
+                "memory_lookup_skipped": memory_skip_reason,
+            }
+            chat_schema = build_chat_response_schema()
+            return {
+                "topic_shifted": False,
+                "pipeline_data": None,
+                "api_messages": api_messages,
+                "retrieval_ctx": retrieval_ctx,
+                "memory_context_prompt": mem_ctx,
+                "chat_schema": chat_schema,
+                "timer_steps": t._steps,
+            }
 
         # 話題偏移偵測
         with t.step("話題偏移偵測 (Topic Shift Detection)"):
@@ -240,100 +271,41 @@ def run_dual_layer_orchestration(
                                                          user_id=user_id,
                                                          visibility_filter=visibility_filter)
 
-        # 格式化記憶上下文
-        core_ctx = ""
-        core_debug_text = "未觸發核心認知。"
-        if core_insights:
-            core_ctx = f"<user_core_memory>\n{core_insights[0]['insight']}\n</user_core_memory>\n"
-            core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
-
-        profile_ctx = ""
-        profile_debug_text = "未觸發使用者偏好。"
-        if profile_matches:
-            profile_lines = [
-                f'<preference key="{xml_attr(pm["fact_key"])}">{pm["fact_value"]}</preference>'
-                for pm in profile_matches
-            ]
-            profile_ctx = "<user_relevant_preferences>\n" + "\n".join(profile_lines) + "\n</user_relevant_preferences>\n"
-            profile_debug_text = f"觸發 {len(profile_matches)} 筆偏好: " + ", ".join(
-                [f"{pm['fact_key']}={pm['fact_value']} ({pm['score']:.3f})" for pm in profile_matches])
-
-        block_details = []
-        mem_ctx = "無相關記憶。"
-        if blocks:
-            formatted_blocks = []
-            for i, block in enumerate(blocks):
-                raw_text = format_dialogue_for_analysis(block["raw_dialogues"], force_group=force_group)
-                formatted_blocks.append(
-                    f'<episodic_memory index="{i + 1}" uid="{xml_attr(block.get("block_id", "unknown"))}">\n'
-                    f"<timestamp>{block['timestamp']}</timestamp>\n"
-                    f"<overview>\n{block['overview']}\n</overview>\n"
-                    f"<dialogue>\n{raw_text}\n</dialogue>\n"
-                    "</episodic_memory>"
-                )
-                overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
-                block_details.append({
-                    "id": i + 1, "overview": overview_header,
-                    "hybrid": block.get("_debug_score", 0),
-                    "dense": block.get("_debug_raw_sim", 0),
-                    "sparse": block.get("_debug_sparse_raw", 0),
-                    "recency": block.get("_debug_recency", 0),
-                    "importance": block.get("_debug_importance", 0),
-                })
-            mem_ctx = "\n\n".join(formatted_blocks)
-
         # System Prompt 組裝
         with t.step("System Prompt 組裝 (Prompt Assembly)"):
             static_profile = ms.get_static_profile_prompt(user_id=user_id,
                                                           visibility_filter=visibility_filter)
-            static_profile_block = f"\n{static_profile}\n" if static_profile else ""
-
             proactive_topics_block = ms.get_proactive_topics_prompt(limit=1, user_id=user_id,
                                                                     character_id=character_id,
                                                                     visibility_filter=visibility_filter)
-            if proactive_topics_block:
-                proactive_topics_block = f"\n{proactive_topics_block}\n"
-
-            pm = get_prompt_manager()
-            speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
-                reply_rules=reply_rules,
+            retrieved_memory = build_retrieved_memory_context(
+                static_profile=static_profile,
+                core_insights=core_insights,
+                profile_matches=profile_matches,
+                proactive_topics=proactive_topics_block,
+                blocks=blocks,
+                force_group=force_group,
             )
-
-            _suffix = get_prompt_manager().get("chat_system_suffix").format(
-                mem_ctx=mem_ctx,
-                speech_instruction=speech_instruction,
-            )
-
-            sys_prompt = f"""{char_sys_prompt}
-{group_participants_block}
-{static_profile_block}
-{core_ctx}{profile_ctx}{proactive_topics_block}
-{_suffix}"""
+            mem_ctx = retrieved_memory.prompt
+            block_details = retrieved_memory.block_details
+            core_debug_text = retrieved_memory.core_debug_text
+            profile_debug_text = retrieved_memory.profile_debug_text
 
             # 上下文組裝
-            api_messages = [{"role": "system", "content": sys_prompt}]
-            clean_history = format_history_for_llm(session_messages[-context_window:], force_group=force_group)
-            # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
-            # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
-            api_messages.extend(clean_history)
-
-            # 注入環境上下文 + 情緒軌跡前綴到當前使用者訊息（不放 system prompt，以保留 prefix cache）
-            if api_messages and api_messages[-1]["role"] == "user":
-                _prefix = build_user_prefix(session_messages, user_prefs=user_prefs, session_ctx=_ctx)
-                _latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], _ctx)
-                api_messages[-1] = {**api_messages[-1], "content": _prefix + _latest_user}
+            api_messages, clean_history, sys_prompt = build_final_chat_context(
+                char_sys_prompt=char_sys_prompt,
+                group_participants_block=group_participants_block,
+                mem_ctx=mem_ctx,
+                reply_rules=reply_rules,
+                session_messages=session_messages,
+                context_window=context_window,
+                user_prefs=user_prefs,
+                session_ctx=_ctx,
+                force_group=force_group,
+            )
 
         # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）
-        _ctx_preview_lines = []
-        for m in clean_history:
-            role_label = "使用者" if m["role"] == "user" else "助理"
-            preview = m["content"][:300] + ("..." if len(m["content"]) > 300 else "")
-            _ctx_preview_lines.append(f"[{role_label}]: {preview}")
-        _history_preview = (
-            f"\n\n{'─'*40}\n[對話紀錄窗口（共 {len(clean_history)} 則）]\n"
-            + "\n".join(_ctx_preview_lines)
-            if clean_history else "\n\n[對話紀錄窗口：空（首輪對話）]"
-        )
+        _history_preview = build_history_preview(clean_history)
 
         retrieval_ctx = {
             "original_query": user_prompt,
@@ -353,23 +325,14 @@ def run_dual_layer_orchestration(
         }
 
         # JSON Schema（speech 已移至獨立翻譯 subagent，status_metrics/tone 已移除）
-        schema_properties = {
-            "internal_thought": {"type": "string"},
-            "reply": {"type": "string"},
-            "extracted_entities": {"type": "array", "items": {"type": "string"}},
-        }
-        schema_required = ["internal_thought", "reply", "extracted_entities"]
-        chat_schema = {
-            "type": "object",
-            "properties": schema_properties,
-            "required": schema_required,
-        }
+        chat_schema = build_chat_response_schema()
 
         return {
             "topic_shifted": topic_shifted,
             "pipeline_data": pipeline_data,
             "api_messages": api_messages,
             "retrieval_ctx": retrieval_ctx,
+            "memory_context_prompt": mem_ctx,
             "chat_schema": chat_schema,
             "timer_steps": t._steps,
         }
@@ -483,6 +446,7 @@ def run_dual_layer_orchestration(
     pipeline_data = mem_result["pipeline_data"]
     api_messages = mem_result["api_messages"]
     retrieval_ctx = mem_result["retrieval_ctx"]
+    memory_context_prompt = mem_result.get("memory_context_prompt", "")
     chat_schema = mem_result["chat_schema"]
     tool_context = tool_result["tool_context"]
     thinking_speech = tool_result["thinking_speech"]
@@ -497,6 +461,7 @@ def run_dual_layer_orchestration(
         session_messages=session_messages,
         user_prefs=user_prefs,
         session_ctx=session_ctx,
+        memory_context=memory_context_prompt,
     )
 
     # ════════════════════════════════════════════════════════════
@@ -559,8 +524,17 @@ def run_dual_layer_orchestration(
     else:
         tool_state_export = SharedToolState(executed=False)
 
-    return (
-        reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data,
-        inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids,
-        tool_state_export,
+    return OrchestrationResult(
+        reply_text=reply_text,
+        new_entities=new_entities,
+        retrieval_context=retrieval_ctx,
+        topic_shifted=topic_shifted,
+        pipeline_data=pipeline_data,
+        inner_thought=inner_thought,
+        status_metrics=status_metrics,
+        tone=tone,
+        speech=speech,
+        thinking_speech=thinking_speech,
+        cited_uids=cited_uids,
+        tool_state_export=tool_state_export,
     )

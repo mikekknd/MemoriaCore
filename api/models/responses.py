@@ -160,6 +160,7 @@ class RetrievalContextDTO(BaseModel):
     context_messages_count: int = 0
     perf_timing: PerfTimingDTO = PerfTimingDTO()
     llm_trace: dict = {}
+    external_context: dict = {}
 
 
 class ChatTurnDTO(BaseModel):
@@ -178,6 +179,7 @@ class ChatTurnDTO(BaseModel):
 
 
 class ChatSyncResponseDTO(BaseModel):
+    session_id: str = ""
     message_id: Optional[int] = None
     reply: str
     extracted_entities: list[str] = []
@@ -264,6 +266,7 @@ class SystemConfigDTO(BaseModel):
     dual_layer_enabled: bool = False
     group_chat_max_bot_turns: int = 3
     group_chat_turn_delay_seconds: float = 2.0
+    max_session_characters: int = 6
     opening_penalty_enabled: bool = True
     opening_penalty_tokenizer_ref: str = ""
     tts_enabled: bool = False

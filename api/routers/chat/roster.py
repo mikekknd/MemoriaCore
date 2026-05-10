@@ -1,10 +1,8 @@
 """Session roster 更新工具。"""
 
 from api.dependencies import get_character_manager
+from api.session_limits import MAX_SESSION_CHARACTERS
 from api.session_manager import SessionState, session_manager
-
-
-MAX_SESSION_CHARACTERS = 6
 
 
 def normalize_character_ids(raw_ids: list[str] | None) -> tuple[list[str], dict[str, str]] | None:

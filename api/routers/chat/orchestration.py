@@ -9,26 +9,31 @@ from api.dependencies import (
     get_memory_sys, get_storage, get_router, get_analyzer,
     get_embed_model, get_character_manager,
 )
-from core.prompt_manager import get_prompt_manager
 from core.storage_manager import DEFAULT_SYSTEM_PROMPT
-from core.prompt_utils import build_user_prefix, format_latest_user_message_for_llm
 from core.chat_orchestrator.router_agent import run_router_agent
 from core.chat_orchestrator.dialogue_format import (
-    format_history_for_llm,
-    format_dialogue_for_analysis,
     collect_cited_uids,
     snapshot_messages_for_pipeline,
     strip_system_events,
 )
+from core.chat_orchestrator.memory_context import build_retrieved_memory_context
 from core.chat_orchestrator.router_hints import build_router_context_hints
-from core.chat_orchestrator.dataclasses import SharedExpandState, SharedToolState
-from core.xml_prompt import format_tool_context_xml, format_tool_results_xml, xml_attr
+from core.chat_orchestrator.dataclasses import OrchestrationResult, SharedExpandState, SharedToolState
+from core.chat_orchestrator.generation_context import (
+    build_available_tools,
+    build_chat_response_schema,
+    build_final_chat_context,
+    build_history_preview,
+    memory_lookup_skip_reason,
+    resolve_orchestration_scope,
+)
+from core.xml_prompt import format_tool_context_xml, format_tool_results_xml
 from core.chat_orchestrator.group_context import (
     build_group_participants_block,
     build_llm_log_context,
-    is_group_context,
 )
 from core.chat_orchestrator.group_followup import inject_group_followup_instruction
+from core.chat_orchestrator.live_persona import resolve_live_persona_prompt
 from core.chat_orchestrator.persona_agent import _sanitize_group_reply
 from core.opening_penalty import get_opening_penalty_manager
 from api.routers.chat.timer import StepTimer
@@ -50,9 +55,7 @@ def _run_chat_orchestration(
     """
     同步執行對話編排的關鍵路徑（在執行緒池中跑）。
     話題偏移時的記憶管線已拆至背景，此處只做偵測 → 檢索 → 生成。
-    回傳 12-tuple：(reply_text, new_entities, retrieval_context_dict, topic_shifted, pipeline_data,
-                    inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids,
-                    tool_state_export)
+    回傳 OrchestrationResult；呼叫端如需舊 endpoint 解構格式，統一經由 _unpack_orchestration_result()。
     pipeline_data: 若話題偏移，回傳 PipelineContext 供呼叫端發起背景任務；否則為 None。
     on_event: 可選的 callback，用於即時推送中間狀態（如工具呼叫通知）給前端。
     session_ctx: {"user_id": str, "character_id": str, "persona_face": str,
@@ -65,13 +68,14 @@ def _run_chat_orchestration(
     storage = get_storage()
     embed_model = get_embed_model()
 
-    ctx = session_ctx or {}
-    user_id = ctx.get("user_id", "default")
-    character_id = ctx.get("character_id", "default")
-    persona_face = ctx.get("persona_face", "public")
-    write_visibility = persona_face  # persona_face == write_visibility（由 resolve_context 保證）
-    visibility_filter = ["private", "public"] if persona_face == "private" else ["public"]
-    force_group = is_group_context(ctx)
+    scope = resolve_orchestration_scope(session_ctx)
+    ctx = scope.ctx
+    user_id = scope.user_id
+    character_id = scope.character_id
+    persona_face = scope.persona_face
+    write_visibility = scope.write_visibility
+    visibility_filter = scope.visibility_filter
+    force_group = scope.force_group
     is_group_followup_turn = bool(ctx.get("followup_instruction"))
     cached_shared_tool_state = ctx.get("shared_tool_state")
     shared_expand_state = ctx.get("shared_expand_state")
@@ -91,109 +95,91 @@ def _run_chat_orchestration(
     pipeline_data: PipelineContext | None = None
     timer = StepTimer()
 
+    memory_skip_reason = memory_lookup_skip_reason(ctx)
+
     # ─── 提取 Active UIDs ───
     # 主路徑：debug_info["cited_uids"]；缺值時 fallback 到 content regex（相容舊資料）
     active_uids = set()
-    for m in session_messages[-4:]:
-        for uid in collect_cited_uids(m):
-            active_uids.add(uid)
-
-    # ─── 話題偏移偵測 ───
-    with timer.step("話題偏移偵測 (Topic Shift Detection)"):
-        is_shift, cohesion_score = analyzer.detect_topic_shift(
-            session_messages, embed_model, threshold=shift_threshold,
-        )
-
-    if is_shift:
-        topic_shifted = True
-        # 準備背景管線所需的資料快照（不在此處執行管線）
-        import copy
-        msgs_to_extract = snapshot_messages_for_pipeline(session_messages[:-1])
-        _user_blocks = ms._get_memory_blocks(user_id, character_id, write_visibility)
-        last_block = copy.deepcopy(_user_blocks[-1]) if _user_blocks else None
-        pipeline_data = PipelineContext(
-            msgs_to_extract=msgs_to_extract,
-            last_block=last_block,
-            session_ctx=session_ctx or {},
-        )
-
-    # ─── 雙軌檢索 ───
-    with timer.step("查詢擴展 (Query Expansion LLM)"):
-        if isinstance(shared_expand_state, SharedExpandState) and shared_expand_state.executed:
-            expand_res = dict(shared_expand_state.expand_result or {})
-        else:
-            expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
-            if isinstance(shared_expand_state, SharedExpandState):
-                shared_expand_state.expand_result = dict(expand_res)
-                shared_expand_state.executed = True
-    inherited_str = " ".join(last_entities)
-    combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
-
-    f_alpha = ui_alpha
-    f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
-
-    with timer.step("情境記憶檢索 (Memory Block Search)"):
-        raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base,
-                                      user_id=user_id, character_id=character_id, visibility_filter=visibility_filter)
-        blocks = [b for b in raw_blocks if b.get("block_id") not in active_uids]
-
-    with timer.step("核心認知檢索 (Core Memory Search)"):
-        core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45,
-                                                user_id=user_id, character_id=character_id,
-                                                visibility_filter=visibility_filter)
-
-    core_ctx = ""
-    core_debug_text = "未觸發核心認知。"
-    if core_insights:
-        core_ctx = f"<user_core_memory>\n{core_insights[0]['insight']}\n</user_core_memory>\n"
-        core_debug_text = f"觸發認知: {core_insights[0]['insight']} (Score: {core_insights[0]['score']:.3f})"
-
-    with timer.step("使用者偏好檢索 (Profile Search)"):
-        profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5,
-                                                     user_id=user_id,
-                                                     visibility_filter=visibility_filter)
-    profile_ctx = ""
-    profile_debug_text = "未觸發使用者偏好。"
-    if profile_matches:
-        profile_lines = [
-            f'<preference key="{xml_attr(pm["fact_key"])}">{pm["fact_value"]}</preference>'
-            for pm in profile_matches
-        ]
-        profile_ctx = "<user_relevant_preferences>\n" + "\n".join(profile_lines) + "\n</user_relevant_preferences>\n"
-        profile_debug_text = f"觸發 {len(profile_matches)} 筆偏好: " + ", ".join(
-            [f"{pm['fact_key']}={pm['fact_value']} ({pm['score']:.3f})" for pm in profile_matches])
-
-    block_details = []
-    mem_ctx = "無相關記憶。"
-    if blocks:
-        formatted_blocks = []
-        for i, block in enumerate(blocks):
-            raw_text = format_dialogue_for_analysis(block["raw_dialogues"], force_group=force_group)
-            formatted_blocks.append(
-                f'<episodic_memory index="{i + 1}" uid="{xml_attr(block.get("block_id", "unknown"))}">\n'
-                f"<timestamp>{block['timestamp']}</timestamp>\n"
-                f"<overview>\n{block['overview']}\n</overview>\n"
-                f"<dialogue>\n{raw_text}\n</dialogue>\n"
-                "</episodic_memory>"
+    if not memory_skip_reason:
+        for m in session_messages[-4:]:
+            for uid in collect_cited_uids(m):
+                active_uids.add(uid)
+    if memory_skip_reason:
+        expand_res = {"original_query": user_prompt, "expanded_keywords": "", "entity_confidence": 0.0}
+        if isinstance(shared_expand_state, SharedExpandState):
+            shared_expand_state.expand_result = dict(expand_res)
+            shared_expand_state.executed = True
+        blocks = []
+        mem_ctx = ""
+        block_details = []
+        core_debug_text = ""
+        profile_debug_text = ""
+        f_base = max(0.50, memory_hard_base)
+    else:
+        # ─── 話題偏移偵測 ───
+        with timer.step("話題偏移偵測 (Topic Shift Detection)"):
+            is_shift, cohesion_score = analyzer.detect_topic_shift(
+                session_messages, embed_model, threshold=shift_threshold,
             )
-            overview_header = block['overview'].split('\n')[0] if '\n' in block['overview'] else block['overview']
-            block_details.append({
-                "id": i + 1, "overview": overview_header,
-                "hybrid": block.get("_debug_score", 0),
-                "dense": block.get("_debug_raw_sim", 0),
-                "sparse": block.get("_debug_sparse_raw", 0),
-                "recency": block.get("_debug_recency", 0),
-                "importance": block.get("_debug_importance", 0),
-            })
-        mem_ctx = "\n\n".join(formatted_blocks)
 
-    static_profile = ms.get_static_profile_prompt(user_id=user_id, visibility_filter=visibility_filter)
-    static_profile_block = f"\n{static_profile}\n" if static_profile else ""
+        if is_shift:
+            topic_shifted = True
+            # 準備背景管線所需的資料快照（不在此處執行管線）
+            import copy
+            msgs_to_extract = snapshot_messages_for_pipeline(session_messages[:-1])
+            _user_blocks = ms._get_memory_blocks(user_id, character_id, write_visibility)
+            last_block = copy.deepcopy(_user_blocks[-1]) if _user_blocks else None
+            pipeline_data = PipelineContext(
+                msgs_to_extract=msgs_to_extract,
+                last_block=last_block,
+                session_ctx=session_ctx or {},
+            )
 
-    proactive_topics_block = ms.get_proactive_topics_prompt(limit=1, user_id=user_id, character_id=character_id,
-                                                             visibility_filter=visibility_filter)
-    if proactive_topics_block:
-        proactive_topics_block = f"\n{proactive_topics_block}\n"
+        # ─── 雙軌檢索 ───
+        with timer.step("查詢擴展 (Query Expansion LLM)"):
+            if isinstance(shared_expand_state, SharedExpandState) and shared_expand_state.executed:
+                expand_res = dict(shared_expand_state.expand_result or {})
+            else:
+                expand_res = ms.expand_query(user_prompt, session_messages, rtr, task_key="expand", force_group=force_group)
+                if isinstance(shared_expand_state, SharedExpandState):
+                    shared_expand_state.expand_result = dict(expand_res)
+                    shared_expand_state.executed = True
+        inherited_str = " ".join(last_entities)
+        combined_keywords = f"{expand_res['expanded_keywords']} {inherited_str}".strip()
+
+        f_alpha = ui_alpha
+        f_base = max(0.50, memory_hard_base - (0.05 * expand_res["entity_confidence"]))
+
+        with timer.step("情境記憶檢索 (Memory Block Search)"):
+            raw_blocks = ms.search_blocks(user_prompt, combined_keywords, 2, f_alpha, 0.5, memory_threshold, f_base,
+                                          user_id=user_id, character_id=character_id, visibility_filter=visibility_filter)
+            blocks = [b for b in raw_blocks if b.get("block_id") not in active_uids]
+
+        with timer.step("核心認知檢索 (Core Memory Search)"):
+            core_insights = ms.search_core_memories(user_prompt, top_k=1, threshold=0.45,
+                                                    user_id=user_id, character_id=character_id,
+                                                    visibility_filter=visibility_filter)
+
+        with timer.step("使用者偏好檢索 (Profile Search)"):
+            profile_matches = ms.search_profile_by_query(user_prompt, top_k=3, threshold=0.5,
+                                                         user_id=user_id,
+                                                         visibility_filter=visibility_filter)
+
+        static_profile = ms.get_static_profile_prompt(user_id=user_id, visibility_filter=visibility_filter)
+        proactive_topics_block = ms.get_proactive_topics_prompt(limit=1, user_id=user_id, character_id=character_id,
+                                                                 visibility_filter=visibility_filter)
+        retrieved_memory = build_retrieved_memory_context(
+            static_profile=static_profile,
+            core_insights=core_insights,
+            profile_matches=profile_matches,
+            proactive_topics=proactive_topics_block,
+            blocks=blocks,
+            force_group=force_group,
+        )
+        mem_ctx = retrieved_memory.prompt
+        block_details = retrieved_memory.block_details
+        core_debug_text = retrieved_memory.core_debug_text
+        profile_debug_text = retrieved_memory.profile_debug_text
 
     # 動態角色載入（evolved_prompt 優先，否則使用 system_prompt）
     char_mgr = get_character_manager()
@@ -212,6 +198,12 @@ def _run_chat_orchestration(
     tts_rules = active_char.get("tts_rules", "")
     char_tts_lang = active_char.get("tts_language", "")
     char_sys_prompt = char_mgr.get_effective_prompt(active_char, persona_face=persona_face) or DEFAULT_SYSTEM_PROMPT
+    char_sys_prompt, reply_rules = resolve_live_persona_prompt(
+        character_id=character_id,
+        base_prompt=char_sys_prompt,
+        base_reply_rules=reply_rules,
+        session_ctx=ctx,
+    )
     group_participants_block = build_group_participants_block(ctx, char_mgr, character_id)
     log_context = build_llm_log_context(ctx, char_mgr, character_id)
     opening_penalty_mgr = get_opening_penalty_manager()
@@ -222,47 +214,22 @@ def _run_chat_orchestration(
         user_prefs=user_prefs,
     )
 
-    pm = get_prompt_manager()
-    speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
-        reply_rules=reply_rules,
-    )
-
-    _suffix = get_prompt_manager().get("chat_system_suffix").format(
-        mem_ctx=mem_ctx,
-        speech_instruction=speech_instruction,
-    )
-
-    sys_prompt = f"""{char_sys_prompt}
-{group_participants_block}
-{static_profile_block}
-{core_ctx}{profile_ctx}{proactive_topics_block}
-{_suffix}"""
-
     # ⚠️ 上下文組裝必須在 debug 預覽之前完成（修正原本 clean_history 引用順序錯誤）。
     with timer.step("上下文組裝 (Context Assembly)"):
-        api_messages = [{"role": "system", "content": sys_prompt}]
-        clean_history = format_history_for_llm(session_messages[-context_window:], force_group=force_group)
-        # ⚠️ 關鍵：禁止移除此行。對話紀錄必須包含在 api_messages 中，否則 LLM 將失去上下文。
-        # 修改 sys_prompt 組裝邏輯後，請確認此行仍存在且在 sys_prompt 之後執行。
-        api_messages.extend(clean_history)
-
-        # 注入環境上下文 + 情緒軌跡前綴到當前使用者訊息（不放 system prompt，以保留 prefix cache）
-        if api_messages and api_messages[-1]["role"] == "user":
-            _prefix = build_user_prefix(session_messages, user_prefs=user_prefs, session_ctx=ctx)
-            _latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], ctx)
-            api_messages[-1] = {**api_messages[-1], "content": _prefix + _latest_user}
+        api_messages, clean_history, sys_prompt = build_final_chat_context(
+            char_sys_prompt=char_sys_prompt,
+            group_participants_block=group_participants_block,
+            mem_ctx=mem_ctx,
+            reply_rules=reply_rules,
+            session_messages=session_messages,
+            context_window=context_window,
+            user_prefs=user_prefs,
+            session_ctx=ctx,
+            force_group=force_group,
+        )
 
     # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）
-    _ctx_preview_lines = []
-    for m in clean_history:
-        role_label = "使用者" if m["role"] == "user" else "助理"
-        preview = m["content"][:300] + ("..." if len(m["content"]) > 300 else "")
-        _ctx_preview_lines.append(f"[{role_label}]: {preview}")
-    _history_preview = (
-        f"\n\n{'─'*40}\n[對話紀錄窗口（共 {len(clean_history)} 則）]\n"
-        + "\n".join(_ctx_preview_lines)
-        if clean_history else "\n\n[對話紀錄窗口：空（首輪對話）]"
-    )
+    _history_preview = build_history_preview(clean_history)
 
     retrieval_ctx = {
         "original_query": user_prompt,
@@ -279,54 +246,19 @@ def _run_chat_orchestration(
         "dynamic_prompt": sys_prompt + _history_preview,
         "context_messages_count": len(clean_history),
     }
+    if memory_skip_reason:
+        retrieval_ctx["memory_lookup_skipped"] = memory_skip_reason
 
     # 由系統直接標記引用的 UIDs，不依賴 LLM 回傳以避免降智或格式錯誤
     cited_uids = [b.get("block_id") for b in blocks if "block_id" in b] if blocks else []
 
     # ─── LLM 生成 ───（speech 移至獨立翻譯 subagent，status_metrics/tone 已移除）
-    schema_properties = {
-        "internal_thought": {"type": "string"},
-        "reply": {"type": "string"},
-        "extracted_entities": {"type": "array", "items": {"type": "string"}},
-    }
-    schema_required = ["internal_thought", "reply", "extracted_entities"]
-    chat_schema = {
-        "type": "object",
-        "properties": schema_properties,
-        "required": schema_required,
-    }
+    chat_schema = build_chat_response_schema()
 
     with timer.step("LLM 對話生成 (Chat Generation LLM)"):
         try:
-            from tools.tavily import TAVILY_SEARCH_SCHEMA, execute_tool_call
-            tools_list = []
-            if user_prefs.get("tavily_api_key"):
-                tools_list.append(TAVILY_SEARCH_SCHEMA)
-            try:
-                from tools.weather import WEATHER_SCHEMA
-                if user_prefs.get("openweather_api_key"):
-                    tools_list.append(WEATHER_SCHEMA)
-            except ImportError:
-                pass
-            try:
-                from tools.bash_tool import BASH_TOOL_SCHEMA
-                if user_prefs.get("bash_tool_enabled"):
-                    tools_list.append(BASH_TOOL_SCHEMA)
-            except ImportError:
-                pass
-            try:
-                from tools.browser_agent import BROWSER_AGENT_SCHEMA
-                if user_prefs.get("browser_agent_enabled"):
-                    tools_list.append(BROWSER_AGENT_SCHEMA)
-            except ImportError:
-                pass
-            try:
-                from tools.minimax_image import GENERATE_IMAGE_SCHEMA, GENERATE_SELF_PORTRAIT_SCHEMA
-                if user_prefs.get("image_generation_enabled") and user_prefs.get("minimax_api_key"):
-                    tools_list.append(GENERATE_IMAGE_SCHEMA)
-                    tools_list.append(GENERATE_SELF_PORTRAIT_SCHEMA)
-            except ImportError:
-                pass
+            from tools.tavily import execute_tool_call
+            tools_list = build_available_tools(user_prefs, ctx)
 
             # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call。
             # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
@@ -345,7 +277,7 @@ def _run_chat_orchestration(
                         **api_messages[-1],
                         "content": api_messages[-1]["content"] + tool_notice,
                     }
-            elif not is_group_followup_turn:
+            elif tools_list and not is_group_followup_turn:
                 # ── 第一輪：輕量工具偵測（共用 run_router_agent）──────
                 # clean_history 末尾含當前 user_prompt，傳 [:-1] 避免重複追加。
                 try:
@@ -425,6 +357,7 @@ def _run_chat_orchestration(
                 session_messages=session_messages,
                 user_prefs=user_prefs,
                 session_ctx=session_ctx,
+                memory_context=mem_ctx,
             )
 
             if opening_penalty_plan.prompt_block:
@@ -538,10 +471,19 @@ def _run_chat_orchestration(
     else:
         tool_state_export = SharedToolState(executed=False)
 
-    return (
-        reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data,
-        inner_thought, status_metrics, tone, speech, "", cited_uids,
-        tool_state_export,
+    return OrchestrationResult(
+        reply_text=reply_text,
+        new_entities=new_entities,
+        retrieval_context=retrieval_ctx,
+        topic_shifted=topic_shifted,
+        pipeline_data=pipeline_data,
+        inner_thought=inner_thought,
+        status_metrics=status_metrics,
+        tone=tone,
+        speech=speech,
+        thinking_speech="",
+        cited_uids=cited_uids,
+        tool_state_export=tool_state_export,
     )
 
 
@@ -557,19 +499,19 @@ def _select_orchestration(user_prefs: dict):
     return _run_chat_orchestration
 
 
-def _unpack_orchestration_result(result: tuple):
-    """統一解構 9/10/11/12-tuple 的編排結果。
+def _unpack_orchestration_result(result):
+    """統一解構編排結果。
 
-    12-tuple（最新）：
+    OrchestrationResult / latest 12-slot tuple：
         (reply, entities, ctx, shifted, pipeline, thought, metrics, tone,
          speech, thinking_speech, cited_uids, tool_state_export)
-    舊版會在末尾補預設值（cited_uids=[], thinking_speech="", tool_state_export=None）。
     """
-    if len(result) == 12:
+    if isinstance(result, OrchestrationResult):
+        return result.as_tuple()
+    if isinstance(result, tuple) and len(result) == 12:
         return result
-    if len(result) == 11:
-        return (*result, None)
-    if len(result) == 10:
-        return (*result, [], None)
-    # 舊版 9-tuple，補上 thinking_speech="" 和 cited_uids=[] 和 tool_state_export=None
-    return (*result, "", [], None)
+    try:
+        item_count = len(result)
+    except TypeError:
+        item_count = f"non-sized {type(result).__name__}"
+    raise ValueError(f"orchestration result must be OrchestrationResult or a 12-slot tuple, got {item_count} items")

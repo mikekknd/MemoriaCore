@@ -205,9 +205,7 @@ function toggleTokenVisible() {
 function updatePlatformHint() {
   const platform = document.getElementById('platform').value;
   const hint = document.getElementById('platformHint');
-  hint.textContent = platform === 'discord'
-    ? MCI18N.t('bots.discord_hint')
-    : '';
+  hint.textContent = platform === 'discord' ? MCI18N.t('bots.discord_hint') : '';
 }
 
 async function saveBot(event) {
@@ -218,6 +216,7 @@ async function saveBot(event) {
     character_id: document.getElementById('characterId').value,
     token: document.getElementById('token').value,
     enabled: document.getElementById('enabled').checked,
+    settings: {},
   };
   const url = editingId ? `${API}/bots/${encodeURIComponent(editingId)}` : `${API}/bots`;
   if (!editingId) payload.bot_id = document.getElementById('botId').value;
@@ -249,6 +248,7 @@ async function toggleBotEnabled(id, enabled) {
     character_id: bot.character_id || 'default',
     token: bot.token || '',
     enabled,
+    settings: bot.settings || {},
   };
   const r = await fetch(`${API}/bots/${encodeURIComponent(id)}`, {
     method: 'PUT',

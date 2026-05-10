@@ -1,4 +1,5 @@
 """SystemLogger 結構化日誌測試。"""
+import io
 import json
 import os
 
@@ -97,3 +98,29 @@ def test_system_logger_tail_scan_handles_partial_first_line(monkeypatch, tmp_pat
         entries = [json.loads(line) for line in f if line.strip()]
 
     assert entries[-1]["trace_seq"] == 1000
+
+
+def test_system_logger_console_output_survives_cp950_stream(monkeypatch):
+    log_path = os.path.join(os.getcwd(), ".pyTestTemp", "system_logger_cp950_test.jsonl")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    if os.path.exists(log_path):
+        os.remove(log_path)
+    raw_stream = io.BytesIO()
+    cp950_stdout = io.TextIOWrapper(raw_stream, encoding="cp950", errors="strict")
+    monkeypatch.setattr("sys.stdout", cp950_stdout)
+    monkeypatch.setattr("core.system_logger._LOG_FILE", str(log_path))
+    SystemLogger._reset_for_tests()
+
+    call_id = SystemLogger.log_llm_prompt(
+        "chat",
+        "model-a",
+        [{"role": "user", "content": "動畫與 ≤ 符號不應讓 console logging 中斷"}],
+    )
+    SystemLogger.log_llm_response("chat", "model-a", "这段包含簡中與貓字", llm_call_id=call_id)
+    cp950_stdout.flush()
+
+    with open(log_path, "r", encoding="utf-8") as f:
+        entries = [json.loads(line) for line in f if line.strip()]
+
+    assert entries[0]["messages"][0]["content"].startswith("動畫與")
+    assert entries[1]["content"].startswith("这段包含")

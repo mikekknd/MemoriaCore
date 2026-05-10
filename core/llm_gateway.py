@@ -14,6 +14,7 @@ from core.system_logger import SystemLogger
 _onnx_session = None
 _tokenizer = None
 CHAT_JSON_MAX_TOKENS = 768
+YOUTUBE_SAFETY_JSON_MAX_TOKENS = 4096
 
 def get_bge_m3_onnx_instance():
     global _onnx_session, _tokenizer
@@ -209,8 +210,49 @@ class OllamaProvider(ILLMProvider):
                     "type": tc_dict.get("type", "function"),
                     "function": tc_dict["function"]
                 })
-                
+
         return content.strip(), clean_tcs
+
+    def _native_chat_accepts_tools(self) -> bool:
+        try:
+            return "tools" in inspect.signature(self._client.chat).parameters
+        except (TypeError, ValueError):
+            return True
+
+    def _generate_chat_without_native_tools(
+        self,
+        messages: list,
+        model: str,
+        temperature: float = 0.0,
+        response_format: dict | None = None,
+        tools: list | None = None,
+        tool_choice: str | dict = "auto",
+        max_tokens: int | None = None,
+    ) -> tuple[str, list]:
+        try:
+            return self._generate_chat_openai_compatible(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                response_format=response_format,
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            SystemLogger.log_error(
+                "OllamaProvider",
+                f"目前 ollama client 不支援 native tools，OpenAI-compatible tools 呼叫也失敗，改用無 tools 降級: {type(exc).__name__}: {exc}",
+                details={"model": model, "base_url": self._openai_base_url(self.host)},
+            )
+            return self._generate_chat_native(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                response_format=response_format,
+                tools=None,
+                max_tokens=max_tokens,
+            )
 
     def generate_chat(self, messages: list, model: str, temperature: float = 0.0, response_format: dict | None = None, tools: list | None = None, tool_choice: str | dict = "auto", max_tokens: int | None = None, logit_bias: dict | None = None) -> tuple[str, list]:
         if logit_bias:
@@ -232,14 +274,38 @@ class OllamaProvider(ILLMProvider):
                     details={"model": model, "base_url": self._openai_base_url(self.host)},
                 )
 
-        return self._generate_chat_native(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            response_format=response_format,
-            tools=tools,
-            max_tokens=max_tokens,
-        )
+        if tools and not self._native_chat_accepts_tools():
+            return self._generate_chat_without_native_tools(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                response_format=response_format,
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=max_tokens,
+            )
+
+        try:
+            return self._generate_chat_native(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                response_format=response_format,
+                tools=tools,
+                max_tokens=max_tokens,
+            )
+        except TypeError as exc:
+            if tools and "unexpected keyword argument 'tools'" in str(exc):
+                return self._generate_chat_without_native_tools(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    response_format=response_format,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    max_tokens=max_tokens,
+                )
+            raise
 
     def get_embedding(self, text: str, model: str) -> dict:
         clean_text = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
@@ -489,6 +555,12 @@ class LLMRouter:
         """最終角色 JSON 回覆很短，限制輸出可避免模型發散時長篇續寫。"""
         if task_key == "chat" and response_format and log_context:
             return CHAT_JSON_MAX_TOKENS
+        if response_format and log_context:
+            if (
+                log_context.get("source") == "prompt_json"
+                and log_context.get("prompt_key") == "youtube_live_safety_classifier_prompt"
+            ):
+                return YOUTUBE_SAFETY_JSON_MAX_TOKENS
         return None
 
     @staticmethod

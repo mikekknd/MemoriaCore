@@ -198,6 +198,33 @@ class TestVisibilityFilter:
         assert "某某路" not in public_prompt and "123" not in public_prompt, \
             "私訊住址不應出現在 public face prompt"
 
+    def test_shared_memory_is_limited_by_audience(self, ms):
+        """YouTube shared memory 只讓 audience 內角色檢索，不無條件混入其他角色。"""
+        block = ms.add_shared_memory_block(
+            "這是 YouTube 直播互動脈絡：直播討論 debug 與聊天室互動。",
+            [{"role": "system", "content": "YouTube 直播共通摘要"}],
+            ["coco", "bailian"],
+            metadata={"source": "youtube_live_summary", "summary_id": 1},
+        )
+        assert block is not None
+
+        results_coco = ms.search_blocks(
+            "直播 debug", "", top_k=3, threshold=0.0, hard_base=0.0,
+            user_id="user_a", character_id="coco", visibility_filter=["public"],
+        )
+        results_bailian = ms.search_blocks(
+            "直播 debug", "", top_k=3, threshold=0.0, hard_base=0.0,
+            user_id="user_a", character_id="bailian", visibility_filter=["public"],
+        )
+        results_other = ms.search_blocks(
+            "直播 debug", "", top_k=3, threshold=0.0, hard_base=0.0,
+            user_id="user_a", character_id="other", visibility_filter=["public"],
+        )
+
+        assert any(item["block_id"] == block["block_id"] for item in results_coco)
+        assert any(item["block_id"] == block["block_id"] for item in results_bailian)
+        assert all(item["block_id"] != block["block_id"] for item in results_other)
+
 
 # ══════════════════════════════════════════════
 # 3. 跨用戶 cluster 合併防護

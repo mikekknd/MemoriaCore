@@ -247,7 +247,11 @@ class PersonaSyncManager:
         # 3. 閒置檢查（per character + per face）
         channel_class = "private" if persona_face == "private" else "public"
         try:
-            last_msg_time = storage.get_last_message_time_by_character_and_channel_class(character_id, channel_class)
+            last_msg_time = storage.get_last_message_time_by_character_and_channel_class(
+                character_id,
+                channel_class,
+                exclude_channels=("youtube_live",),
+            )
         except Exception as e:
             return False, f"storage_error({e})"
 
@@ -264,7 +268,10 @@ class PersonaSyncManager:
         since_iso = state.get("last_reflection_at") or "1970-01-01T00:00:00"
         try:
             new_count = storage.count_messages_since_by_character_and_channel_class(
-                since_iso, character_id, channel_class,
+                since_iso,
+                character_id,
+                channel_class,
+                exclude_channels=("youtube_live",),
             )
         except Exception as e:
             return False, f"count_error({e})"

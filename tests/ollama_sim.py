@@ -2,7 +2,7 @@
 import json
 
 
-# 複用 tools_synthetic.py 的 JSON Schema 模式
+# 複用 tools.synthetic 的 JSON Schema 模式
 CONVERSATION_SCHEMA = {
     "type": "object",
     "properties": {

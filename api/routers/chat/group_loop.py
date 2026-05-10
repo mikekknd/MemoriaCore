@@ -10,6 +10,7 @@ from api.routers.chat.pipeline import _run_memory_pipeline_bg
 from core.chat_orchestrator.group_followup import build_group_followup_instruction
 from core.chat_orchestrator.group_router import run_group_router
 from core.chat_orchestrator.dataclasses import SharedExpandState, SharedToolState
+from core.chat_orchestrator.live_persona import apply_live_persona_to_participants
 
 
 MAX_GROUP_TURNS_HARD_LIMIT = 12
@@ -40,15 +41,43 @@ async def run_group_chat_loop(
     on_turn: Callable[[dict[str, Any]], Any] | None = None,
     user_name: str = "",
     expose_llm_trace: bool = False,
+    extra_session_ctx: dict | None = None,
+    transient_user_content: str = "",
+    max_turns_override: int | None = None,
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
+    if extra_session_ctx:
+        base_ctx = {
+            "user_id": session.user_id,
+            "channel": session.channel,
+            "persona_face": session.persona_face,
+            "session_id": session.session_id,
+            "active_character_ids": list(session.active_character_ids or [session.character_id]),
+            "session_mode": session.session_mode,
+            "group_name": session.group_name,
+        }
+        base_ctx.update(extra_session_ctx)
+        participants = apply_live_persona_to_participants(participants, base_ctx)
     if not participants:
         return []
 
     max_turns = _group_turn_limit(user_prefs)
+    if max_turns_override is not None:
+        try:
+            max_turns = int(max_turns_override)
+        except (TypeError, ValueError):
+            pass
+        max_turns = max(1, min(max_turns, MAX_GROUP_TURNS_HARD_LIMIT))
     turn_delay_seconds = _group_turn_delay_seconds(user_prefs)
     working_messages = list(session.messages)
+    transient_user_content = str(transient_user_content or "").strip()
+    if transient_user_content:
+        working_messages.append({
+            "role": "user",
+            "content": transient_user_content,
+            "debug_info": {"transient_external_context_anchor": True},
+        })
     turns: list[dict[str, Any]] = []
     last_entities = list(session.last_entities)
     participant_ids = _participant_ids(participants)
@@ -59,6 +88,9 @@ async def run_group_chat_loop(
     shared_tool_state: SharedToolState | None = None
     # 同一輪 user 輸入的檢索意圖固定，query expansion 只需呼叫一次。
     shared_expand_state = SharedExpandState()
+    discussion_mode = _discussion_mode_for_external_context(extra_session_ctx)
+    live_hosting = _live_hosting_for_external_context(extra_session_ctx)
+    live_episode_plan = _live_episode_plan_for_external_context(extra_session_ctx)
 
     for turn_index in range(max_turns):
         route = await asyncio.to_thread(
@@ -71,6 +103,10 @@ async def run_group_chat_loop(
             honor_mentions=(turn_index == 0),
             bot_turn_index=turn_index,
             max_bot_turns=max_turns,
+            allow_single_participant_repeat=bool(user_prefs.get("group_chat_allow_single_character_repeat", True)),
+            discussion_mode=discussion_mode,
+            live_hosting=live_hosting,
+            live_episode_plan=live_episode_plan,
         )
         if not route.should_respond or not route.target_character_id:
             if turn_index == 0:
@@ -90,6 +126,16 @@ async def run_group_chat_loop(
         if not target_char:
             break
         character_name = target_char.get("name") or target_character_id
+        live_episode_reply_task = _build_live_episode_reply_task(
+            live_episode_plan,
+            turn_index=turn_index,
+            max_turns=max_turns,
+            target_character_id=target_character_id,
+            character_name=character_name,
+            last_character_name=last_character_name,
+            last_reply=last_reply,
+            discussion_mode=discussion_mode,
+        )
         if on_event:
             on_event({
                 "type": "typing",
@@ -112,6 +158,8 @@ async def run_group_chat_loop(
                 "conversation_intent": route.conversation_intent,
                 "routing_action": route.action,
             }
+            if live_episode_reply_task:
+                followup_instruction["live_episode_reply_task"] = live_episode_reply_task
 
         session_ctx = {
             "user_id": session.user_id,
@@ -129,7 +177,12 @@ async def run_group_chat_loop(
             "shared_expand_state": shared_expand_state,
             "followup_instruction": followup_instruction,
             "expose_llm_trace": expose_llm_trace,
+            "group_discussion_mode": discussion_mode,
         }
+        if extra_session_ctx:
+            session_ctx.update(extra_session_ctx)
+        if live_episode_reply_task:
+            session_ctx["live_episode_reply_task"] = live_episode_reply_task
 
         result = await asyncio.to_thread(
             orchestration_fn,
@@ -143,6 +196,9 @@ async def run_group_chat_loop(
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
             inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
             tool_state_export = _unpack_orchestration_result(result)
+        external_summary = ((extra_session_ctx or {}).get("external_chat_context") or {}).get("summary")
+        if isinstance(external_summary, dict):
+            retrieval_ctx["external_context"] = external_summary
 
         # turn 0 完成後鎖定工具狀態，後續 turn 共用；若 turn 0 沒觸發工具就保持 None。
         if shared_tool_state is None and isinstance(tool_state_export, SharedToolState) and tool_state_export.executed:
@@ -232,6 +288,107 @@ def _group_turn_delay_seconds(user_prefs: dict) -> float:
     except (TypeError, ValueError):
         delay = 2.0
     return max(0.0, min(delay, MAX_GROUP_TURN_DELAY_SECONDS))
+
+
+def _discussion_mode_for_external_context(extra_session_ctx: dict | None) -> str:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return "default"
+    source = str(external_context.get("source") or "").strip()
+    if source in {"youtube_live", "youtube_live_director"}:
+        return "youtube_live"
+    return "default"
+
+
+def _live_hosting_for_external_context(extra_session_ctx: dict | None) -> dict | None:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return None
+    source = str(external_context.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return None
+    hosting = external_context.get("live_hosting")
+    return hosting if isinstance(hosting, dict) and hosting else None
+
+
+def _live_episode_plan_for_external_context(extra_session_ctx: dict | None) -> dict | None:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return None
+    source = str(external_context.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return None
+    live_episode_plan = external_context.get("live_episode_plan")
+    return live_episode_plan if isinstance(live_episode_plan, dict) and live_episode_plan else None
+
+
+def _build_live_episode_reply_task(
+    live_episode_plan: dict | None,
+    *,
+    turn_index: int,
+    max_turns: int,
+    target_character_id: str,
+    character_name: str,
+    last_character_name: str,
+    last_reply: str,
+    discussion_mode: str,
+) -> dict[str, Any]:
+    if discussion_mode != "youtube_live" or not isinstance(live_episode_plan, dict) or not live_episode_plan:
+        return {}
+    reply_index = max(1, int(turn_index or 0) + 1)
+    max_role_replies = _live_episode_max_role_replies(live_episode_plan, max_turns)
+    stage = _live_episode_reply_stage(reply_index)
+    segment_memory = (
+        live_episode_plan.get("segment_memory")
+        if isinstance(live_episode_plan.get("segment_memory"), dict)
+        else {}
+    )
+    previous_claims = [
+        str(item).strip()
+        for item in segment_memory.get("covered_claims") or []
+        if str(item).strip()
+    ]
+    turn_contract = (
+        live_episode_plan.get("turn_contract")
+        if isinstance(live_episode_plan.get("turn_contract"), dict)
+        else {}
+    )
+    task = {
+        "stage": stage,
+        "turn_reply_index": reply_index,
+        "max_role_replies": max_role_replies,
+        "target_character_id": str(target_character_id or "").strip(),
+        "target_character_name": str(character_name or "").strip(),
+        "turn_id": str(live_episode_plan.get("turn_id") or turn_contract.get("turn_id") or "").strip(),
+        "turn_type": str(live_episode_plan.get("turn_type") or turn_contract.get("turn_type") or "").strip(),
+        "previous_claims": previous_claims,
+    }
+    if last_character_name:
+        task["previous_speaker_name"] = str(last_character_name or "").strip()
+    if last_reply:
+        task["previous_reply"] = str(last_reply or "").strip()
+    return {key: value for key, value in task.items() if value not in ("", [], {})}
+
+
+def _live_episode_max_role_replies(live_episode_plan: dict, max_turns: int) -> int:
+    dialogue_policy = (
+        live_episode_plan.get("dialogue_policy")
+        if isinstance(live_episode_plan.get("dialogue_policy"), dict)
+        else {}
+    )
+    try:
+        policy_limit = int(dialogue_policy.get("max_replies") or max_turns)
+    except (TypeError, ValueError):
+        policy_limit = max_turns
+    return max(1, min(int(max_turns or 1), policy_limit, MAX_GROUP_TURNS_HARD_LIMIT))
+
+
+def _live_episode_reply_stage(reply_index: int) -> str:
+    if reply_index <= 1:
+        return "primary_point"
+    if reply_index == 2:
+        return "reaction_translate_or_new_angle"
+    return "bridge_close_only"
 
 
 def _character_by_id(characters: list[dict], character_id: str) -> dict | None:

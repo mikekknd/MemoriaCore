@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTubeBridge Live Chat</title>
+  <link rel="stylesheet" href="/ui-assets/live-chat.css?v=topic-graph-sources-v2">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Live Chat</h1>
+      <div class="status-row">
+        <span id="sessionBadge" class="badge">尋找 live session...</span>
+        <span id="durationBadge" class="badge">已直播 -- / 目標 --</span>
+        <span id="countBadge">0 則</span>
+        <span id="updatedBadge">尚未更新</span>
+      </div>
+    </header>
+    <div class="toolbar">
+      <button id="orderBottom" class="active" type="button">最新在下方</button>
+      <button id="orderTop" type="button">最新在上方</button>
+      <button id="refresh" type="button">更新</button>
+    </div>
+    <main id="chatList" class="list newest-bottom">
+      <div class="empty">等待 YouTubeBridge 建立或綁定直播 session。</div>
+    </main>
+  </div>
+
+  <script type="module" src="/ui-assets/live-chat.js?v=topic-graph-sources-v2"></script>
+</body>
+</html>

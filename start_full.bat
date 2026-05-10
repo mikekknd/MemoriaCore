@@ -47,13 +47,17 @@ if %errorlevel% neq 0 (
 :: -- Port config (edit here if needed) --
 set API_PORT=8088
 set STREAMLIT_PORT=8501
+set "LOG_DIR=%~dp0runtime\log"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 :: -- 清掉佔用 API port 的舊進程（PowerShell 隔離，避免 taskkill 把 Ctrl+C 傳回 batch）--
 powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort %API_PORT% -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 
 :: -- Start FastAPI backend --
 echo [1/2] Starting FastAPI backend on port %API_PORT% ...
-start /B "" "%VENV_PYTHON%" run_server.py
+echo      stdout: %LOG_DIR%\api_8088.out.log
+echo      stderr: %LOG_DIR%\api_8088.err.log
+start "MemoriaCore API" /B cmd /c ""%PYTHON%" run_server.py 1>>"%LOG_DIR%\api_8088.out.log" 2>>"%LOG_DIR%\api_8088.err.log""
 
 :: -- Wait for FastAPI to be ready --
 echo      Waiting for backend to be ready ...
@@ -78,7 +82,9 @@ echo.
 :: -- Start Streamlit frontend --
 :start_streamlit
 echo [2/2] Starting Streamlit dashboard on port %STREAMLIT_PORT% ...
-start /B "" "%VENV_PYTHON%" -m streamlit run app.py --server.port %STREAMLIT_PORT% --server.headless true
+echo      stdout: %LOG_DIR%\streamlit_8501.out.log
+echo      stderr: %LOG_DIR%\streamlit_8501.err.log
+start "MemoriaCore Streamlit" /B cmd /c ""%PYTHON%" -m streamlit run app.py --server.port %STREAMLIT_PORT% --server.headless true 1>>"%LOG_DIR%\streamlit_8501.out.log" 2>>"%LOG_DIR%\streamlit_8501.err.log""
 
 :: -- Wait for Streamlit --
 timeout /t 3 /nobreak >nul

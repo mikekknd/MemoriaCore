@@ -49,8 +49,9 @@ def sample_user_prefs():
 
 
 class TestDualLayerCoordinator:
-    def test_returns_11_tuple(self, mock_deps, sample_user_prefs):
-        """雙層編排應回傳 11-tuple"""
+    def test_returns_orchestration_result(self, mock_deps, sample_user_prefs):
+        """雙層編排應回傳 OrchestrationResult"""
+        from core.chat_orchestrator.dataclasses import OrchestrationResult
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
@@ -60,11 +61,11 @@ class TestDualLayerCoordinator:
             user_prefs=sample_user_prefs,
         )
 
-        assert isinstance(result, tuple)
+        assert isinstance(result, OrchestrationResult)
         assert len(result) == 12
 
     def test_reply_in_result(self, mock_deps, mock_router_with_tools, sample_user_prefs):
-        """12-tuple 的第一個元素應是回覆文字"""
+        """OrchestrationResult 的第一個相容位置應是回覆文字"""
         from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
 
         result = run_dual_layer_orchestration(
@@ -189,8 +190,7 @@ class TestDualLayerCoordinator:
             user_prefs=sample_user_prefs,
         )
 
-        # 只要不拋例外即通過
-        assert isinstance(result, tuple)
+        # 只要不拋例外且保留序列相容即通過
         assert len(result) == 12
 
     def test_group_followup_appended_when_history_ends_with_assistant(
@@ -229,8 +229,17 @@ class TestDualLayerCoordinator:
         assert "<user_identity" not in messages[-1]["content"]
         assert '<user user_name="夏雪" />' not in messages[-1]["content"]
         assert '<latest_user_message speaker="human_user" user_name="夏雪">' not in messages[-1]["content"]
-        assert '<original_user_request role="background_constraint" speaker="human_user" user_name="夏雪">' in messages[-1]["content"]
-        assert '<primary_reply_target role="primary_response_target" speaker="可可">' in messages[-1]["content"]
+        assert "original_user_request:" in messages[-1]["content"]
+        assert "role: background_constraint" in messages[-1]["content"]
+        assert "speaker: human_user" in messages[-1]["content"]
+        assert "user_name: 夏雪" in messages[-1]["content"]
+        assert "primary_reply_target:" in messages[-1]["content"]
+        assert "role: primary_response_target" in messages[-1]["content"]
+        assert "speaker: 可可" in messages[-1]["content"]
+        assert "<original_user_request" not in messages[-1]["content"]
+        assert "<primary_reply_target" not in messages[-1]["content"]
+        assert "<turn_context>" not in messages[-1]["content"]
+        assert "<routing_decision>" not in messages[-1]["content"]
         assert "兩位早安阿" in messages[-1]["content"]
         assert "早安呀" in messages[-1]["content"]
         assert '<group_followup_instruction source="system_control">' in messages[-1]["content"]
@@ -238,6 +247,54 @@ class TestDualLayerCoordinator:
         assert "<group_followup_control" not in messages[-1]["content"]
         assert "上一位發言者" not in messages[0]["content"]
         assert "早安呀" not in messages[0]["content"]
+
+    def test_group_followup_user_control_includes_retrieved_memory_context(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
+    ):
+        """群組接力追加的 user control 也要承載 retrieved_memory_context，system prompt 保持穩定。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        mock_memory_system.set_core_search_results([
+            {"insight": "使用者偏好先驗證再下結論。", "score": 0.91},
+        ])
+        mock_memory_system.set_search_results([
+            {
+                "block_id": "mem-followup",
+                "timestamp": "2026-05-07T08:00:00",
+                "overview": "使用者討論 prompt cache。",
+                "raw_dialogues": [{"role": "user", "content": "不要破壞 cache"}],
+            }
+        ])
+
+        run_dual_layer_orchestration(
+            session_messages=[
+                {"role": "user", "content": "兩位聊一下 prompt cache"},
+                {"role": "assistant", "content": "[可可|char-a]: system prompt 最好穩定。"},
+            ],
+            last_entities=[],
+            user_prompt="兩位聊一下 prompt cache",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "session_mode": "group",
+                "active_character_ids": ["char-a", "default"],
+                "character_id": "default",
+                "followup_instruction": {
+                    "user_prompt_original": "兩位聊一下 prompt cache",
+                    "last_character_name": "可可",
+                    "last_reply": "system prompt 最好穩定。",
+                },
+            },
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        system_prompt = chat_call["messages"][0]["content"]
+        followup_user = chat_call["messages"][-1]["content"]
+        assert "<retrieved_memory_context>" not in system_prompt
+        assert "使用者偏好先驗證" not in system_prompt
+        assert "<retrieved_memory_context>" in followup_user
+        assert "使用者偏好先驗證" in followup_user
+        assert "uid: mem-followup" in followup_user
+        assert '<group_followup_instruction source="system_control">' in followup_user
 
     def test_group_followup_turn_skips_tool_router(
         self, mock_deps, mock_router_with_tools, sample_user_prefs
@@ -271,6 +328,130 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_dual_layer_youtube_live_external_context_disables_tool_router(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """直播 external_context 已提供資料時，不應再觸發一般工具路由。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        prefs = {**sample_user_prefs, "tavily_api_key": "test-key"}
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請比較 Re:ZERO 與 Witch Hat Atelier 最新排名"}],
+            last_entities=[],
+            user_prompt="請比較 Re:ZERO 與 Witch Hat Atelier 最新排名",
+            user_prefs=prefs,
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic\n本輪目標：比較已提供資料。",
+                },
+            },
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        assert router_calls == []
+
+    def test_dual_layer_youtube_live_external_context_skips_memory_lookup(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, mock_analyzer, sample_user_prefs
+    ):
+        """直播流程由 EpisodePlan/Topic Pack 提供上下文，不應再跑使用者記憶檢索。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        memory_calls = []
+
+        def record_memory_call(name):
+            def _inner(*args, **kwargs):
+                memory_calls.append(name)
+                if name == "expand_query":
+                    return {"expanded_keywords": "不該出現", "entity_confidence": 1.0}
+                return []
+            return _inner
+
+        mock_analyzer.detect_topic_shift.side_effect = AssertionError("youtube live should skip topic shift")
+        mock_memory_system.expand_query = record_memory_call("expand_query")
+        mock_memory_system.search_blocks = record_memory_call("search_blocks")
+        mock_memory_system.search_core_memories = record_memory_call("search_core_memories")
+        mock_memory_system.search_profile_by_query = record_memory_call("search_profile_by_query")
+        mock_memory_system.get_static_profile_prompt = record_memory_call("get_static_profile_prompt")
+        mock_memory_system.get_proactive_topics_prompt = record_memory_call("get_proactive_topics_prompt")
+
+        result = run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請根據流程繼續直播"}],
+            last_entities=["舊標籤"],
+            user_prompt="請根據流程繼續直播",
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic",
+                },
+            },
+        )
+
+        retrieval_ctx = result[2]
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+
+        assert memory_calls == []
+        assert retrieval_ctx["expanded_keywords"] == ""
+        assert retrieval_ctx["has_memory"] is False
+        assert retrieval_ctx["block_count"] == 0
+        assert retrieval_ctx["memory_lookup_skipped"] == "youtube_live_director"
+        assert result[3] is False
+        assert result[4] is None
+        assert "<retrieved_memory_context>" not in latest_user
+
+    def test_dual_layer_retrieved_memory_context_is_moved_to_user_prompt(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
+    ):
+        """雙層最終 prompt 將 retrieved_memory_context 放在 user message，避免破壞 system cache。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        mock_memory_system.set_core_search_results([
+            {"insight": "使用者偏好先驗證再下結論。", "score": 0.91},
+        ])
+        mock_memory_system.set_search_results([
+            {
+                "block_id": "mem-a",
+                "timestamp": "2026-05-07T08:00:00",
+                "overview": "使用者討論 prompt token 壓縮。",
+                "raw_dialogues": [{"role": "user", "content": "XML 太深"}],
+            }
+        ])
+        mock_memory_system.search_profile_by_query = lambda *args, **kwargs: [
+            {"fact_key": "favorite_food", "fact_value": "毛豆", "score": 0.88},
+        ]
+
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "prompt 可以壓短嗎"}],
+            last_entities=[],
+            user_prompt="prompt 可以壓短嗎",
+            user_prefs=sample_user_prefs,
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        system_prompt = chat_call["messages"][0]["content"]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<retrieved_memory_context>" not in system_prompt
+        assert "core_memory:" not in system_prompt
+        assert latest_user.count("<retrieved_memory_context>") == 1
+        assert "core_memory:" in latest_user
+        assert "relevant_preferences:" in latest_user
+        assert "episodic_memories:" in latest_user
+        assert "uid: mem-a" in latest_user
+        assert "<user_core_memory>" not in latest_user
+        assert "<user_relevant_preferences>" not in latest_user
+        assert "<preference" not in latest_user
+        assert "<episodic_memory" not in latest_user
+        assert "<timestamp>" not in latest_user
+        assert "<overview>" not in latest_user
+        assert "<dialogue>" not in latest_user
 
     def test_dual_layer_group_reuses_query_expand_state(
         self, mock_deps, mock_memory_system, sample_user_prefs
@@ -415,6 +596,172 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_single_layer_youtube_live_external_context_disables_tool_router(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排在直播 external_context 下也不得呼叫工具路由。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        prefs = {**sample_user_prefs, "dual_layer_enabled": False, "tavily_api_key": "test-key"}
+        orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請查最新動畫排名"}],
+            last_entities=[],
+            user_prompt="請查最新動畫排名",
+            user_prefs=prefs,
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic\n本輪目標：依據已提供資料回應。",
+                },
+            },
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        assert router_calls == []
+
+    def test_single_layer_youtube_live_external_context_skips_memory_lookup(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層直播流程也不應執行任何使用者記憶檢索步驟。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        memory_calls = []
+
+        def record_memory_call(name):
+            def _inner(*args, **kwargs):
+                memory_calls.append(name)
+                if name == "expand_query":
+                    return {"expanded_keywords": "不該出現", "entity_confidence": 1.0}
+                return []
+            return _inner
+
+        mock_analyzer.detect_topic_shift.side_effect = AssertionError("youtube live should skip topic shift")
+        mock_memory_system.expand_query = record_memory_call("expand_query")
+        mock_memory_system.search_blocks = record_memory_call("search_blocks")
+        mock_memory_system.search_core_memories = record_memory_call("search_core_memories")
+        mock_memory_system.search_profile_by_query = record_memory_call("search_profile_by_query")
+        mock_memory_system.get_static_profile_prompt = record_memory_call("get_static_profile_prompt")
+        mock_memory_system.get_proactive_topics_prompt = record_memory_call("get_proactive_topics_prompt")
+
+        result = orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請根據流程繼續直播"}],
+            last_entities=["舊標籤"],
+            user_prompt="請根據流程繼續直播",
+            user_prefs={**sample_user_prefs, "dual_layer_enabled": False},
+            session_ctx={
+                "channel": "youtube_live",
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "context_text": "直播流程 action=continue_topic",
+                },
+            },
+        )
+
+        retrieval_ctx = result[2]
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+
+        assert memory_calls == []
+        assert retrieval_ctx["expanded_keywords"] == ""
+        assert retrieval_ctx["has_memory"] is False
+        assert retrieval_ctx["block_count"] == 0
+        assert retrieval_ctx["memory_lookup_skipped"] == "youtube_live_director"
+        assert result[3] is False
+        assert result[4] is None
+        assert "<retrieved_memory_context>" not in latest_user
+
+    def test_single_layer_retrieved_memory_context_is_moved_to_user_prompt(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層最終 prompt 也將 retrieved_memory_context 放在 user message。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        mock_memory_system.set_core_search_results([
+            {"insight": "使用者偏好先驗證再下結論。", "score": 0.91},
+        ])
+        mock_memory_system.set_search_results([
+            {
+                "block_id": "mem-single",
+                "timestamp": "2026-05-07T08:00:00",
+                "overview": "使用者討論 prompt token 壓縮。",
+                "raw_dialogues": [{"role": "user", "content": "XML 太深"}],
+            }
+        ])
+        mock_memory_system.search_profile_by_query = lambda *args, **kwargs: [
+            {"fact_key": "favorite_food", "fact_value": "毛豆", "score": 0.88},
+        ]
+
+        orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "prompt 可以壓短嗎"}],
+            last_entities=[],
+            user_prompt="prompt 可以壓短嗎",
+            user_prefs={**sample_user_prefs, "dual_layer_enabled": False},
+        )
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        system_prompt = chat_call["messages"][0]["content"]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<retrieved_memory_context>" not in system_prompt
+        assert "core_memory:" not in system_prompt
+        assert latest_user.count("<retrieved_memory_context>") == 1
+        assert "core_memory:" in latest_user
+        assert "relevant_preferences:" in latest_user
+        assert "episodic_memories:" in latest_user
+        assert "uid: mem-single" in latest_user
+        assert "<user_core_memory>" not in latest_user
+        assert "<user_relevant_preferences>" not in latest_user
+        assert "<preference" not in latest_user
+        assert "<episodic_memory" not in latest_user
+        assert "<timestamp>" not in latest_user
+        assert "<overview>" not in latest_user
+        assert "<dialogue>" not in latest_user
 
     def test_single_layer_group_reuses_query_expand_state(
         self,
@@ -740,35 +1087,17 @@ class TestUnpackOrchestrationResult:
         assert len(unpacked) == 12
         assert unpacked == result
 
-    def test_handles_11_tuple_pads_tool_state(self):
-        """舊 11-tuple 應補足 tool_state_export=None"""
+    @pytest.mark.parametrize("length", [9, 10, 11, 13])
+    def test_rejects_legacy_tuple_lengths(self, length):
+        """內部 orchestration contract 只接受 OrchestrationResult 或最新 12-slot tuple。"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
-        result = tuple(range(11))
-        unpacked = _unpack_orchestration_result(result)
+        with pytest.raises(ValueError, match="12"):
+            _unpack_orchestration_result(tuple(range(length)))
 
-        assert len(unpacked) == 12
-        assert unpacked[-1] is None
-
-    def test_handles_10_tuple_pads_cited_uids_and_tool_state(self):
-        """10-tuple 應補足 cited_uids=[] 和 tool_state_export=None"""
+    def test_rejects_non_tuple_sequence(self):
+        """12-slot list 不應繞過最新 tuple contract。"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
-        result = tuple(range(10))
-        unpacked = _unpack_orchestration_result(result)
-
-        assert len(unpacked) == 12
-        assert unpacked[-2] == []
-        assert unpacked[-1] is None
-
-    def test_handles_9_tuple_pads_full(self):
-        """9-tuple 應補足 thinking_speech=""、cited_uids=[]、tool_state_export=None"""
-        from api.routers.chat.orchestration import _unpack_orchestration_result
-
-        result = tuple(range(9))
-        unpacked = _unpack_orchestration_result(result)
-
-        assert len(unpacked) == 12
-        assert unpacked[-3] == ""
-        assert unpacked[-2] == []
-        assert unpacked[-1] is None
+        with pytest.raises(ValueError, match="12-slot tuple"):
+            _unpack_orchestration_result(list(range(12)))

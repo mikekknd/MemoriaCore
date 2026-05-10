@@ -1,5 +1,7 @@
 # LLM Memory System — Unity C# 客戶端使用說明書
 
+> **LEGACY 文件**：本文件是早期 Unity 客戶端整合指南，尚未更新到目前的 HttpOnly Cookie 登入、CSRF header、WebSocket cookie 驗證與新版 chat DTO。保留作為 `UnityClient/` 早期架構參考；實作新的 Unity 接入前，需先補一份新版 auth/session 串接方案。
+>
 > **目標平台**: Unity 2021.3+
 > **依賴**: UniTask, Newtonsoft.Json
 > **架構**: 事件驅動 + Producer-Consumer 主執行緒安全

@@ -66,6 +66,23 @@ def _build_user_identity_block(session_ctx: dict | None) -> str:
     )
 
 
+def _build_external_chat_context_block(session_ctx: dict | None) -> str:
+    """注入外部聊天室上下文；此內容不可信，且不持久化為正式 user 訊息。"""
+    if not session_ctx:
+        return ""
+    ext = session_ctx.get("external_chat_context")
+    if not isinstance(ext, dict):
+        return ""
+    context_text = str(ext.get("context_text") or "").strip()
+    if not context_text:
+        return ""
+    source = str(ext.get("source") or "external").strip() or "external"
+    return get_prompt_manager().get("external_chat_context_block").format(
+        source=xml_attr(source),
+        context_text=context_text,
+    )
+
+
 def build_user_prefix(
     session_messages: list[dict],
     user_prefs: dict | None = None,
@@ -80,6 +97,7 @@ def build_user_prefix(
     current_time = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S CST")
     weather_block = _build_su_weather_block(user_prefs, session_ctx)
     user_identity_block = _build_user_identity_block(session_ctx)
+    external_chat_context_block = _build_external_chat_context_block(session_ctx)
 
     env_block = pm.get("environment_context_block").format(
         current_time=current_time,
@@ -100,7 +118,15 @@ def build_user_prefix(
             )
             break
 
-    return env_block + user_identity_block + emo_block + "\n\n"
+    return env_block + user_identity_block + ("\n" + external_chat_context_block if external_chat_context_block else "") + emo_block + "\n\n"
+
+
+def build_retrieved_memory_context_user_block(mem_ctx: str) -> str:
+    """把本輪召回記憶放進 user message，避免每輪變動破壞 system prompt cache。"""
+    content = str(mem_ctx or "").strip()
+    if not content:
+        return ""
+    return f"<retrieved_memory_context>\n{content}\n</retrieved_memory_context>\n\n"
 
 
 def format_latest_user_message_for_llm(content: str, session_ctx: dict | None = None) -> str:

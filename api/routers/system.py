@@ -3,7 +3,7 @@ import asyncio
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from api.dependencies import (
-    get_memory_sys, get_storage, get_router,
+    get_memory_sys, get_storage, get_router, get_analyzer,
     get_persona_sync_manager, reload_router, reload_tts,
     require_db_writes_enabled,
 )
@@ -12,6 +12,7 @@ from api.models.requests import (
     PreferenceAggregateRequest, SyntheticRequest,
 )
 from api.models.responses import SystemConfigDTO
+from api.session_limits import MAX_SESSION_CHARACTERS
 from core.i18n import DEFAULT_LOCALE, normalize_locale
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -63,6 +64,7 @@ async def get_config():
         dual_layer_enabled=prefs.get("dual_layer_enabled", False),
         group_chat_max_bot_turns=int(prefs.get("group_chat_max_bot_turns", 3)),
         group_chat_turn_delay_seconds=float(prefs.get("group_chat_turn_delay_seconds", 2.0)),
+        max_session_characters=MAX_SESSION_CHARACTERS,
         opening_penalty_enabled=prefs.get("opening_penalty_enabled", True),
         opening_penalty_tokenizer_ref=prefs.get("opening_penalty_tokenizer_ref", ""),
         tts_enabled=prefs.get("tts_enabled", False),
@@ -245,9 +247,7 @@ async def trigger_persona_sync_now(
 @router.post("/synthetic")
 async def synthetic_data(body: SyntheticRequest):
     require_db_writes_enabled()
-    import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools_synthetic import generate_synthetic_data
+    from tools.synthetic import generate_synthetic_data
     ms = get_memory_sys()
     ana = get_analyzer()
     rtr = get_router()

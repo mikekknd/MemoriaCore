@@ -103,6 +103,7 @@ class BotRegistry:
             "character_id": str(config.get("character_id", "default")).strip() or "default",
             "token": str(config.get("token", "")).strip(),
             "enabled": bool(config.get("enabled", False)),
+            "settings": deepcopy(config.get("settings", {})) if isinstance(config.get("settings"), dict) else {},
         }
 
     @staticmethod
@@ -119,7 +120,6 @@ class BotRegistry:
         if config.get("enabled") and platform in {"telegram", "discord"} and not config.get("token"):
             platform_label = "Telegram" if platform == "telegram" else "Discord"
             raise BotRegistryError(f"enabled {platform_label} bot 必須提供 token")
-
     def validate_configs(self, configs: list[dict[str, Any]], *, character_ids: set[str]) -> None:
         seen_ids: set[str] = set()
         seen_enabled_tokens: dict[str, set[str]] = {
@@ -152,4 +152,5 @@ class BotRegistry:
             "character_id": prefs.get("active_character_id", "default") or "default",
             "token": token,
             "enabled": True,
+            "settings": {},
         }]

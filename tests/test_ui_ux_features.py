@@ -2,14 +2,17 @@
 import asyncio
 from pathlib import Path
 import shutil
+import threading
 import uuid
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 import api.dependencies as deps
 from api.middleware.auth import AuthMiddleware
 from api.main import _persona_sync_candidate_character_ids, _should_log_persona_sync_skip
+from api.models.requests import ChatSyncRequest
 from api.routers import auth, chat_rest, session, system
 from api.session_manager import session_manager
 from core.storage_manager import StorageManager
@@ -93,6 +96,7 @@ def test_system_config_roundtrips_admin_bypass(monkeypatch):
         assert config.status_code == 200, config.text
         assert config.json()["admin_bypass_enabled"] is False
         assert config.json()["group_chat_turn_delay_seconds"] == 2.0
+        assert config.json()["max_session_characters"] == 6
         assert config.json()["ui_locale"] == "zh-TW"
         public_locale = client.get("/api/v1/system/ui-locale")
         assert public_locale.status_code == 200, public_locale.text
@@ -168,7 +172,8 @@ def test_personality_root_endpoint_removed_and_sync_requires_character_id(monkey
 
 def test_auto_persona_sync_uses_conversation_candidates_without_default_fallback():
     class FakeStorage:
-        def list_conversation_character_ids(self):
+        def list_conversation_character_ids(self, exclude_channels=()):
+            assert exclude_channels == ("youtube_live",)
             return ["char-a", "char-b"]
 
         def list_recent_conversation_character_ids(self, limit=50):
@@ -177,15 +182,59 @@ def test_auto_persona_sync_uses_conversation_candidates_without_default_fallback
     assert _persona_sync_candidate_character_ids(FakeStorage()) == ["char-a", "char-b"]
 
     class EmptyStorage:
-        def list_conversation_character_ids(self):
+        def list_conversation_character_ids(self, exclude_channels=()):
             return []
 
     assert _persona_sync_candidate_character_ids(EmptyStorage()) == []
 
 
+def test_auto_persona_sync_candidates_ignore_youtube_live_channel():
+    base = _tmp_dir()
+    storage = _storage(base)
+
+    try:
+        storage.create_conversation_session(
+            "sid-live",
+            channel="youtube_live",
+            channel_uid="yt-live-a",
+            user_id="__youtube_live__",
+            character_id="char-live",
+            channel_class="public",
+            persona_face="public",
+        )
+        storage.save_conversation_message(
+            "sid-live",
+            "assistant",
+            "直播測試回覆",
+            character_id="char-live",
+            character_name="直播角色",
+        )
+        storage.create_conversation_session(
+            "sid-dashboard",
+            channel="dashboard",
+            channel_uid="1",
+            user_id="1",
+            character_id="char-dashboard",
+            channel_class="public",
+            persona_face="public",
+        )
+        storage.save_conversation_message(
+            "sid-dashboard",
+            "assistant",
+            "一般公開回覆",
+            character_id="char-dashboard",
+            character_name="公開角色",
+        )
+
+        assert _persona_sync_candidate_character_ids(storage) == ["char-dashboard"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_auto_persona_sync_skip_log_suppresses_insufficient_messages():
     assert _should_log_persona_sync_skip("no_messages_yet") is False
     assert _should_log_persona_sync_skip("insufficient_messages(12/50)") is False
+    assert _should_log_persona_sync_skip("daily_limit_reached(2/2)") is False
     assert _should_log_persona_sync_skip("not_idle(1.0min < 10min)") is True
 
 
@@ -258,6 +307,51 @@ def test_conversation_message_persists_character_name():
         assert messages[0]["character_name"] == "角色 A"
         assert messages[0]["character_id"] == "char-a"
     finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_delete_all_session_history_is_current_user_scoped(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-clear-sessions-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+
+    try:
+        client = TestClient(_app(), client=("127.0.0.1", 50000))
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "owner",
+                "password": "abc123",
+                "password_confirm": "abc123",
+            },
+        )
+        assert registered.status_code == 200, registered.text
+        csrf = registered.json()["csrf_token"]
+
+        storage.create_conversation_session("owner-db-a", user_id="1", character_id="char-a")
+        storage.create_conversation_session("owner-db-b", user_id="1", character_id="char-a")
+        storage.create_conversation_session("other-db", user_id="999", character_id="char-a")
+        active_owner = asyncio.run(session_manager.create(user_id="1", character_id="char-a"))
+        active_other = asyncio.run(session_manager.create(user_id="999", character_id="char-a"))
+
+        deleted = client.request(
+            "DELETE",
+            "/api/v1/session/history",
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["deleted_count"] == 3
+        assert storage.load_conversation_sessions(user_id="1") == []
+        assert storage.get_session_info("other-db") is not None
+        assert asyncio.run(session_manager.get(active_owner.session_id)) is None
+        assert asyncio.run(session_manager.get(active_other.session_id)) is not None
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -426,6 +520,67 @@ def test_stream_sync_emits_roster_changed_before_group_done(monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
 
 
+@pytest.mark.asyncio
+async def test_stream_sync_cancels_group_task_when_client_disconnects(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-stream-cancel-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            if character_id in {"char-a", "char-b"}:
+                return {
+                    "character_id": character_id,
+                    "name": {"char-a": "角色 A", "char-b": "角色 B"}[character_id],
+                    "tts_language": "",
+                    "tts_rules": "",
+                }
+            return None
+
+    async def fake_group_loop(**kwargs):
+        kwargs["on_event"]({"type": "debug_tick"})
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    deps.character_mgr = FakeCharacterManager()
+    monkeypatch.setattr(chat_rest, "run_group_chat_loop", fake_group_loop)
+
+    try:
+        response = await chat_rest.chat_stream_sync(
+            ChatSyncRequest(
+                content="hello",
+                character_ids=["char-a", "char-b"],
+            ),
+            current_user={"id": "owner", "username": "owner", "role": "admin"},
+        )
+        iterator = response.body_iterator
+        first_event = await asyncio.wait_for(anext(iterator), timeout=1.0)
+        assert '"type": "debug_tick"' in first_event
+        assert started.is_set()
+
+        await iterator.aclose()
+        for _ in range(20):
+            if cancelled.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert cancelled.is_set()
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
+        deps.character_mgr = None
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_chat_sync_returns_and_persists_character_name(monkeypatch):
     monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-chat-secret")
     base = _tmp_dir()
@@ -458,6 +613,7 @@ def test_chat_sync_returns_and_persists_character_name(monkeypatch):
             "測試回覆",
             "",
             [],
+            None,
         )
 
     deps.character_mgr = FakeCharacterManager()
@@ -523,7 +679,7 @@ def test_chat_sync_returns_roster_event_when_roster_changes(monkeypatch):
             return None
 
     def fake_orchestration(*args, **kwargs):
-        return ("ok", [], {}, False, None, "", None, None, "ok", "", [])
+        return ("ok", [], {}, False, None, "", None, None, "ok", "", [], None)
 
     async def fake_group_loop(**kwargs):
         return [{

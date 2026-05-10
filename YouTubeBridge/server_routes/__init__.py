@@ -1,0 +1,41 @@
+"""YouTubeBridge FastAPI route registration。"""
+from __future__ import annotations
+
+from fastapi import FastAPI
+
+from . import (
+    connectors,
+    director,
+    episode_plans,
+    fact_cards,
+    memoria,
+    persona_overlays,
+    research,
+    sessions,
+    summaries,
+    testing,
+    topic_packs,
+    ui,
+)
+
+
+_ROUTE_MODULES = (
+    ui,
+    connectors,
+    sessions,
+    director,
+    episode_plans,
+    testing,
+    topic_packs,
+    fact_cards,
+    research,
+    persona_overlays,
+    summaries,
+    memoria,
+)
+
+
+def register_routes(app: FastAPI, state) -> None:
+    for module in _ROUTE_MODULES:
+        module.configure(state)
+        app.include_router(module.router)

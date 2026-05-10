@@ -180,6 +180,18 @@ class SessionManager:
                 self._storage.deactivate_session(session_id)
             return removed
 
+    async def delete_for_user(self, user_id: str) -> list[str]:
+        """從記憶體移除指定使用者的所有活躍 session。"""
+        target_user_id = str(user_id)
+        async with self._lock:
+            removed_ids = [
+                sid for sid, session in self._sessions.items()
+                if session.user_id == target_user_id
+            ]
+            for sid in removed_ids:
+                self._sessions.pop(sid, None)
+            return removed_ids
+
     async def bridge(self, session_id: str, keep_last_n: int = 6) -> bool:
         """橋接邏輯：話題偏移後保留最近 N 條訊息（預設 6 條 = 3 輪），並記錄截斷點到 DB。"""
         async with self._lock:
@@ -302,6 +314,32 @@ class SessionManager:
                 if message_id is not None:
                     msg["message_id"] = message_id
             s.messages.append(msg)
+            return msg.get("message_id")
+
+    async def add_system_event(
+        self,
+        session_id: str,
+        content: str,
+        debug_info: dict | None = None,
+    ) -> int | None:
+        async with self._lock:
+            s = self._sessions.get(session_id)
+            if not s:
+                return None
+            msg = {"role": "system_event", "content": content}
+            if debug_info:
+                msg["debug_info"] = debug_info
+            s.messages.append(msg)
+            s.last_active = datetime.now()
+            if self._storage:
+                message_id = self._storage.save_conversation_message(
+                    session_id,
+                    "system_event",
+                    content,
+                    debug_info,
+                )
+                if message_id is not None:
+                    msg["message_id"] = message_id
             return msg.get("message_id")
 
     async def add_assistant_message(

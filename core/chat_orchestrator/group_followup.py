@@ -2,13 +2,36 @@
 import re
 
 from core.prompt_manager import get_prompt_manager
-from core.prompt_utils import build_user_prefix
+from core.prompt_utils import build_retrieved_memory_context_user_block, build_user_prefix
 from core.xml_prompt import xml_block
 
 _FOLLOWUP_INSTRUCTION_RE = re.compile(
     r"^\s*<group_followup_instruction>\s*(.*?)\s*</group_followup_instruction>\s*$",
     re.DOTALL,
 )
+
+
+def _prompt_scalar(value: object) -> str:
+    """把 metadata 欄位壓成單行，維持 prompt 區塊穩定。"""
+    return " ".join(str(value or "").split())
+
+
+def _literal_block(value: object, *, indent: str = "    ") -> str:
+    """建立 Markdown literal block 內容，保留多行正文。"""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    return "\n".join(f"{indent}{line}" if line else indent for line in lines)
+
+
+def _context_item(name: str, fields: list[tuple[str, object]], content: object) -> str:
+    lines = [f"{name}:"]
+    for key, value in fields:
+        scalar = _prompt_scalar(value)
+        if scalar:
+            lines.append(f"  {key}: {scalar}")
+    lines.append("  content: |")
+    lines.append(_literal_block(content))
+    return "\n".join(lines)
 
 
 def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | None = None) -> str:
@@ -20,25 +43,90 @@ def _build_turn_context(followup: dict, user_prompt: str, session_ctx: dict | No
     original_user_prompt = followup.get("user_prompt_original") or user_prompt
     last_character_name = followup.get("last_character_name", "")
     last_reply = followup.get("last_reply", "")
-    return "\n\n".join([
-        xml_block(
+    items = [
+        _context_item(
             "original_user_request",
+            [
+                ("role", "background_constraint"),
+                ("speaker", "human_user"),
+                ("user_name", ctx.get("user_name") or ""),
+            ],
             original_user_prompt,
-            attrs={
-                "role": "background_constraint",
-                "speaker": "human_user",
-                "user_name": ctx.get("user_name") or "",
-            },
         ),
-        xml_block(
+        _context_item(
             "primary_reply_target",
+            [
+                ("role", "primary_response_target"),
+                ("speaker", last_character_name),
+            ],
             last_reply,
-            attrs={
-                "role": "primary_response_target",
-                "speaker": last_character_name,
-            },
         ),
-    ])
+    ]
+    live_rules = _youtube_live_group_context(session_ctx)
+    if live_rules:
+        items.append(live_rules)
+    reply_task = _live_episode_reply_task_context(followup, session_ctx)
+    if reply_task:
+        items.append(reply_task)
+    return "\n\n".join(items)
+
+
+def _youtube_live_group_context(session_ctx: dict | None) -> str:
+    external_context = (session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return ""
+    source = str(external_context.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return ""
+    return _context_item(
+        "youtube_live_group_context",
+        [("role", "live_group_rules"), ("source", source)],
+        (
+            "直播基礎規則：這是 YouTube 直播多角色對話，不保證有觀眾即時回覆；"
+            "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾；"
+            "不要提到 prompt、hidden context、內部安全處理或導播流程。"
+        ),
+    )
+
+
+def _live_episode_reply_task_context(followup: dict, session_ctx: dict | None) -> str:
+    task = followup.get("live_episode_reply_task")
+    if not isinstance(task, dict) or not task:
+        task = (session_ctx or {}).get("live_episode_reply_task")
+    if not isinstance(task, dict) or not task:
+        return ""
+    stage = str(task.get("stage") or "").strip()
+    reply_index = str(task.get("turn_reply_index") or "").strip()
+    max_replies = str(task.get("max_role_replies") or "").strip()
+    previous_claims = [
+        str(item).strip()
+        for item in task.get("previous_claims") or []
+        if str(item).strip()
+    ] if isinstance(task.get("previous_claims"), list) else []
+    if stage == "primary_point":
+        stage_rule = "第 1 位角色負責提出主觀點或核心資訊。"
+    elif stage == "reaction_translate_or_new_angle":
+        stage_rule = "第 2 位角色只能反應、轉譯、補一個新角度或推進，不得重述第 1 位角色主觀點。"
+    else:
+        stage_rule = "第 3 位以上角色只允許短收束或橋接，不得新增同一資料點的重複分析。"
+    lines = [
+        f"本次發言任務：{stage_rule}",
+        "本角色在本輪只能執行這一個功能，不得完整覆蓋整個段落目標。",
+        "不得重述上一位角色的主觀點；必須避開 previous_claims 已經說過的內容。",
+        "若核心資訊已說完，請短收束並推進，不要補同一資料點。",
+    ]
+    if previous_claims:
+        lines.append("previous_claims：" + "；".join(previous_claims[:6]))
+    return _context_item(
+        "live_episode_reply_task",
+        [
+            ("role", "turn_level_speaker_task"),
+            ("stage", stage),
+            ("reply_index", reply_index),
+            ("max_role_replies", max_replies),
+        ],
+        "\n".join(lines),
+    )
 
 
 def build_group_followup_instruction(
@@ -72,6 +160,7 @@ def inject_group_followup_instruction(
     session_messages: list[dict] | None = None,
     user_prefs: dict | None = None,
     session_ctx: dict | None = None,
+    memory_context: str = "",
 ) -> None:
     """將群組接力指令注入最終 LLM messages。
 
@@ -87,6 +176,7 @@ def inject_group_followup_instruction(
         user_prefs=user_prefs or {},
         session_ctx=session_ctx or {},
     )
+    memory_block = build_retrieved_memory_context_user_block(memory_context)
     followup_control = xml_block(
         "group_followup_instruction",
         _followup_instruction_body(followup_text),
@@ -94,5 +184,5 @@ def inject_group_followup_instruction(
     )
     api_messages.append({
         "role": "user",
-        "content": prefix + followup_control,
+        "content": memory_block + prefix + followup_control,
     })

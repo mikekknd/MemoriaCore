@@ -9,7 +9,7 @@ from api.dependencies import (
 )
 from api.models.requests import (
     SearchRequest, CoreSearchRequest, ExpandQueryRequest, BlockUpdateRequest,
-    MaintenanceModeRequest, DropMaintenanceTableRequest,
+    MaintenanceModeRequest, DropMaintenanceTableRequest, SharedYouTubeSummaryMemoryRequest,
 )
 from api.models.responses import (
     MemoryBlockDTO, SearchResultDTO, CoreMemoryDTO,
@@ -89,6 +89,8 @@ def _refresh_memory_runtime_cache(ms) -> dict:
     ms._memory_blocks_cache.clear()
     ms._core_memories_cache.clear()
     ms._user_profiles_cache.clear()
+    if hasattr(ms, "_shared_memory_blocks_cache"):
+        ms._shared_memory_blocks_cache.clear()
     if ms.db_path:
         ms._memory_blocks_cache[("default", "default", "public")] = ms.storage.load_db(
             ms.db_path,
@@ -103,6 +105,7 @@ def _refresh_memory_runtime_cache(ms) -> dict:
         "memory_blocks_cache": len(ms._memory_blocks_cache),
         "core_memories_cache": len(ms._core_memories_cache),
         "user_profiles_cache": len(ms._user_profiles_cache),
+        "shared_memory_blocks_cache": len(getattr(ms, "_shared_memory_blocks_cache", {})),
     }
 
 
@@ -426,6 +429,49 @@ async def get_block(
     raise HTTPException(404, detail=f"Block {block_id} not found")
 
 
+@router.post("/shared-youtube-summary")
+async def write_shared_youtube_summary_memory(
+    body: SharedYouTubeSummaryMemoryRequest,
+    current_user: dict = Depends(require_admin_user),
+):
+    """寫入 YouTube Live summary 的 shared public memory。"""
+    require_db_writes_enabled()
+    ms = get_memory_sys()
+    _require_memory_db(ms)
+    character_ids = [str(cid).strip() for cid in body.character_ids if str(cid).strip()]
+    character_ids = list(dict.fromkeys(character_ids))
+    if not character_ids:
+        raise HTTPException(422, detail="character_ids 不可為空")
+    metadata = {
+        "source": "youtube_live_summary",
+        "summary_id": body.summary_id,
+        "session_id": body.session_id,
+        "video_id": body.video_id,
+        "memory_write_status": "completed",
+    }
+    raw_dialogues = [{
+        "role": "system",
+        "content": f"[YouTube 直播互動共通記憶 summary_id={body.summary_id}]\n{body.memory_text}",
+    }]
+    async with db_write_lock:
+        block = await asyncio.to_thread(
+            ms.add_shared_memory_block,
+            body.memory_text,
+            raw_dialogues,
+            character_ids,
+            metadata=metadata,
+            source="youtube_live_summary",
+        )
+    if not block:
+        raise HTTPException(503, detail="記憶向量引擎尚未就緒，shared memory 未寫入")
+    return {
+        "status": "completed",
+        "block_id": block["block_id"],
+        "character_ids": character_ids,
+        "metadata": metadata,
+    }
+
+
 @router.put("/blocks/{block_id}", response_model=MemoryBlockDTO)
 async def update_block(block_id: str, body: BlockUpdateRequest, current_user: dict = Depends(get_current_user)):
     require_db_writes_enabled()
@@ -542,25 +588,28 @@ async def delete_core(
     require_db_writes_enabled()
     ms = get_memory_sys()
     async with db_write_lock:
-        # 從所有已快取的 visibility slot 移除
-        found = False
+        deleted = 0
         user_id = str(current_user["id"])
         character_id = "default"
         for vis in _visibility_filter_for(current_user):
+            deleted = await asyncio.to_thread(
+                ms.storage.delete_core_memory,
+                ms.db_path,
+                user_id,
+                character_id,
+                core_id,
+                vis,
+            )
             cache_key = (user_id, character_id, vis)
             if cache_key in ms._core_memories_cache:
-                before = len(ms._core_memories_cache[cache_key])
                 ms._core_memories_cache[cache_key] = [
                     c for c in ms._core_memories_cache[cache_key]
                     if c["core_id"] != core_id
                 ]
-                if len(ms._core_memories_cache[cache_key]) < before:
-                    found = True
-        if not found:
+            if deleted:
+                break
+        if deleted < 1:
             raise HTTPException(404, detail=f"Core memory {core_id} not found")
-        await asyncio.to_thread(
-            ms.storage.delete_core_memory, ms.db_path, user_id, character_id, core_id
-        )
     return {"status": "deleted", "core_id": core_id}
 
 

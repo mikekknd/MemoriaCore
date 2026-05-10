@@ -20,7 +20,7 @@ from api.dependencies import (
 from api.session_manager import session_manager
 from core.background_gatherer import start_background_gather_loop
 from api.middleware.auth import AuthMiddleware
-from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots
+from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots, llm_tasks
 
 
 def _persona_sync_candidate_character_ids(storage) -> list[str]:
@@ -30,7 +30,7 @@ def _persona_sync_candidate_character_ids(storage) -> list[str]:
     不以 active/default character 補位，避免同步目標被全域預設角色污染。
     """
     if hasattr(storage, "list_conversation_character_ids"):
-        return storage.list_conversation_character_ids()
+        return storage.list_conversation_character_ids(exclude_channels=("youtube_live",))
     return storage.list_recent_conversation_character_ids(limit=50)
 
 
@@ -39,6 +39,7 @@ def _should_log_persona_sync_skip(reason: str) -> bool:
     quiet_prefixes = (
         "no_messages_yet",
         "insufficient_messages(",
+        "daily_limit_reached(",
     )
     return not any(reason.startswith(prefix) for prefix in quiet_prefixes)
 
@@ -150,6 +151,10 @@ def _cors_origins() -> list[str]:
         "http://127.0.0.1:8501",
         "http://localhost:8502",
         "http://127.0.0.1:8502",
+        "http://localhost:8503",
+        "http://127.0.0.1:8503",
+        "http://localhost:8091",
+        "http://127.0.0.1:8091",
     ]
 
 
@@ -179,6 +184,7 @@ app.include_router(chat_rest.router, prefix=PREFIX)
 app.include_router(character.router, prefix=PREFIX)
 app.include_router(bots.router, prefix=PREFIX)
 app.include_router(prompts.router, prefix=PREFIX)
+app.include_router(llm_tasks.router, prefix=PREFIX)
 app.include_router(persona_evolution.router, prefix=PREFIX)
 app.include_router(personality_public.router, prefix=PREFIX)
 app.include_router(admin_users.router, prefix=PREFIX)

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTubeBridge Live</title>
+  <style>
+    :root {
+      --bg: #f3f6fa;
+      --surface: #ffffff;
+      --border: #d6deea;
+      --text: #162233;
+      --muted: #657187;
+      --accent: #087f73;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+    .muted { color: var(--muted); font-size: 13px; }
+    .shell {
+      height: calc(100vh - 58px);
+      display: grid;
+      grid-template-columns: minmax(360px, 38vw) minmax(520px, 1fr);
+      gap: 12px;
+      padding: 12px;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    .status {
+      color: var(--accent);
+      background: #e8f8ef;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    @media (max-width: 960px) {
+      header { height: auto; min-height: 58px; align-items: flex-start; flex-direction: column; padding: 12px; }
+      .shell { height: calc(100vh - 96px); grid-template-columns: 1fr; grid-template-rows: minmax(320px, 45vh) 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>YouTubeBridge Live</h1>
+      <div class="muted">左側是直播只讀聊天輸出，右側是 Bridge 主控台。</div>
+    </div>
+    <span class="status">Live entry</span>
+  </header>
+  <main class="shell">
+    <iframe id="liveChatFrame" title="Live Chat" src="/live-chat/"></iframe>
+    <iframe id="controlFrame" title="YouTubeBridge Control" src="/ui/?embedded=control"></iframe>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const requestedSessionId = params.get("session_id") || "";
+    if (requestedSessionId) {
+      const encoded = encodeURIComponent(requestedSessionId);
+      document.getElementById("liveChatFrame").src = `/live-chat/?session_id=${encoded}`;
+      document.getElementById("controlFrame").src = `/ui/?embedded=control&session_id=${encoded}`;
+    }
+  </script>
+</body>
+</html>

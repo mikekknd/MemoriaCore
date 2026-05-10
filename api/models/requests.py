@@ -1,7 +1,7 @@
 """Pydantic request bodies — API 輸入資料驗證。"""
 import re
-from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import Any, Literal, Optional
 
 from api.auth_utils import WEAK_PASSWORDS
 from core.i18n import normalize_locale
@@ -119,9 +119,33 @@ class ExpandQueryRequest(BaseModel):
 
 class ChatSyncRequest(BaseModel):
     content: str
+    display_content: Optional[str] = None
     session_id: Optional[str] = None
     character_ids: Optional[list[str]] = None
     group_name: Optional[str] = None
+    channel: Optional[str] = None
+    channel_uid: Optional[str] = None
+    user_id: Optional[str] = None
+    channel_class: Optional[Literal["public", "private"]] = None
+    persona_face: Optional[Literal["public", "private"]] = None
+    external_context: Optional[dict] = None
+    include_speech: bool = True
+    memory_write_policy: Literal["normal", "transient"] = "normal"
+
+
+class PromptJsonRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    prompt_key: str = Field(..., min_length=1, max_length=128)
+    variables: dict[str, Any] = Field(default_factory=dict)
+    task_key: str = Field("compress", min_length=1, max_length=64)
+    temperature: float = Field(0.1, ge=0.0, le=2.0)
+    response_schema: Optional[dict[str, Any]] = Field(None, alias="schema")
+
+
+class EmbedTextRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=12000)
+    model: str = Field("", max_length=128)
 
 
 class CreateSessionRequest(BaseModel):
@@ -133,8 +157,21 @@ class CreateSessionRequest(BaseModel):
     group_name: str = ""
 
 
+class SessionSystemEventRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=2000)
+    debug_info: dict[str, Any] = Field(default_factory=dict)
+
+
 class BlockUpdateRequest(BaseModel):
     new_overview: str
+
+
+class SharedYouTubeSummaryMemoryRequest(BaseModel):
+    summary_id: int
+    session_id: str
+    video_id: str = ""
+    memory_text: str = Field(..., min_length=1, max_length=2000)
+    character_ids: list[str] = Field(default_factory=list)
 
 
 class MaintenanceModeRequest(BaseModel):

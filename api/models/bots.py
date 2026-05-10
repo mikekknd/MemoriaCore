@@ -1,7 +1,7 @@
 """Bot registry API DTOs。"""
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,7 @@ class BotConfigBase(BaseModel):
     character_id: str = "default"
     token: str = ""
     enabled: bool = False
+    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class BotConfigCreateRequest(BotConfigBase):
