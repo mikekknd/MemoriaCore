@@ -263,6 +263,7 @@ export function fillSessionForm(session) {
   $("directorAnchorEveryTurns").value = session.director_anchor_every_turns || 2;
   $("episodePlanHandoffGapSeconds").value = session.episode_plan_handoff_gap_seconds || 2;
   $("episodePlanTurnGapSeconds").value = session.episode_plan_turn_gap_seconds || 8;
+  $("directorDialogueExpansionEnabled").checked = session.director_dialogue_expansion_enabled !== false;
   $("directorGroupTurnLimit").value = session.director_group_turn_limit || 3;
   $("directorMaxChatBatches").value = session.director_max_chat_batches_before_anchor || 2;
   $("autoInject").checked = !!session.auto_inject;
@@ -305,6 +306,7 @@ export function newSessionDraft() {
   $("directorAnchorEveryTurns").value = 2;
   $("episodePlanHandoffGapSeconds").value = 2;
   $("episodePlanTurnGapSeconds").value = 8;
+  $("directorDialogueExpansionEnabled").checked = true;
   $("directorGroupTurnLimit").value = 3;
   $("directorMaxChatBatches").value = 2;
   $("autoInject").checked = true;
@@ -398,6 +400,7 @@ export function liveSessionPayload({ createNew = false } = {}) {
     director_anchor_every_turns: Number($("directorAnchorEveryTurns").value || 2),
     episode_plan_handoff_gap_seconds: Number($("episodePlanHandoffGapSeconds").value || 2),
     episode_plan_turn_gap_seconds: Number($("episodePlanTurnGapSeconds").value || 8),
+    director_dialogue_expansion_enabled: $("directorDialogueExpansionEnabled").checked,
     director_group_turn_limit: Number($("directorGroupTurnLimit").value || 3),
     director_max_chat_batches_before_anchor: Number($("directorMaxChatBatches").value || 2),
     auto_finalize_on_duration: $("autoFinalize").checked,

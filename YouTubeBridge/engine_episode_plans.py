@@ -610,6 +610,10 @@ class EpisodePlanManagerMixin:
             f"本輪目標：{turn.get('intent') or segment.get('goal') or '未指定'}",
             "角色功能：" + (", ".join(preferred_functions) if preferred_functions else "依角色設定自然接話"),
             *dialogue_lines,
+            *self._episode_segment_rhythm_context_lines(segment, turn),
+            *self._episode_focus_context_lines(plan, turn),
+            *self._episode_recommendation_context_lines(plan, turn),
+            *self._episode_stance_context_lines(turn),
             "輸出限制："
             f"最多句數：{int(output.get('max_sentences') or 2)}；"
             f"必須問句結尾：{bool(output.get('must_end_with_question'))}；"
@@ -710,6 +714,169 @@ class EpisodePlanManagerMixin:
         return "；".join(parts)
 
     @staticmethod
+    def _episode_focus_target_catalog(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        targets = plan.get("focus_targets") if isinstance(plan.get("focus_targets"), list) else []
+        catalog: dict[str, dict[str, Any]] = {}
+        for raw_target in targets:
+            if not isinstance(raw_target, dict):
+                continue
+            target_id = str(raw_target.get("target_id") or "").strip()
+            if not target_id:
+                continue
+            catalog[target_id] = raw_target
+        return catalog
+
+    def _episode_focus_context_lines(
+        self,
+        plan: dict[str, Any],
+        turn: dict[str, Any],
+    ) -> list[str]:
+        policy = turn.get("focus_policy") if isinstance(turn.get("focus_policy"), dict) else {}
+        if not policy:
+            return []
+        catalog = self._episode_focus_target_catalog(plan)
+        target_ids = [
+            str(item).strip()
+            for item in policy.get("target_ids") or []
+            if str(item).strip()
+        ]
+        target_parts: list[str] = []
+        for target_id in target_ids:
+            target = catalog.get(target_id) or {}
+            label = str(target.get("label") or target_id).strip()
+            target_type = str(target.get("target_type") or "focus_target").strip()
+            reason = str(target.get("selection_reason") or "").strip()
+            analysis_angles = [
+                str(item).strip()
+                for item in target.get("analysis_angles") or []
+                if str(item).strip()
+            ]
+            recommendation_axes = [
+                str(item).strip()
+                for item in target.get("recommendation_axes") or []
+                if str(item).strip()
+            ]
+            details = [f"{target_id}（{target_type}：{label}"]
+            if reason:
+                details.append(f"選入理由：{reason}")
+            if analysis_angles:
+                details.append("可用深挖角度：" + ", ".join(analysis_angles[:4]))
+            if recommendation_axes:
+                details.append("推薦判斷軸：" + ", ".join(recommendation_axes[:4]))
+            target_parts.append("；".join(details) + "）")
+        depth_goal = str(policy.get("depth_goal") or "").strip()
+        must_cover = [
+            str(item).strip()
+            for item in policy.get("must_cover") or []
+            if str(item).strip()
+        ]
+        recommendation_mode = str(policy.get("recommendation_mode") or "").strip()
+        lines = ["焦點對象控制："]
+        if target_parts:
+            lines.append("本輪焦點：" + "；".join(target_parts))
+        if depth_goal:
+            lines.append(f"深挖目標：{depth_goal}")
+        if must_cover:
+            lines.append("必須覆蓋角度：" + ", ".join(must_cover[:4]))
+        if bool(policy.get("avoid_generic_reframe")):
+            lines.append(
+                "避免泛泛重框：不要回到抽象框架或泛泛選擇原則；"
+                "必須停留在本輪焦點對象的具體特徵、取捨或使用情境。"
+            )
+        if recommendation_mode:
+            lines.append(f"推薦模式：{recommendation_mode}")
+        if str(turn.get("turn_type") or "").strip() == "personal_recommendation":
+            lines.append(
+                "主觀推薦規則：允許角色以個人偏好推薦，不需偽裝中立；"
+                "但必須說清楚推薦給誰、推薦理由、避雷條件。"
+            )
+        return lines
+
+    def _episode_recommendation_context_lines(
+        self,
+        plan: dict[str, Any],
+        turn: dict[str, Any],
+    ) -> list[str]:
+        policy = (
+            turn.get("recommendation_policy")
+            if isinstance(turn.get("recommendation_policy"), dict)
+            else {}
+        )
+        if not policy:
+            return []
+        catalog = self._episode_focus_target_catalog(plan)
+        lines = ["角色具體推薦："]
+        style = str(policy.get("recommendation_style") or "").strip()
+        if style:
+            lines.append(f"推薦風格：{style}")
+        ranked_order = [
+            str(item).strip()
+            for item in policy.get("ranked_order") or []
+            if str(item).strip()
+        ]
+        if ranked_order:
+            labels = [
+                str((catalog.get(target_id) or {}).get("label") or target_id).strip()
+                for target_id in ranked_order
+            ]
+            lines.append("推薦排序：" + " > ".join(labels))
+        recommendations = (
+            policy.get("recommendations")
+            if isinstance(policy.get("recommendations"), list)
+            else []
+        )
+        for raw_recommendation in recommendations:
+            if not isinstance(raw_recommendation, dict):
+                continue
+            target_id = str(raw_recommendation.get("target_id") or "").strip()
+            target = catalog.get(target_id) or {}
+            label = str(target.get("label") or target_id or "未指定焦點").strip()
+            best_for = str(raw_recommendation.get("best_for") or "").strip()
+            why = str(raw_recommendation.get("why") or "").strip()
+            avoid_if = str(raw_recommendation.get("avoid_if") or "").strip()
+            personal_bias = str(raw_recommendation.get("personal_bias") or "").strip()
+            parts = []
+            if best_for:
+                parts.append(f"推薦給{best_for}")
+            if why:
+                parts.append(f"理由：{why}")
+            if avoid_if:
+                parts.append(f"避雷：{avoid_if}")
+            if personal_bias:
+                parts.append(f"個人偏好：{personal_bias}")
+            if parts:
+                lines.append(f"{label}：" + "；".join(parts))
+        return lines
+
+    @staticmethod
+    def _episode_stance_context_lines(turn: dict[str, Any]) -> list[str]:
+        policy = turn.get("stance_policy") if isinstance(turn.get("stance_policy"), dict) else {}
+        if not policy:
+            return []
+        phrases = [
+            str(item).strip()
+            for item in policy.get("avoid_disclaimer_phrases") or []
+            if str(item).strip()
+        ]
+        lines = [
+            "立場強度控制：",
+            f"立場模式：{str(policy.get('stance_mode') or '').strip() or 'assertive'}",
+            "必須站邊："
+            f"{bool(policy.get('must_take_side'))}；"
+            f"免責聲明預算：{int(policy.get('disclaimer_budget') or 0)}",
+        ]
+        if phrases:
+            lines.append("本輪不要使用的安全退路：" + ", ".join(phrases))
+        edge_instruction = str(policy.get("edge_instruction") or "").strip()
+        if edge_instruction:
+            lines.append(f"進攻角度：{edge_instruction}")
+        lines.append(
+            "反平板規則：不要用『每個人喜好不同』、『僅供參考』或同義句作為固定開場/結尾；"
+            "若需要承認差異，只能服務本輪具體推薦或取捨。"
+        )
+        return lines
+
+    @staticmethod
     def _episode_dialogue_context_lines(dialogue_policy: dict[str, Any]) -> list[str]:
         try:
             max_replies = int(dialogue_policy.get("max_replies") or 1)
@@ -728,10 +895,88 @@ class EpisodePlanManagerMixin:
         if max_replies >= 3:
             lines.append("第 3 位以上角色：只允許短收束或橋接，不得新增同一資料點的重複分析。")
         lines.extend([
+            "選項題直球規則：如果前一位角色提出 A/B、多條路線或多個問題選項，下一位角色必須先選一個或排出優先序，再補理由；禁止先用『看需求』、『沒有優劣』、『端看心境』、『各有喜好』這類中立框架逃避回答。",
+            "反方頻率控制：analyst、skeptic、counterpoint 角色不要每次都修正主持人的分類或總結；若主持已給出可用整理，先承接或選邊，只補一個必要條件，然後交回節奏或收束。",
             "段落完成條件：核心資訊已被說出即視為 completed；completed 後不得再次呼叫 analyst 類角色補充同一資料。",
             "本次發言任務：第 1 位角色負責提出主觀點或核心資訊；不得完整覆蓋整個段落目標。",
         ])
         return lines
+
+    @staticmethod
+    def _episode_segment_rhythm_context_lines(
+        segment: dict[str, Any],
+        turn: dict[str, Any],
+    ) -> list[str]:
+        rhythm = (
+            segment.get("rhythm_control")
+            if isinstance(segment.get("rhythm_control"), dict)
+            else {}
+        )
+        evidence = (
+            turn.get("evidence_policy")
+            if isinstance(turn.get("evidence_policy"), dict)
+            else {}
+        )
+        completion = (
+            segment.get("completion_conditions")
+            if isinstance(segment.get("completion_conditions"), dict)
+            else {}
+        )
+        discussion_goal = str(
+            rhythm.get("discussion_goal")
+            or segment.get("goal")
+            or turn.get("intent")
+            or "完成本段規劃目標"
+        ).strip()
+        data_points = [
+            str(item).strip()
+            for item in rhythm.get("data_points") or []
+            if str(item).strip()
+        ]
+        if not data_points:
+            data_points = [
+                str(item).strip()
+                for item in evidence.get("required_entities") or []
+                if str(item).strip()
+            ]
+        if not data_points:
+            data_points = [
+                str(item).strip()
+                for item in evidence.get("queries") or []
+                if str(item).strip()
+            ][:2]
+        audience_understanding = str(
+            rhythm.get("audience_understanding")
+            or "觀眾能抓住本段目標與下一步判斷方向，不需要聽完整資料清單。"
+        ).strip()
+        close_when = [
+            str(item).strip()
+            for item in rhythm.get("close_when") or []
+            if str(item).strip()
+        ]
+        if not close_when:
+            required_types = [
+                str(item).strip()
+                for item in completion.get("required_turn_types") or []
+                if str(item).strip()
+            ]
+            max_turns = completion.get("max_planned_turns")
+            if required_types:
+                close_when.append("已涵蓋必要 turn 類型：" + ", ".join(required_types))
+            if max_turns:
+                close_when.append(f"達到本段最多 {max_turns} 個 planned turns")
+            close_when.append("同一觀點、比喻類型或結論已經出現兩次")
+        return [
+            "段落節奏煞車：",
+            f"本段討論目標：{discussion_goal}",
+            "需要使用的資料點："
+            + (", ".join(data_points) if data_points else "依本輪目標取最少必要資料")
+            + "；資料點只作為素材，不要求逐句覆蓋。",
+            f"本段應達成的觀眾理解：{audience_understanding}",
+            "收束時機：" + "；".join(close_when),
+            "重複煞車：同一觀點、同一比喻類型或同一結論已經出現兩次時，"
+            "請用一句短收束語推進下一輪，不要換句話重講。",
+        ]
 
     @staticmethod
     def _episode_evidence_max_cards(evidence: dict[str, Any]) -> int:
@@ -780,7 +1025,7 @@ class EpisodePlanManagerMixin:
             return fallback
         return (
             "目前沒有可用的真實聊天室留言或 Super Chat；不要引用、承認、感謝或杜撰任何具體觀眾發言。"
-            "請改為概括不同觀眾可能有不同偏好，並把討論拉回本輪主題。"
+            "請改用一個具體觀眾情境或選擇壓力推進本輪主題，不要加通用偏好免責聲明。"
         )
 
     def _episode_completed_audience_events(
@@ -895,11 +1140,25 @@ class EpisodePlanManagerMixin:
             character_records=character_records,
         )
         dialogue_policy = self._episode_dialogue_policy(turn)
+        context_turn = turn
+        expansion_enabled = getattr(
+            self,
+            "_director_dialogue_expansion_enabled",
+            lambda _session: True,
+        )(session)
+        if not expansion_enabled:
+            dialogue_policy = {
+                **dialogue_policy,
+                "min_replies": 1,
+                "max_replies": 1,
+            }
+            context_turn = copy.deepcopy(turn)
+            context_turn["dialogue_policy"] = dialogue_policy
         next_turn_preview = self._episode_next_turn_preview(plan, planned_state)
         context_text = self._episode_plan_context_text(
             plan,
             planned_state,
-            turn,
+            context_turn,
             interrupt_state=interrupt_state,
             speaker_policy=speaker_policy,
             next_turn_preview=next_turn_preview,
@@ -928,6 +1187,21 @@ class EpisodePlanManagerMixin:
                 },
                 "speaker_policy": speaker_policy,
                 "dialogue_policy": dialogue_policy,
+                "focus_policy": copy.deepcopy(
+                    turn.get("focus_policy")
+                    if isinstance(turn.get("focus_policy"), dict)
+                    else {}
+                ),
+                "recommendation_policy": copy.deepcopy(
+                    turn.get("recommendation_policy")
+                    if isinstance(turn.get("recommendation_policy"), dict)
+                    else {}
+                ),
+                "stance_policy": copy.deepcopy(
+                    turn.get("stance_policy")
+                    if isinstance(turn.get("stance_policy"), dict)
+                    else {}
+                ),
                 "next_turn_preview": next_turn_preview,
                 "audience_event_context": audience_event_context,
                 "output_requirements": copy.deepcopy(

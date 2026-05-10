@@ -359,6 +359,156 @@ def test_segment_memory_semantic_claim_ids_projected():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_episode_plan_projection_contains_focus_deep_dive_context():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        plan, planned_state = manager._episode_plan_and_state(session, state)
+        plan["focus_targets"] = [
+            {
+                "target_id": "tool-alpha",
+                "label": "Alpha Notebook",
+                "target_type": "productivity_tool",
+                "selection_reason": "代表低摩擦、快速上手的個人整理工具。",
+                "analysis_angles": ["上手成本", "整理彈性", "團隊交接限制"],
+                "recommendation_axes": ["適合誰", "不適合誰", "個人首選理由"],
+            },
+            {
+                "target_id": "workflow-beta",
+                "label": "Beta Review Loop",
+                "target_type": "team_workflow",
+                "selection_reason": "代表流程約束較強、但交接品質穩定的團隊方案。",
+                "analysis_angles": ["審核節奏", "責任分工", "擴張成本"],
+                "recommendation_axes": ["最佳使用情境", "避雷條件", "角色偏好排序"],
+            },
+        ]
+        turn = {
+            **manager._episode_current_turn_contract(plan, planned_state),
+            "turn_type": "focus_deep_dive",
+            "focus_policy": {
+                "target_ids": ["tool-alpha"],
+                "depth_goal": "停在 Alpha Notebook 的使用情境與限制，不回到抽象選工具原則。",
+                "must_cover": ["上手成本", "整理彈性", "團隊交接限制"],
+                "avoid_generic_reframe": True,
+                "recommendation_mode": "best_for",
+            },
+        }
+
+        projection = manager._episode_plan_context_text(
+            plan,
+            planned_state,
+            turn,
+            interrupt_state={},
+        )
+
+        assert "焦點對象控制：" in projection
+        assert "tool-alpha（productivity_tool：Alpha Notebook" in projection
+        assert "深挖目標：停在 Alpha Notebook 的使用情境與限制" in projection
+        assert "必須覆蓋角度：上手成本, 整理彈性, 團隊交接限制" in projection
+        assert "推薦模式：best_for" in projection
+        assert "不要回到抽象框架或泛泛選擇原則" in projection
+        assert "focus_targets" not in projection
+        assert "recommendation_axes" not in projection
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_episode_plan_projection_contains_personal_recommendation_rules():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        plan, planned_state = manager._episode_plan_and_state(session, state)
+        plan["focus_targets"] = [
+            {
+                "target_id": "tool-alpha",
+                "label": "Alpha Notebook",
+                "target_type": "productivity_tool",
+                "selection_reason": "代表低摩擦、快速上手的個人整理工具。",
+                "analysis_angles": ["上手成本", "整理彈性", "團隊交接限制"],
+                "recommendation_axes": ["適合誰", "不適合誰", "個人首選理由"],
+            },
+            {
+                "target_id": "workflow-beta",
+                "label": "Beta Review Loop",
+                "target_type": "team_workflow",
+                "selection_reason": "代表流程約束較強、但交接品質穩定的團隊方案。",
+                "analysis_angles": ["審核節奏", "責任分工", "擴張成本"],
+                "recommendation_axes": ["最佳使用情境", "避雷條件", "角色偏好排序"],
+            },
+        ]
+        turn = {
+            **manager._episode_current_turn_contract(plan, planned_state),
+            "turn_type": "personal_recommendation",
+            "focus_policy": {
+                "target_ids": ["tool-alpha", "workflow-beta"],
+                "depth_goal": "以角色偏好給出具體選擇，不偽裝成中立總結。",
+                "must_cover": ["推薦給誰", "推薦理由", "避雷條件"],
+                "avoid_generic_reframe": True,
+                "recommendation_mode": "personal_pick",
+            },
+            "recommendation_policy": {
+                "recommendation_style": "角色可以偏好明確，但必須給出可採用的選擇條件。",
+                "recommendations": [
+                    {
+                        "target_id": "tool-alpha",
+                        "best_for": "個人先整理、還沒有團隊交接壓力的使用者。",
+                        "why": "上手快，能把零散想法先收進同一處。",
+                        "avoid_if": "需要多人審核、權責追蹤或長期知識庫一致性。",
+                        "personal_bias": "主持偏好把它當第一週試用入口。",
+                    },
+                    {
+                        "target_id": "workflow-beta",
+                        "best_for": "已經有多人協作與交付責任的團隊。",
+                        "why": "流程約束比較重，但能減少交接時的解讀落差。",
+                        "avoid_if": "團隊現在只需要個人速度，還沒有固定審核節奏。",
+                        "personal_bias": "分析角色偏好把它當正式上線方案。",
+                    },
+                ],
+                "ranked_order": ["tool-alpha", "workflow-beta"],
+            },
+            "stance_policy": {
+                "stance_mode": "assertive",
+                "must_take_side": True,
+                "disclaimer_budget": 0,
+                "avoid_disclaimer_phrases": [
+                    "每個人喜好不同",
+                    "僅供參考",
+                    "榜單只是參考",
+                ],
+                "edge_instruction": "直接給角色偏好的排序與取捨，不用先替所有人留退路。",
+            },
+        }
+
+        projection = manager._episode_plan_context_text(
+            plan,
+            planned_state,
+            turn,
+            interrupt_state={},
+        )
+
+        assert "推薦模式：personal_pick" in projection
+        assert "主觀推薦規則：允許角色以個人偏好推薦，不需偽裝中立" in projection
+        assert "必須說清楚推薦給誰、推薦理由、避雷條件" in projection
+        assert "角色具體推薦：" in projection
+        assert "推薦風格：角色可以偏好明確，但必須給出可採用的選擇條件。" in projection
+        assert "Alpha Notebook：推薦給個人先整理、還沒有團隊交接壓力的使用者。" in projection
+        assert "理由：上手快，能把零散想法先收進同一處。" in projection
+        assert "避雷：需要多人審核、權責追蹤或長期知識庫一致性。" in projection
+        assert "個人偏好：主持偏好把它當第一週試用入口。" in projection
+        assert "推薦排序：Alpha Notebook > Beta Review Loop" in projection
+        assert "立場強度控制：" in projection
+        assert "立場模式：assertive" in projection
+        assert "必須站邊：True；免責聲明預算：0" in projection
+        assert "本輪不要使用的安全退路：每個人喜好不同, 僅供參考, 榜單只是參考" in projection
+        assert "進攻角度：直接給角色偏好的排序與取捨，不用先替所有人留退路。" in projection
+        assert "Alpha Notebook" in projection
+        assert "Beta Review Loop" in projection
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_episode_turn_uses_structured_evidence_policy_queries(monkeypatch):
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
@@ -520,7 +670,45 @@ def test_episode_plan_projection_uses_role_reply_budget_instead_of_suggested_rep
         assert "本段最多 2 次角色發言" in projection
         assert "第 1 位角色：提出主觀點或核心資訊" in projection
         assert "第 2 位角色：只能反應、轉譯、補一個新角度或推進，不得重述第 1 位角色主觀點" in projection
+        assert "選項題直球規則：如果前一位角色提出 A/B、多條路線或多個問題選項" in projection
+        assert "下一位角色必須先選一個或排出優先序" in projection
+        assert "禁止先用『看需求』、『沒有優劣』、『端看心境』" in projection
+        assert "反方頻率控制：analyst、skeptic、counterpoint 角色不要每次都修正主持人的分類或總結" in projection
         assert "本次發言任務：第 1 位角色負責提出主觀點或核心資訊" in projection
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_episode_plan_projection_contains_segment_rhythm_brakes():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        plan, planned_state = manager._episode_plan_and_state(session, state)
+        plan["segments"][0]["rhythm_control"] = {
+            "discussion_goal": "用事件 Hook 建立本段討論目標。",
+            "data_points": ["事件名稱", "觀眾反應"],
+            "audience_understanding": "觀眾理解為什麼現在值得聽，但不被迫聽完整資料清單。",
+            "close_when": [
+                "hook 與 analysis 都完成",
+                "同一觀點或比喻已經出現兩次",
+            ],
+        }
+        turn = manager._episode_current_turn_contract(plan, planned_state)
+
+        projection = manager._episode_plan_context_text(
+            plan,
+            planned_state,
+            turn,
+            interrupt_state={},
+        )
+
+        assert "段落節奏煞車：" in projection
+        assert "本段討論目標：用事件 Hook 建立本段討論目標。" in projection
+        assert "需要使用的資料點：事件名稱, 觀眾反應；資料點只作為素材，不要求逐句覆蓋。" in projection
+        assert "本段應達成的觀眾理解：觀眾理解為什麼現在值得聽，但不被迫聽完整資料清單。" in projection
+        assert "收束時機：hook 與 analysis 都完成；同一觀點或比喻已經出現兩次" in projection
+        assert "同一觀點、同一比喻類型或同一結論已經出現兩次時" in projection
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

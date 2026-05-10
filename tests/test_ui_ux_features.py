@@ -310,6 +310,20 @@ def test_conversation_message_persists_character_name():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_session_message_dto_preserves_timestamp_for_live_chat_ordering():
+    dto = session._message_to_dto(
+        {
+            "message_id": 7,
+            "role": "assistant",
+            "content": "後來才講的台詞",
+            "timestamp": "2026-05-10T12:34:56",
+        },
+        {"role": "admin"},
+    )
+
+    assert dto.model_dump()["timestamp"] == "2026-05-10T12:34:56"
+
+
 def test_delete_all_session_history_is_current_user_scoped(monkeypatch):
     monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "ui-ux-clear-sessions-secret")
     base = _tmp_dir()

@@ -92,6 +92,7 @@ class SessionRepositoryMixin:
                 "sc_interrupt_cooldown_seconds": int(config.get("sc_interrupt_cooldown_seconds", 30) or 30),
                 "max_sc_per_batch": int(config.get("max_sc_per_batch", 5) or 5),
                 "director_anchor_every_turns": int(config.get("director_anchor_every_turns", 2) or 2),
+                "director_dialogue_expansion_enabled": 1 if config.get("director_dialogue_expansion_enabled", True) else 0,
                 "director_group_turn_limit": int(config.get("director_group_turn_limit", 3) or 3),
                 "episode_plan_handoff_gap_seconds": max(1, min(int(config.get("episode_plan_handoff_gap_seconds", 2) or 2), 5)),
                 "episode_plan_turn_gap_seconds": max(1, min(int(config.get("episode_plan_turn_gap_seconds", 8) or 8), 30)),

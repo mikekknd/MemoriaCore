@@ -523,6 +523,7 @@ class DirectorRuntimeManagerMixin:
         elapsed_minutes, elapsed_percent, remaining_minutes = self._session_elapsed(session)
         if not prompt:
             prompt = f"目前適合執行 {action}，請自然延續直播對話，不要提到幕後流程。"
+        dialogue_expansion_enabled = self._director_dialogue_expansion_enabled(session)
         topic_context = ""
         if not has_episode_plan:
             if action == "opening":
@@ -541,7 +542,11 @@ class DirectorRuntimeManagerMixin:
         if not has_episode_plan:
             context_parts.append(f"直播進度：{elapsed_percent}%（已 {elapsed_minutes} 分鐘，剩餘約 {remaining_minutes} 分鐘）")
         context_parts.append(f"處理提示：{public_prompt}")
-        if not has_episode_plan and action not in {"reply_chat_batch", "reply_super_chat_batch"}:
+        if (
+            dialogue_expansion_enabled
+            and not has_episode_plan
+            and action not in {"reply_chat_batch", "reply_super_chat_batch"}
+        ):
             context_parts.append(
                 "直播互動規則：目前不是回應留言批次；請讓角色彼此接話、補充、反駁或提出下一個切入點，不要把問題丟回聊天室。"
             )
@@ -609,6 +614,8 @@ class DirectorRuntimeManagerMixin:
                     part for part in context_parts
                     if not str(part).startswith("處理提示：")
                 ]
+        if not dialogue_expansion_enabled:
+            group_turn_limit = 1
         if action == "opening" and not has_episode_plan:
             opening_intro_context = self._opening_intro_context_for_session(session)
             if opening_intro_context:
@@ -650,6 +657,7 @@ class DirectorRuntimeManagerMixin:
             "connector_id": session.get("connector_id", ""),
             "video_id": session.get("video_id", ""),
             "live_chat_id": session.get("live_chat_id", ""),
+            "director_dialogue_expansion_enabled": dialogue_expansion_enabled,
             "group_turn_limit": group_turn_limit,
             "context_text": "\n".join(context_parts),
             "event_ids": [],
@@ -660,6 +668,7 @@ class DirectorRuntimeManagerMixin:
                 "source_session_id": session_id,
                 "event_count": 0,
                 "action": action,
+                "director_dialogue_expansion_enabled": dialogue_expansion_enabled,
                 "group_turn_limit": group_turn_limit,
             },
         }

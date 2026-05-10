@@ -452,6 +452,123 @@ async def test_planned_turn_uses_dialogue_policy_group_turn_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_director_dialogue_expansion_disabled_forces_single_planned_reply(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "director_dialogue_expansion_enabled": False,
+            "director_group_turn_limit": 9,
+        })
+        plan = sample_plan()
+        plan["segments"][0]["planned_turn_contracts"][0]["dialogue_policy"] = {
+            "min_replies": 2,
+            "max_replies": 3,
+            "autonomy": "guided",
+            "preferred_flow": ["host frames the beat", "analyst adds one concrete point"],
+        }
+        storage.upsert_live_episode_plan(plan)
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        captured = {}
+
+        class CaptureStreamClient:
+            def list_characters(self):
+                return _episode_plan_characters()
+
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "單人回覆完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        await manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            manager._episode_planned_turn_decision(
+                session,
+                storage.get_director_state("live-a"),
+            ),
+        )
+
+        external_context = captured["external_context"]
+        assert external_context["group_turn_limit"] == 1
+        assert external_context["summary"]["group_turn_limit"] == 1
+        assert external_context["summary"]["director_dialogue_expansion_enabled"] is False
+        assert external_context["live_episode_plan"]["dialogue_policy"]["min_replies"] == 1
+        assert external_context["live_episode_plan"]["dialogue_policy"]["max_replies"] == 1
+        assert "本段最多 1 次角色發言" in external_context["context_text"]
+        assert "第 2 位角色" not in external_context["context_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_dialogue_expansion_disabled_removes_legacy_handoff_prompt(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Legacy Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "director_dialogue_expansion_enabled": False,
+            "director_group_turn_limit": 7,
+            "director_guidance": "本場只聊動畫新番。",
+        })
+        captured = {}
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "單人回覆完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        await manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            {
+                "action": "continue_topic",
+                "prompt": "請主持A延續這個話題。",
+            },
+        )
+
+        external_context = captured["external_context"]
+        assert external_context["group_turn_limit"] == 1
+        assert external_context["summary"]["director_dialogue_expansion_enabled"] is False
+        assert "請讓角色彼此接話" not in external_context["context_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_planned_opening_turn_defaults_to_single_reply(monkeypatch):
     tmp_dir = _tmp_dir()
     try:

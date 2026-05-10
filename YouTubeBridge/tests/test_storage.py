@@ -69,6 +69,7 @@ def test_connector_and_session_roundtrip():
             "sc_interrupt_cooldown_seconds": 45,
             "max_sc_per_batch": 6,
             "director_anchor_every_turns": 3,
+            "director_dialogue_expansion_enabled": False,
             "director_group_turn_limit": 5,
             "episode_plan_handoff_gap_seconds": 4,
             "episode_plan_turn_gap_seconds": 11,
@@ -105,6 +106,7 @@ def test_connector_and_session_roundtrip():
         assert session["sc_interrupt_cooldown_seconds"] == 45
         assert session["max_sc_per_batch"] == 6
         assert session["director_anchor_every_turns"] == 3
+        assert session["director_dialogue_expansion_enabled"] is False
         assert session["director_group_turn_limit"] == 5
         assert session["episode_plan_handoff_gap_seconds"] == 4
         assert session["episode_plan_turn_gap_seconds"] == 11

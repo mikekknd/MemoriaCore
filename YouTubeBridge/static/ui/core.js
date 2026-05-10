@@ -120,7 +120,7 @@ export function installTestIds() {
     "autoScThanksOnFinalize", "researchEnabled", "toggleSession", "updateSession",
     "testEventMinSeconds", "testEventMaxSeconds", "testEventCountPerTick",
     "testSuperChatCountPerTick", "autoTestEvents", "generateTestEvents", "eventsList",
-    "directorGuidance", "hostInteractionRules", "programSegmentPlan", "programSegmentRows", "addProgramSegmentRow", "programSegmentTurns", "directorIdle", "topicPackSelect",
+    "directorGuidance", "hostInteractionRules", "programSegmentPlan", "programSegmentRows", "addProgramSegmentRow", "programSegmentTurns", "directorIdle", "directorDialogueExpansionEnabled", "topicPackSelect",
     "topicEntrySelect", "updateTopicPack", "deleteTopicPack", "deleteAllTopicPacks", "updateTopicEntry", "cancelTopicEntryEdit",
     "topicEntryPanel", "importFactCardsFolder", "factCardImportOverlay", "factCardImportMessage",
     "topicGraphPanel", "topicGraphState", "refreshTopicGraph", "rebuildTopicGraph", "refreshTopicGraphTrace", "resetTopicGraphView",

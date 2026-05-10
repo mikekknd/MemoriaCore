@@ -297,6 +297,353 @@ def test_validate_live_episode_plan_accepts_audience_event_policy():
     assert validated["segments"][0]["planned_turn_contracts"][0]["audience_event_policy"]["requires_real_events"] is True
 
 
+def test_validate_live_episode_plan_accepts_focus_targets_and_focus_policy():
+    plan = sample_plan()
+    plan["focus_targets"] = [
+        {
+            "target_id": "tool-alpha",
+            "label": "Alpha Notebook",
+            "target_type": "productivity_tool",
+            "selection_reason": "代表低摩擦、快速上手的個人整理工具。",
+            "analysis_angles": ["上手成本", "整理彈性", "團隊交接限制"],
+            "recommendation_axes": ["適合誰", "不適合誰", "個人首選理由"],
+        },
+        {
+            "target_id": "workflow-beta",
+            "label": "Beta Review Loop",
+            "target_type": "team_workflow",
+            "selection_reason": "代表流程約束較強、但交接品質穩定的團隊方案。",
+            "analysis_angles": ["審核節奏", "責任分工", "擴張成本"],
+            "recommendation_axes": ["最佳使用情境", "避雷條件", "角色偏好排序"],
+        },
+    ]
+    first_turn = plan["segments"][0]["planned_turn_contracts"][0]
+    first_turn["turn_type"] = "focus_deep_dive"
+    first_turn["focus_policy"] = {
+        "target_ids": ["tool-alpha"],
+        "depth_goal": "停在 Alpha Notebook 的使用情境與限制，不回到抽象選工具原則。",
+        "must_cover": ["上手成本", "整理彈性", "團隊交接限制"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "best_for",
+    }
+    second_turn = plan["segments"][0]["planned_turn_contracts"][1]
+    second_turn["turn_type"] = "personal_recommendation"
+    second_turn["focus_policy"] = {
+        "target_ids": ["tool-alpha", "workflow-beta"],
+        "depth_goal": "以角色偏好給出具體選擇，不偽裝成中立總結。",
+        "must_cover": ["推薦給誰", "推薦理由", "避雷條件"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "personal_pick",
+    }
+    second_turn["recommendation_policy"] = {
+        "recommendation_style": "角色可以偏好明確，但必須給出可採用的選擇條件。",
+        "recommendations": [
+            {
+                "target_id": "tool-alpha",
+                "best_for": "個人先整理、還沒有團隊交接壓力的使用者。",
+                "why": "上手快，能把零散想法先收進同一處。",
+                "avoid_if": "需要多人審核、權責追蹤或長期知識庫一致性。",
+                "personal_bias": "主持偏好把它當第一週試用入口。",
+            },
+            {
+                "target_id": "workflow-beta",
+                "best_for": "已經有多人協作與交付責任的團隊。",
+                "why": "流程約束比較重，但能減少交接時的解讀落差。",
+                "avoid_if": "團隊現在只需要個人速度，還沒有固定審核節奏。",
+                "personal_bias": "分析角色偏好把它當正式上線方案。",
+            },
+        ],
+        "ranked_order": ["tool-alpha", "workflow-beta"],
+    }
+    second_turn["stance_policy"] = {
+        "stance_mode": "assertive",
+        "must_take_side": True,
+        "disclaimer_budget": 0,
+        "avoid_disclaimer_phrases": [
+            "每個人喜好不同",
+            "僅供參考",
+            "榜單只是參考",
+        ],
+        "edge_instruction": "直接給角色偏好的排序與取捨，不用先替所有人留退路。",
+    }
+    plan["segments"][0]["completion_conditions"]["required_turn_types"] = [
+        "focus_deep_dive",
+        "personal_recommendation",
+    ]
+
+    validated = validate_live_episode_plan(plan)
+
+    turns = validated["segments"][0]["planned_turn_contracts"]
+    assert validated["focus_targets"][0]["target_id"] == "tool-alpha"
+    assert turns[0]["dialogue_policy"]["max_replies"] == 3
+    assert turns[1]["dialogue_policy"]["max_replies"] == 3
+    assert turns[1]["focus_policy"]["recommendation_mode"] == "personal_pick"
+    assert turns[1]["recommendation_policy"]["recommendations"][0]["best_for"].startswith("個人先整理")
+    assert turns[1]["stance_policy"]["disclaimer_budget"] == 0
+
+
+def test_validate_live_episode_plan_rejects_unknown_focus_policy_target_id():
+    plan = sample_plan()
+    plan["focus_targets"] = [
+        {
+            "target_id": "known-target",
+            "label": "Known Target",
+            "target_type": "generic_option",
+            "selection_reason": "用來驗證 focus_policy target id 檢查。",
+            "analysis_angles": ["角度一", "角度二"],
+            "recommendation_axes": ["適合誰", "避雷條件"],
+        },
+        {
+            "target_id": "comparison-target",
+            "label": "Comparison Target",
+            "target_type": "generic_option",
+            "selection_reason": "讓焦點對象清單符合多對象企劃容量。",
+            "analysis_angles": ["角度一", "角度二"],
+            "recommendation_axes": ["適合誰", "避雷條件"],
+        }
+    ]
+    plan["segments"][0]["planned_turn_contracts"][0]["focus_policy"] = {
+        "target_ids": ["missing-target"],
+        "depth_goal": "驗證不存在的焦點對象會被拒絕。",
+        "must_cover": ["角度一", "角度二"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "best_for",
+    }
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="focus_policy.target_ids"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_rejects_focus_deep_dive_without_enough_angles():
+    plan = sample_plan()
+    plan["focus_targets"] = [
+        {
+            "target_id": "known-target",
+            "label": "Known Target",
+            "target_type": "generic_option",
+            "selection_reason": "用來驗證深挖角度數量。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+        {
+            "target_id": "comparison-target",
+            "label": "Comparison Target",
+            "target_type": "generic_option",
+            "selection_reason": "讓焦點對象清單符合多對象企劃容量。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+    ]
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["turn_type"] = "focus_deep_dive"
+    turn["focus_policy"] = {
+        "target_ids": ["known-target"],
+        "depth_goal": "驗證深挖 turn 不能只放兩個標籤式角度。",
+        "must_cover": ["角度一", "角度二"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "best_for",
+    }
+    plan["segments"][0]["completion_conditions"]["required_turn_types"] = [
+        "focus_deep_dive",
+        "analysis",
+    ]
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="focus_policy.must_cover"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_rejects_personal_recommendation_without_details():
+    plan = sample_plan()
+    plan["focus_targets"] = [
+        {
+            "target_id": "known-target",
+            "label": "Known Target",
+            "target_type": "generic_option",
+            "selection_reason": "用來驗證推薦明細。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+        {
+            "target_id": "comparison-target",
+            "label": "Comparison Target",
+            "target_type": "generic_option",
+            "selection_reason": "讓焦點對象清單符合多對象企劃容量。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+    ]
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["turn_type"] = "personal_recommendation"
+    turn["focus_policy"] = {
+        "target_ids": ["known-target", "comparison-target"],
+        "depth_goal": "推薦 turn 必須有每個焦點對象的具體推薦明細。",
+        "must_cover": ["推薦給誰", "推薦理由", "避雷條件"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "personal_pick",
+    }
+    plan["segments"][0]["completion_conditions"]["required_turn_types"] = [
+        "personal_recommendation",
+        "analysis",
+    ]
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="recommendation_policy"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_rejects_recommendation_policy_unknown_target_id():
+    plan = sample_plan()
+    plan["focus_targets"] = [
+        {
+            "target_id": "known-target",
+            "label": "Known Target",
+            "target_type": "generic_option",
+            "selection_reason": "用來驗證推薦 target id。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+        {
+            "target_id": "comparison-target",
+            "label": "Comparison Target",
+            "target_type": "generic_option",
+            "selection_reason": "讓焦點對象清單符合多對象企劃容量。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+    ]
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["turn_type"] = "personal_recommendation"
+    turn["focus_policy"] = {
+        "target_ids": ["known-target"],
+        "depth_goal": "驗證推薦明細 target id 會被交叉檢查。",
+        "must_cover": ["推薦給誰", "推薦理由", "避雷條件"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "personal_pick",
+    }
+    turn["recommendation_policy"] = {
+        "recommendation_style": "角色主觀推薦。",
+        "recommendations": [
+            {
+                "target_id": "missing-target",
+                "best_for": "測試對象。",
+                "why": "測試理由。",
+                "avoid_if": "測試避雷。",
+            }
+        ],
+    }
+    plan["segments"][0]["completion_conditions"]["required_turn_types"] = [
+        "personal_recommendation",
+        "analysis",
+    ]
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="recommendation_policy.recommendations"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_rejects_personal_recommendation_without_stance_policy():
+    plan = sample_plan()
+    plan["focus_targets"] = [
+        {
+            "target_id": "known-target",
+            "label": "Known Target",
+            "target_type": "generic_option",
+            "selection_reason": "用來驗證個人推薦必須站邊。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+        {
+            "target_id": "comparison-target",
+            "label": "Comparison Target",
+            "target_type": "generic_option",
+            "selection_reason": "讓焦點對象清單符合多對象企劃容量。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+    ]
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["turn_type"] = "personal_recommendation"
+    turn["focus_policy"] = {
+        "target_ids": ["known-target"],
+        "depth_goal": "推薦 turn 必須避免安全退路。",
+        "must_cover": ["推薦給誰", "推薦理由", "避雷條件"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "personal_pick",
+    }
+    turn["recommendation_policy"] = {
+        "recommendation_style": "角色主觀推薦。",
+        "recommendations": [
+            {
+                "target_id": "known-target",
+                "best_for": "測試對象。",
+                "why": "測試理由。",
+                "avoid_if": "測試避雷。",
+            }
+        ],
+    }
+    plan["segments"][0]["completion_conditions"]["required_turn_types"] = [
+        "personal_recommendation",
+        "analysis",
+    ]
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="stance_policy"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_rejects_personal_recommendation_with_disclaimer_budget():
+    plan = sample_plan()
+    plan["focus_targets"] = [
+        {
+            "target_id": "known-target",
+            "label": "Known Target",
+            "target_type": "generic_option",
+            "selection_reason": "用來驗證免責聲明預算。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+        {
+            "target_id": "comparison-target",
+            "label": "Comparison Target",
+            "target_type": "generic_option",
+            "selection_reason": "讓焦點對象清單符合多對象企劃容量。",
+            "analysis_angles": ["角度一", "角度二", "角度三"],
+            "recommendation_axes": ["適合誰", "推薦理由", "避雷條件"],
+        },
+    ]
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["turn_type"] = "personal_recommendation"
+    turn["focus_policy"] = {
+        "target_ids": ["known-target"],
+        "depth_goal": "推薦 turn 不能把免責聲明當固定開場。",
+        "must_cover": ["推薦給誰", "推薦理由", "避雷條件"],
+        "avoid_generic_reframe": True,
+        "recommendation_mode": "personal_pick",
+    }
+    turn["recommendation_policy"] = {
+        "recommendation_style": "角色主觀推薦。",
+        "recommendations": [
+            {
+                "target_id": "known-target",
+                "best_for": "測試對象。",
+                "why": "測試理由。",
+                "avoid_if": "測試避雷。",
+            }
+        ],
+    }
+    turn["stance_policy"] = {
+        "stance_mode": "assertive",
+        "must_take_side": True,
+        "disclaimer_budget": 1,
+        "avoid_disclaimer_phrases": ["每個人喜好不同"],
+        "edge_instruction": "直接站邊。",
+    }
+    plan["segments"][0]["completion_conditions"]["required_turn_types"] = [
+        "personal_recommendation",
+        "analysis",
+    ]
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="disclaimer_budget"):
+        validate_live_episode_plan(plan)
+
+
 def test_validate_live_episode_plan_accepts_turn_budget_and_claim_policy():
     plan = sample_plan()
     plan["turn_budget"] = {
@@ -359,6 +706,19 @@ def test_validate_live_episode_plan_rejects_unknown_claim_policy_id():
     }
 
     with pytest.raises(LiveEpisodePlanValidationError, match="claim_policy.new_claim_ids"):
+        validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_rejects_invalid_segment_rhythm_control():
+    plan = sample_plan()
+    plan["segments"][0]["rhythm_control"] = {
+        "discussion_goal": "",
+        "data_points": [],
+        "audience_understanding": "",
+        "close_when": [],
+    }
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="rhythm_control.discussion_goal"):
         validate_live_episode_plan(plan)
 
 

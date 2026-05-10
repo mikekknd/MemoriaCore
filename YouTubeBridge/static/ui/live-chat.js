@@ -14,6 +14,7 @@ const state = {
   displayMessages: [],
   characterColorMap: {},
   nextColorIndex: 0,
+  nextMessageOrder: 0,
 };
 const LIVE_CHAT_REFRESH_TYPES = new Set([
   "chat_message",
@@ -168,6 +169,49 @@ function liveEventToMessage(event) {
     source: "youtube_live_event",
   };
 }
+function assignMessageOrder(message) {
+  const existing = Number(message._liveChatOrder || 0);
+  if (Number.isFinite(existing) && existing > 0) return existing;
+  state.nextMessageOrder += 1;
+  message._liveChatOrder = state.nextMessageOrder;
+  return state.nextMessageOrder;
+}
+function messageTimeValue(message) {
+  const value = message.created_at || message.timestamp || "";
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+function numericMessageId(message) {
+  const raw = message.message_id;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+function numericMessageIdOrder(left, right) {
+  const leftId = numericMessageId(left);
+  const rightId = numericMessageId(right);
+  if (leftId !== null && rightId !== null && leftId !== rightId) {
+    return leftId - rightId;
+  }
+  return 0;
+}
+function fallbackMessageOrder(left, right) {
+  const order = Number(left._liveChatOrder || 0) - Number(right._liveChatOrder || 0);
+  if (order !== 0) return order;
+  return String(left.message_id || "").localeCompare(String(right.message_id || ""));
+}
+function compareMessageOrder(left, right) {
+  const leftTime = messageTimeValue(left);
+  const rightTime = messageTimeValue(right);
+  if (leftTime !== null && rightTime !== null) {
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return numericMessageIdOrder(left, right) || fallbackMessageOrder(left, right);
+  }
+  if (leftTime !== null) return -1;
+  if (rightTime !== null) return 1;
+  return numericMessageIdOrder(left, right) || fallbackMessageOrder(left, right);
+}
 function mergeMessages(...groups) {
   const seen = new Set();
   const merged = [];
@@ -179,14 +223,10 @@ function mergeMessages(...groups) {
       : `${message.source || message.role}:${message.created_at || message.timestamp || ""}:${message.content || ""}`;
     if (seen.has(key)) return;
     seen.add(key);
+    assignMessageOrder(message);
     merged.push(message);
   });
-  return merged.sort((left, right) => {
-    const leftTime = new Date(left.created_at || left.timestamp || 0).getTime() || 0;
-    const rightTime = new Date(right.created_at || right.timestamp || 0).getTime() || 0;
-    if (leftTime !== rightTime) return leftTime - rightTime;
-    return String(left.message_id || "").localeCompare(String(right.message_id || ""));
-  });
+  return merged.sort(compareMessageOrder);
 }
 function visibleMessages(messages) {
   return (messages || []).filter((message) => {

@@ -1,5 +1,7 @@
 import importlib.util
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -231,6 +233,7 @@ def test_live_page_propagates_requested_session_id_to_live_chat_frame():
 def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     live_chat_html = _live_chat_source()
 
+    assert 'live-chat.js?v=live-chat-order-v1' in live_chat_html
     assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
     assert '"chat_message"' in live_chat_html
     assert '"youtube_live_event"' in live_chat_html
@@ -246,6 +249,48 @@ def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     assert '${message.role || "message"}:${messageId}' in live_chat_html
     assert "scheduleRefresh(0)" in live_chat_html
     assert "setInterval(() => refreshChat({ silent: true }), 8000)" not in live_chat_html
+
+
+def test_live_chat_missing_timestamp_uses_stable_fallback_order(tmp_path):
+    if not shutil.which("node"):
+        pytest.skip("node is required for live-chat.js behavior test")
+    static_root = Path(server_module.STATIC_ROOT)
+    source = (static_root / "ui" / "live-chat.js").read_text(encoding="utf-8")
+    helper_source = source[:source.index("function visibleMessages")]
+    script = tmp_path / "live_chat_order_test.mjs"
+    script.write_text(
+        helper_source
+        + """
+const mixed = mergeMessages(
+  [{ message_id: 1, role: "assistant", content: "有時間", timestamp: "2026-05-10T12:00:00" }],
+  [{ message_id: 2, role: "assistant", content: "空時間", timestamp: "" }],
+);
+const mixedOrder = mixed.map((message) => message.content).join("|");
+if (mixedOrder !== "有時間|空時間") {
+  throw new Error(`missing timestamp sorted as oldest: ${mixedOrder}`);
+}
+
+const numericFallback = mergeMessages(
+  [{ message_id: 2, role: "assistant", content: "二號", timestamp: "" }],
+  [{ message_id: 10, role: "assistant", content: "十號", timestamp: "" }],
+);
+const numericOrder = numericFallback.map((message) => message.content).join("|");
+if (numericOrder !== "二號|十號") {
+  throw new Error(`numeric message_id fallback sorted lexically: ${numericOrder}`);
+}
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_live_chat_polls_memoria_history_while_sse_is_connected():
@@ -1145,6 +1190,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "scInterruptCooldown": "Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。",
         "maxScPerBatch": "每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。",
         "sessionTopicPackSelect": "本場直播啟動或更新時要綁定的 Topic Pack；直播中只讀取已綁定資料，不執行 Fact Card 生成或匯入。",
+        "directorDialogueExpansionEnabled": "開啟時，導播推話題後可讓角色互相接話直到導播回合上限；關閉時，每次導播指令只讓被指定的一位角色回應。",
         "directorGroupTurnLimit": "導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。",
         "directorMaxChatBatches": "連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。",
         "directorIdle": "角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。",
@@ -1169,6 +1215,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         ("動態注入最短秒數", "injectMinIntervalSeconds"),
         ("話題資料包", "sessionTopicPackSelect"),
         ("單一話題持續回合數", "directorAnchorEveryTurns"),
+        ("角色接話延伸", "directorDialogueExpansionEnabled"),
         ("企劃交接等待秒數", "episodePlanHandoffGapSeconds"),
         ("企劃一般等待秒數", "episodePlanTurnGapSeconds"),
         ("導播回合上限", "directorGroupTurnLimit"),

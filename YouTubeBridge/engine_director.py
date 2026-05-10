@@ -73,9 +73,15 @@ class DirectorManagerMixin:
         except (TypeError, ValueError):
             value = 3
         value = max(1, min(value, 12))
+        if not DirectorManagerMixin._director_dialogue_expansion_enabled(session):
+            return 1
         if str(action or "").strip() in {"duration_closing", "closing_super_chat_thanks", "final_closing"}:
             return min(value, 2)
         return value
+
+    @staticmethod
+    def _director_dialogue_expansion_enabled(session: dict[str, Any] | None = None) -> bool:
+        return bool((session or {}).get("director_dialogue_expansion_enabled", True))
 
     @staticmethod
     def _program_segment_turns(session: dict[str, Any] | None = None) -> int:

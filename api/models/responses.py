@@ -68,6 +68,7 @@ class SessionMessageDTO(BaseModel):
     message_id: Optional[int] = None
     role: str
     content: str
+    timestamp: Optional[str] = None
     debug_info: Optional[dict] = None
     character_id: Optional[str] = None
     character_name: Optional[str] = None

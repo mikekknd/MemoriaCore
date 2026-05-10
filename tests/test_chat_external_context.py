@@ -620,6 +620,22 @@ def test_youtube_live_director_transient_prompt_keeps_roles_talking_to_each_othe
     assert "回應留言" in transient
 
 
+def test_youtube_live_director_transient_prompt_respects_disabled_dialogue_expansion():
+    body = ChatSyncRequest(content="請自然延續直播。")
+
+    transient = _transient_user_content_for_external_context(
+        body,
+        {
+            "source": "youtube_live_director",
+            "director_dialogue_expansion_enabled": False,
+        },
+    )
+
+    assert "角色彼此" not in transient
+    assert "不要要求其他角色接話" in transient
+    assert "不要把問題丟回觀眾" in transient
+
+
 def test_youtube_live_director_transient_prompt_includes_public_turn_instruction():
     body = ChatSyncRequest(
         content=(

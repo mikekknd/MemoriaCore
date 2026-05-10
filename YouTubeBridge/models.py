@@ -58,6 +58,7 @@ class LiveSessionConfig(BaseModel):
     sc_interrupt_cooldown_seconds: int = Field(30, ge=0, le=600)
     max_sc_per_batch: int = Field(5, ge=1, le=30)
     director_anchor_every_turns: int = Field(2, ge=1, le=10)
+    director_dialogue_expansion_enabled: bool = True
     director_group_turn_limit: int = Field(3, ge=1, le=12)
     episode_plan_handoff_gap_seconds: int = Field(2, ge=1, le=5)
     episode_plan_turn_gap_seconds: int = Field(8, ge=1, le=30)

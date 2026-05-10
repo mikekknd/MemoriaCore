@@ -40,6 +40,9 @@ DEFAULT_DIALOGUE_REPLY_BOUNDS = {
     "transition": (1, 2),
     "analysis": (2, 3),
     "counterpoint": (2, 3),
+    "focus_deep_dive": (2, 3),
+    "focus_compare": (2, 3),
+    "personal_recommendation": (2, 3),
     "chat_bridge": (2, 3),
     "audience_answer": (2, 3),
     "closing": (1, 2),
@@ -48,6 +51,13 @@ DEFAULT_DIALOGUE_REPLY_BOUNDS = {
 
 ALLOWED_DIALOGUE_AUTONOMY = {"strict", "guided", "open"}
 ALLOWED_AUDIENCE_EMPTY_BEHAVIOR = {"fallback_without_audience_quotes"}
+ALLOWED_RECOMMENDATION_MODES = {
+    "best_for",
+    "avoid_if",
+    "personal_pick",
+    "ranked_choice",
+}
+ALLOWED_STANCE_MODES = {"assertive", "provocative", "balanced"}
 
 
 def _require_dict(value: Any, path: str) -> dict[str, Any]:
@@ -223,6 +233,50 @@ def _validate_turn_budget(data: dict[str, Any]) -> None:
         _require_text(budget.get("planning_note"), "turn_budget.planning_note")
 
 
+def _focus_target_ids(data: dict[str, Any]) -> set[str]:
+    raw_targets = data.get("focus_targets")
+    if raw_targets is None:
+        return set()
+    targets = _require_list(raw_targets, "focus_targets", min_items=2)
+    if len(targets) > 4:
+        raise LiveEpisodePlanValidationError("focus_targets must contain at most 4 item(s)")
+    target_ids: set[str] = set()
+    for index, raw_target in enumerate(targets):
+        target = _require_dict(raw_target, f"focus_targets[{index}]")
+        target_id = _require_text(
+            target.get("target_id"),
+            f"focus_targets[{index}].target_id",
+        )
+        if target_id in target_ids:
+            raise LiveEpisodePlanValidationError(
+                f"focus_targets[{index}].target_id must be unique"
+            )
+        target_ids.add(target_id)
+        _require_text(target.get("label"), f"focus_targets[{index}].label")
+        _require_text(target.get("target_type"), f"focus_targets[{index}].target_type")
+        _require_text(
+            target.get("selection_reason"),
+            f"focus_targets[{index}].selection_reason",
+        )
+        for angle_index, angle in enumerate(
+            _require_list(
+                target.get("analysis_angles"),
+                f"focus_targets[{index}].analysis_angles",
+                min_items=1,
+            )
+        ):
+            _require_text(angle, f"focus_targets[{index}].analysis_angles[{angle_index}]")
+        for axis_index, axis in enumerate(
+            _require_list(
+                target.get("recommendation_axes"),
+                f"focus_targets[{index}].recommendation_axes",
+                min_items=1,
+            )
+        ):
+            _require_text(axis, f"focus_targets[{index}].recommendation_axes[{axis_index}]")
+    return target_ids
+
+
 def _claim_ledger_ids(data: dict[str, Any]) -> set[str]:
     raw_ledger = data.get("claim_ledger")
     if raw_ledger is None:
@@ -276,6 +330,181 @@ def _validate_claim_policy(policy: dict[str, Any], known_claim_ids: set[str], pa
             policy.get("must_not_paraphrase_used_claims"),
             f"{path}.must_not_paraphrase_used_claims",
         )
+
+
+def _validate_focus_policy(
+    policy: dict[str, Any],
+    known_target_ids: set[str],
+    turn_type: str,
+    path: str,
+) -> None:
+    if not isinstance(policy, dict) or not policy:
+        if turn_type in {"focus_deep_dive", "focus_compare", "personal_recommendation"}:
+            raise LiveEpisodePlanValidationError(f"{path} is required for {turn_type}")
+        return
+    if not known_target_ids:
+        raise LiveEpisodePlanValidationError(f"{path} requires focus_targets")
+    target_ids = [
+        _require_text(item, f"{path}.target_ids[]")
+        for item in _require_list(policy.get("target_ids"), f"{path}.target_ids", min_items=1)
+    ]
+    missing_ids = sorted({item for item in target_ids if item not in known_target_ids})
+    if missing_ids:
+        raise LiveEpisodePlanValidationError(
+            f"{path}.target_ids contains unknown focus target ids: {missing_ids}"
+        )
+    _require_text(policy.get("depth_goal"), f"{path}.depth_goal")
+    min_must_cover = 3 if turn_type in {"focus_deep_dive", "personal_recommendation"} else 2
+    must_cover = _require_list(
+        policy.get("must_cover"),
+        f"{path}.must_cover",
+        min_items=min_must_cover,
+    )
+    if len(must_cover) > 4:
+        raise LiveEpisodePlanValidationError(f"{path}.must_cover must contain at most 4 item(s)")
+    for index, item in enumerate(must_cover):
+        _require_text(item, f"{path}.must_cover[{index}]")
+    _require_bool(policy.get("avoid_generic_reframe"), f"{path}.avoid_generic_reframe")
+    recommendation_mode = _require_text(
+        policy.get("recommendation_mode"),
+        f"{path}.recommendation_mode",
+    )
+    if recommendation_mode not in ALLOWED_RECOMMENDATION_MODES:
+        allowed = ", ".join(sorted(ALLOWED_RECOMMENDATION_MODES))
+        raise LiveEpisodePlanValidationError(
+            f"{path}.recommendation_mode must be one of: {allowed}"
+        )
+
+
+def _validate_recommendation_policy(
+    policy: dict[str, Any],
+    focus_policy: dict[str, Any],
+    known_target_ids: set[str],
+    turn_type: str,
+    path: str,
+) -> None:
+    if not isinstance(policy, dict) or not policy:
+        if turn_type == "personal_recommendation":
+            raise LiveEpisodePlanValidationError(
+                f"{path} is required for personal_recommendation"
+            )
+        return
+    _require_text(policy.get("recommendation_style"), f"{path}.recommendation_style")
+    recommendations = _require_list(
+        policy.get("recommendations"),
+        f"{path}.recommendations",
+        min_items=1,
+    )
+    recommended_ids: set[str] = set()
+    for index, raw_recommendation in enumerate(recommendations):
+        recommendation = _require_dict(raw_recommendation, f"{path}.recommendations[{index}]")
+        target_id = _require_text(
+            recommendation.get("target_id"),
+            f"{path}.recommendations[{index}].target_id",
+        )
+        if target_id not in known_target_ids:
+            raise LiveEpisodePlanValidationError(
+                f"{path}.recommendations[{index}].target_id contains unknown focus target id: {target_id}"
+            )
+        recommended_ids.add(target_id)
+        _require_text(
+            recommendation.get("best_for"),
+            f"{path}.recommendations[{index}].best_for",
+        )
+        _require_text(
+            recommendation.get("why"),
+            f"{path}.recommendations[{index}].why",
+        )
+        _require_text(
+            recommendation.get("avoid_if"),
+            f"{path}.recommendations[{index}].avoid_if",
+        )
+        if "personal_bias" in recommendation:
+            _require_text(
+                recommendation.get("personal_bias"),
+                f"{path}.recommendations[{index}].personal_bias",
+            )
+    ranked_order = [
+        _require_text(item, f"{path}.ranked_order[]")
+        for item in _require_list(policy.get("ranked_order", []), f"{path}.ranked_order")
+    ]
+    missing_ranked_ids = sorted({item for item in ranked_order if item not in known_target_ids})
+    if missing_ranked_ids:
+        raise LiveEpisodePlanValidationError(
+            f"{path}.ranked_order contains unknown focus target ids: {missing_ranked_ids}"
+        )
+    if turn_type == "personal_recommendation":
+        focus_target_ids = {
+            _require_text(item, f"{path}.focus_policy.target_ids[]")
+            for item in _require_list(
+                focus_policy.get("target_ids", []),
+                f"{path}.focus_policy.target_ids",
+                min_items=1,
+            )
+        }
+        missing_recommendations = sorted(focus_target_ids - recommended_ids)
+        if missing_recommendations:
+            raise LiveEpisodePlanValidationError(
+                f"{path}.recommendations missing focus target ids: {missing_recommendations}"
+            )
+
+
+def _validate_stance_policy(policy: dict[str, Any], turn_type: str, path: str) -> None:
+    if not isinstance(policy, dict) or not policy:
+        if turn_type == "personal_recommendation":
+            raise LiveEpisodePlanValidationError(
+                f"{path} is required for personal_recommendation"
+            )
+        return
+    stance_mode = _require_text(policy.get("stance_mode"), f"{path}.stance_mode")
+    if stance_mode not in ALLOWED_STANCE_MODES:
+        allowed = ", ".join(sorted(ALLOWED_STANCE_MODES))
+        raise LiveEpisodePlanValidationError(f"{path}.stance_mode must be one of: {allowed}")
+    must_take_side = _require_bool(policy.get("must_take_side"), f"{path}.must_take_side")
+    disclaimer_budget = _require_int(
+        policy.get("disclaimer_budget"),
+        f"{path}.disclaimer_budget",
+        minimum=0,
+    )
+    if disclaimer_budget > 1:
+        raise LiveEpisodePlanValidationError(f"{path}.disclaimer_budget must be <= 1")
+    for index, phrase in enumerate(
+        _require_list(
+            policy.get("avoid_disclaimer_phrases"),
+            f"{path}.avoid_disclaimer_phrases",
+            min_items=1,
+        )
+    ):
+        _require_text(phrase, f"{path}.avoid_disclaimer_phrases[{index}]")
+    _require_text(policy.get("edge_instruction"), f"{path}.edge_instruction")
+    if turn_type == "personal_recommendation":
+        if not must_take_side:
+            raise LiveEpisodePlanValidationError(
+                f"{path}.must_take_side must be true for personal_recommendation"
+            )
+        if disclaimer_budget != 0:
+            raise LiveEpisodePlanValidationError(
+                f"{path}.disclaimer_budget must be 0 for personal_recommendation"
+            )
+
+
+def _validate_segment_rhythm_control(raw_control: Any, path: str) -> None:
+    if raw_control is None:
+        return
+    control = _require_dict(raw_control, path)
+    _require_text(control.get("discussion_goal"), f"{path}.discussion_goal")
+    for index, item in enumerate(
+        _require_list(control.get("data_points"), f"{path}.data_points", min_items=1)
+    ):
+        _require_text(item, f"{path}.data_points[{index}]")
+    _require_text(
+        control.get("audience_understanding"),
+        f"{path}.audience_understanding",
+    )
+    for index, item in enumerate(
+        _require_list(control.get("close_when"), f"{path}.close_when", min_items=1)
+    ):
+        _require_text(item, f"{path}.close_when[{index}]")
 
 
 def dialogue_policy_for_turn(turn: dict[str, Any]) -> dict[str, Any]:
@@ -376,6 +605,7 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
         _require_dict(data.get("audience_event_classifier"), "audience_event_classifier")
     )
     _validate_turn_budget(data)
+    focus_target_ids = _focus_target_ids(data)
     claim_ids = _claim_ledger_ids(data)
     participant_ids = _participant_ids(
         _require_list(data.get("participants"), "participants", min_items=1)
@@ -386,6 +616,10 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
         segment_path = f"segments[{segment_index}]"
         segment_obj = _require_dict(segment, segment_path)
         _require_text(segment_obj.get("segment_id"), f"{segment_path}.segment_id")
+        _validate_segment_rhythm_control(
+            segment_obj.get("rhythm_control"),
+            f"{segment_path}.rhythm_control",
+        )
         turns = _require_list(
             segment_obj.get("planned_turn_contracts"),
             f"{segment_path}.planned_turn_contracts",
@@ -396,7 +630,8 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
             turn_path = f"{segment_path}.planned_turn_contracts[{turn_index}]"
             turn_obj = _require_dict(turn, turn_path)
             _require_text(turn_obj.get("turn_id"), f"{turn_path}.turn_id")
-            turn_types.add(_require_text(turn_obj.get("turn_type"), f"{turn_path}.turn_type"))
+            turn_type = _require_text(turn_obj.get("turn_type"), f"{turn_path}.turn_type")
+            turn_types.add(turn_type)
             _require_text(turn_obj.get("intent"), f"{turn_path}.intent")
             try:
                 turn_obj["dialogue_policy"] = dialogue_policy_for_turn(turn_obj)
@@ -430,6 +665,24 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
                 turn_obj.get("claim_policy") if isinstance(turn_obj.get("claim_policy"), dict) else {},
                 claim_ids,
                 f"{turn_path}.claim_policy",
+            )
+            _validate_focus_policy(
+                turn_obj.get("focus_policy") if isinstance(turn_obj.get("focus_policy"), dict) else {},
+                focus_target_ids,
+                turn_type,
+                f"{turn_path}.focus_policy",
+            )
+            _validate_recommendation_policy(
+                turn_obj.get("recommendation_policy") if isinstance(turn_obj.get("recommendation_policy"), dict) else {},
+                turn_obj.get("focus_policy") if isinstance(turn_obj.get("focus_policy"), dict) else {},
+                focus_target_ids,
+                turn_type,
+                f"{turn_path}.recommendation_policy",
+            )
+            _validate_stance_policy(
+                turn_obj.get("stance_policy") if isinstance(turn_obj.get("stance_policy"), dict) else {},
+                turn_type,
+                f"{turn_path}.stance_policy",
             )
         _validate_completion_conditions(
             _require_dict(

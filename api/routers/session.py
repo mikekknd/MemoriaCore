@@ -31,6 +31,7 @@ def _message_to_dto(m: dict, current_user: dict) -> SessionMessageDTO:
         message_id=m.get("message_id"),
         role=m["role"],
         content=m["content"],
+        timestamp=m.get("timestamp"),
         debug_info=_visible_debug_info(m, current_user),
         character_id=m.get("character_id"),
         character_name=m.get("character_name"),

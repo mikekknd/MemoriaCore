@@ -648,11 +648,19 @@ def _transient_user_content_for_external_context(body: ChatSyncRequest, external
     source = str(external_context.get("source") or "").strip()
     if source == "youtube_live_director":
         public_turn_instruction = str(body.content or "").replace("\r", "\n").strip()
-        base_instruction = (
-            "請根據已提供的直播流程提示回應。"
-            "這是直播自主推進，不保證有觀眾即時回覆；請讓角色彼此接話、補充或提出不同角度。"
-            "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
-        )
+        if external_context.get("director_dialogue_expansion_enabled") is False:
+            base_instruction = (
+                "請根據已提供的直播流程提示回應。"
+                "這是直播自主推進，本次只需要目前被導播或路由指定的一位角色完成回應；"
+                "不要要求其他角色接話。"
+                "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+            )
+        else:
+            base_instruction = (
+                "請根據已提供的直播流程提示回應。"
+                "這是直播自主推進，不保證有觀眾即時回覆；請讓角色彼此接話、補充或提出不同角度。"
+                "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+            )
         if public_turn_instruction:
             return f"{public_turn_instruction}\n\n{base_instruction}"
         return base_instruction
