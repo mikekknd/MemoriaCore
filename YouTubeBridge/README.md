@@ -49,7 +49,7 @@ YouTubeBridge/
 - `engine_test_runtime.py`：auto test event loop、`generate_test_events()`、test generation facade wrappers。
 - `engine_test_events.py`：純測試留言與 Super Chat 產生 helper。
 - `engine_public_events.py`：公開事件/metadata presenter helper。
-- `engine_topic_packs.py`：Topic Pack、fact cards、embedding、replenish、import/generation。
+- `engine_topic_packs.py`：Topic Pack、FactCards 資料夾匯入、embedding、usage/retrieval、topic graph。Gemini 產卡、auto-build 與自動補卡流程已移除。
 
 `bridge_engine.py` 目前還保留的主要責任：
 
