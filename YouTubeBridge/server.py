@@ -31,7 +31,7 @@ from memoria_client import MemoriaClient
 from models import (
     CleanupRequest, ConnectorConfig, DirectorGuidanceRequest, DirectorStartRequest,
     E2ECheckpointRequest, EpisodePlanBindRequest, EpisodePlanEvidenceImportRequest, EpisodePlanImportRequest,
-    FactCardGenerateRequest, FactCardImportRequest, InterruptRequest,
+    FactCardImportRequest, InterruptRequest,
     LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
     YouTubeLiveGlobalSuffixRequest,
     ResearchRequest, SummarizeRequest, TestChatGenerateRequest, TopicPackCreateRequest,
@@ -365,9 +365,7 @@ get_latest_topic_graph_trace = _route_handler(_topic_packs_routes.get_latest_top
 link_topic_pack = _route_handler(_topic_packs_routes.link_topic_pack)
 
 import_fact_cards_folder_to_pack = _route_handler(_fact_cards_routes.import_fact_cards_folder_to_pack)
-generate_fact_cards_with_gemini_to_pack = _route_handler(_fact_cards_routes.generate_fact_cards_with_gemini_to_pack)
 import_fact_cards_folder = _route_handler(_fact_cards_routes.import_fact_cards_folder)
-generate_fact_cards_with_gemini = _route_handler(_fact_cards_routes.generate_fact_cards_with_gemini)
 
 # request_research keeps enforce_cooldown=False for manual research requests.
 request_research = _route_handler(_research_routes.request_research)

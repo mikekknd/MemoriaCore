@@ -109,7 +109,7 @@ def _build_llm_selector(label_prefix: str, key_prefix: str) -> LLMConfig | None:
             model = manual
         else:
             # Sort popular models to top
-            priority = ["claude", "gpt-4", "gemini", "llama", "mistral"]
+            priority = ["claude", "gpt-4", "llama", "mistral"]
             popular = [m for m in models if any(p in m.lower() for p in priority)]
             rest = [m for m in models if m not in popular]
             model = st.selectbox("模型", popular + rest, key=f"{key_prefix}_model")

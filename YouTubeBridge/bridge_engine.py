@@ -42,7 +42,6 @@ from bridge_contracts import (
 from bridge_runtime import LiveRuntime
 from fact_cards import (
     DEFAULT_FACT_CARDS_DIR,
-    generate_fact_card_markdown_with_gemini,
     iter_fact_card_files,
     parse_fact_card_markdown,
 )

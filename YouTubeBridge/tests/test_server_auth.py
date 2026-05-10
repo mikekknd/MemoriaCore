@@ -395,7 +395,6 @@ def test_control_ui_exposes_fact_cards_folder_import_for_anime_topic_flow():
 
     assert 'id="importFactCardsFolder"' in index_html
     assert 'id="importEpisodePlanEvidence"' in index_html
-    assert 'id="generateGeminiFactCards"' not in index_html
     assert 'id="topicAutoBuildControls"' not in index_html
     assert 'id="autoBuildTopicPack"' not in index_html
     assert 'id="autoBuildCount"' not in index_html
@@ -669,8 +668,6 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert 'setTopicActionVisible("rebuildTopicEmbeddings", hasPack);' in index_html
     assert 'setTopicActionVisible("topicAutoBuildControls"' not in index_html
     assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
-    assert 'setTopicActionVisible("generateGeminiFactCards"' not in index_html
-    assert 'setTopicActionVisible("generateGeminiFactCards", hasSession);' not in index_html
     assert 'setTopicActionVisible("importFactCardsFolder", hasPack && !liveLocked);' in index_html
     assert '$("importFactCardsFolder").disabled = !hasPack || liveLocked || importBusy;' in index_html
     assert '$("importFactCardsFolder").textContent = importBusy ? "匯入中..." : "匯入 FactCards 資料夾";' in index_html
@@ -694,7 +691,6 @@ def test_topic_pack_buttons_are_contextual_in_control_ui():
     assert '<button id="searchTopicPack"' not in index_html
     assert '<button id="restoreTopicEntries"' not in index_html
     assert '<button id="autoBuildTopicPack"' not in index_html
-    assert '<button id="generateGeminiFactCards"' not in index_html
     assert '<button id="importFactCardsFolder" class="blue is-hidden">匯入 FactCards 資料夾</button>' in index_html
     init_start = index_html.index("installTestIds();")
     init_block = index_html[init_start:index_html.index("initBridgeKey()", init_start)]
@@ -927,15 +923,13 @@ def test_topic_pack_entry_save_locks_editor_while_request_is_running():
     assert "setTopicEntryEditorBusy(false);" in update_block
 
 
-def test_fact_card_gemini_generation_ui_is_not_exposed():
+def test_fact_card_generation_ui_is_not_exposed():
     index_html = _control_ui_source()
 
     assert 'id="factCardGenerationOverlay"' not in index_html
     assert 'id="factCardGenerationMessage"' not in index_html
     assert "factCardGenerationBusy" not in index_html
     assert "function setFactCardGenerationBusy" not in index_html
-    assert "async function generateGeminiFactCards" not in index_html
-    assert 'log("Gemini FactCards 開始產生"' not in index_html
     assert 'id="autoBuildTopic"' not in index_html
 
 
@@ -1387,7 +1381,6 @@ def test_fact_cards_folder_import_is_blocked_during_live_runtime():
     assert "function factCardActionsBlockedDuringLive" in index_html
     assert "直播中不產生或匯入 Fact Cards" in index_html
     assert 'id="topicFactCardLiveLockNotice"' in index_html
-    assert 'setTopicActionVisible("generateGeminiFactCards"' not in index_html
     assert 'setTopicActionVisible("importFactCardsFolder", hasPack && !liveLocked);' in index_html
     assert 'setTopicActionVisible("autoBuildTopicPack"' not in index_html
 
@@ -2695,53 +2688,6 @@ async def test_fact_cards_folder_import_endpoint_initializes_pack_without_live_s
 
 
 @pytest.mark.asyncio
-async def test_fact_cards_generate_endpoint_initializes_pack_without_live_session(monkeypatch):
-    calls: list[dict] = []
-
-    class FakeManager:
-        def generate_fact_cards_with_gemini_to_pack(
-            self,
-            *,
-            topic: str,
-            pack_id: int | None = None,
-            output_name: str | None = None,
-            timeout_seconds: int = 300,
-        ):
-            calls.append({
-                "topic": topic,
-                "pack_id": pack_id,
-                "output_name": output_name,
-                "timeout_seconds": timeout_seconds,
-            })
-            return {
-                "status": "completed",
-                "topic": topic,
-                "file_name": "anime-topic.md",
-                "import": {"pack_id": pack_id or 77, "created_count": 2},
-            }
-
-    monkeypatch.setattr(server_module, "manager", FakeManager())
-
-    result = await server_module.generate_fact_cards_with_gemini_to_pack(
-        server_module.FactCardGenerateRequest(
-            topic="動畫新番最新話作畫討論",
-            pack_id=None,
-            output_name="",
-            timeout_seconds=120,
-        )
-    )
-
-    assert calls == [{
-        "topic": "動畫新番最新話作畫討論",
-        "pack_id": None,
-        "output_name": None,
-        "timeout_seconds": 120,
-    }]
-    assert result["import"]["pack_id"] == 77
-    assert result["import"]["created_count"] == 2
-
-
-@pytest.mark.asyncio
 async def test_fact_card_generation_and_import_endpoints_reject_while_live_running(monkeypatch, tmp_path):
     storage = server_module.BridgeStorage(tmp_path / "bridge.db")
     storage.upsert_connector({
@@ -2765,9 +2711,6 @@ async def test_fact_card_generation_and_import_endpoints_reject_while_live_runni
         def import_fact_cards_folder_to_pack(self, **_kwargs):
             raise AssertionError("import should not run during live")
 
-        def generate_fact_cards_with_gemini_to_pack(self, **_kwargs):
-            raise AssertionError("generation should not run during live")
-
     monkeypatch.setattr(server_module, "manager", FakeManager())
 
     assert not hasattr(server_module, "auto_build_session_topic_pack")
@@ -2776,12 +2719,6 @@ async def test_fact_card_generation_and_import_endpoints_reject_while_live_runni
         await server_module.import_fact_cards_folder_to_pack(server_module.FactCardImportRequest())
     assert import_exc.value.status_code == 409
     assert "直播中不產生或匯入 Fact Cards" in import_exc.value.detail
-
-    with pytest.raises(HTTPException) as generate_exc:
-        await server_module.generate_fact_cards_with_gemini_to_pack(
-            server_module.FactCardGenerateRequest(topic="動畫新番最新話")
-        )
-    assert generate_exc.value.status_code == 409
 
     with pytest.raises(HTTPException) as evidence_exc:
         await server_module.import_episode_plan_evidence(

@@ -5,7 +5,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException
 
-from models import FactCardGenerateRequest, FactCardImportRequest
+from models import FactCardImportRequest
 
 
 router = APIRouter()
@@ -77,24 +77,6 @@ async def import_fact_cards_folder_to_pack(body: FactCardImportRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-
-@router.post("/topic-packs/fact-cards/generate")
-async def generate_fact_cards_with_gemini_to_pack(body: FactCardGenerateRequest):
-    _ensure_fact_card_mutation_allowed()
-    try:
-        return await asyncio.to_thread(
-            manager.generate_fact_cards_with_gemini_to_pack,
-            topic=body.topic,
-            pack_id=body.pack_id,
-            output_name=body.output_name or None,
-            timeout_seconds=body.timeout_seconds,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-
 @router.post("/sessions/{session_id}/fact-cards/import-folder")
 async def import_fact_cards_folder(session_id: str, body: FactCardImportRequest):
     _ensure_fact_card_mutation_allowed()
@@ -104,24 +86,6 @@ async def import_fact_cards_folder(session_id: str, body: FactCardImportRequest)
             session_id,
             pack_id=body.pack_id,
             max_files=body.max_files,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-
-@router.post("/sessions/{session_id}/fact-cards/generate")
-async def generate_fact_cards_with_gemini(session_id: str, body: FactCardGenerateRequest):
-    _ensure_fact_card_mutation_allowed()
-    try:
-        return await asyncio.to_thread(
-            manager.generate_fact_cards_with_gemini,
-            session_id,
-            topic=body.topic,
-            pack_id=body.pack_id,
-            output_name=body.output_name or None,
-            timeout_seconds=body.timeout_seconds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

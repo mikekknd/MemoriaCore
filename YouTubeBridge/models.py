@@ -180,13 +180,6 @@ class FactCardImportRequest(BaseModel):
     max_files: int = Field(50, ge=1, le=200)
 
 
-class FactCardGenerateRequest(BaseModel):
-    topic: str = Field("動畫新番最新一話細節討論", min_length=1, max_length=500)
-    pack_id: int | None = None
-    output_name: str = Field("", max_length=120)
-    timeout_seconds: int = Field(300, ge=30, le=900)
-
-
 class ResearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     pack_id: int | None = None

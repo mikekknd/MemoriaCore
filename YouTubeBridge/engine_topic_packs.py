@@ -1,11 +1,7 @@
 """YouTubeBridge topic pack 與 fact card manager mixin。"""
 from __future__ import annotations
 
-import json
 import logging
-import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -28,15 +24,7 @@ from topic_graph import (
 
 
 logger = logging.getLogger("youtube_bridge")
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TOPIC_SEQUENCE_TURNS_PER_ENTRY = 3
-
-
-def _generate_fact_card_markdown(**kwargs):
-    # 保留舊測試與外部 monkeypatch bridge_engine.generate_fact_card_markdown_with_gemini 的相容性。
-    import bridge_engine
-
-    return bridge_engine.generate_fact_card_markdown_with_gemini(**kwargs)
 
 
 class TopicPackManagerMixin:
@@ -566,71 +554,6 @@ class TopicPackManagerMixin:
             "session_id": session_id,
         }
 
-    def _run_fact_card_replenishment_worker_process(
-        self,
-        session_id: str,
-        *,
-        topic: str,
-        pack_id: int,
-        output_name: str,
-        timeout_seconds: int = 300,
-    ) -> dict[str, Any]:
-        worker_path = Path(__file__).with_name("fact_card_worker.py")
-        timeout = max(30, min(int(timeout_seconds or 300), 900))
-        command = [
-            sys.executable,
-            str(worker_path),
-            "--db-path",
-            str(self.storage.db_path),
-            "--session-id",
-            session_id,
-            "--topic",
-            str(topic or ""),
-            "--pack-id",
-            str(int(pack_id)),
-            "--output-name",
-            str(output_name or ""),
-            "--timeout-seconds",
-            str(timeout),
-        ]
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=str(PROJECT_ROOT),
-                env=env,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                timeout=timeout + 90,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(f"FactCard worker timeout after {timeout + 90}s") from exc
-        payload = self._parse_fact_card_worker_payload(completed.stdout)
-        if completed.returncode != 0:
-            error = str(payload.get("error") or completed.stderr or completed.stdout or "FactCard worker failed")
-            raise RuntimeError(error[:500])
-        if str(payload.get("status") or "") == "failed":
-            raise RuntimeError(str(payload.get("error") or "FactCard worker failed")[:500])
-        return payload
-
-    @staticmethod
-    def _parse_fact_card_worker_payload(stdout: str) -> dict[str, Any]:
-        lines = [line.strip() for line in str(stdout or "").splitlines() if line.strip()]
-        for line in reversed(lines):
-            if not (line.startswith("{") and line.endswith("}")):
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                return payload
-        raise RuntimeError("FactCard worker did not return JSON status")
-
     def _ensure_fact_cards_pack(self, session_id: str, pack_id: int | None = None) -> int:
         if pack_id is not None:
             self.storage.link_topic_pack_to_session(session_id, int(pack_id))
@@ -828,76 +751,3 @@ class TopicPackManagerMixin:
                 "edge_count": 0,
                 "error": str(exc)[:300],
             }
-
-    def generate_fact_cards_with_gemini(
-        self,
-        session_id: str,
-        *,
-        topic: str,
-        pack_id: int | None = None,
-        output_name: str | None = None,
-        timeout_seconds: int = 300,
-    ) -> dict[str, Any]:
-        session = self.storage.get_session(session_id)
-        if not session:
-            raise ValueError("live session 不存在")
-        clean_topic = str(topic or "").strip() or "動畫新番最新一話細節討論"
-        generated = _generate_fact_card_markdown(
-            topic=clean_topic,
-            output_dir=DEFAULT_FACT_CARDS_DIR,
-            output_name=output_name,
-            session_title=str(session.get("display_name") or session_id),
-            director_guidance=str(session.get("director_guidance") or "固定討論動畫新番。"),
-            timeout_seconds=timeout_seconds,
-            memoria_client=self._memoria_client(),
-        )
-        import_result = self.import_fact_card_file(
-            session_id,
-            generated["path"],
-            pack_id=pack_id,
-        )
-        return {
-            "status": "completed",
-            "session_id": session_id,
-            "topic": clean_topic,
-            "file_name": generated["file_name"],
-            "fallback_mode": generated.get("fallback_mode", ""),
-            "stdout_tail": generated.get("stdout_tail", ""),
-            "stderr_tail": generated.get("stderr_tail", ""),
-            "import": import_result,
-        }
-
-    def generate_fact_cards_with_gemini_to_pack(
-        self,
-        *,
-        topic: str,
-        pack_id: int | None = None,
-        output_name: str | None = None,
-        timeout_seconds: int = 300,
-    ) -> dict[str, Any]:
-        clean_topic = str(topic or "").strip()
-        if not clean_topic:
-            raise ValueError("Fact Cards 生成主題不可為空")
-        generated = _generate_fact_card_markdown(
-            topic=clean_topic,
-            output_dir=DEFAULT_FACT_CARDS_DIR,
-            output_name=output_name,
-            session_title="動畫新番 FactCards",
-            director_guidance="固定討論動畫新番，補充最新話劇情細節、作畫品質、演出超展開與社群討論。",
-            timeout_seconds=timeout_seconds,
-            memoria_client=self._memoria_client(),
-        )
-        target_pack_id = self._ensure_fact_cards_standalone_pack(pack_id)
-        import_result = self._import_fact_card_paths_to_pack(
-            [Path(generated["path"])],
-            pack_id=target_pack_id,
-        )
-        return {
-            "status": "completed",
-            "topic": clean_topic,
-            "file_name": generated["file_name"],
-            "fallback_mode": generated.get("fallback_mode", ""),
-            "stdout_tail": generated.get("stdout_tail", ""),
-            "stderr_tail": generated.get("stderr_tail", ""),
-            "import": import_result,
-        }

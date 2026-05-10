@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import json
 import shutil
-import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
@@ -358,14 +357,7 @@ def test_maybe_replenish_fact_cards_is_removed_and_never_generates(monkeypatch):
         )
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
 
-        def fail_generate(*_args, **_kwargs):
-            raise AssertionError("自動補卡已移除，不應呼叫 Gemini 產卡")
-
-        def fail_worker(*_args, **_kwargs):
-            raise AssertionError("自動補卡已移除，不應排程 worker")
-
-        monkeypatch.setattr(manager, "generate_fact_cards_with_gemini", fail_generate)
-        monkeypatch.setattr(manager, "_run_fact_card_replenishment_worker_process", fail_worker)
+        assert not hasattr(manager, "_run_fact_card_replenishment_worker_process")
 
         result = manager.maybe_replenish_fact_cards(
             "live-a",
@@ -422,41 +414,6 @@ def test_topic_pack_context_usage_record_does_not_schedule_replenishment(monkeyp
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-def test_fact_card_worker_process_parses_completed_payload(monkeypatch):
-    tmp_dir = _tmp_dir()
-    try:
-        storage = BridgeStorage(tmp_dir / "youtube_live.db")
-        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
-
-        def fake_run(command, **kwargs):
-            assert "fact_card_worker.py" in " ".join(str(part) for part in command)
-            assert "--db-path" in command
-            assert str(storage.db_path) in command
-            assert kwargs["capture_output"] is True
-            assert kwargs["env"]["PYTHONIOENCODING"].lower().startswith("utf-8")
-            assert kwargs["env"]["PYTHONUTF8"] == "1"
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout='worker log\n{"status":"completed","fallback_mode":"","import":{"created_count":2,"embedding_count":2}}\n',
-                stderr="",
-            )
-
-        monkeypatch.setattr(bridge_engine.subprocess, "run", fake_run)
-
-        result = manager._run_fact_card_replenishment_worker_process(
-            "live-a",
-            topic="動畫新番最新話作畫爭議",
-            pack_id=7,
-            output_name="auto-replenish-test.md",
-            timeout_seconds=120,
-        )
-
-        assert result["status"] == "completed"
-        assert result["import"]["created_count"] == 2
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
 def test_import_fact_cards_folder_to_pack_initializes_without_live_session():
     tmp_dir = _tmp_dir()
     try:
@@ -485,100 +442,6 @@ def test_import_fact_cards_folder_to_pack_initializes_without_live_session():
         assert len(entries) == 1
         assert entries[0]["title"] == "作畫討論"
         assert storage.get_topic_pack_entry_embedding(entries[0]["id"]) is not None
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-def test_generate_fact_cards_with_gemini_to_pack_initializes_without_live_session(monkeypatch):
-    tmp_dir = _tmp_dir()
-    try:
-        storage = BridgeStorage(tmp_dir / "youtube_live.db")
-        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
-        generated_path = tmp_dir / "anime-topic.md"
-        generated_path.write_text(
-            "# 動畫新番主題\n\n"
-            "## Summary\n"
-            "依主題生成的動畫新番資料卡。\n\n"
-            "## Facts\n"
-            "### 最新話演出討論\n"
-            "這張卡由 Gemini direct output 流程產生，並可匯入沒有 Live Session 的資料包。\n",
-            encoding="utf-8",
-        )
-        calls: list[dict] = []
-
-        def fake_generate(**kwargs):
-            calls.append(kwargs)
-            return {
-                "path": generated_path,
-                "file_name": generated_path.name,
-                "fallback_mode": "",
-                "stdout_tail": "",
-                "stderr_tail": "",
-            }
-
-        monkeypatch.setattr(bridge_engine, "generate_fact_card_markdown_with_gemini", fake_generate)
-
-        result = manager.generate_fact_cards_with_gemini_to_pack(
-            topic="動畫新番最新話演出討論",
-            timeout_seconds=120,
-        )
-
-        assert calls[0]["topic"] == "動畫新番最新話演出討論"
-        assert calls[0]["session_title"] == "動畫新番 FactCards"
-        assert result["status"] == "completed"
-        assert result["topic"] == "動畫新番最新話演出討論"
-        assert result["import"]["created_count"] == 1
-        assert result["import"]["embedding_count"] == 1
-        assert "session_id" not in result["import"]
-        entries = storage.list_topic_pack_entries(result["import"]["pack_id"])
-        assert entries[0]["title"] == "最新話演出討論"
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-def test_fact_card_worker_process_timeout_is_reported(monkeypatch):
-    tmp_dir = _tmp_dir()
-    try:
-        storage = BridgeStorage(tmp_dir / "youtube_live.db")
-        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
-
-        def fake_run(command, **_kwargs):
-            raise subprocess.TimeoutExpired(command, timeout=3)
-
-        monkeypatch.setattr(bridge_engine.subprocess, "run", fake_run)
-
-        with pytest.raises(TimeoutError) as exc_info:
-            manager._run_fact_card_replenishment_worker_process(
-                "live-a",
-                topic="動畫新番最新話作畫爭議",
-                pack_id=7,
-                output_name="auto-replenish-test.md",
-                timeout_seconds=3,
-            )
-
-        assert "FactCard worker timeout" in str(exc_info.value)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-def test_fact_card_worker_process_rejects_clarifying_question_stdout(monkeypatch):
-    tmp_dir = _tmp_dir()
-    try:
-        storage = BridgeStorage(tmp_dir / "youtube_live.db")
-        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
-
-        def fake_run(command, **_kwargs):
-            return subprocess.CompletedProcess(command, 0, stdout="請提供更明確的作品名稱或集數。", stderr="")
-
-        monkeypatch.setattr(bridge_engine.subprocess, "run", fake_run)
-
-        with pytest.raises(RuntimeError) as exc_info:
-            manager._run_fact_card_replenishment_worker_process(
-                "live-a",
-                topic="動畫新番最新話作畫爭議",
-                pack_id=7,
-                output_name="auto-replenish-test.md",
-                timeout_seconds=120,
-            )
-
-        assert "did not return JSON status" in str(exc_info.value)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
