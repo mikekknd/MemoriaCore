@@ -564,8 +564,12 @@ def test_episode_plan_projection_contains_turn_evidence_brief_without_raw_factca
         )
 
         assert "企劃內嵌事實摘要：" in projection
-        assert "可直接使用的事實：事件 A 在 2026-05-10 公開更新" in projection
-        assert "來源邊界：FactCards 與 sources.md 已被企劃層消化成本摘要" in projection
+        assert projection.count("可直接使用的事實：") == 1
+        assert "可直接使用的事實：\n- 事件 A 在 2026-05-10 公開更新" in projection
+        assert "- 公開來源只支援事件已更新，不支援推論它已經代表整個市場。" in projection
+        assert projection.count("來源邊界：") == 1
+        assert "來源邊界：\n- FactCards 與 sources.md 已被企劃層消化成本摘要" in projection
+        assert "- 沒有來源支撐的成因或排名推論不可自行補完。" in projection
         assert "不得把查證責任推給角色" in projection
         assert "不要在台詞中提到 FactCards、來源卡或自己正在查資料" in projection
         assert "evidence_brief:" not in projection

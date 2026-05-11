@@ -181,13 +181,15 @@ def _live_reply_context(followup: dict, session_ctx: dict | None) -> str:
         if str(item).strip()
     ][:3]
     if facts or boundaries:
-        lines.append("可用事實與來源邊界：")
-        for fact in facts:
-            lines.append(f"- 可直接使用的事實：{fact}")
-        for boundary in boundaries:
-            lines.append(f"- 來源邊界：{boundary}")
+        lines.append("企劃內嵌事實摘要：")
+        if facts:
+            lines.append("可直接使用的事實：")
+            lines.extend(f"- {fact}" for fact in facts)
+        if boundaries:
+            lines.append("來源邊界：")
+            lines.extend(f"- {boundary}" for boundary in boundaries)
         if bool(evidence_brief.get("do_not_delegate_to_character")):
-            lines.append("- 查證責任邊界：不得在台詞中提到來源卡、查資料或把查證責任交給角色。")
+            lines.append("查證責任邊界：不得在台詞中提到來源卡、查資料或把查證責任交給角色。")
 
     output = plan.get("output_requirements") if isinstance(plan.get("output_requirements"), dict) else {}
     if output:

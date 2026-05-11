@@ -879,10 +879,12 @@ class EpisodePlanManagerMixin:
             if str(item).strip()
         ]
         lines = ["企劃內嵌事實摘要："]
-        for fact in facts[:6]:
-            lines.append(f"可直接使用的事實：{fact}")
-        for boundary in boundaries[:4]:
-            lines.append(f"來源邊界：{boundary}")
+        if facts:
+            lines.append("可直接使用的事實：")
+            lines.extend(f"- {fact}" for fact in facts[:6])
+        if boundaries:
+            lines.append("來源邊界：")
+            lines.extend(f"- {boundary}" for boundary in boundaries[:4])
         if bool(brief.get("do_not_delegate_to_character")):
             lines.append(
                 "查證責任邊界：上述摘要已由企劃層從來源工件整理完成；"

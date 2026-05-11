@@ -833,7 +833,11 @@ def test_youtube_live_episode_followup_uses_compact_live_reply_context():
     assert "primary_reply_target:" in instruction
     assert "live_reply_context:" in instruction
     assert "live_episode_reply_task:" in instruction
+    assert instruction.count("可直接使用的事實：") == 1
+    assert "- Anime Corner Week 5 是海外社群週榜。" in instruction
     assert "Anime Corner Week 5 是海外社群週榜" in instruction
+    assert instruction.count("來源邊界：") == 1
+    assert "- 只能說明海外投票熱度，不是作品品質定論。" in instruction
     assert "只能說明海外投票熱度" in instruction
     assert "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾" in instruction
     assert "original_user_request:" not in instruction
