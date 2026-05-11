@@ -659,7 +659,7 @@ def test_episode_plan_projection_contains_turn_contract_without_full_plan_json()
         assert "最多句數：2" in projection
         assert "證據需求：本輪需要導播規劃的查證邊界" in projection
         assert "證據容量上限 3 個重點" in projection
-        assert "查證線索：事件名稱 爆點 觀眾反應" in projection
+        assert "查證線索：" not in projection
         assert "必須涵蓋：事件名稱" in projection
         assert "plan_id:" not in projection
         assert "turn_contract:" not in projection
@@ -689,13 +689,43 @@ def test_episode_plan_projection_uses_role_reply_budget_instead_of_suggested_rep
         assert "建議回覆數" not in projection
         assert "可以在此範圍內自然接話" not in projection
         assert "本段最多 2 次角色發言" in projection
-        assert "第 1 位角色：提出主觀點或核心資訊" in projection
-        assert "第 2 位角色：只能反應、轉譯、補一個新角度或推進，不得重述第 1 位角色主觀點" in projection
-        assert "選項題直球規則：如果前一位角色提出 A/B、多條路線或多個問題選項" in projection
-        assert "下一位角色必須先選一個或排出優先序" in projection
-        assert "禁止先用『看需求』、『沒有優劣』、『端看心境』" in projection
-        assert "反方頻率控制：analyst、skeptic、counterpoint 角色不要每次都修正主持人的分類或總結" in projection
-        assert "本次發言任務：第 1 位角色負責提出主觀點或核心資訊" in projection
+        assert "本次角色任務：提出本輪核心資訊或主觀點" in projection
+        assert "若無新資訊，短收束並推進" in projection
+        assert "第 1 位角色：提出主觀點或核心資訊" not in projection
+        assert "第 2 位角色：只能在「承接反應、轉譯觀眾視角、補新角度、推進下一段」中選一種" not in projection
+        assert "選項題直球規則：如果前一位角色提出 A/B、多條路線或多個問題選項" not in projection
+        assert "段落完成條件：" not in projection
+        assert "反方頻率控制：analyst、skeptic、counterpoint 角色不要每次都修正主持人的分類或總結" not in projection
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_episode_plan_projection_scopes_question_when_audience_questions_disallowed():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        plan, planned_state = manager._episode_plan_and_state(session, state)
+        turn = {
+            **manager._episode_current_turn_contract(plan, planned_state),
+            "output_requirements": {
+                "max_sentences": 3,
+                "must_end_with_question": True,
+                "allow_audience_question": False,
+                "should_handoff": True,
+                "handoff_target_function": "analyst",
+            },
+        }
+
+        projection = manager._episode_plan_context_text(
+            plan,
+            planned_state,
+            turn,
+            interrupt_state={},
+        )
+
+        assert "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾" in projection
+        assert "必須問句結尾：True；允許向觀眾提問：False" not in projection
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -728,8 +758,9 @@ def test_episode_plan_projection_contains_segment_rhythm_brakes():
         assert "本段討論目標：用事件 Hook 建立本段討論目標。" in projection
         assert "需要使用的資料點：事件名稱, 觀眾反應；資料點只作為素材，不要求逐句覆蓋。" in projection
         assert "本段應達成的觀眾理解：觀眾理解為什麼現在值得聽，但不被迫聽完整資料清單。" in projection
-        assert "收束時機：hook 與 analysis 都完成；同一觀點或比喻已經出現兩次" in projection
-        assert "同一觀點、同一比喻類型或同一結論已經出現兩次時" in projection
+        assert "收束提示：必要內容已完成或同一觀點開始重複時，請用一句短收束語推進下一輪。" in projection
+        assert "收束時機：" not in projection
+        assert "hook 與 analysis 都完成" not in projection
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

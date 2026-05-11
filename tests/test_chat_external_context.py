@@ -14,7 +14,10 @@ from api.routers.chat_rest import (
 )
 from core.chat_orchestrator.dialogue_format import format_history_for_llm
 from core.chat_orchestrator.dataclasses import PipelineContext
-from core.chat_orchestrator.group_followup import build_group_followup_instruction
+from core.chat_orchestrator.group_followup import (
+    build_group_followup_instruction,
+    inject_group_followup_instruction,
+)
 
 
 def test_external_context_payload_is_generic_and_capped():
@@ -706,19 +709,13 @@ def test_group_followup_prompt_uses_generic_hard_duplicate_rules():
     template = prompts["group_followup_user"]["template"]
 
     assert "你正在接續同一段直播討論" in template
-    assert "不得重述 primary_reply_target.content 的主張、結論或理由" in template
-    assert "不得使用同一資料卡或同一 evidence entry 的同一個事實點再次展開" in template
-    assert "不得把上一位角色的句子改寫成自己的語氣" in template
-    assert "若無新資訊，只能三選一" in template
-    assert "簡短反應" in template
-    assert "轉譯成觀眾視角" in template
-    assert "推進到下一段" in template
-    assert "判定為重複的情況" in template
-    assert "使用相同原因解釋同一事件、數據、排名、趨勢或結論變化" in template
-    assert "再次說明同一對象的同一屬性、背景、優勢、限制、受眾基本盤或表現結果" in template
-    assert "再次使用同功能比喻" in template
-    assert "再次總結相同結論" in template
-    assert "若 primary_reply_target.content 已經完成本輪目標，請不要補分析" in template
+    assert "routing_decision:" not in template
+    assert "conversation_intent:" not in template
+    assert "本次主要回應對象是 primary_reply_target.content" in template
+    assert "第 2 位角色只能在「承接反應、轉譯觀眾視角、補新角度、推進下一段」中選一種" not in template
+    assert "禁止重述前一位已完成的語義主張" not in template
+    assert "判定為重複的情況" not in template
+    assert "不得使用同一資料卡或同一 evidence entry" not in template
     assert "動畫" not in template
     assert "作品的作畫、世界觀" not in template
 
@@ -765,10 +762,150 @@ def test_youtube_live_group_followup_instruction_includes_reply_task_block():
 
     assert "live_episode_reply_task:" in instruction
     assert "本次發言任務" in instruction
-    assert "第 2 位角色只能反應、轉譯、補一個新角度或推進" in instruction
-    assert "不得完整覆蓋整個段落目標" in instruction
-    assert "不得重述上一位角色的主觀點" in instruction
+    assert "第 2 位角色只能在「承接反應、轉譯觀眾視角、補新角度、推進下一段」中選一種" in instruction
+    assert "禁止重述前一位已完成的語義主張" in instruction
+    assert "不得重述上一位角色的主觀點" not in instruction
     assert "Anime Corner 週榜只是即時快照" in instruction
+
+
+def test_youtube_live_episode_followup_uses_compact_live_reply_context():
+    instruction = build_group_followup_instruction(
+        {
+            "user_prompt_original": (
+                "Beat shape: surprise_to_frame. 可可用觀眾語氣點出最新 Week 5 排名變化。\n\n"
+                "<live_episode_turn_context>\n"
+                "第 1 位角色：提出主觀點或核心資訊。\n"
+                "本輪必須使用的新主張：week5_ranking_shift\n"
+                "</live_episode_turn_context>"
+            ),
+            "last_character_name": "可可",
+            "last_reply": "最新週榜突然換第一名，白蓮覺得這種大風吹正常嗎？",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "new_speaker_reply_to_ai",
+            "live_episode_reply_task": {
+                "stage": "reaction_translate_or_new_angle",
+                "turn_reply_index": 2,
+                "max_role_replies": 2,
+                "previous_claims": ["Week 5 排名變化已由可可說出"],
+                "previous_speaker_name": "可可",
+                "previous_reply": "最新週榜突然換第一名，白蓮覺得這種大風吹正常嗎？",
+            },
+        },
+        "請自然延續直播。",
+        {
+            "external_chat_context": {
+                "source": "youtube_live_director",
+                "context_text": (
+                    "<live_episode_turn_context>\n"
+                    "第 1 位角色：提出主觀點或核心資訊。\n"
+                    "本輪必須使用的新主張：week5_ranking_shift\n"
+                    "收束時機：Required turn types are completed\n"
+                    "</live_episode_turn_context>"
+                ),
+                "live_episode_plan": {
+                    "evidence_brief": {
+                        "facts_to_state": ["Anime Corner Week 5 是海外社群週榜。"],
+                        "source_boundaries": ["只能說明海外投票熱度，不是作品品質定論。"],
+                        "do_not_delegate_to_character": True,
+                    },
+                    "output_requirements": {
+                        "max_sentences": 3,
+                        "must_end_with_question": True,
+                        "allow_audience_question": False,
+                        "should_handoff": True,
+                        "handoff_target_function": "analyst",
+                    },
+                    "turn_contract": {
+                        "turn_id": "seg_01_turn_01",
+                        "turn_type": "hook",
+                        "intent": "可可提出榜單 hook",
+                    },
+                    "turn_id": "seg_01_turn_01",
+                    "turn_type": "hook",
+                },
+            },
+        },
+    )
+
+    assert "routing_decision:" not in instruction
+    assert "conversation_intent:" not in instruction
+    assert "routing_action" not in instruction
+    assert "primary_reply_target:" in instruction
+    assert "live_reply_context:" in instruction
+    assert "live_episode_reply_task:" in instruction
+    assert "Anime Corner Week 5 是海外社群週榜" in instruction
+    assert "只能說明海外投票熱度" in instruction
+    assert "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾" in instruction
+    assert "original_user_request:" not in instruction
+    assert "<live_episode_turn_context>" not in instruction
+    assert "第 1 位角色：提出主觀點或核心資訊" not in instruction
+    assert "本輪必須使用的新主張" not in instruction
+    assert "收束時機" not in instruction
+
+
+def test_youtube_live_episode_followup_injection_suppresses_full_director_context():
+    api_messages = [
+        {"role": "system", "content": "system"},
+        {"role": "assistant", "content": "上一位角色台詞"},
+    ]
+    followup = {
+        "user_prompt_original": "請根據已提供的直播流程提示回應。",
+        "last_character_name": "可可",
+        "last_reply": "最新週榜突然換第一名，白蓮覺得這種大風吹正常嗎？",
+        "conversation_intent": "continue_group_discussion",
+        "routing_action": "new_speaker_reply_to_ai",
+        "live_episode_reply_task": {
+            "stage": "reaction_translate_or_new_angle",
+            "turn_reply_index": 2,
+            "max_role_replies": 2,
+            "previous_claims": ["Week 5 排名變化已由可可說出"],
+        },
+    }
+    session_ctx = {
+        "channel": "youtube_live",
+        "external_chat_context": {
+            "source": "youtube_live_director",
+            "context_text": (
+                "<live_episode_turn_context>\n"
+                "第 1 位角色：提出主觀點或核心資訊。\n"
+                "本輪必須使用的新主張：week5_ranking_shift\n"
+                "</live_episode_turn_context>"
+            ),
+            "live_episode_plan": {
+                "evidence_brief": {
+                    "facts_to_state": ["Anime Corner Week 5 是海外社群週榜。"],
+                    "source_boundaries": ["不能當成作品品質定論。"],
+                    "do_not_delegate_to_character": True,
+                },
+                "output_requirements": {
+                    "max_sentences": 2,
+                    "must_end_with_question": False,
+                    "allow_audience_question": False,
+                    "should_handoff": True,
+                    "handoff_target_function": "analyst",
+                },
+                "turn_id": "seg_01_turn_01",
+                "turn_type": "hook",
+            },
+        },
+    }
+
+    inject_group_followup_instruction(
+        api_messages,
+        followup,
+        "請根據已提供的直播流程提示回應。",
+        session_messages=[],
+        session_ctx=session_ctx,
+    )
+
+    injected = api_messages[-1]["content"]
+    assert '<group_followup_instruction source="system_control">' in injected
+    assert "live_reply_context:" in injected
+    assert "Anime Corner Week 5 是海外社群週榜" in injected
+    assert "<director_context" not in injected
+    assert "<live_episode_turn_context>" not in injected
+    assert "第 1 位角色：提出主觀點或核心資訊" not in injected
+    assert "本輪必須使用的新主張" not in injected
 
 
 def test_youtube_live_group_followup_instruction_omits_duplicate_hosting_rules():

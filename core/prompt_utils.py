@@ -67,7 +67,7 @@ def _build_user_identity_block(session_ctx: dict | None) -> str:
 
 
 def _build_external_chat_context_block(session_ctx: dict | None) -> str:
-    """注入外部聊天室上下文；此內容不可信，且不持久化為正式 user 訊息。"""
+    """注入暫態外部/導播上下文；不持久化為正式 user 訊息。"""
     if not session_ctx:
         return ""
     ext = session_ctx.get("external_chat_context")
@@ -77,10 +77,29 @@ def _build_external_chat_context_block(session_ctx: dict | None) -> str:
     if not context_text:
         return ""
     source = str(ext.get("source") or "external").strip() or "external"
+    if source == "youtube_live_director":
+        return get_prompt_manager().get("director_external_context_block").format(
+            source=xml_attr(source),
+            context_text=context_text,
+        )
     return get_prompt_manager().get("external_chat_context_block").format(
         source=xml_attr(source),
         context_text=context_text,
     )
+
+
+def _is_youtube_live_prompt_context(session_ctx: dict | None) -> bool:
+    """判斷目前前綴是否服務 YouTube 直播導播流程。"""
+    if not session_ctx:
+        return False
+    external = session_ctx.get("external_chat_context")
+    if not isinstance(external, dict):
+        return False
+    source = str(external.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return False
+    channel = str(session_ctx.get("channel") or "").strip()
+    return channel in {"", "youtube_live"}
 
 
 def build_user_prefix(
@@ -105,18 +124,19 @@ def build_user_prefix(
     )
 
     emo_block = ""
-    current_character_id = str((session_ctx or {}).get("character_id") or "").strip()
-    for msg in reversed(session_messages):
-        if msg.get("role") == "assistant" and msg.get("persona_state"):
-            msg_character_id = str(msg.get("character_id") or "").strip()
-            if current_character_id and msg_character_id and msg_character_id != current_character_id:
-                continue
-            ps = msg["persona_state"]
-            internal_thought = ps.get("internal_thought") or "—"
-            emo_block = "\n" + pm.get("emotional_trajectory_block").format(
-                internal_thought=internal_thought,
-            )
-            break
+    if not _is_youtube_live_prompt_context(session_ctx):
+        current_character_id = str((session_ctx or {}).get("character_id") or "").strip()
+        for msg in reversed(session_messages):
+            if msg.get("role") == "assistant" and msg.get("persona_state"):
+                msg_character_id = str(msg.get("character_id") or "").strip()
+                if current_character_id and msg_character_id and msg_character_id != current_character_id:
+                    continue
+                ps = msg["persona_state"]
+                internal_thought = ps.get("internal_thought") or "—"
+                emo_block = "\n" + pm.get("emotional_trajectory_block").format(
+                    internal_thought=internal_thought,
+                )
+                break
 
     return env_block + user_identity_block + ("\n" + external_chat_context_block if external_chat_context_block else "") + emo_block + "\n\n"
 

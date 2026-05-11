@@ -564,11 +564,6 @@ class EpisodePlanManagerMixin:
             for item in evidence.get("required_entities") or []
             if str(item).strip()
         ]
-        evidence_queries = [
-            str(item).strip()
-            for item in evidence.get("queries") or []
-            if str(item).strip()
-        ][:4]
         preferred_functions = [
             str(item).strip()
             for item in speaker.get("preferred_role_functions") or []
@@ -620,10 +615,7 @@ class EpisodePlanManagerMixin:
             *self._episode_recommendation_context_lines(plan, turn),
             *self._episode_stance_context_lines(turn),
             *self._episode_evidence_brief_context_lines(turn),
-            "輸出限制："
-            f"最多句數：{int(output.get('max_sentences') or 2)}；"
-            f"必須問句結尾：{bool(output.get('must_end_with_question'))}；"
-            f"允許向觀眾提問：{bool(output.get('allow_audience_question'))}",
+            self._episode_output_context_line(output),
             "交接要求："
             f"{'需要' if bool(output.get('should_handoff')) else '不需要'}；"
             f"交接功能：{output.get('handoff_target_function') or '未指定'}",
@@ -641,30 +633,19 @@ class EpisodePlanManagerMixin:
                 "證據需求：本輪需要導播規劃的查證邊界；"
                 f"證據容量上限 {max_cards} 個重點，只能作為事實依據，不是立場或段落策略。"
             )
-            if evidence_queries:
-                lines.append(
-                    "查證線索："
-                    + "；".join(evidence_queries)
-                    + "。沒有明確來源支撐的具體事實請保守處理，不要自行補完。"
-                )
         else:
             lines.append("證據需求：本輪不使用外部話題卡；請依本輪目標與角色開場/收束要求回應。")
         if required_entities:
             lines.append("必須涵蓋：" + ", ".join(required_entities))
-        preview = next_turn_preview if isinstance(next_turn_preview, dict) else {}
-        if preview.get("turn_id"):
-            next_label = " - ".join(
-                part for part in (
-                    str(preview.get("turn_type") or "").strip(),
-                    str(preview.get("intent") or "").strip(),
-                )
-                if part
-            )
-            if next_label:
-                lines.append(
-                    "下一輪預告："
-                    f"{next_label}；自由發揮時請自然往這個方向收束，但不要提前完整講完下一輪。"
-                )
+        handoff = turn.get("handoff") if isinstance(turn.get("handoff"), dict) else {}
+        handoff_hint = str(handoff.get("next_turn_hint") or "").strip()
+        if handoff_hint:
+            lines.append(f"交接提示：{handoff_hint}；只提示轉場方向，不要提前完整展開下一輪。")
+        else:
+            preview = next_turn_preview if isinstance(next_turn_preview, dict) else {}
+            preview_type = str(preview.get("turn_type") or "").strip()
+            if preview.get("turn_id") and preview_type:
+                lines.append(f"交接提示：下一輪類型 {preview_type}；只提示轉場方向，不要提前完整展開下一輪。")
         forbidden_parts = []
         for label, key in (("避免重複主張", "claims"), ("避免重複比喻", "metaphors"), ("避免重複開頭", "openings")):
             values = [str(item).strip() for item in forbidden.get(key) or [] if str(item).strip()]
@@ -698,6 +679,25 @@ class EpisodePlanManagerMixin:
             lines.append("回復規則：本輪不是聊天室打斷，完成後依企劃段落節奏推進。")
         lines.append("</live_episode_turn_context>")
         return "\n".join(lines)
+
+    @staticmethod
+    def _episode_output_context_line(output: dict[str, Any]) -> str:
+        try:
+            max_sentences = int(output.get("max_sentences") or 2)
+        except (TypeError, ValueError):
+            max_sentences = 2
+        max_sentences = max(1, min(max_sentences, 8))
+        must_end_with_question = bool(output.get("must_end_with_question"))
+        allow_audience_question = bool(output.get("allow_audience_question"))
+        if must_end_with_question and allow_audience_question:
+            ending_rule = "結尾必須是可回應真實觀眾事件的問句。"
+        elif must_end_with_question:
+            ending_rule = "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾。"
+        elif allow_audience_question:
+            ending_rule = "可向觀眾提問，但只能在本輪正在回應真實留言或 Super Chat 時使用。"
+        else:
+            ending_rule = "不要求問句結尾；不得向觀眾提問。"
+        return f"輸出限制：最多句數：{max_sentences}；{ending_rule}"
 
     @staticmethod
     def _episode_claim_catalog(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -930,18 +930,9 @@ class EpisodePlanManagerMixin:
             "對話彈性：",
             f"自主度：{autonomy}",
             f"本段最多 {max_replies} 次角色發言；這是硬上限，不是必須用完。",
-            "第 1 位角色：提出主觀點或核心資訊。",
+            "本次角色任務：提出本輪核心資訊或主觀點；不得一次講完整段落。",
+            "接力煞車：若無新資訊，短收束並推進。",
         ]
-        if max_replies >= 2:
-            lines.append("第 2 位角色：只能反應、轉譯、補一個新角度或推進，不得重述第 1 位角色主觀點。")
-        if max_replies >= 3:
-            lines.append("第 3 位以上角色：只允許短收束或橋接，不得新增同一資料點的重複分析。")
-        lines.extend([
-            "選項題直球規則：如果前一位角色提出 A/B、多條路線或多個問題選項，下一位角色必須先選一個或排出優先序，再補理由；禁止先用『看需求』、『沒有優劣』、『端看心境』、『各有喜好』這類中立框架逃避回答。",
-            "反方頻率控制：analyst、skeptic、counterpoint 角色不要每次都修正主持人的分類或總結；若主持已給出可用整理，先承接或選邊，只補一個必要條件，然後交回節奏或收束。",
-            "段落完成條件：核心資訊已被說出即視為 completed；completed 後不得再次呼叫 analyst 類角色補充同一資料。",
-            "本次發言任務：第 1 位角色負責提出主觀點或核心資訊；不得完整覆蓋整個段落目標。",
-        ])
         return lines
 
     @staticmethod
@@ -1015,9 +1006,7 @@ class EpisodePlanManagerMixin:
             + (", ".join(data_points) if data_points else "依本輪目標取最少必要資料")
             + "；資料點只作為素材，不要求逐句覆蓋。",
             f"本段應達成的觀眾理解：{audience_understanding}",
-            "收束時機：" + "；".join(close_when),
-            "重複煞車：同一觀點、同一比喻類型或同一結論已經出現兩次時，"
-            "請用一句短收束語推進下一輪，不要換句話重講。",
+            "收束提示：必要內容已完成或同一觀點開始重複時，請用一句短收束語推進下一輪。",
         ]
 
     @staticmethod
@@ -1219,6 +1208,11 @@ class EpisodePlanManagerMixin:
                 "stance_policy": copy.deepcopy(
                     turn.get("stance_policy")
                     if isinstance(turn.get("stance_policy"), dict)
+                    else {}
+                ),
+                "handoff": copy.deepcopy(
+                    turn.get("handoff")
+                    if isinstance(turn.get("handoff"), dict)
                     else {}
                 ),
                 "evidence_brief": copy.deepcopy(

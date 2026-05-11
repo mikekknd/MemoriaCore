@@ -445,8 +445,10 @@ async def test_planned_turn_uses_dialogue_policy_group_turn_limit(monkeypatch):
             "intent": "說明事件背後脈絡",
         }
         assert "本段最多 3 次角色發言" in captured["external_context"]["context_text"]
-        assert "第 2 位角色：只能反應、轉譯、補一個新角度或推進" in captured["external_context"]["context_text"]
-        assert "下一輪預告：analysis - 說明事件背後脈絡" in captured["external_context"]["context_text"]
+        assert "本次角色任務：提出本輪核心資訊或主觀點" in captured["external_context"]["context_text"]
+        assert "第 2 位角色：只能在「承接反應、轉譯觀眾視角、補新角度、推進下一段」中選一種" not in captured["external_context"]["context_text"]
+        assert "交接提示：交給分析角色補脈絡" in captured["external_context"]["context_text"]
+        assert "下一輪預告：analysis - 說明事件背後脈絡" not in captured["external_context"]["context_text"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
