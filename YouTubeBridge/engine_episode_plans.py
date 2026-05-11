@@ -564,6 +564,11 @@ class EpisodePlanManagerMixin:
             for item in evidence.get("required_entities") or []
             if str(item).strip()
         ]
+        evidence_queries = [
+            str(item).strip()
+            for item in evidence.get("queries") or []
+            if str(item).strip()
+        ][:4]
         preferred_functions = [
             str(item).strip()
             for item in speaker.get("preferred_role_functions") or []
@@ -614,6 +619,7 @@ class EpisodePlanManagerMixin:
             *self._episode_focus_context_lines(plan, turn),
             *self._episode_recommendation_context_lines(plan, turn),
             *self._episode_stance_context_lines(turn),
+            *self._episode_evidence_brief_context_lines(turn),
             "輸出限制："
             f"最多句數：{int(output.get('max_sentences') or 2)}；"
             f"必須問句結尾：{bool(output.get('must_end_with_question'))}；"
@@ -631,9 +637,18 @@ class EpisodePlanManagerMixin:
                 "本輪請使用 fallback 目標，不要假裝已收到觀眾回應。"
             )
         if max_cards > 0:
-            lines.append(f"證據需求：需要資料卡，最多 {max_cards} 張；資料卡只作為事實依據，不是立場或段落策略。")
+            lines.append(
+                "證據需求：本輪需要導播規劃的查證邊界；"
+                f"證據容量上限 {max_cards} 個重點，只能作為事實依據，不是立場或段落策略。"
+            )
+            if evidence_queries:
+                lines.append(
+                    "查證線索："
+                    + "；".join(evidence_queries)
+                    + "。沒有明確來源支撐的具體事實請保守處理，不要自行補完。"
+                )
         else:
-            lines.append("證據需求：本輪不注入資料卡；請依本輪目標與角色開場/收束要求回應。")
+            lines.append("證據需求：本輪不使用外部話題卡；請依本輪目標與角色開場/收束要求回應。")
         if required_entities:
             lines.append("必須涵蓋：" + ", ".join(required_entities))
         preview = next_turn_preview if isinstance(next_turn_preview, dict) else {}
@@ -849,6 +864,33 @@ class EpisodePlanManagerMixin:
         return lines
 
     @staticmethod
+    def _episode_evidence_brief_context_lines(turn: dict[str, Any]) -> list[str]:
+        brief = turn.get("evidence_brief") if isinstance(turn.get("evidence_brief"), dict) else {}
+        if not brief:
+            return []
+        facts = [
+            str(item).strip()
+            for item in brief.get("facts_to_state") or []
+            if str(item).strip()
+        ]
+        boundaries = [
+            str(item).strip()
+            for item in brief.get("source_boundaries") or []
+            if str(item).strip()
+        ]
+        lines = ["企劃內嵌事實摘要："]
+        for fact in facts[:6]:
+            lines.append(f"可直接使用的事實：{fact}")
+        for boundary in boundaries[:4]:
+            lines.append(f"來源邊界：{boundary}")
+        if bool(brief.get("do_not_delegate_to_character")):
+            lines.append(
+                "查證責任邊界：上述摘要已由企劃層從來源工件整理完成；"
+                "不得把查證責任推給角色，不要在台詞中提到 FactCards、來源卡或自己正在查資料。"
+            )
+        return lines
+
+    @staticmethod
     def _episode_stance_context_lines(turn: dict[str, Any]) -> list[str]:
         policy = turn.get("stance_policy") if isinstance(turn.get("stance_policy"), dict) else {}
         if not policy:
@@ -988,26 +1030,6 @@ class EpisodePlanManagerMixin:
         except (TypeError, ValueError):
             return 3
         return max(0, min(value, 8))
-
-    def _episode_turn_topic_context(self, session_id: str, turn: dict[str, Any]) -> str:
-        evidence = turn.get("evidence_policy") if isinstance(turn.get("evidence_policy"), dict) else {}
-        queries = [
-            str(query).strip()
-            for query in evidence.get("queries") or []
-            if str(query).strip()
-        ]
-        if not queries:
-            return ""
-        max_cards = self._episode_evidence_max_cards(evidence)
-        if max_cards <= 0:
-            return ""
-        return self._topic_pack_context_for_query(
-            session_id,
-            "\n".join(queries),
-            limit=max_cards,
-            usage_source="episode_plan",
-            allow_fallback=bool(evidence.get("allow_unverified_claims")),
-        )
 
     @staticmethod
     def _episode_turn_is_audience_event_dependent(turn: dict[str, Any]) -> bool:
@@ -1164,10 +1186,7 @@ class EpisodePlanManagerMixin:
             next_turn_preview=next_turn_preview,
             audience_event_context=audience_event_context,
         )
-        topic_context = self._episode_turn_topic_context(
-            str(session.get("session_id") or ""),
-            turn,
-        )
+        topic_context = ""
         patch = {
             "live_episode_plan": {
                 "plan_id": str(plan.get("plan_id") or ""),
@@ -1200,6 +1219,11 @@ class EpisodePlanManagerMixin:
                 "stance_policy": copy.deepcopy(
                     turn.get("stance_policy")
                     if isinstance(turn.get("stance_policy"), dict)
+                    else {}
+                ),
+                "evidence_brief": copy.deepcopy(
+                    turn.get("evidence_brief")
+                    if isinstance(turn.get("evidence_brief"), dict)
                     else {}
                 ),
                 "next_turn_preview": next_turn_preview,

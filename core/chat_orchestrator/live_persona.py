@@ -89,13 +89,6 @@ def resolve_live_persona_prompt(
         return base_prompt, base_reply_rules
 
     pm = get_prompt_manager()
-    reply_rules_block = ""
-    if override["reply_rules"]:
-        reply_rules_block = (
-            "<live_reply_rules>\n"
-            f"{override['reply_rules']}\n"
-            "</live_reply_rules>\n\n"
-        )
     overlay_block = pm.get("youtube_live_persona_override_block").format(
         mode=override["mode"],
         system_prompt=override["system_prompt"],
@@ -103,7 +96,6 @@ def resolve_live_persona_prompt(
         opening_intro=override["opening_intro"] or "（未設定）",
         addressing_text=_addressing_text(override["addressing"]),
         reply_rules=override["reply_rules"],
-        reply_rules_block=reply_rules_block,
     )
     if override["mode"] == "append":
         next_prompt = f"{base_prompt}\n\n{overlay_block}".strip()

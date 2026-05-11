@@ -509,79 +509,98 @@ def test_episode_plan_projection_contains_personal_recommendation_rules():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_episode_turn_uses_structured_evidence_policy_queries(monkeypatch):
+def test_episode_plan_patch_does_not_inject_topic_pack_cards_for_evidence_turn(monkeypatch):
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
         session = storage.get_session("live-a")
         state = storage.get_director_state("live-a")
-        plan, planned_state = manager._episode_plan_and_state(session, state)
-        turn = manager._episode_current_turn_contract(plan, planned_state)
-        calls = []
+        decision = manager._episode_planned_turn_decision(session, state)
 
-        def fake_topic_context(session_id, query_text, *, limit, usage_source, allow_fallback, **_kwargs):
-            calls.append({
-                "session_id": session_id,
-                "query_text": query_text,
-                "limit": limit,
-                "usage_source": usage_source,
-                "allow_fallback": allow_fallback,
-            })
-            return "<topic_pack_fact_cards>structured query</topic_pack_fact_cards>"
+        def fail_topic_context(*_args, **_kwargs):
+            raise AssertionError("LiveEpisodePlan turns must not inject topic_pack_fact_cards")
 
-        monkeypatch.setattr(manager, "_topic_pack_context_for_query", fake_topic_context)
+        monkeypatch.setattr(manager, "_topic_pack_context_for_query", fail_topic_context)
 
-        context = manager._episode_turn_topic_context("live-a", turn)
+        patch, context_text, topic_context = manager._episode_plan_external_context_patch(
+            session,
+            state,
+            decision,
+        )
 
-        assert "structured query" in context
-        assert calls == [{
-            "session_id": "live-a",
-            "query_text": "事件名稱 爆點 觀眾反應",
-            "limit": 3,
-            "usage_source": "episode_plan",
-            "allow_fallback": False,
-        }]
+        assert topic_context == ""
+        assert "<topic_pack_fact_cards" not in context_text
+        assert patch["live_episode_plan"]["evidence_policy"]["max_cards"] == 3
+        assert "事件名稱" in context_text
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_episode_turn_max_cards_zero_skips_topic_pack_retrieval(monkeypatch):
+def test_episode_plan_projection_contains_turn_evidence_brief_without_raw_factcards():
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
         session = storage.get_session("live-a")
         state = storage.get_director_state("live-a")
         plan, planned_state = manager._episode_plan_and_state(session, state)
-        turn = manager._episode_current_turn_contract(plan, planned_state)
-        turn["evidence_policy"]["max_cards"] = 0
-        calls = []
+        turn = {
+            **manager._episode_current_turn_contract(plan, planned_state),
+            "evidence_brief": {
+                "facts_to_state": [
+                    "事件 A 在 2026-05-10 公開更新，角色可以直接把它當本輪 factual anchor。",
+                    "公開來源只支援事件已更新，不支援推論它已經代表整個市場。",
+                ],
+                "source_boundaries": [
+                    "FactCards 與 sources.md 已被企劃層消化成本摘要，角色不得說自己正在查卡。",
+                    "沒有來源支撐的成因或排名推論不可自行補完。",
+                ],
+                "do_not_delegate_to_character": True,
+            },
+        }
 
-        def fake_topic_context(session_id, query_text, **kwargs):
-            calls.append((session_id, query_text, kwargs))
-            return "<topic_pack_fact_cards>should not be used</topic_pack_fact_cards>"
+        projection = manager._episode_plan_context_text(
+            plan,
+            planned_state,
+            turn,
+            interrupt_state={},
+        )
 
-        monkeypatch.setattr(manager, "_topic_pack_context_for_query", fake_topic_context)
-
-        assert manager._episode_turn_topic_context("live-a", turn) == ""
-        assert calls == []
+        assert "企劃內嵌事實摘要：" in projection
+        assert "可直接使用的事實：事件 A 在 2026-05-10 公開更新" in projection
+        assert "來源邊界：FactCards 與 sources.md 已被企劃層消化成本摘要" in projection
+        assert "不得把查證責任推給角色" in projection
+        assert "不要在台詞中提到 FactCards、來源卡或自己正在查資料" in projection
+        assert "evidence_brief:" not in projection
+        assert "<topic_pack_fact_cards" not in projection
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_allow_unverified_claims_false_does_not_fallback_to_unverified_cards(monkeypatch):
+def test_episode_plan_external_context_patch_includes_evidence_brief():
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
         session = storage.get_session("live-a")
         state = storage.get_director_state("live-a")
-        plan, planned_state = manager._episode_plan_and_state(session, state)
-        turn = manager._episode_current_turn_contract(plan, planned_state)
+        decision = manager._episode_planned_turn_decision(session, state)
+        decision["episode_plan"]["turn_contract"]["evidence_brief"] = {
+            "facts_to_state": [
+                "事件 A 在 2026-05-10 公開更新，這是 planned turn 內嵌事實。",
+            ],
+            "source_boundaries": [
+                "FactCards 是查證來源，不是 runtime 話題卡。",
+            ],
+            "do_not_delegate_to_character": True,
+        }
 
-        def fake_topic_context(session_id, query_text, *, allow_fallback, **_kwargs):
-            if allow_fallback:
-                return "<topic_pack_fact_cards>fallback card</topic_pack_fact_cards>"
-            return ""
+        patch, context_text, topic_context = manager._episode_plan_external_context_patch(
+            session,
+            state,
+            decision,
+        )
 
-        monkeypatch.setattr(manager, "_topic_pack_context_for_query", fake_topic_context)
-
-        assert manager._episode_turn_topic_context("live-a", turn) == ""
+        assert topic_context == ""
+        assert patch["live_episode_plan"]["evidence_brief"]["facts_to_state"] == [
+            "事件 A 在 2026-05-10 公開更新，這是 planned turn 內嵌事實。"
+        ]
+        assert "企劃內嵌事實摘要：" in context_text
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -638,7 +657,9 @@ def test_episode_plan_projection_contains_turn_contract_without_full_plan_json()
         assert "角色功能：host" in projection
         assert "交接功能：analyst" in projection
         assert "最多句數：2" in projection
-        assert "證據需求：需要資料卡，最多 3 張" in projection
+        assert "證據需求：本輪需要導播規劃的查證邊界" in projection
+        assert "證據容量上限 3 個重點" in projection
+        assert "查證線索：事件名稱 爆點 觀眾反應" in projection
         assert "必須涵蓋：事件名稱" in projection
         assert "plan_id:" not in projection
         assert "turn_contract:" not in projection

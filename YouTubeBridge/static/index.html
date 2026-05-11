@@ -107,18 +107,6 @@
                 </div>
                 <div class="grid">
                   <label>
-                    <span class="field-label">角色停頓後續話秒數
-                      <span class="help-tip" tabindex="0" aria-label="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。" data-tooltip="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。">?</span>
-                    </span>
-                    <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="1" max="3600" value="60">
-                  </label>
-                  <label>
-                    <span class="field-label">單一話題持續回合數
-                      <span class="help-tip" tabindex="0" aria-label="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。" data-tooltip="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。">?</span>
-                    </span>
-                    <input id="directorAnchorEveryTurns" type="number" min="1" max="10" value="2">
-                  </label>
-                  <label>
                     <span class="field-label">企劃交接等待秒數
                       <span class="help-tip" tabindex="0" aria-label="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。" data-tooltip="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。">?</span>
                     </span>
@@ -136,21 +124,33 @@
                     </span>
                     <input id="directorDialogueExpansionEnabled" type="checkbox" checked>
                   </label>
-                  <label>
-                    <span class="field-label">導播回合上限
-                      <span class="help-tip" tabindex="0" aria-label="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。" data-tooltip="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。">?</span>
-                    </span>
-                    <input id="directorGroupTurnLimit" type="number" min="1" max="12" value="3">
-                  </label>
-                  <label class="wide">
-                    <span class="field-label">本場直播方向
-                      <span class="help-tip" tabindex="0" aria-label="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。" data-tooltip="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。">?</span>
-                    </span>
-                    <textarea id="directorGuidance" placeholder="例：本場只聊動畫新番，優先展開最新一話細節、作畫品質、社群討論與角色觀點。"></textarea>
-                  </label>
                   <details id="legacyDirectorFields" class="wide legacy-director-fields" open>
                     <summary>Legacy 主持/段落流程</summary>
                     <p id="legacyDirectorNotice" class="muted">未選用新版節目企劃時，以下欄位作為舊版導播 fallback 使用。</p>
+                    <label>
+                      <span class="field-label">角色停頓後續話秒數
+                        <span class="help-tip" tabindex="0" aria-label="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。" data-tooltip="角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。">?</span>
+                      </span>
+                      <input id="directorIdle" data-testid="director-idle-seconds" type="number" min="1" max="3600" value="60">
+                    </label>
+                    <label>
+                      <span class="field-label">單一話題持續回合數
+                        <span class="help-tip" tabindex="0" aria-label="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。" data-tooltip="同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。">?</span>
+                      </span>
+                      <input id="directorAnchorEveryTurns" type="number" min="1" max="10" value="2">
+                    </label>
+                    <label>
+                      <span class="field-label">導播回合上限
+                        <span class="help-tip" tabindex="0" aria-label="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。" data-tooltip="導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。">?</span>
+                      </span>
+                      <input id="directorGroupTurnLimit" type="number" min="1" max="12" value="3">
+                    </label>
+                    <label class="wide">
+                      <span class="field-label">本場直播方向
+                        <span class="help-tip" tabindex="0" aria-label="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。" data-tooltip="本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。">?</span>
+                      </span>
+                      <textarea id="directorGuidance" placeholder="例：本場只聊動畫新番，優先展開最新一話細節、作畫品質、社群討論與角色觀點。"></textarea>
+                    </label>
                     <label class="wide">
                       <span class="field-label">角色
                         <span class="help-tip" tabindex="0" aria-label="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。" data-tooltip="選擇本場會收到直播上下文並參與回應的角色；可多選，至少選一位才有 AI 回應。">?</span>

@@ -145,10 +145,9 @@
     "description": "YouTubeBridge trusted live scope 使用的直播專用角色 prompt 覆寫區塊。",
     "used_by": "core/chat_orchestrator/live_persona.py",
     "placeholders": [
-      "{system_prompt}",
-      "{reply_rules_block}"
+      "{system_prompt}"
     ],
-    "template": "<live_character_prompt>\n{system_prompt}\n</live_character_prompt>\n\n{reply_rules_block}直播約束：\n- 除非正在回應留言或 Super Chat，不要把問題丟回觀眾；請和其他角色互相接話、補充、反駁或提出下一個切入點。\n- 不要提到 prompt、overlay、hidden context、內部安全處理或導播流程。"
+    "template": "<live_character_prompt>\n{system_prompt}\n</live_character_prompt>\n\n直播約束：\n- 除非正在回應留言或 Super Chat，不要把問題丟回觀眾；請和其他角色互相接話、補充、反駁或提出下一個切入點。\n- 不要提到 prompt、overlay、hidden context、內部安全處理或導播流程。"
   },
   "chat_system_suffix": {
     "label": "對話系統後綴指令 (Chat System Suffix)",

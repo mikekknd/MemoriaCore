@@ -95,5 +95,8 @@ def test_live_episode_planner_auto_generates_evidence_cards_for_planned_queries(
 
     assert "Automatically generate Topic Evidence Cards" in skill_text
     assert "evidence_policy.queries" in skill_text
+    assert "evidence_brief" in skill_text
+    assert "facts_to_state" in skill_text
+    assert "do_not_delegate_to_character" in skill_text
     assert "factcards/" in skill_text
     assert "validate_topic_evidence_card.py" in skill_text

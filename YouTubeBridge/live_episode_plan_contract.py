@@ -189,6 +189,38 @@ def _validate_evidence_policy(evidence_policy: dict[str, Any], path: str) -> Non
     _require_int(evidence_policy.get("max_cards"), f"{path}.max_cards", minimum=0)
 
 
+def _validate_evidence_brief(raw_brief: Any, path: str) -> None:
+    if raw_brief is None:
+        return
+    brief = _require_dict(raw_brief, path)
+    facts = _require_list(
+        brief.get("facts_to_state"),
+        f"{path}.facts_to_state",
+        min_items=1,
+    )
+    if len(facts) > 6:
+        raise LiveEpisodePlanValidationError(
+            f"{path}.facts_to_state must contain at most 6 item(s)"
+        )
+    for index, fact in enumerate(facts):
+        _require_text(fact, f"{path}.facts_to_state[{index}]")
+    boundaries = _require_list(
+        brief.get("source_boundaries"),
+        f"{path}.source_boundaries",
+        min_items=1,
+    )
+    if len(boundaries) > 4:
+        raise LiveEpisodePlanValidationError(
+            f"{path}.source_boundaries must contain at most 4 item(s)"
+        )
+    for index, boundary in enumerate(boundaries):
+        _require_text(boundary, f"{path}.source_boundaries[{index}]")
+    _require_bool(
+        brief.get("do_not_delegate_to_character"),
+        f"{path}.do_not_delegate_to_character",
+    )
+
+
 def _validate_output_requirements(output: dict[str, Any], path: str) -> None:
     _require_int(output.get("max_sentences"), f"{path}.max_sentences", minimum=1)
     _require_bool(output.get("must_end_with_question"), f"{path}.must_end_with_question")
@@ -645,6 +677,10 @@ def validate_live_episode_plan(plan: dict[str, Any]) -> dict[str, Any]:
             _validate_evidence_policy(
                 _require_dict(turn_obj.get("evidence_policy"), f"{turn_path}.evidence_policy"),
                 f"{turn_path}.evidence_policy",
+            )
+            _validate_evidence_brief(
+                turn_obj.get("evidence_brief"),
+                f"{turn_path}.evidence_brief",
             )
             _require_dict(
                 turn_obj.get("forbidden_repetition"),

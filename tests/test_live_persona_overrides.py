@@ -12,7 +12,7 @@ class _PromptManager:
         templates = {
             "youtube_live_persona_override_block": (
                 "<live_character_prompt>\n{system_prompt}\n</live_character_prompt>\n"
-                "{reply_rules_block}\n"
+                "\n"
                 "直播約束：\n- 除非正在回應留言或 Super Chat，不要把問題丟回觀眾。"
             ),
             "group_participants_block": (
@@ -71,8 +71,18 @@ def test_trusted_youtube_live_persona_replaces_base_prompt(monkeypatch):
     assert "<live_speech_identity>" not in prompt
     assert "對其他角色的固定稱呼" not in prompt
     assert "今天的直播主持可可" not in prompt
-    assert "<live_reply_rules>" in prompt
+    assert "<live_reply_rules>" not in prompt
+    assert "每次接話都要自然接住前一位角色。" not in prompt
     assert "自然接住前一位角色" in reply_rules
+
+
+def test_youtube_live_persona_template_does_not_embed_reply_rules_block():
+    prompts = json.loads(open("prompts_default.json", encoding="utf-8").read())
+    block = prompts["youtube_live_persona_override_block"]
+
+    assert "{reply_rules_block}" not in block["template"]
+    assert "{reply_rules_block}" not in block["placeholders"]
+    assert "<live_reply_rules>" not in block["template"]
 
 
 def test_live_persona_prompt_omits_runtime_scope_and_opening_execution_rules():

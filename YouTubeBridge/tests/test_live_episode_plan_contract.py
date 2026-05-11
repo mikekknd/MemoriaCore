@@ -1,5 +1,6 @@
 import copy
 import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,26 @@ from live_episode_plan_contract import (
     initial_planned_state,
     validate_live_episode_plan,
 )
+
+LIVE_PLANNER_VALIDATOR_PATH = (
+    Path(__file__).resolve().parents[1].parent
+    / ".agents"
+    / "skills"
+    / "live-episode-planner"
+    / "scripts"
+    / "validate_episode_plan.py"
+)
+
+
+def _load_live_planner_validator():
+    spec = importlib.util.spec_from_file_location(
+        "validate_live_episode_planner_skill",
+        LIVE_PLANNER_VALIDATOR_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
 
 
 def sample_plan() -> dict:
@@ -253,6 +274,50 @@ def test_validate_live_episode_plan_requires_structured_evidence_policy_queries(
 
     with pytest.raises(LiveEpisodePlanValidationError, match="evidence_policy.queries"):
         validate_live_episode_plan(plan)
+
+
+def test_validate_live_episode_plan_accepts_turn_evidence_brief():
+    plan = sample_plan()
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["evidence_brief"] = {
+        "facts_to_state": [
+            "事件 A 在 2026-05-10 公開更新，這是本輪可以直接說出的事實。",
+            "公開來源只支援事件已更新，不支援推論事件已成為市場第一。",
+        ],
+        "source_boundaries": [
+            "FactCards 與 sources.md 是企劃層查證工件，不是角色要朗讀的話題卡。",
+            "沒有來源支撐的成因或排名推論不可自行補完。",
+        ],
+        "do_not_delegate_to_character": True,
+    }
+
+    validated = validate_live_episode_plan(plan)
+
+    brief = validated["segments"][0]["planned_turn_contracts"][0]["evidence_brief"]
+    assert brief["facts_to_state"][0].startswith("事件 A")
+    assert brief["source_boundaries"][0].startswith("FactCards")
+    assert brief["do_not_delegate_to_character"] is True
+
+
+def test_validate_live_episode_plan_rejects_invalid_turn_evidence_brief():
+    plan = sample_plan()
+    turn = plan["segments"][0]["planned_turn_contracts"][0]
+    turn["evidence_brief"] = {
+        "facts_to_state": [],
+        "source_boundaries": ["缺少可直接播出的事實時，這不是完整企劃。"],
+        "do_not_delegate_to_character": True,
+    }
+
+    with pytest.raises(LiveEpisodePlanValidationError, match="evidence_brief.facts_to_state"):
+        validate_live_episode_plan(plan)
+
+
+def test_live_episode_planner_skill_validator_requires_evidence_brief_for_source_backed_turns():
+    validator = _load_live_planner_validator()
+    plan = sample_plan()
+
+    with pytest.raises(validator.EpisodePlanSkillValidationError, match="evidence_brief"):
+        validator._require_runtime_evidence_briefs(plan)
 
 
 def test_validate_live_episode_plan_rejects_speaker_policy_outside_participants():

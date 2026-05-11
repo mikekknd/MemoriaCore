@@ -1066,6 +1066,43 @@ def test_control_ui_exposes_episode_plan_import_and_binding_controls():
     assert "interrupt_state" in index_html
 
 
+def test_live_session_moves_legacy_director_knobs_into_legacy_block():
+    index_html = _control_ui_source()
+    live_session_block = index_html[
+        index_html.index('<div id="liveSessionPane"'):
+        index_html.index('<div id="eventsPane"')
+    ]
+    legacy_start = live_session_block.index('id="legacyDirectorFields"')
+    legacy_block = live_session_block[
+        legacy_start:
+        live_session_block.index("</details>", legacy_start)
+    ]
+    primary_director_grid = live_session_block[
+        live_session_block.index('<div class="grid">'):
+        legacy_start
+    ]
+
+    legacy_field_ids = (
+        "directorIdle",
+        "directorAnchorEveryTurns",
+        "directorGroupTurnLimit",
+        "directorGuidance",
+    )
+    for field_id in legacy_field_ids:
+        assert f'id="{field_id}"' in legacy_block
+        assert f'id="{field_id}"' not in primary_director_grid
+
+    for field_id in (
+        "episodePlanHandoffGapSeconds",
+        "episodePlanTurnGapSeconds",
+        "directorDialogueExpansionEnabled",
+    ):
+        assert f'id="{field_id}"' in primary_director_grid
+        assert f'id="{field_id}"' not in legacy_block
+    assert 'id="directorMaxChatBatches"' in live_session_block
+    assert 'id="directorMaxChatBatches"' not in legacy_block
+
+
 def test_live_session_places_director_below_selected_roles_and_runtime_settings_on_right():
     index_html = _control_ui_source()
     live_session_block = index_html[
