@@ -47,6 +47,7 @@ from fact_cards import (
 )
 from memoria_client import MemoriaClient
 from storage import BridgeStorage, infer_super_chat_tier
+from tts_gpt_sovits import GptSoVitsTTSProvider, TTSResult
 from youtube_client import YouTubeClient, normalize_message
 
 
@@ -81,11 +82,14 @@ class YouTubeBridgeManager(
         storage: BridgeStorage,
         youtube_client: YouTubeClient | None = None,
         memoria_client_factory=None,
+        tts_provider_factory=None,
     ):
         self.storage = storage
         self.youtube_client = youtube_client or YouTubeClient()
         self.memoria_client_factory = memoria_client_factory or MemoriaClient
+        self.tts_provider_factory = tts_provider_factory or GptSoVitsTTSProvider
         self._memoria_client_cache = None
+        self._tts_provider_cache = None
         self.auto_finalize_archive_callback = None
         self._runtimes: dict[str, LiveRuntime] = {}
         self._lock = asyncio.Lock()
@@ -97,6 +101,400 @@ class YouTubeBridgeManager(
 
     def reset_memoria_client(self) -> None:
         self._memoria_client_cache = None
+
+    def _tts_provider(self):
+        if self._tts_provider_cache is None:
+            self._tts_provider_cache = self.tts_provider_factory()
+        return self._tts_provider_cache
+
+    @staticmethod
+    def _presentation_enabled(session: dict[str, Any] | None) -> bool:
+        return bool((session or {}).get("presentation_enabled"))
+
+    @staticmethod
+    def _presentation_ack_timeout(session: dict[str, Any] | None) -> int:
+        try:
+            value = int((session or {}).get("presentation_ack_timeout_seconds", 120) or 120)
+        except (TypeError, ValueError):
+            value = 120
+        return max(1, min(value, 600))
+
+    @staticmethod
+    def _split_presentation_utterances(text: str) -> list[str]:
+        clean = " ".join(str(text or "").replace("\r", "\n").split())
+        if not clean:
+            return []
+        parts: list[str] = []
+        start = 0
+        for index, char in enumerate(clean):
+            if char in "。！？!?":
+                part = clean[start:index + 1].strip()
+                if part:
+                    parts.append(part)
+                start = index + 1
+        tail = clean[start:].strip()
+        if tail:
+            parts.append(tail)
+        return parts or [clean]
+
+    @staticmethod
+    def _presentation_audio_root() -> Path:
+        return PROJECT_ROOT / "runtime" / "YouTubeBridge" / "TTSAudio"
+
+    def _presentation_item_public(self, item: dict[str, Any]) -> dict[str, Any]:
+        audio_url = ""
+        if item.get("audio_path"):
+            audio_url = (
+                f"/sessions/{item['session_id']}/presentation/"
+                f"{item['item_id']}/audio"
+            )
+        return {
+            "item_id": item.get("item_id"),
+            "message_id": item.get("message_id"),
+            "interaction_job_id": item.get("interaction_job_id"),
+            "character_id": item.get("character_id"),
+            "character_name": item.get("character_name"),
+            "sequence_index": item.get("sequence_index"),
+            "text": item.get("text") or "",
+            "audio_url": audio_url,
+            "audio_format": item.get("audio_format") or "wav",
+            "status": item.get("status") or "",
+        }
+
+    async def present_stream_result(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        source: str,
+        interaction_job_id: str = "",
+    ) -> None:
+        session = self.storage.get_session(session_id)
+        message = self._chat_message_from_stream_result(event, source=source)
+        if not message:
+            return
+        if not self._presentation_enabled(session):
+            await self._broadcast(
+                session_id,
+                {
+                    "type": "chat_message",
+                    "message": message,
+                    "source": source,
+                },
+            )
+            return
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        utterances = self._split_presentation_utterances(str(message.get("content") or ""))
+        async with runtime.presentation_sequence_condition:
+            presentation_sequence = runtime.presentation_next_sequence
+            runtime.presentation_next_sequence += 1
+        prepare_task: asyncio.Task | None = None
+        try:
+            if not utterances:
+                return
+            prepare_task = asyncio.create_task(self._prepare_presentation_item(
+                session or {},
+                message,
+                utterances[0],
+                index=0,
+                source=source,
+                interaction_job_id=interaction_job_id,
+                runtime=runtime,
+            ))
+            async with runtime.presentation_sequence_condition:
+                await runtime.presentation_sequence_condition.wait_for(
+                    lambda: runtime.presentation_present_sequence == presentation_sequence
+                )
+            async with runtime.presentation_lock:
+                for index, text in enumerate(utterances):
+                    if prepare_task is None:
+                        prepare_task = asyncio.create_task(self._prepare_presentation_item(
+                            session or {},
+                            message,
+                            text,
+                            index=index,
+                            source=source,
+                            interaction_job_id=interaction_job_id,
+                            runtime=runtime,
+                        ))
+                    item = await prepare_task
+                    prepare_task = None
+                    next_index = index + 1
+                    if next_index < len(utterances):
+                        prepare_task = asyncio.create_task(self._prepare_presentation_item(
+                            session or {},
+                            message,
+                            utterances[next_index],
+                            index=next_index,
+                            source=source,
+                            interaction_job_id=interaction_job_id,
+                            runtime=runtime,
+                        ))
+                    await self._present_prepared_item(
+                        session or {},
+                        message,
+                        item,
+                        source=source,
+                        interaction_job_id=interaction_job_id,
+                        runtime=runtime,
+                    )
+        except Exception:
+            if prepare_task and not prepare_task.done():
+                prepare_task.cancel()
+            raise
+        finally:
+            async with runtime.presentation_sequence_condition:
+                if runtime.presentation_present_sequence == presentation_sequence:
+                    runtime.presentation_present_sequence += 1
+                    while runtime.presentation_present_sequence in runtime.presentation_skipped_sequences:
+                        runtime.presentation_skipped_sequences.remove(runtime.presentation_present_sequence)
+                        runtime.presentation_present_sequence += 1
+                else:
+                    runtime.presentation_skipped_sequences.add(presentation_sequence)
+                runtime.presentation_sequence_condition.notify_all()
+
+    async def prepare_stream_result(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        source: str,
+        interaction_job_id: str = "",
+    ) -> dict[str, Any] | None:
+        session = self.storage.get_session(session_id)
+        message = self._chat_message_from_stream_result(event, source=source)
+        if not message:
+            return None
+        if not self._presentation_enabled(session):
+            return {"message": message, "items": []}
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        items: list[dict[str, Any]] = []
+        for index, text in enumerate(self._split_presentation_utterances(str(message.get("content") or ""))):
+            items.append(await self._prepare_presentation_item(
+                session or {},
+                message,
+                text,
+                index=index,
+                source=source,
+                interaction_job_id=interaction_job_id,
+                runtime=runtime,
+            ))
+        return {"message": message, "items": items}
+
+    async def present_prepared_stream_results(
+        self,
+        session_id: str,
+        prepared_results: list[dict[str, Any]],
+        *,
+        source: str,
+        interaction_job_id: str = "",
+    ) -> None:
+        if not prepared_results:
+            return
+        session = self.storage.get_session(session_id)
+        if not self._presentation_enabled(session):
+            for prepared in prepared_results:
+                message = prepared.get("message") if isinstance(prepared, dict) else None
+                if isinstance(message, dict):
+                    await self._broadcast(
+                        session_id,
+                        {
+                            "type": "chat_message",
+                            "message": message,
+                            "source": source,
+                        },
+                    )
+            return
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        async with runtime.presentation_sequence_condition:
+            presentation_sequence = runtime.presentation_next_sequence
+            runtime.presentation_next_sequence += 1
+        try:
+            async with runtime.presentation_sequence_condition:
+                await runtime.presentation_sequence_condition.wait_for(
+                    lambda: runtime.presentation_present_sequence == presentation_sequence
+                )
+            async with runtime.presentation_lock:
+                for prepared in prepared_results:
+                    if not isinstance(prepared, dict):
+                        continue
+                    message = prepared.get("message") if isinstance(prepared.get("message"), dict) else {}
+                    for item in prepared.get("items") or []:
+                        if isinstance(item, dict):
+                            await self._present_prepared_item(
+                                session or {},
+                                message,
+                                item,
+                                source=source,
+                                interaction_job_id=interaction_job_id,
+                                runtime=runtime,
+                            )
+        finally:
+            async with runtime.presentation_sequence_condition:
+                if runtime.presentation_present_sequence == presentation_sequence:
+                    runtime.presentation_present_sequence += 1
+                    while runtime.presentation_present_sequence in runtime.presentation_skipped_sequences:
+                        runtime.presentation_skipped_sequences.remove(runtime.presentation_present_sequence)
+                        runtime.presentation_present_sequence += 1
+                else:
+                    runtime.presentation_skipped_sequences.add(presentation_sequence)
+                runtime.presentation_sequence_condition.notify_all()
+
+    async def _prepare_presentation_item(
+        self,
+        session: dict[str, Any],
+        message: dict[str, Any],
+        text: str,
+        *,
+        index: int,
+        source: str,
+        interaction_job_id: str,
+        runtime: LiveRuntime,
+    ) -> dict[str, Any]:
+        session_id = str(session.get("session_id") or runtime.session_id)
+        item = self.storage.create_presentation_item({
+            "session_id": session_id,
+            "interaction_job_id": interaction_job_id,
+            "message_id": f"{message.get('message_id') or ''}:{index}",
+            "character_id": message.get("character_id") or "",
+            "character_name": message.get("character_name") or "",
+            "sequence_index": index,
+            "text": text,
+            "audio_format": "wav",
+            "metadata": {"source": source},
+        })
+        item = self.storage.update_presentation_item(item["item_id"], status="synthesizing") or item
+        try:
+            tts_result = await self._synthesize_presentation_audio(session, item)
+            update_fields: dict[str, Any] = {"status": "ready"}
+            if tts_result.ok and tts_result.audio_bytes:
+                audio_dir = self._presentation_audio_root() / session_id
+                audio_dir.mkdir(parents=True, exist_ok=True)
+                audio_format = tts_result.audio_format or "wav"
+                audio_path = audio_dir / f"{item['item_id']}.{audio_format}"
+                audio_path.write_bytes(tts_result.audio_bytes)
+                update_fields.update({
+                    "audio_path": str(audio_path),
+                    "audio_format": audio_format,
+                    "error": "",
+                })
+            else:
+                update_fields.update({
+                    "audio_format": tts_result.audio_format or item.get("audio_format") or "wav",
+                    "error": tts_result.error,
+                })
+        except Exception as exc:
+            update_fields = {
+                "status": "ready",
+                "error": str(exc)[:500],
+            }
+        item = self.storage.update_presentation_item(item["item_id"], **update_fields) or item
+        return item
+
+    async def _present_prepared_item(
+        self,
+        session: dict[str, Any],
+        message: dict[str, Any],
+        item: dict[str, Any],
+        *,
+        source: str,
+        interaction_job_id: str,
+        runtime: LiveRuntime,
+    ) -> None:
+        session_id = str(session.get("session_id") or runtime.session_id)
+        update_fields: dict[str, Any] = {
+            "status": "presenting",
+            "presented_at": datetime.now().isoformat(),
+        }
+        if not item.get("audio_path") and item.get("error"):
+            update_fields["status"] = "failed"
+        item = self.storage.update_presentation_item(item["item_id"], **update_fields) or item
+        if interaction_job_id:
+            self.storage.update_interaction(interaction_job_id, status="presenting")
+        ack_event = asyncio.Event()
+        runtime.presentation_ack_events[item["item_id"]] = ack_event
+        await self._broadcast(
+            session_id,
+            {
+                "type": "presentation_item_ready",
+                "item": self._presentation_item_public(item),
+            },
+        )
+        try:
+            await asyncio.wait_for(
+                ack_event.wait(),
+                timeout=self._presentation_ack_timeout(session),
+            )
+        except asyncio.TimeoutError:
+            item = self.storage.update_presentation_item(
+                item["item_id"],
+                status="skipped",
+                error="presentation ack timeout",
+            ) or item
+        finally:
+            runtime.presentation_ack_events.pop(item["item_id"], None)
+        if item.get("status") != "skipped":
+            chat_message = {
+                **message,
+                "message_id": item.get("message_id") or message.get("message_id"),
+                "content": item.get("text") or "",
+                "created_at": item.get("presented_at") or message.get("created_at"),
+                "timestamp": item.get("presented_at") or message.get("timestamp"),
+            }
+            await self._broadcast(
+                session_id,
+                {
+                    "type": "chat_message",
+                    "message": chat_message,
+                    "source": source,
+                },
+            )
+
+    async def _synthesize_presentation_audio(
+        self,
+        session: dict[str, Any],
+        item: dict[str, Any],
+    ) -> TTSResult:
+        if not session.get("tts_enabled"):
+            return TTSResult(ok=False, audio_format="wav", error="tts disabled")
+        profile = self.storage.get_tts_profile(str(item.get("character_id") or "")) or {}
+        if not profile or not profile.get("enabled"):
+            return TTSResult(ok=False, audio_format="wav", error="tts profile missing")
+        provider = self._tts_provider()
+        return await asyncio.to_thread(provider.synthesize, item.get("text") or "", profile)
+
+    async def ack_presentation_item(self, session_id: str, item_id: str) -> dict | None:
+        item = self.storage.get_presentation_item(item_id)
+        if not item or item.get("session_id") != session_id:
+            return None
+        update_fields = {"acked_at": datetime.now().isoformat()}
+        if item.get("status") != "failed":
+            update_fields["status"] = "played"
+        updated = self.storage.update_presentation_item(
+            item_id,
+            **update_fields,
+        )
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        ack_event = runtime.presentation_ack_events.get(item_id)
+        if ack_event:
+            ack_event.set()
+        return updated
+
+    async def skip_current_presentation_item(self, session_id: str) -> dict | None:
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        items = self.storage.list_presentation_items(session_id, statuses={"presenting", "failed"}, limit=1)
+        if not items:
+            return None
+        item = items[-1]
+        updated = self.storage.update_presentation_item(
+            item["item_id"],
+            status="skipped",
+            acked_at=datetime.now().isoformat(),
+        )
+        ack_event = runtime.presentation_ack_events.get(item["item_id"])
+        if ack_event:
+            ack_event.set()
+        return updated
 
     async def _run_auto_finalize_archive_callback(
         self,
@@ -273,6 +671,47 @@ class YouTubeBridgeManager(
             loop,
         )
 
+    def _dispatch_stream_chat_result(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        source: str,
+        interaction_job_id: str = "",
+        wait_for_completion: bool = True,
+    ):
+        if interaction_job_id:
+            current = self.storage.get_interaction(interaction_job_id)
+            if current and current.get("status") in {"interrupt_requested", "interrupted", "discarded"}:
+                logger.warning(
+                    "stale_generation_dropped session_id=%s job_id=%s source=%s status=%s",
+                    session_id,
+                    interaction_job_id,
+                    source,
+                    current.get("status"),
+                )
+                return None
+        session = self.storage.get_session(session_id)
+        if not self._presentation_enabled(session):
+            self._broadcast_stream_chat_message(loop, session_id, event, source=source)
+            return None
+        future = asyncio.run_coroutine_threadsafe(
+            self.present_stream_result(
+                session_id,
+                event,
+                source=source,
+                interaction_job_id=interaction_job_id,
+            ),
+            loop,
+        )
+        if not wait_for_completion:
+            return future
+        message = self._chat_message_from_stream_result(event, source=source) or {}
+        utterance_count = max(1, len(self._split_presentation_utterances(str(message.get("content") or ""))))
+        future.result(timeout=(self._presentation_ack_timeout(session) * utterance_count) + 120)
+        return future
+
     async def _poll_loop(self, runtime: LiveRuntime) -> None:
         while runtime.running:
             session = self.storage.get_session(runtime.session_id)
@@ -439,7 +878,12 @@ class YouTubeBridgeManager(
         if worker.get("error"):
             resolution["research_error"] = str(worker.get("error") or "")[:300]
         if resolution["research_status"] in {"queued", "running"}:
-            raise ValueError("觀眾查詢資料搜尋中，保留留言等待 Research Gate 完成")
+            resolution["fallback_reason"] = "research_incomplete"
+            return (
+                "觀眾查詢資料狀態：相關查證仍在背景處理；"
+                "本輪只能根據已知直播脈絡安全回應，不得宣稱已查到最新資料或具體排名。",
+                resolution,
+            )
         return "", resolution
 
     @staticmethod
@@ -996,6 +1440,9 @@ class YouTubeBridgeManager(
         used_ids: list[int] = []
         visible_events: list[dict[str, Any]] = []
         max_chars = int(session.get("max_context_chars", 8000) or 8000)
+        presentation_mode = self._presentation_enabled(session)
+        if presentation_mode:
+            max_chars = min(max_chars, 1200)
         used_chars = 0
         for event in active_events:
             line = self._event_line(event)
@@ -1021,20 +1468,30 @@ class YouTubeBridgeManager(
             "hidden_unsafe_count": len(hidden_event_ids),
             "dropped_count": max(0, len(active_events) - len(used_ids)),
         }
+        if presentation_mode:
+            summary["presentation_enabled"] = True
+            summary["group_turn_limit"] = 1
         topic_context, query_resolution = self._live_query_context_for_events(session, active_events, lines)
         summary["query_resolution"] = query_resolution
+        context_parts = ["\n".join(lines), topic_context]
+        if presentation_mode:
+            context_parts.append(
+                "直播輸出模式：請只產生一個短 spoken beat；避免多角色連續接話，讓前端播放完成後再進入下一輪。"
+            )
         payload = {
             "source": "youtube_live",
             "source_session_id": session_id,
             "connector_id": session["connector_id"],
             "video_id": session.get("video_id", ""),
             "live_chat_id": session.get("live_chat_id", ""),
-            "context_text": "\n".join([part for part in ["\n".join(lines), topic_context] if part]),
+            "context_text": "\n".join([part for part in context_parts if part]),
             "event_ids": used_ids,
             "visible_events": visible_events,
             "max_chars": max_chars,
             "summary": summary,
         }
+        if presentation_mode:
+            payload["group_turn_limit"] = 1
         return self._attach_live_persona_overrides(session, payload), summary
 
     @staticmethod

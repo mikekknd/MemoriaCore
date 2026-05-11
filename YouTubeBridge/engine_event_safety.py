@@ -20,12 +20,44 @@ class EventSafetyManagerMixin:
         async with runtime.safety_lock:
             return await self.classify_pending_events(session_id, limit=limit)
 
+    async def classify_event_ids_serialized(self, session_id: str, event_ids: list[int]) -> dict[str, Any]:
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        async with runtime.safety_lock:
+            ids = []
+            for raw_id in event_ids:
+                try:
+                    event_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+                if event_id not in ids:
+                    ids.append(event_id)
+            if not ids:
+                return {"session_id": session_id, "classified_count": 0, "failed_count": 0, "events": []}
+            events = self.storage.get_events_by_ids(session_id, ids, limit=len(ids))
+            pending_events = [
+                event
+                for event in events
+                if str(event.get("status") or "active") == "active"
+                and str(event.get("message_text") or "").strip()
+                and str(event.get("safety_status") or "pending") in {"pending", "failed_retryable"}
+            ]
+            return await self._classify_event_batch(session_id, pending_events)
+
     def _schedule_pending_event_classification(self, runtime: LiveRuntime, *, limit: int = 50) -> None:
         if runtime.safety_task and not runtime.safety_task.done():
             return
 
         async def _run() -> None:
             try:
+                active = self.storage.get_active_interaction(runtime.session_id)
+                if active:
+                    pending = self.storage.list_events_pending_safety(runtime.session_id, limit=limit)
+                    has_super_chat = any(
+                        str(event.get("priority_class") or "") == "super_chat"
+                        for event in pending
+                    )
+                    if not has_super_chat:
+                        return
                 await self.classify_pending_events_serialized(runtime.session_id, limit=limit)
             except asyncio.CancelledError:
                 raise
@@ -40,6 +72,9 @@ class EventSafetyManagerMixin:
             raise ValueError("live session 不存在")
         batch_limit = min(max(1, int(limit or SAFETY_CLASSIFIER_BATCH_LIMIT)), SAFETY_CLASSIFIER_BATCH_LIMIT)
         events = self.storage.list_events_pending_safety(session_id, limit=batch_limit)
+        return await self._classify_event_batch(session_id, events)
+
+    async def _classify_event_batch(self, session_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
         if not events:
             return {"session_id": session_id, "classified_count": 0, "failed_count": 0, "events": []}
 

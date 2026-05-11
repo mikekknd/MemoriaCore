@@ -524,9 +524,8 @@ class ClosingManagerMixin:
         classify_error = ""
         loop = asyncio.get_running_loop()
         closing_batch_limit = min(max(1, int(batch_limit or 10)), SAFETY_CLASSIFIER_BATCH_LIMIT)
-        expected_batches = max(1, (len(initial_pending) + closing_batch_limit - 1) // closing_batch_limit)
         per_batch_timeout = max(1.0, float(per_batch_timeout_seconds))
-        total_timeout = max(1.0, float(timeout_seconds), expected_batches * per_batch_timeout)
+        total_timeout = max(1.0, float(timeout_seconds))
         deadline = loop.time() + total_timeout
         while self.storage.list_events_pending_safety(session_id, limit=1):
             remaining_seconds = deadline - loop.time()

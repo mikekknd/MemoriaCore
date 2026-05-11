@@ -17,6 +17,9 @@
   display: grid;
   gap: 10px;
 }
+.event-action-overlay .blocking-dialog {
+  width: min(360px, 100%);
+}
 .blocking-dialog h3 {
   margin: 0;
   font-size: 15px;

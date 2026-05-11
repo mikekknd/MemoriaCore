@@ -120,8 +120,8 @@ def row_to_session(row: sqlite3.Row | None) -> dict | None:
         "director_anchor_every_turns": int(row_value(row, "director_anchor_every_turns", 2) or 2),
         "director_dialogue_expansion_enabled": bool(row_value(row, "director_dialogue_expansion_enabled", 1)),
         "director_group_turn_limit": int(row_value(row, "director_group_turn_limit", 3) or 3),
-        "episode_plan_handoff_gap_seconds": int(row_value(row, "episode_plan_handoff_gap_seconds", 2) or 2),
-        "episode_plan_turn_gap_seconds": int(row_value(row, "episode_plan_turn_gap_seconds", 8) or 8),
+        "director_audience_interrupt_cooldown_seconds": int(row_value(row, "director_audience_interrupt_cooldown_seconds", 30)),
+        "director_max_audience_batches_per_planned_turn": int(row_value(row, "director_max_audience_batches_per_planned_turn", 1)),
         "director_max_chat_batches_before_anchor": int(row_value(row, "director_max_chat_batches_before_anchor", 2) or 2),
         "director_offtopic_policy": row_value(row, "director_offtopic_policy", "defer") or "defer",
         "director_sc_burst_policy": row_value(row, "director_sc_burst_policy", "summarize_batch") or "summarize_batch",
@@ -129,6 +129,10 @@ def row_to_session(row: sqlite3.Row | None) -> dict | None:
         "research_cooldown_seconds": int(row_value(row, "research_cooldown_seconds", 300) or 300),
         "research_max_per_session": int(row_value(row, "research_max_per_session", 12) or 12),
         "auto_sc_thanks_on_finalize": bool(row_value(row, "auto_sc_thanks_on_finalize", 1)),
+        "presentation_enabled": bool(row_value(row, "presentation_enabled", 0)),
+        "tts_enabled": bool(row_value(row, "tts_enabled", 0)),
+        "tts_provider": row_value(row, "tts_provider", "gpt_sovits") or "gpt_sovits",
+        "presentation_ack_timeout_seconds": int(row_value(row, "presentation_ack_timeout_seconds", 120) or 120),
         "started_at": row_value(row, "started_at", "") or "",
         "finalized_at": row_value(row, "finalized_at", "") or "",
         "summary_status": row_value(row, "summary_status", "pending") or "pending",
@@ -269,6 +273,49 @@ def row_to_director_state(row: sqlite3.Row | None, session_id: str) -> dict:
         "last_seen_event_id": int(row["last_seen_event_id"] or 0),
         "status": row["status"] or "stopped",
         "updated_at": row["updated_at"] or "",
+        "metadata": json_load(row["metadata_json"], {}),
+    }
+
+
+def row_to_presentation_item(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "item_id": row["item_id"],
+        "session_id": row["session_id"],
+        "interaction_job_id": row["interaction_job_id"] or "",
+        "message_id": row["message_id"] or "",
+        "character_id": row["character_id"] or "",
+        "character_name": row["character_name"] or "",
+        "sequence_index": int(row["sequence_index"] or 0),
+        "status": row["status"] or "queued",
+        "text": row["text"] or "",
+        "audio_path": row["audio_path"] or "",
+        "audio_format": row["audio_format"] or "wav",
+        "error": row["error"] or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "presented_at": row["presented_at"] or "",
+        "acked_at": row["acked_at"] or "",
+        "metadata": json_load(row["metadata_json"], {}),
+    }
+
+
+def row_to_tts_profile(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "character_id": row["character_id"],
+        "ref_audio_path": row["ref_audio_path"] or "",
+        "prompt_text": row["prompt_text"] or "",
+        "text_lang": row["text_lang"] or "zh",
+        "prompt_lang": row["prompt_lang"] or "zh",
+        "speed_factor": float(row["speed_factor"] or 1.0),
+        "media_type": row["media_type"] or "wav",
+        "enabled": bool(row["enabled"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
         "metadata": json_load(row["metadata_json"], {}),
     }
 

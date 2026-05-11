@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from core.prompt_manager import get_prompt_manager
 from core.prompt_utils import (
+    build_external_context_turn_control,
     build_retrieved_memory_context_user_block,
     build_user_prefix,
     format_latest_user_message_for_llm,
@@ -130,6 +131,7 @@ def build_final_chat_context(
     user_prefs: dict,
     session_ctx: dict,
     force_group: bool,
+    turn_instruction: str = "",
 ) -> tuple[list[dict], list[dict], str]:
     pm = get_prompt_manager()
     speech_instruction = pm.get("chat_speech_instruction_no_tts").format(
@@ -154,6 +156,15 @@ def build_final_chat_context(
         memory_context = build_retrieved_memory_context_user_block(mem_ctx)
         latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], session_ctx)
         api_messages[-1] = {**api_messages[-1], "content": memory_context + prefix + latest_user}
+    else:
+        turn_control = build_external_context_turn_control(
+            turn_instruction,
+            session_messages=session_messages,
+            user_prefs=user_prefs,
+            session_ctx=session_ctx,
+        )
+        if turn_control:
+            api_messages.append({"role": "user", "content": turn_control})
 
     return api_messages, clean_history, sys_prompt
 

@@ -20,6 +20,7 @@ LOOPBACK_ONLY_PATHS = frozenset({
 })
 UI_ASSET_PATH_RE = re.compile(r"^/ui-assets/.+$")
 SSE_PATH_RE = re.compile(r"^/sessions/[^/]+/events$")
+PRESENTATION_AUDIO_PATH_RE = re.compile(r"^/sessions/[^/]+/presentation/[^/]+/audio$")
 
 
 def is_loopback_request(request: Any) -> bool:
@@ -32,7 +33,12 @@ def is_loopback_request(request: Any) -> bool:
 
 def require_bridge_key(request: Any) -> None:
     path = getattr(getattr(request, "url", None), "path", "")
-    if path in LOOPBACK_ONLY_PATHS or UI_ASSET_PATH_RE.match(path) or SSE_PATH_RE.match(path):
+    if (
+        path in LOOPBACK_ONLY_PATHS
+        or UI_ASSET_PATH_RE.match(path)
+        or SSE_PATH_RE.match(path)
+        or PRESENTATION_AUDIO_PATH_RE.match(path)
+    ):
         if not is_loopback_request(request):
             raise HTTPException(status_code=403, detail="loopback access only")
         return

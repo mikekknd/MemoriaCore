@@ -84,12 +84,14 @@ def test_audience_question_queues_research_gate_without_blocking_injection(monke
         monkeypatch.setattr(manager, "_research_request_sync", fail_inline_research, raising=False)
         monkeypatch.setattr(manager, "_ensure_audience_research_worker", fake_ensure_worker, raising=False)
 
-        with pytest.raises(ValueError, match="觀眾查詢資料搜尋中"):
-            manager.build_external_context("live-a")
+        context, summary = manager.build_external_context("live-a")
 
         assert queued
         assert queued[0]["session_id"] == "live-a"
         assert "最新一話的聲優陣容" in queued[0]["query"]
+        assert "相關查證仍在背景處理" in context["context_text"]
+        assert summary["query_resolution"]["research_status"] == "queued"
+        assert summary["query_resolution"]["fallback_reason"] == "research_incomplete"
         assert not storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

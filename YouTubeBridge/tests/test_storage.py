@@ -71,8 +71,8 @@ def test_connector_and_session_roundtrip():
             "director_anchor_every_turns": 3,
             "director_dialogue_expansion_enabled": False,
             "director_group_turn_limit": 5,
-            "episode_plan_handoff_gap_seconds": 4,
-            "episode_plan_turn_gap_seconds": 11,
+            "director_audience_interrupt_cooldown_seconds": 42,
+            "director_max_audience_batches_per_planned_turn": 1,
             "director_max_chat_batches_before_anchor": 2,
             "director_offtopic_policy": "defer",
             "director_sc_burst_policy": "summarize_batch",
@@ -108,8 +108,10 @@ def test_connector_and_session_roundtrip():
         assert session["director_anchor_every_turns"] == 3
         assert session["director_dialogue_expansion_enabled"] is False
         assert session["director_group_turn_limit"] == 5
-        assert session["episode_plan_handoff_gap_seconds"] == 4
-        assert session["episode_plan_turn_gap_seconds"] == 11
+        assert session["director_audience_interrupt_cooldown_seconds"] == 42
+        assert session["director_max_audience_batches_per_planned_turn"] == 1
+        assert "episode_plan_handoff_gap_seconds" not in session
+        assert "episode_plan_turn_gap_seconds" not in session
         assert session["director_max_chat_batches_before_anchor"] == 2
         assert session["director_offtopic_policy"] == "defer"
         assert session["director_sc_burst_policy"] == "summarize_batch"
@@ -117,7 +119,153 @@ def test_connector_and_session_roundtrip():
         assert session["research_cooldown_seconds"] == 120
         assert session["research_max_per_session"] == 8
         assert session["auto_sc_thanks_on_finalize"] is True
+        assert session["presentation_enabled"] is False
+        assert session["tts_enabled"] is False
+        assert session["tts_provider"] == "gpt_sovits"
+        assert session["presentation_ack_timeout_seconds"] == 120
         assert storage.list_sessions()[0]["connector_id"] == "yt-main"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_presentation_session_fields_roundtrip():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "tts_provider": "gpt_sovits",
+            "presentation_ack_timeout_seconds": 9,
+        })
+
+        assert session["presentation_enabled"] is True
+        assert session["tts_enabled"] is True
+        assert session["tts_provider"] == "gpt_sovits"
+        assert session["presentation_ack_timeout_seconds"] == 9
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_presentation_items_and_tts_profiles_roundtrip():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+        })
+        storage.upsert_tts_profile({
+            "character_id": "char-a",
+            "ref_audio_path": "voice-a.wav",
+            "prompt_text": "參考語音文字。",
+            "text_lang": "zh",
+            "prompt_lang": "zh",
+            "speed_factor": 1.15,
+            "media_type": "wav",
+        })
+        profile = storage.get_tts_profile("char-a")
+        assert profile["ref_audio_path"] == "voice-a.wav"
+        assert profile["prompt_text"] == "參考語音文字。"
+        assert profile["speed_factor"] == 1.15
+
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-a",
+            "message_id": "msg-a",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "sequence_index": 1,
+            "text": "第一句。",
+            "audio_format": "wav",
+        })
+        assert item["status"] == "queued"
+        assert item["text"] == "第一句。"
+
+        updated = storage.update_presentation_item(
+            item["item_id"],
+            status="presenting",
+            audio_path="runtime/YouTubeBridge/TTSAudio/live-a/item.wav",
+        )
+        assert updated["status"] == "presenting"
+        assert updated["audio_path"].endswith("item.wav")
+
+        visible = storage.list_presented_messages("live-a")
+        assert [message["content"] for message in visible] == ["第一句。"]
+        assert visible[0]["character_name"] == "可可"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_presenting_interaction_is_active():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "status": "presenting",
+        })
+
+        assert storage.get_active_interaction("live-a")["job_id"] == interaction["job_id"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_prefetch_interaction_is_active_until_consumed():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+        })
+        prefetching = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetching",
+        })
+
+        assert storage.get_active_interaction("live-a")["job_id"] == prefetching["job_id"]
+        assert storage.claim_next_interaction("live-a") is None
+
+        storage.update_interaction(prefetching["job_id"], status="prefetched")
+
+        assert storage.get_active_interaction("live-a")["job_id"] == prefetching["job_id"]
+        assert storage.claim_next_interaction("live-a") is None
+
+        storage.update_interaction(prefetching["job_id"], status="completed")
+
+        assert storage.get_active_interaction("live-a") is None
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

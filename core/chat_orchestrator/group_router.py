@@ -70,6 +70,8 @@ def run_group_router(
     discussion_mode: str = "default",
     live_hosting: dict | None = None,
     live_episode_plan: dict | None = None,
+    current_turn_instruction: str = "",
+    current_turn_start_index: int | None = None,
 ) -> GroupRouterResult:
     """根據近期群組上下文選出下一位 AI；無需接話時回傳 should_respond=False。"""
     participants = _normalize_characters(active_characters)
@@ -90,12 +92,27 @@ def run_group_router(
     if not participants:
         return GroupRouterResult(False, None, "no participants", "stop_no_new_value")
 
-    mentioned_id = _detect_mention(_latest_user_text(session_messages), participants) if honor_mentions else None
+    latest_user_text = str(current_turn_instruction or "").strip() or _latest_user_text(session_messages)
+    mentioned_id = _detect_mention(latest_user_text, participants) if honor_mentions else None
     if mentioned_id:
         return GroupRouterResult(True, mentioned_id, "explicit mention", "explicit_user_request")
 
-    latest_user_text = _latest_user_text(session_messages)
-    spoken_after_user = _spoken_participant_ids_after_latest_user(session_messages, participants)
+    turn_start_index = _normalize_current_turn_start_index(current_turn_start_index, len(session_messages))
+    if turn_start_index is None:
+        spoken_after_user = _spoken_participant_ids_after_latest_user(session_messages, participants)
+        recent_exchange = _recent_assistant_exchange_after_latest_user(
+            session_messages,
+            participants,
+            limit=4,
+        )
+    else:
+        spoken_after_user = _spoken_participant_ids_after_turn_start(session_messages, participants, turn_start_index)
+        recent_exchange = _recent_assistant_exchange_after_turn_start(
+            session_messages,
+            participants,
+            start_index=turn_start_index,
+            limit=4,
+        )
     already_spoken_refs = _participant_refs(spoken_after_user, participants)
     not_yet_spoken_ids = _not_yet_spoken_participant_ids(spoken_after_user, participants)
     not_yet_spoken_refs = _participant_refs(not_yet_spoken_ids, participants)
@@ -121,11 +138,7 @@ def run_group_router(
                 "already_spoken_this_turn": already_spoken_refs,
                 "not_yet_spoken_this_turn": not_yet_spoken_refs,
                 "all_participants_already_spoke_this_turn": all_participants_spoke,
-                "recent_assistant_exchange_this_turn": _recent_assistant_exchange_after_latest_user(
-                    session_messages,
-                    participants,
-                    limit=4,
-                ),
+                "recent_assistant_exchange_this_turn": recent_exchange,
                 "bot_turn_index": max(0, int(bot_turn_index or 0)),
                 "max_bot_turns": max_bot_turns,
                 "remaining_bot_turns_including_next": remaining_bot_turns,
@@ -518,6 +531,32 @@ def _latest_user_text(messages: list[dict]) -> str:
     return ""
 
 
+def _normalize_current_turn_start_index(value: int | None, message_count: int) -> int | None:
+    if value is None:
+        return None
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(index, max(0, int(message_count or 0))))
+
+
+def _spoken_participant_ids_after_turn_start(
+    messages: list[dict],
+    participants: list[dict],
+    start_index: int,
+) -> set[str]:
+    valid_ids = {p["character_id"] for p in participants}
+    spoken: set[str] = set()
+    for msg in messages[max(0, int(start_index or 0)):]:
+        if msg.get("role") != "assistant":
+            continue
+        cid = str(msg.get("character_id") or "").strip()
+        if cid in valid_ids:
+            spoken.add(cid)
+    return spoken
+
+
 def _spoken_participant_ids_after_latest_user(messages: list[dict], participants: list[dict]) -> set[str]:
     latest_user_index = None
     for idx in range(len(messages) - 1, -1, -1):
@@ -540,6 +579,30 @@ def _spoken_participant_ids_after_latest_user(messages: list[dict], participants
 
 def _not_yet_spoken_participant_ids(spoken_ids: set[str], participants: list[dict]) -> list[str]:
     return [p["character_id"] for p in participants if p["character_id"] not in spoken_ids]
+
+
+def _recent_assistant_exchange_after_turn_start(
+    messages: list[dict],
+    participants: list[dict],
+    *,
+    start_index: int,
+    limit: int,
+) -> list[dict]:
+    valid_ids = {p["character_id"] for p in participants}
+    names = {p["character_id"]: p.get("name") or p["character_id"] for p in participants}
+    exchange = []
+    for msg in messages[max(0, int(start_index or 0)):]:
+        if msg.get("role") != "assistant":
+            continue
+        cid = str(msg.get("character_id") or "").strip()
+        if cid not in valid_ids:
+            continue
+        exchange.append({
+            "character_id": cid,
+            "name": msg.get("character_name") or names.get(cid) or cid,
+            "content": str(msg.get("content", ""))[:800],
+        })
+    return exchange[-max(1, int(limit or 1)):]
 
 
 def _recent_assistant_exchange_after_latest_user(

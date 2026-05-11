@@ -141,6 +141,41 @@ def build_user_prefix(
     return env_block + user_identity_block + ("\n" + external_chat_context_block if external_chat_context_block else "") + emo_block + "\n\n"
 
 
+def build_external_context_turn_control(
+    content: str,
+    *,
+    session_messages: list[dict],
+    user_prefs: dict | None = None,
+    session_ctx: dict | None = None,
+) -> str:
+    """外部上下文回合沒有真人 user 訊息時，建立暫態 control turn。"""
+    if not session_ctx:
+        return ""
+    ext = session_ctx.get("external_chat_context")
+    if not isinstance(ext, dict):
+        return ""
+    if not str(ext.get("context_text") or "").strip():
+        return ""
+
+    prefix = build_user_prefix(
+        session_messages,
+        user_prefs=user_prefs,
+        session_ctx=session_ctx,
+    ).strip()
+    instruction = str(content or "").replace("\r", "\n").strip()
+    if instruction:
+        source = str(ext.get("source") or "external").strip() or "external"
+        instruction_block = xml_block(
+            "external_turn_instruction",
+            instruction,
+            attrs={"source": source},
+        )
+        if prefix:
+            return f"{prefix}\n\n{instruction_block}"
+        return instruction_block
+    return prefix
+
+
 def build_retrieved_memory_context_user_block(mem_ctx: str) -> str:
     """把本輪召回記憶放進 user message，避免每輪變動破壞 system prompt cache。"""
     content = str(mem_ctx or "").strip()

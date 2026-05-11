@@ -680,15 +680,7 @@ def _messages_for_orchestration(
     body: ChatSyncRequest,
     external_context: dict | None,
 ) -> list[dict]:
-    out = list(messages)
-    transient = _transient_user_content_for_external_context(body, external_context)
-    if transient:
-        out.append({
-            "role": "user",
-            "content": transient,
-            "debug_info": {"transient_external_context_anchor": True},
-        })
-    return out
+    return list(messages)
 
 
 def _external_context_group_turn_limit(session, external_context: dict | None) -> int | None:

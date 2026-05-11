@@ -5,13 +5,14 @@ import {
   loadMemoriaConfig, loadMemoriaRefs, loadSessions, loadYoutubeLiveGlobalSuffix, makeSummary,
   bindSelectedEpisodePlan, importEpisodePlanFromFile, syncLocalEpisodePlans,
   refreshDirector, refreshEpisodePlans, refreshEvents, refreshSummary,
-  replySuperChats, saveConnector, saveMemoriaConfig, saveYoutubeLiveGlobalSuffix,
-  addLivePersonaAddressingRow, fillLivePersonaOverlayForm, livePersonaOverlayFor, saveLivePersonaOverlay,
+  replySuperChats, saveConnector, saveMemoriaConfig, saveTestEventSettings, saveYoutubeLiveGlobalSuffix,
+  addLivePersonaAddressingRow, applyLiveTtsSourcePreset, fillLivePersonaOverlayForm, livePersonaOverlayFor, saveLivePersonaOverlay,
   addProgramSegmentRow,
+  startEventsAutoRefresh, stopEventsAutoRefresh,
   showEpisodePlanError,
   testMemoriaAuth, toggleAutoTestEvents, toggleSession,
   syncCharacterSelectionLimit, unbindEpisodePlan, updateDirectorGuidance, updateEpisodePlanModeControls, updateLiveSessionControls, updateSessionSettings,
-} from "./control.js?v=global-suffix-v1";
+} from "./control.js?v=events-feedback-v3";
 import {
   addTopicEntry, cancelTopicEntryEdit, createTopicPack, deleteAllTopicPacks, deleteTopicPack,
   fillTopicEntryForm, importEpisodePlanEvidence, importFactCardsFolder, linkTopicPack, rebuildTopicEmbeddings,
@@ -114,6 +115,8 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelectorAll(".pane").forEach((x) => x.classList.remove("active"));
     tab.classList.add("active");
     $(tab.dataset.pane).classList.add("active");
+    if (tab.dataset.pane === "eventsPane") startEventsAutoRefresh({ immediate: true });
+    else stopEventsAutoRefresh();
   });
 });
 $("refreshAll").onclick = () => refreshAll().catch((error) => log("更新失敗", String(error)));
@@ -127,6 +130,7 @@ $("reloadYoutubeLiveGlobalSuffix").onclick = () => loadYoutubeLiveGlobalSuffix()
 $("saveYoutubeLiveGlobalSuffix").onclick = () => saveYoutubeLiveGlobalSuffix().catch((error) => log("YouTube Live 全域 suffix 儲存失敗", String(error)));
 $("saveLivePersonaOverlay").onclick = () => saveLivePersonaOverlay().catch((error) => log("直播角色設定儲存失敗", String(error)));
 $("addLivePersonaAddressingRow").onclick = () => addLivePersonaAddressingRow();
+$("liveTtsSourcePreset").onchange = () => applyLiveTtsSourcePreset();
 $("addProgramSegmentRow").onclick = () => addProgramSegmentRow();
 $("testMemoriaAuth").onclick = () => testMemoriaAuth().catch((error) => {
   $("memoriaAuthState").textContent = "連線失敗";
@@ -138,6 +142,7 @@ $("toggleSession").onclick = () => toggleSession().catch((error) => handleLiveSe
 $("updateSession").onclick = () => updateSessionSettings().catch((error) => handleLiveSessionError("直播設定更新失敗", error));
 $("refreshEvents").onclick = () => refreshEvents().catch((error) => log("留言更新失敗", String(error)));
 $("generateTestEvents").onclick = () => generateTestEvents().catch((error) => log("測試留言生成失敗", String(error)));
+$("saveTestEventSettings").onclick = () => saveTestEventSettings().catch((error) => log("測試留言參數儲存失敗", String(error)));
 $("toggleAutoTestEvents").onclick = () => toggleAutoTestEvents().catch((error) => log("自動測試留言切換失敗", String(error)));
 $("injectSelected").onclick = () => injectEvents(false).catch((error) => log("注入失敗", String(error)));
 $("injectPending").onclick = () => injectEvents(true).catch((error) => log("注入失敗", String(error)));
@@ -191,6 +196,10 @@ $("characterSelect").addEventListener("change", () => {
 });
 $("livePersonaCharacterSelect").addEventListener("change", () => {
   fillLivePersonaOverlayForm(livePersonaOverlayFor($("livePersonaCharacterSelect").value));
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") stopEventsAutoRefresh();
+  else startEventsAutoRefresh({ immediate: true });
 });
 
 installTestIds();

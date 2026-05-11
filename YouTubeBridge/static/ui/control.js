@@ -18,28 +18,33 @@ export {
   maxSessionCharacters,
   validateSelectedCharacters,
   syncCharacterSelectionLimit,
-} from "./memoria-control.js?v=global-suffix-v1";
+} from "./memoria-control.js?v=events-feedback-v3";
 export {
   renderLivePersonaCharacterOptions,
   addLivePersonaAddressingRow,
+  applyLiveTtsSourcePreset,
   livePersonaOverlayFor,
   fillLivePersonaOverlayForm,
   loadLivePersonaOverlays,
   livePersonaOverlayPayload,
   saveLivePersonaOverlay,
-} from "./live-persona-control.js?v=hosting-segments-v1";
+} from "./live-persona-control.js?v=tts-profile-v1";
 export {
   isRealYoutubeLiveSession,
   testEventControlsDisabled,
   updateTestEventControls,
+  setEventState,
+  startEventsAutoRefresh,
+  stopEventsAutoRefresh,
   refreshEvents,
   renderEvents,
   injectEvents,
   generateTestEvents,
+  saveTestEventSettings,
   toggleAutoTestEvents,
   replySuperChats,
   interruptNow,
-} from "./events-control.js?v=hosting-segments-v1";
+} from "./events-control.js?v=events-feedback-v3";
 export {
   refreshSummary,
   renderSummary,
@@ -80,4 +85,4 @@ export {
   finalizeCurrentSession,
   toggleSession,
   subscribeEvents,
-} from "./session-control.js?v=finalize-status-v1";
+} from "./session-control.js?v=events-feedback-v3";

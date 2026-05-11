@@ -165,7 +165,7 @@ class InteractionRepositoryMixin:
             ).fetchone()
             if not target:
                 return None
-            if target["status"] == "running":
+            if target["status"] in {"running", "presenting"}:
                 return self._row_to_interaction(target)
             if target["status"] != "queued":
                 return None
@@ -173,21 +173,21 @@ class InteractionRepositoryMixin:
                 """
                 SELECT * FROM live_interactions
                 WHERE session_id = ?
-                  AND status = 'running'
+                  AND status IN ('running', 'presenting')
                 ORDER BY priority DESC, id ASC
                 """,
                 (target["session_id"],),
             ).fetchall()
             self._finalize_duplicate_running_rows(conn, running_rows)
-            running_count = conn.execute(
+            active_count = conn.execute(
                 """
                 SELECT COUNT(*) AS count FROM live_interactions
                 WHERE session_id = ?
-                  AND status = 'running'
+                  AND status IN ('running', 'presenting', 'prefetching', 'prefetched')
                 """,
                 (target["session_id"],),
             ).fetchone()
-            if running_count and int(running_count["count"] or 0) > 0:
+            if active_count and int(active_count["count"] or 0) > 0:
                 return None
             conn.execute(
                 """
@@ -211,13 +211,23 @@ class InteractionRepositoryMixin:
                 """
                 SELECT * FROM live_interactions
                 WHERE session_id = ?
-                  AND status = 'running'
+                  AND status IN ('running', 'presenting')
                 ORDER BY priority DESC, id ASC
                 """,
                 (session_id,),
             ).fetchall()
             kept = self._finalize_duplicate_running_rows(conn, running_rows)
             if kept:
+                return None
+            active_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count FROM live_interactions
+                WHERE session_id = ?
+                  AND status IN ('prefetching', 'prefetched')
+                """,
+                (session_id,),
+            ).fetchone()
+            if active_count and int(active_count["count"] or 0) > 0:
                 return None
             row = conn.execute(
                 """
@@ -257,7 +267,7 @@ class InteractionRepositoryMixin:
                 """
                 SELECT * FROM live_interactions
                 WHERE session_id = ?
-                  AND status = 'running'
+                  AND status IN ('running', 'presenting')
                 ORDER BY priority DESC, id ASC
                 """,
                 (session_id,),
@@ -267,7 +277,7 @@ class InteractionRepositoryMixin:
                 """
                 SELECT * FROM live_interactions
                 WHERE session_id = ?
-                  AND status IN ('queued', 'running', 'interrupt_requested')
+                  AND status IN ('queued', 'running', 'presenting', 'prefetching', 'prefetched', 'interrupt_requested')
                 ORDER BY priority DESC, id ASC
                 """,
                 (session_id,),

@@ -1,7 +1,7 @@
 import { $, state, api, escapeHtml, log } from "./core.js";
 import { selectedSessionId, selectedSessionInfo } from "./selectors.js";
-import { loadLivePersonaOverlays, renderLivePersonaCharacterOptions } from "./live-persona-control.js?v=topic-graph-sources-v2";
-import { loadSessions, updateLiveSessionControls } from "./session-control.js?v=topic-graph-sources-v2";
+import { loadLivePersonaOverlays, renderLivePersonaCharacterOptions } from "./live-persona-control.js?v=tts-profile-v1";
+import { loadSessions, updateLiveSessionControls } from "./session-control.js?v=events-feedback-v3";
 export function selectedCharacterIds() {
   return Array.from($("characterSelect").selectedOptions).map((option) => option.value).filter(Boolean);
 }

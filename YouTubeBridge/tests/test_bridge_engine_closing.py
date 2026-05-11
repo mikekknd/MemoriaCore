@@ -572,7 +572,7 @@ async def test_closing_safety_resolution_classifies_pending_events_in_small_batc
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @pytest.mark.asyncio
-async def test_closing_safety_resolution_uses_per_batch_timeout_budget():
+async def test_closing_safety_resolution_does_not_expand_total_timeout_by_batch_count():
     tmp_dir = _tmp_dir()
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
@@ -627,10 +627,13 @@ async def test_closing_safety_resolution_uses_per_batch_timeout_budget():
             batch_limit=bridge_engine.SAFETY_CLASSIFIER_BATCH_LIMIT,
         )
 
-        assert result["status"] == "completed"
-        assert result["classified_count"] == 45
-        assert result["batch_count"] == 3
-        assert batch_sizes == [20, 20, 5]
+        assert result["status"] == "fallback_after_error"
+        assert result["error"] == "timeout"
+        assert 0 < result["classified_count"] < 45
+        assert result["fallback_count"] == 45 - result["classified_count"]
+        assert 0 < result["batch_count"] < 3
+        assert batch_sizes
+        assert len(batch_sizes) < 3
         assert storage.list_events_pending_safety("live-a") == []
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

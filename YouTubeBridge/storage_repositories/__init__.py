@@ -7,6 +7,7 @@ from .episode_plans import EpisodePlanRepositoryMixin
 from .events import EventRepositoryMixin
 from .interactions import InteractionRepositoryMixin
 from .live_persona import LivePersonaRepositoryMixin
+from .presentation import PresentationRepositoryMixin
 from .sessions import SessionRepositoryMixin
 from .summaries import SummaryRepositoryMixin
 from .topic_packs import TopicPackRepositoryMixin
@@ -18,6 +19,7 @@ __all__ = [
     "EventRepositoryMixin",
     "InteractionRepositoryMixin",
     "LivePersonaRepositoryMixin",
+    "PresentationRepositoryMixin",
     "SessionRepositoryMixin",
     "SummaryRepositoryMixin",
     "TopicPackRepositoryMixin",

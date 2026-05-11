@@ -188,6 +188,7 @@ def run_dual_layer_orchestration(
                     user_prefs=user_prefs,
                     session_ctx=_ctx,
                     force_group=force_group,
+                    turn_instruction=user_prompt,
                 )
 
             _history_preview = build_history_preview(clean_history)
@@ -302,6 +303,7 @@ def run_dual_layer_orchestration(
                 user_prefs=user_prefs,
                 session_ctx=_ctx,
                 force_group=force_group,
+                turn_instruction=user_prompt,
             )
 
         # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）
