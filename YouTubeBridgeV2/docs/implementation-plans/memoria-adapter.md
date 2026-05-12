@@ -68,14 +68,14 @@ After implementation exists, update API Source values for adapter contracts. If 
 
 ## Execution Steps
 
-- [ ] Create failing tests in `tests/youtubebridge_v2/test_memoria_adapter.py`.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create `YouTubeBridgeV2/adapters/memoria.py` with planned symbols.
-- [ ] Implement request mapping and response normalization.
-- [ ] Implement error classification and redaction.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor private helpers and rerun tests.
-- [ ] Sync API reference Source values after symbols exist.
+- [x] Create failing tests in `tests/youtubebridge_v2/test_memoria_adapter.py`.
+- [x] Run the red command and confirm expected failure.
+- [x] Create `YouTubeBridgeV2/adapters/memoria.py` with planned symbols.
+- [x] Implement request mapping and response normalization.
+- [x] Implement error classification and redaction.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor private helpers and rerun tests.
+- [x] Sync API reference Source values after symbols exist.
 
 ## Acceptance Criteria
 

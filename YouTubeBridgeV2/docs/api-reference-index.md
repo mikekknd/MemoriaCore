@@ -364,16 +364,28 @@ Source:
 ### MemoriaCore Adapter
 
 Purpose:
-將 V2 planned show / aftertalk intent 轉成 MemoriaCore request，並正規化回覆與錯誤。
+將 V2 planned show / aftertalk intent 轉成 MemoriaCore `/api/v1/chat/sync` request envelope，並正規化回覆與錯誤。
 
 Concepts:
 - `MemoriaRequestPayload`
 - `NormalizedMemoriaResponse`
 - `MemoriaAdapterError`
 - `MemoriaCorrelationMetadata`
+- `build_memoria_request`
+- `normalize_memoria_response`
+- `classify_memoria_error`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/adapters/memoria.py::MemoriaRequestPayload`
+- `YouTubeBridgeV2/adapters/memoria.py::NormalizedMemoriaResponse`
+- `YouTubeBridgeV2/adapters/memoria.py::MemoriaAdapterError`
+- `YouTubeBridgeV2/adapters/memoria.py::MemoriaCorrelationMetadata`
+- `YouTubeBridgeV2/adapters/memoria.py::build_memoria_request`
+- `YouTubeBridgeV2/adapters/memoria.py::normalize_memoria_response`
+- `YouTubeBridgeV2/adapters/memoria.py::classify_memoria_error`
 
 ### Closing
 
