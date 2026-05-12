@@ -277,7 +277,7 @@ Source:
 
 ## Module Concept Contracts
 
-以下 contract 仍屬文件層概念接口。後續 runtime code、API route、UI file 或 adapter implementation 實際存在後，才可補 `Source`。
+以下列出 V2 模組層 contract。已實作的條目會附 `Source`；尚未實作的條目保留 Concepts，等 runtime code、API route、UI file 或 adapter implementation 實際存在後再補 `Source`。
 
 ### Runtime Application Service
 
@@ -296,6 +296,16 @@ Concepts:
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/runtime/application_service.py::RuntimeApplicationService`
+- `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommand`
+- `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommandType`
+- `YouTubeBridgeV2/runtime/application_service.py::RuntimeServiceResult`
+- `YouTubeBridgeV2/runtime/application_service.py::RuntimeServiceEvent`
+- `YouTubeBridgeV2/runtime/application_service.py::PersistedTransitionRef`
+- `YouTubeBridgeV2/runtime/application_service.py::AdapterDispatchResult`
+- `YouTubeBridgeV2/runtime/application_service.py::RecoveryDecision`
 
 ### LiveEpisodePlan Runner
 

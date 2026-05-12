@@ -78,9 +78,12 @@ Runtime Application Service 不擁有：
 
 ## Public Entrypoints
 
-本階段只描述 planned public contracts，不宣稱 source symbol 已存在。
+本節描述已存在的 Runtime Application Service public contracts。實作位於 `YouTubeBridgeV2/runtime/application_service.py`，具體 storage、adapter 與 route 仍由後續模組注入或實作。
 
 ### `RuntimeApplicationService`
+
+Source:
+`YouTubeBridgeV2/runtime/application_service.py::RuntimeApplicationService`
 
 Purpose:
 接收 typed command，協調 V2 runtime workflow。
@@ -94,6 +97,7 @@ Expected Methods:
 - `update_aftertalk_policy(command, now)`
 - `request_manual_close(command, now)`
 - `finalize_closing(command, now)`
+- `recover_session(command, now)`
 
 Side Effects:
 - 透過 repository 寫入 storage。
@@ -101,6 +105,9 @@ Side Effects:
 - 產生 observability/event stream payload。
 
 ### `RuntimeCommand`
+
+Source:
+`YouTubeBridgeV2/runtime/application_service.py::RuntimeCommand`
 
 Purpose:
 所有外部 runtime action 的 typed command envelope。
@@ -113,6 +120,9 @@ Required Fields:
 - command-specific payload
 
 ### `RuntimeServiceResult`
+
+Source:
+`YouTubeBridgeV2/runtime/application_service.py::RuntimeServiceResult`
 
 Purpose:
 回傳 command 的 stable result shape。

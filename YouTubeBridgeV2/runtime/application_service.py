@@ -1,0 +1,582 @@
+"""YouTubeBridgeV2 runtime application service contracts.
+
+本模組是 runtime workflow 的 side-effect boundary。它負責讀取 snapshot、
+呼叫純 Runtime Phase decision、依 next action dispatch 注入的 runtime
+dependency，並回傳已 redacted 的 service result。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Any, Callable
+
+from .phase import (
+    AftertalkPolicy,
+    LiveSessionPhase,
+    LiveSessionSnapshot,
+    PhaseTransition,
+    PhaseTransitionReason,
+    advance_phase,
+)
+
+
+class RuntimeCommandType(str, Enum):
+    """Runtime Application Service 接受的 command 類型."""
+
+    CREATE_SESSION = "create_session"
+    BIND_PLAN = "bind_plan"
+    START_SESSION = "start_session"
+    TICK = "tick"
+    HANDLE_YOUTUBE_EVENT = "handle_youtube_event"
+    UPDATE_AFTERTALK_POLICY = "update_aftertalk_policy"
+    MANUAL_CLOSE = "manual_close"
+    FINALIZE_CLOSING = "finalize_closing"
+    RECOVER = "recover"
+
+
+@dataclass(frozen=True)
+class RuntimeCommand:
+    """所有 runtime action 共用的 typed command envelope."""
+
+    command_id: str
+    session_id: str
+    command_type: RuntimeCommandType | str
+    issued_at: datetime
+    permission_context: object | None = None
+    payload: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RuntimeServiceEvent:
+    """可發送到 operator/display/observer 的 public service event."""
+
+    event_type: str
+    session_id: str
+    phase: LiveSessionPhase | str | None
+    payload: dict[str, object]
+    correlation_id: str
+
+
+@dataclass(frozen=True)
+class PersistedTransitionRef:
+    """已保存 phase transition 的 reference."""
+
+    transition_id: str
+    session_id: str
+    previous_phase: LiveSessionPhase | str
+    next_phase: LiveSessionPhase
+    reason: PhaseTransitionReason
+
+
+@dataclass(frozen=True)
+class AdapterDispatchResult:
+    """Adapter 或 runtime module dispatch 的 normalized result."""
+
+    status: str
+    summary: dict[str, object] = field(default_factory=dict)
+    retryable: bool = False
+
+
+@dataclass(frozen=True)
+class RecoveryDecision:
+    """Crash/restart recovery 的 deterministic decision."""
+
+    action: str
+    reason: str
+    session_id: str
+
+
+@dataclass(frozen=True)
+class RuntimeServiceResult:
+    """Runtime command 的 stable result shape."""
+
+    status: str
+    session_id: str
+    phase: LiveSessionPhase | str | None
+    events: list[RuntimeServiceEvent]
+    errors: list[dict[str, object]]
+    correlation_id: str
+    transition_ref: PersistedTransitionRef | None = None
+    adapter_result: AdapterDispatchResult | None = None
+    recovery_decision: RecoveryDecision | None = None
+
+
+class _NoopRunner:
+    def run(
+        self,
+        *,
+        command: RuntimeCommand,
+        snapshot: LiveSessionSnapshot,
+        transition: PhaseTransition,
+        now: datetime,
+    ) -> AdapterDispatchResult:
+        return AdapterDispatchResult(status="ok", summary={"message": "no-op"})
+
+
+class RuntimeApplicationService:
+    """協調 V2 runtime command、phase decision 與注入式 side effects."""
+
+    def __init__(
+        self,
+        *,
+        storage: object,
+        phase_advancer: Callable[[LiveSessionSnapshot, datetime], PhaseTransition] = advance_phase,
+        planned_show_runner: object | None = None,
+        aftertalk: object | None = None,
+        closing: object | None = None,
+    ) -> None:
+        self._storage = storage
+        self._phase_advancer = phase_advancer
+        self._planned_show_runner = planned_show_runner or _NoopRunner()
+        self._aftertalk = aftertalk or _NoopRunner()
+        self._closing = closing or _NoopRunner()
+
+    def create_session(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        """建立 session 並保存 command result."""
+
+        existing = self._existing_result(command)
+        if existing is not None:
+            return existing
+
+        snapshot = self._storage.create_session(command, now)
+        event = self._event(
+            event_type="session_created",
+            command=command,
+            phase=snapshot.current_phase,
+            payload={"phase": _phase_value(snapshot.current_phase)},
+        )
+        self._persist_event(event)
+        result = RuntimeServiceResult(
+            status="ok",
+            session_id=command.session_id,
+            phase=snapshot.current_phase,
+            events=[event],
+            errors=[],
+            correlation_id=_correlation_id(command),
+        )
+        self._save_result(command, result)
+        return result
+
+    def bind_plan(self, command: RuntimeCommand, now: datetime) -> RuntimeServiceResult:
+        return self._storage_delegate(command, now, "bind_plan", "plan_bound")
+
+    def start_session(self, command: RuntimeCommand, now: datetime) -> RuntimeServiceResult:
+        return self._storage_delegate(command, now, "start_session", "session_started")
+
+    def tick_session(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        """讀取最新 snapshot，推進 phase decision 並 dispatch next action."""
+
+        existing = self._existing_result(command)
+        if existing is not None:
+            return existing
+
+        snapshot = self._storage.read_snapshot(command.session_id)
+        return self._advance_and_dispatch(command, now, snapshot)
+
+    def handle_youtube_event(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        if hasattr(self._storage, "persist_youtube_event"):
+            self._storage.persist_youtube_event(command.session_id, command.payload, now)
+        return self.tick_session(command, now)
+
+    def update_aftertalk_policy(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        return self._storage_delegate(
+            command,
+            now,
+            "update_aftertalk_policy",
+            "aftertalk_policy_updated",
+        )
+
+    def request_manual_close(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        """要求 manual close，並讓 Runtime Phase 決定後續 closing action."""
+
+        existing = self._existing_result(command)
+        if existing is not None:
+            return existing
+
+        snapshot = self._storage.request_manual_close(
+            command.session_id,
+            command.command_id,
+            now,
+        )
+        return self._advance_and_dispatch(command, now, snapshot)
+
+    def finalize_closing(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        return self._storage_delegate(command, now, "finalize_closing", "closing_finalized")
+
+    def recover_session(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        """從 storage snapshot 恢復 runtime action，不依賴 process-local state."""
+
+        existing = self._existing_result(command)
+        if existing is not None:
+            return existing
+
+        snapshot = self._storage.read_snapshot(command.session_id)
+        recovery_decision = _recovery_decision(command.session_id, snapshot)
+        result = self._advance_and_dispatch(
+            command,
+            now,
+            snapshot,
+            recovery_decision=recovery_decision,
+        )
+        return result
+
+    def _advance_and_dispatch(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+        snapshot: LiveSessionSnapshot,
+        *,
+        recovery_decision: RecoveryDecision | None = None,
+    ) -> RuntimeServiceResult:
+        contract_error = self._validate_snapshot(command, snapshot)
+        if contract_error is not None:
+            return contract_error
+
+        transition = self._phase_advancer(snapshot, now)
+
+        try:
+            transition_ref = self._persist_transition(command, transition, now)
+        except Exception as exc:
+            result = RuntimeServiceResult(
+                status="error",
+                session_id=command.session_id,
+                phase=transition.next_phase,
+                events=[],
+                errors=[
+                    {
+                        "code": "storage_write_failed",
+                        "message": str(exc),
+                    }
+                ],
+                correlation_id=_correlation_id(command),
+                recovery_decision=recovery_decision,
+            )
+            self._save_result(command, result)
+            return result
+
+        adapter_result = self._dispatch_next_action(command, snapshot, transition, now)
+        status = _result_status(adapter_result)
+        errors = _errors_for_adapter_result(adapter_result)
+
+        if adapter_result.status == "error":
+            safe_summary = _sanitize_public_payload(adapter_result.summary)
+            self._storage.persist_error_summary(
+                command.session_id,
+                command.command_id,
+                safe_summary,
+                adapter_result.retryable,
+            )
+
+        event = self._event(
+            event_type=_event_type(adapter_result),
+            command=command,
+            phase=transition.next_phase,
+            payload={
+                "next_action": transition.next_action,
+                "adapter_summary": _sanitize_public_payload(adapter_result.summary),
+            },
+        )
+        self._persist_event(event)
+        result = RuntimeServiceResult(
+            status=status,
+            session_id=command.session_id,
+            phase=transition.next_phase,
+            events=[event],
+            errors=errors,
+            correlation_id=_correlation_id(command),
+            transition_ref=transition_ref,
+            adapter_result=AdapterDispatchResult(
+                status=adapter_result.status,
+                summary=_sanitize_public_payload(adapter_result.summary),
+                retryable=adapter_result.retryable,
+            ),
+            recovery_decision=recovery_decision,
+        )
+        self._save_result(command, result)
+        return result
+
+    def _dispatch_next_action(
+        self,
+        command: RuntimeCommand,
+        snapshot: LiveSessionSnapshot,
+        transition: PhaseTransition,
+        now: datetime,
+    ) -> AdapterDispatchResult:
+        runner = self._runner_for_action(transition.next_action)
+        if runner is None:
+            return AdapterDispatchResult(status="ok", summary={"message": "no dispatch"})
+        result = runner.run(
+            command=command,
+            snapshot=snapshot,
+            transition=transition,
+            now=now,
+        )
+        if isinstance(result, AdapterDispatchResult):
+            return result
+        return AdapterDispatchResult(status="ok", summary={"result": str(result)})
+
+    def _runner_for_action(self, next_action: str) -> object | None:
+        if next_action == "run_planned_show":
+            return self._planned_show_runner
+        if next_action in {"start_aftertalk", "continue_aftertalk"}:
+            return self._aftertalk
+        if next_action == "start_closing":
+            return self._closing
+        return None
+
+    def _validate_snapshot(
+        self,
+        command: RuntimeCommand,
+        snapshot: LiveSessionSnapshot,
+    ) -> RuntimeServiceResult | None:
+        if not snapshot.plan_completed:
+            return None
+        if _coerce_aftertalk_policy(snapshot.aftertalk_policy) is not None:
+            return None
+
+        result = RuntimeServiceResult(
+            status="contract_error",
+            session_id=command.session_id,
+            phase=snapshot.current_phase,
+            events=[],
+            errors=[
+                {
+                    "code": "invalid_aftertalk_policy",
+                    "message": "completed plan requires a valid aftertalk_policy",
+                }
+            ],
+            correlation_id=_correlation_id(command),
+        )
+        self._save_result(command, result)
+        return result
+
+    def _persist_transition(
+        self,
+        command: RuntimeCommand,
+        transition: PhaseTransition,
+        now: datetime,
+    ) -> PersistedTransitionRef:
+        raw_ref = self._storage.persist_transition(
+            command.session_id,
+            command.command_id,
+            transition,
+            now,
+        )
+        return _coerce_transition_ref(raw_ref)
+
+    def _storage_delegate(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+        method_name: str,
+        event_type: str,
+    ) -> RuntimeServiceResult:
+        existing = self._existing_result(command)
+        if existing is not None:
+            return existing
+
+        method = getattr(self._storage, method_name)
+        snapshot = method(command, now)
+        event = self._event(
+            event_type=event_type,
+            command=command,
+            phase=snapshot.current_phase,
+            payload={"phase": _phase_value(snapshot.current_phase)},
+        )
+        self._persist_event(event)
+        result = RuntimeServiceResult(
+            status="ok",
+            session_id=command.session_id,
+            phase=snapshot.current_phase,
+            events=[event],
+            errors=[],
+            correlation_id=_correlation_id(command),
+        )
+        self._save_result(command, result)
+        return result
+
+    def _event(
+        self,
+        *,
+        event_type: str,
+        command: RuntimeCommand,
+        phase: LiveSessionPhase | str | None,
+        payload: dict[str, object],
+    ) -> RuntimeServiceEvent:
+        return RuntimeServiceEvent(
+            event_type=event_type,
+            session_id=command.session_id,
+            phase=phase,
+            payload=_sanitize_public_payload(payload),
+            correlation_id=_correlation_id(command),
+        )
+
+    def _persist_event(self, event: RuntimeServiceEvent) -> None:
+        if hasattr(self._storage, "persist_service_event"):
+            self._storage.persist_service_event(event)
+
+    def _existing_result(self, command: RuntimeCommand) -> RuntimeServiceResult | None:
+        if not hasattr(self._storage, "get_command_result"):
+            return None
+        return self._storage.get_command_result(command.command_id)
+
+    def _save_result(self, command: RuntimeCommand, result: RuntimeServiceResult) -> None:
+        if hasattr(self._storage, "save_command_result"):
+            self._storage.save_command_result(command.command_id, result)
+
+
+def _result_status(adapter_result: AdapterDispatchResult) -> str:
+    if adapter_result.status != "error":
+        return "ok"
+    if adapter_result.retryable:
+        return "retryable_error"
+    return "error"
+
+
+def _errors_for_adapter_result(adapter_result: AdapterDispatchResult) -> list[dict[str, object]]:
+    if adapter_result.status != "error":
+        return []
+    return [
+        {
+            "code": "adapter_error",
+            "retryable": adapter_result.retryable,
+            "summary": _sanitize_public_payload(adapter_result.summary),
+        }
+    ]
+
+
+def _event_type(adapter_result: AdapterDispatchResult) -> str:
+    if adapter_result.status == "error":
+        return "adapter_error"
+    return "runtime_action_dispatched"
+
+
+def _recovery_decision(
+    session_id: str,
+    snapshot: LiveSessionSnapshot,
+) -> RecoveryDecision:
+    if (
+        _phase_value(snapshot.current_phase) == LiveSessionPhase.CLOSING.value
+        and not snapshot.closing_completed
+    ):
+        return RecoveryDecision(
+            action="resume_closing",
+            reason="closing_incomplete",
+            session_id=session_id,
+        )
+    return RecoveryDecision(
+        action="evaluate_phase",
+        reason="snapshot_loaded",
+        session_id=session_id,
+    )
+
+
+def _coerce_transition_ref(raw_ref: object) -> PersistedTransitionRef:
+    if isinstance(raw_ref, PersistedTransitionRef):
+        return raw_ref
+    if isinstance(raw_ref, dict):
+        return PersistedTransitionRef(
+            transition_id=str(raw_ref["transition_id"]),
+            session_id=str(raw_ref["session_id"]),
+            previous_phase=raw_ref["previous_phase"],
+            next_phase=_coerce_phase(raw_ref["next_phase"]),
+            reason=_coerce_reason(raw_ref["reason"]),
+        )
+    raise TypeError("persist_transition must return PersistedTransitionRef or dict")
+
+
+def _coerce_phase(value: LiveSessionPhase | str) -> LiveSessionPhase:
+    if isinstance(value, LiveSessionPhase):
+        return value
+    return LiveSessionPhase(str(value))
+
+
+def _coerce_reason(value: PhaseTransitionReason | str) -> PhaseTransitionReason:
+    if isinstance(value, PhaseTransitionReason):
+        return value
+    return PhaseTransitionReason(str(value))
+
+
+def _coerce_aftertalk_policy(value: AftertalkPolicy | str | None) -> AftertalkPolicy | None:
+    if isinstance(value, AftertalkPolicy):
+        return value
+    try:
+        return AftertalkPolicy(str(value))
+    except ValueError:
+        return None
+
+
+def _sanitize_public_payload(value: Any) -> Any:
+    forbidden_keys = {
+        "hidden_prompt",
+        "raw_payload",
+        "topic_pack",
+        "factcard",
+        "fact_card",
+        "memoriacore_raw",
+        "youtube_raw",
+    }
+
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_public_payload(inner)
+            for key, inner in value.items()
+            if str(key).lower() not in forbidden_keys
+        }
+    if isinstance(value, list):
+        return [_sanitize_public_payload(item) for item in value]
+    return value
+
+
+def _phase_value(phase: LiveSessionPhase | str | None) -> str | None:
+    if phase is None:
+        return None
+    if isinstance(phase, LiveSessionPhase):
+        return phase.value
+    return str(phase)
+
+
+def _correlation_id(command: RuntimeCommand) -> str:
+    return f"runtime-{command.command_id}"
+
+
+__all__ = [
+    "AdapterDispatchResult",
+    "PersistedTransitionRef",
+    "RecoveryDecision",
+    "RuntimeApplicationService",
+    "RuntimeCommand",
+    "RuntimeCommandType",
+    "RuntimeServiceEvent",
+    "RuntimeServiceResult",
+]
