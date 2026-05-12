@@ -42,6 +42,7 @@ This module may call repositories and adapters through interfaces. It must not i
 - `test_storage_write_failure_stops_later_side_effects`
 - `test_crash_recovery_resumes_incomplete_closing`
 - `test_runtime_service_event_excludes_hidden_prompt_and_raw_payload`
+- `test_invalid_aftertalk_policy_returns_contract_error_without_advancing_phase`
 
 Expected red command:
 
@@ -57,6 +58,7 @@ Expected red result before implementation: missing `YouTubeBridgeV2.runtime.appl
 - Implement orchestration methods for session create, plan bind, tick, YouTube event handling, aftertalk policy update, manual close, and closing finalization.
 - Use injected fake repositories/adapters/services in tests.
 - Preserve idempotency by `command_id`.
+- Validate required snapshot policy fields before calling Runtime Phase; when a completed plan has missing or invalid `aftertalk_policy`, return a contract error and do not call `advance_phase`.
 - Redact all service events before returning them.
 
 ## Refactor Boundary
@@ -90,5 +92,6 @@ After implementation exists, update `docs/api-reference-index.md` Source values 
 - API routes can delegate all runtime actions to the service.
 - Service is the only orchestration layer for storage/phase/adapter side effects.
 - Duplicate commands do not repeat side effects.
+- Invalid or missing `aftertalk_policy` for a completed plan is rejected before Runtime Phase is called.
 - Crash/restart recovery has a deterministic entry point.
 - Public service events do not expose hidden prompt or raw payloads.

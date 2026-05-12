@@ -1,6 +1,6 @@
 # Runtime Phase Module Design
 
-本文件定義 YouTubeBridgeV2 的 phase lifecycle 核心狀態機。它是 module design，不是 implementation plan；本階段不宣告任何已存在的 Python source symbol。
+本文件定義 YouTubeBridgeV2 的 phase lifecycle 核心狀態機。它是 module design，不是 implementation plan；Runtime Phase 的第一版 Python source 已實作於 `YouTubeBridgeV2/runtime/phase.py`。
 
 ## Purpose
 
@@ -103,9 +103,12 @@ Runtime Phase 依賴其他模組提供抽象訊號，但不依賴它們的實作
 
 ## Public Entrypoints
 
-本階段只描述預期 entrypoint，不宣稱 source symbol 已存在。
+本節描述已存在的 Runtime Phase public entrypoint。呼叫端仍需先整理並驗證 snapshot，再交給純 decision function。
 
 ### Phase Advance Decision
+
+Source:
+`YouTubeBridgeV2/runtime/phase.py::advance_phase`
 
 Purpose:
 根據 session snapshot 與目前時間，回傳一個 `PhaseTransition` decision。
@@ -124,6 +127,9 @@ Expected Side Effects:
 - 無。此 entrypoint 應維持 pure decision；storage write、SSE publish、adapter call 由呼叫端執行。
 
 ### Duration Evaluation
+
+Source:
+`YouTubeBridgeV2/runtime/phase.py::evaluate_duration`
 
 Purpose:
 用 `DurationPolicy` 判斷 session 是否已到達時間上限，以及 Aftertalk 是否仍可開始或繼續。
@@ -185,8 +191,8 @@ Runtime Phase 應採用保守且可預測的轉換規則。
 Runtime Phase 應明確處理以下失敗模式：
 
 - invalid phase：回傳 `invalid_state_recovery` 並導向 `closing`，讓系統可以保守收尾。
-- missing required session fields：回傳 contract error，由 application service 決定是否阻擋寫入或回報 API 錯誤。
-- completed plan without policy：若 LiveEpisodePlan 已完成但缺少 `aftertalk_policy`，視為 contract error，不默默套用 Legacy director fallback。
+- missing required session fields：由 Runtime Application Service 在建立或提交 `LiveSessionSnapshot` 前回傳 contract error，並決定是否阻擋寫入或回報 API 錯誤；Runtime Phase 假設 snapshot 已通過必要欄位驗證。
+- completed plan without policy：若 LiveEpisodePlan 已完成但缺少或帶有非法 `aftertalk_policy`，Runtime Application Service 必須先回 contract error，不得呼叫 `advance_phase`，也不得默默套用 Legacy director fallback。
 - duration edge cases：負數 duration、起始時間晚於目前時間、時區資訊不一致時，回傳可診斷的 duration metadata 或 contract error。
 - repeated transition request：相同 snapshot 應回傳相同 decision，避免重複呼叫導致不同 phase。
 - ended phase mutation：`ended` 不應因一般輸入被重新打開；若需要重開 session，應由獨立 session/recovery 流程設計。
