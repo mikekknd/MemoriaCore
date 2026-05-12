@@ -347,9 +347,19 @@ Concepts:
 - `AftertalkTurnRequest`
 - `AftertalkStopReason`
 - `AftertalkSessionSummary`
+- `build_aftertalk_turn_request`
+- `summarize_aftertalk_result`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/runtime/aftertalk.py::AftertalkCue`
+- `YouTubeBridgeV2/runtime/aftertalk.py::AftertalkTurnRequest`
+- `YouTubeBridgeV2/runtime/aftertalk.py::AftertalkStopReason`
+- `YouTubeBridgeV2/runtime/aftertalk.py::AftertalkSessionSummary`
+- `YouTubeBridgeV2/runtime/aftertalk.py::build_aftertalk_turn_request`
+- `YouTubeBridgeV2/runtime/aftertalk.py::summarize_aftertalk_result`
 
 ### MemoriaCore Adapter
 
