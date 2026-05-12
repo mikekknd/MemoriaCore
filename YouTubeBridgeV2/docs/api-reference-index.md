@@ -480,9 +480,30 @@ Concepts:
 - `GET /v2/sessions/{session_id}/events`
 - `GET /v2/sessions/{session_id}/operator-stream`
 - `GET /v2/sessions/{session_id}/display-stream`
+- `create_session_endpoint`
+- `get_session_endpoint`
+- `bind_plan_endpoint`
+- `get_phase_endpoint`
+- `update_aftertalk_policy_endpoint`
+- `manual_close_endpoint`
+- `get_session_events_endpoint`
+- `operator_stream_endpoint`
+- `display_stream_endpoint`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/server/routes.py::router`
+- `YouTubeBridgeV2/server/routes.py::create_session_endpoint`
+- `YouTubeBridgeV2/server/routes.py::get_session_endpoint`
+- `YouTubeBridgeV2/server/routes.py::bind_plan_endpoint`
+- `YouTubeBridgeV2/server/routes.py::get_phase_endpoint`
+- `YouTubeBridgeV2/server/routes.py::update_aftertalk_policy_endpoint`
+- `YouTubeBridgeV2/server/routes.py::manual_close_endpoint`
+- `YouTubeBridgeV2/server/routes.py::get_session_events_endpoint`
+- `YouTubeBridgeV2/server/routes.py::operator_stream_endpoint`
+- `YouTubeBridgeV2/server/routes.py::display_stream_endpoint`
 
 ### Access Control / Security
 

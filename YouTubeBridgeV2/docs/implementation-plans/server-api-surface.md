@@ -74,15 +74,15 @@ Add API Source values after routes exist. Keep endpoint list aligned with module
 
 ## Execution Steps
 
-- [ ] Create failing FastAPI route tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create server route module and request/response contracts.
-- [ ] Implement delegation to runtime service.
-- [ ] Implement event history endpoint through a query/service dependency.
-- [ ] Implement SSE event wrappers.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor route helpers and rerun tests.
-- [ ] Sync API reference Source values after routes exist.
+- [x] Create failing FastAPI route tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create server route module and request/response contracts.
+- [x] Implement delegation to runtime service.
+- [x] Implement event history endpoint through a query/service dependency.
+- [x] Implement SSE event wrappers.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor route helpers and rerun tests.
+- [x] Sync API reference Source values after routes exist.
 
 ## Acceptance Criteria
 
