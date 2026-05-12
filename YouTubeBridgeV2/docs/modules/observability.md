@@ -46,13 +46,18 @@ Observability 負責 V2 的 phase transition log、adapter request summary、err
 
 ## Public Entrypoints
 
-本階段只描述 planned public contracts，不宣稱 source symbol 已存在。
+本階段 public contracts 已由 `YouTubeBridgeV2/runtime/observability.py` 實作。
 
 - `TransitionLogEntry`
 - `AdapterTraceSummary`
 - `RuntimeErrorEvent`
 - `CorrelationMetadata`
 - `DiagnosticEvent`
+- `build_transition_log_entry(transition, correlation=None, recorded_at=None)`
+- `redact_adapter_summary(summary, correlation=None, recorded_at=None)`
+- `classify_runtime_error(error, correlation=None, recorded_at=None)`
+
+`TransitionLogEntry`、`AdapterTraceSummary` 與 `RuntimeErrorEvent` 都可攜帶 `diagnostics`，用於標記缺少 correlation id 等不應中斷 runtime 的 observability warning。
 
 ## Redaction Rules
 
@@ -69,8 +74,8 @@ Observability may retain private references only when Storage defines an explici
 
 ## Failure Modes
 
-- logging failure 不得阻斷 runtime phase decision。
-- correlation id 缺失時建立 diagnostic warning，不偽造外部 trace。
+- logging failure 不得阻斷 runtime phase decision；`TransitionLogEntry.emit_to(...)` 與 `DiagnosticEvent.emit_to(...)` 會回傳 warning diagnostic，不向外拋出 sink exception。
+- correlation id 缺失時建立 diagnostic warning，不偽造外部 trace；transition、adapter summary 與 runtime error 都必須保留這個 warning。
 - raw prompt、raw Topic Pack、raw MemoriaCore payload 不得出現在 public diagnostics。
 - adapter error 必須分類為 timeout、transport、auth、invalid response 或 unexpected。
 - security error 不得包含 secret 或 raw header。

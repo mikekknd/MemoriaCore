@@ -67,16 +67,17 @@ Add Source values for observability contracts after implementation exists.
 
 ## Execution Steps
 
-- [ ] Create failing observability tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create observability module with planned symbols.
-- [ ] Implement transition log, redaction, and error classification.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor redaction helpers and rerun tests.
-- [ ] Sync API reference Source values after symbols exist.
+- [x] Create failing observability tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create observability module with planned symbols.
+- [x] Implement transition log, redaction, and error classification.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor redaction helpers and rerun tests.
+- [x] Sync API reference Source values after symbols exist.
 
 ## Acceptance Criteria
 
 - Diagnostic events are useful and compact.
 - Hidden prompt/raw Topic Pack/raw adapter payload do not appear.
 - Observability failures do not affect phase decisions.
+- Missing correlation id creates warning diagnostics for transition, adapter, and runtime error records.

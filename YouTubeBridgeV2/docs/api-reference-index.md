@@ -542,9 +542,22 @@ Concepts:
 - `RuntimeErrorEvent`
 - `CorrelationMetadata`
 - `DiagnosticEvent`
+- `build_transition_log_entry`
+- `redact_adapter_summary`
+- `classify_runtime_error`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/runtime/observability.py::TransitionLogEntry`
+- `YouTubeBridgeV2/runtime/observability.py::AdapterTraceSummary`
+- `YouTubeBridgeV2/runtime/observability.py::RuntimeErrorEvent`
+- `YouTubeBridgeV2/runtime/observability.py::CorrelationMetadata`
+- `YouTubeBridgeV2/runtime/observability.py::DiagnosticEvent`
+- `YouTubeBridgeV2/runtime/observability.py::build_transition_log_entry`
+- `YouTubeBridgeV2/runtime/observability.py::redact_adapter_summary`
+- `YouTubeBridgeV2/runtime/observability.py::classify_runtime_error`
 
 ### Operator Console UI
 
