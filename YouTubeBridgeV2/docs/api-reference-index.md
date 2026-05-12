@@ -602,14 +602,35 @@ Purpose:
 定義直播畫面 chat display 可呈現的 display-safe event contract。
 
 Concepts:
+- `GET /v2/static/chat-display/index.html`
 - `DisplayMessageEvent`
 - `DisplaySystemStateEvent`
 - `DisplaySuperChatEvent`
 - `DisplayCharacterResponseEvent`
 - `DisplayPresentationMetadata`
+- `renderDisplayEvent`
+- `renderDisplayEvents`
+- `connectDisplayStream`
+- `initChatDisplayI18n`
+- `mountChatDisplay`
 
 Stability:
 - `provisional`
+
+Source:
+- `api/main.py::/v2/static`
+- `YouTubeBridgeV2/static/chat-display/index.html`
+- `YouTubeBridgeV2/static/chat-display/chat-display.css`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::DisplayMessageEvent`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::DisplaySystemStateEvent`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::DisplaySuperChatEvent`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::DisplayCharacterResponseEvent`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::DisplayPresentationMetadata`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::renderDisplayEvent`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::renderDisplayEvents`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::connectDisplayStream`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::initChatDisplayI18n`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::mountChatDisplay`
 
 ### YouTube Adapter
 

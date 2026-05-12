@@ -31,7 +31,12 @@ Planned tests: `tests/youtubebridge_v2/test_chat_display_ui.py`
 - `test_chat_display_renders_super_chat_metadata`
 - `test_chat_display_renders_aftertalk_status_banner`
 - `test_chat_display_renders_closing_status_banner`
+- `test_chat_display_renders_existing_closing_status_event_shape`
+- `test_chat_display_renders_display_flags_for_audience_message`
+- `test_chat_display_orders_events_by_sequence_when_rendering_replay`
+- `test_chat_display_missing_session_id_renders_system_banner`
 - `test_malformed_display_event_uses_safe_fallback`
+- `test_render_display_events_keeps_safe_fallback_for_unsupported_items`
 - `test_display_permission_does_not_call_control_api`
 - `test_hidden_prompt_and_operator_metadata_are_not_rendered`
 
@@ -48,6 +53,8 @@ Expected red result before implementation: missing UI test support or missing pl
 - Implement display event rendering and safe fallback.
 - Keep controls absent from display UI.
 - Render display-safe phase and presentation metadata.
+- Render existing closing status event shape and public display flags.
+- Keep replay rendering stable by `sequence` when present.
 
 ## Refactor Boundary
 
@@ -65,16 +72,19 @@ Update API reference if display event names or payload fields change. Add Source
 
 ## Execution Steps
 
-- [ ] Create failing display UI tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create chat display UI files.
-- [ ] Implement event rendering and safe fallback.
-- [ ] Run the green command and any browser smoke command.
-- [ ] Refactor rendering helpers and rerun tests.
-- [ ] Sync API reference after files exist.
+- [x] Create failing display UI tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create chat display UI files.
+- [x] Implement event rendering and safe fallback.
+- [x] Run the green command. Browser smoke is deferred until the UI stack is stable.
+- [x] Refactor rendering helpers and rerun tests.
+- [x] Sync API reference after files exist.
 
 ## Acceptance Criteria
 
 - Display UI renders audience, character, Super Chat, system, and presentation events.
 - Display UI never calls control endpoints.
 - Hidden prompt, raw payload, and operator-only metadata are not rendered.
+- Existing `closing_status` events render as closing status banners.
+- Display-safe audience flags render as allowlisted badges.
+- Replay/initial events sort by `sequence` when present.
