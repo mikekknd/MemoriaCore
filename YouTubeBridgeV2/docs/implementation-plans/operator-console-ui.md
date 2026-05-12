@@ -65,14 +65,14 @@ Update API reference only if UI-facing event names or endpoint usage changes. Ad
 
 ## Execution Steps
 
-- [ ] Create failing UI contract tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create operator console UI files.
-- [ ] Implement phase/status rendering and controls.
-- [ ] Implement error and stale state display.
-- [ ] Run the green command and any browser smoke command.
-- [ ] Refactor UI state mapping and rerun tests.
-- [ ] Sync API reference after files exist.
+- [x] Create failing UI contract tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create operator console UI files.
+- [x] Implement phase/status rendering and controls.
+- [x] Implement error and stale state display.
+- [x] Run the green command. Browser smoke is deferred until the UI stack is stable.
+- [x] Refactor UI state mapping and rerun tests.
+- [x] Sync API reference after files exist.
 
 ## Acceptance Criteria
 

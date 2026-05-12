@@ -21,6 +21,7 @@ from api.session_manager import session_manager
 from core.background_gatherer import start_background_gather_loop
 from api.middleware.auth import AuthMiddleware
 from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots, llm_tasks
+from YouTubeBridgeV2.server import routes as youtubebridge_v2_routes
 
 
 def _persona_sync_candidate_character_ids(storage) -> list[str]:
@@ -188,6 +189,88 @@ app.include_router(llm_tasks.router, prefix=PREFIX)
 app.include_router(persona_evolution.router, prefix=PREFIX)
 app.include_router(personality_public.router, prefix=PREFIX)
 app.include_router(admin_users.router, prefix=PREFIX)
+app.include_router(youtubebridge_v2_routes.router)
+
+
+class _UnavailableV2RuntimeService:
+    def create_session(self, command, now):
+        return self._result(command)
+
+    def bind_plan(self, command, now):
+        return self._result(command)
+
+    def update_aftertalk_policy(self, command, now):
+        return self._result(command)
+
+    def request_manual_close(self, command, now):
+        return self._result(command)
+
+    def _result(self, command):
+        return {
+            "status": "unconfigured",
+            "session_id": command.session_id,
+            "phase": "unknown",
+            "events": [],
+            "errors": [
+                {
+                    "code": "v2_runtime_not_configured",
+                    "message": "runtime service is not configured",
+                }
+            ],
+            "correlation_id": f"runtime-{command.command_id}",
+        }
+
+
+class _UnavailableV2QueryService:
+    def get_session(self, session_id):
+        return self._status(session_id)
+
+    def get_phase(self, session_id):
+        return self._status(session_id)
+
+    def get_session_events(self, session_id, _limit):
+        return [self._event(session_id)]
+
+    def iter_operator_events(self, session_id):
+        return iter([self._event(session_id)])
+
+    def iter_display_events(self, _session_id):
+        return iter([])
+
+    def _status(self, session_id):
+        return {
+            "session_id": session_id,
+            "phase": "unknown",
+            "permission_group": "display",
+            "stream_state": "stale",
+            "error": {
+                "code": "v2_runtime_not_configured",
+                "message": "runtime service is not configured",
+            },
+            "diagnostics": {
+                "message": "runtime service is not configured",
+                "retryable": False,
+            },
+        }
+
+    def _event(self, session_id):
+        return {
+            "event_type": "operator_status",
+            "session_id": session_id,
+            "payload": self._status(session_id),
+        }
+
+
+def _get_unavailable_v2_runtime_service():
+    return _UnavailableV2RuntimeService()
+
+
+def _get_unavailable_v2_query_service():
+    return _UnavailableV2QueryService()
+
+
+app.dependency_overrides[youtubebridge_v2_routes.get_runtime_service] = _get_unavailable_v2_runtime_service
+app.dependency_overrides[youtubebridge_v2_routes.get_query_service] = _get_unavailable_v2_query_service
 
 
 # ── 根路由 → 一般入口 ────────────────────────────────────
@@ -198,7 +281,13 @@ async def root_redirect():
 
 # ── 靜態檔案服務 ──────────────────────────────────────────
 _static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+_v2_static_dir = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "YouTubeBridgeV2",
+    "static",
+)
 app.mount("/static", StaticFiles(directory=_static_dir, html=True), name="static")
+app.mount("/v2/static", StaticFiles(directory=_v2_static_dir, html=True), name="youtubebridge-v2-static")
 
 
 # ── 全域例外處理 ──────────────────────────────────────────

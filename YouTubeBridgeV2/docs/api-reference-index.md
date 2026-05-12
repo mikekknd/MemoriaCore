@@ -565,14 +565,36 @@ Purpose:
 定義後台控制 UI 消費的 session status、control action 與 diagnostic contract。
 
 Concepts:
+- `GET /v2/static/operator-console/index.html`
 - `OperatorSessionStatusView`
 - `OperatorControlAction`
 - `AftertalkPolicyControl`
 - `ManualCloseCommand`
 - `OperatorDiagnosticBanner`
+- `renderOperatorConsole`
+- `loadOperatorStatus`
+- `connectOperatorStream`
+- `initOperatorConsoleI18n`
+- `mountOperatorConsole`
 
 Stability:
 - `provisional`
+
+Source:
+- `api/main.py::/v2/static`
+- `api/main.py::YouTubeBridgeV2.server.routes.router`
+- `YouTubeBridgeV2/static/operator-console/index.html`
+- `YouTubeBridgeV2/static/operator-console/operator-console.css`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::OperatorSessionStatusView`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::OperatorControlAction`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::AftertalkPolicyControl`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::ManualCloseCommand`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::OperatorDiagnosticBanner`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::renderOperatorConsole`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::loadOperatorStatus`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::connectOperatorStream`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::initOperatorConsoleI18n`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::mountOperatorConsole`
 
 ### Chat Display UI
 

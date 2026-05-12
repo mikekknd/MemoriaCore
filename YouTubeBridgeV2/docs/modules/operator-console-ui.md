@@ -45,13 +45,20 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 
 ## Public Entrypoints
 
-本階段只描述 planned UI-facing contracts，不宣稱 source symbol 已存在。
+本階段 UI-facing contracts 已由 `YouTubeBridgeV2/static/operator-console/` 實作。
 
+- Served entrypoint: `/v2/static/operator-console/index.html`
+- Main app wiring: `api/main.py` includes the V2 router and serves `/v2/static`.
 - `OperatorSessionStatusView`
 - `OperatorControlAction`
 - `AftertalkPolicyControl`
 - `ManualCloseCommand`
 - `OperatorDiagnosticBanner`
+- `renderOperatorConsole(view)`
+- `loadOperatorStatus({sessionId, fetchImpl})`
+- `connectOperatorStream({sessionId, eventSourceFactory, onStatus, onStale})`
+- `initOperatorConsoleI18n(i18n)`
+- `mountOperatorConsole({root, sessionId, fetchImpl, initialStatus})`
 
 ## UI State Rules
 
@@ -73,6 +80,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 - unknown phase 顯示 recoverable diagnostic，不自行改 phase。
 - SSE disconnect 時顯示 stale indicator。
 - hidden prompt/raw payload 不得顯示。
+- UI action 只送出 `/v2/sessions/{session_id}/aftertalk-policy` 與 `/v2/sessions/{session_id}/manual-close` request envelope，不直接 import runtime、呼叫 adapter 或寫 storage。
 
 ## Test Strategy
 
