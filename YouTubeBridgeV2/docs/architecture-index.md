@@ -70,6 +70,10 @@ planned_show -> aftertalk -> closing -> ended
 
 負責 V2 FastAPI 或其他 API 入口。它提供後台控制 UI、直播 Chat 顯示介面、observer、外部工具使用的 HTTP/SSE entrypoint，並把 request 轉交 runtime/application service。Server/API Surface 不直接持有 phase 決策或 adapter 實作細節。
 
+### App Factory / Composition
+
+負責 V2 root wiring。它把 StorageManager-like backend、Runtime Application Service、Query Service、HTTP route dependency override 與靜態 UI mount 組成可測試的 V2 app。Composition 不決定 phase 規則、不建立 SQLite connection、不引用 Legacy `YouTubeBridge/` runtime。
+
 ### Access Control / Security
 
 負責 API 存取控制、loopback/API key 規則、MemoriaCore auth delegation、不可信 YouTube/MemoriaCore/UI payload 邊界與安全錯誤回應。Security 規則必須在 Server/API Surface 與 adapter module design 中被引用，不可分散成各路由的臨時判斷。
@@ -105,6 +109,14 @@ V2 MVP 應先完成可驗證的直通路：
 9. Runtime Phase 在 closing complete 後進入 ended。
 
 YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentation/TTS 可以作為後續模組縱切，不應阻擋 runtime phase core 的第一版設計。
+
+## Integration Wave 1 狀態
+
+- [x] V2 app factory：已建立獨立 `create_v2_app(...)`，可掛載 `/v2` routes 與 `/v2/static`。
+- [x] V2 composition：已建立 `create_v2_composition(...)`，集中組裝 runtime service、query service 與 storage port。
+- [x] Runtime storage port：已建立 `RuntimeStoragePort`，只委派 StorageManager-like backend，不直接碰 SQLite。
+- [x] Query service：已建立 `V2QueryService`，供 session status、phase、event history、operator/display SSE 使用。
+- [x] Fake-backed vertical slice：已建立 tests 內 in-memory backend，覆蓋 create session、bind plan、planned show、aftertalk、manual/duration closing、ended 與 public payload redaction。
 
 ## Module Design 文件
 

@@ -279,6 +279,28 @@ Source:
 
 以下列出 V2 模組層 contract。已實作的條目會附 `Source`；尚未實作的條目保留 Concepts，等 runtime code、API route、UI file 或 adapter implementation 實際存在後再補 `Source`。
 
+### App Factory / Composition
+
+Purpose:
+提供 V2 root wiring，將 runtime service、query service、storage port 與 FastAPI dependency overrides 組合起來。
+
+Concepts:
+- `create_v2_app`
+- `V2AppConfigurationError`
+- `create_v2_composition`
+- `V2RuntimeComposition`
+- `V2CompositionConfigurationError`
+
+Stability:
+- `provisional`
+
+Source:
+- `YouTubeBridgeV2/app.py::create_v2_app`
+- `YouTubeBridgeV2/app.py::V2AppConfigurationError`
+- `YouTubeBridgeV2/composition.py::create_v2_composition`
+- `YouTubeBridgeV2/composition.py::V2RuntimeComposition`
+- `YouTubeBridgeV2/composition.py::V2CompositionConfigurationError`
+
 ### Runtime Application Service
 
 Purpose:
@@ -438,6 +460,8 @@ Concepts:
 - `StorageBackendNotConfigured`
 - `StorageRecordNotFound`
 - `StorageContractError`
+- `RuntimeStoragePort`
+- `RuntimeStorageContractError`
 
 Stability:
 - `provisional`
@@ -449,6 +473,9 @@ Implementation status:
   `core/storage/` and `core/storage_manager.py`.
 - `StorageManagerBackedRepository` is an aggregate repository facade, not the
   `RuntimeApplicationService` storage adapter contract.
+- `RuntimeStoragePort` is the application-service storage port. It maps runtime
+  commands to the injected StorageManager-like backend and still does not import
+  or own SQLite.
 
 Source:
 - `YouTubeBridgeV2/storage/repositories.py::SessionRepository`
@@ -464,6 +491,29 @@ Source:
 - `YouTubeBridgeV2/storage/repositories.py::StorageBackendNotConfigured`
 - `YouTubeBridgeV2/storage/repositories.py::StorageRecordNotFound`
 - `YouTubeBridgeV2/storage/repositories.py::StorageContractError`
+- `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort`
+- `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStorageContractError`
+
+### Query Service
+
+Purpose:
+提供 Server/API Surface 使用的 public read model 與 SSE event source，讓 route 不直接讀 storage internals。
+
+Concepts:
+- `V2QueryService`
+- `V2QueryServiceError`
+- `get_session`
+- `get_phase`
+- `get_session_events`
+- `iter_operator_events`
+- `iter_display_events`
+
+Stability:
+- `provisional`
+
+Source:
+- `YouTubeBridgeV2/query_service.py::V2QueryService`
+- `YouTubeBridgeV2/query_service.py::V2QueryServiceError`
 
 ### Server/API Surface
 
