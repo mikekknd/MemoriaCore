@@ -12,7 +12,7 @@
 
 ## Scope
 
-Planned source: `YouTubeBridgeV2/runtime/live_episode_plan.py`
+Planned source: `YouTubeBridgeV2/live_episode_plan/runner.py`
 
 Planned tests: `tests/youtubebridge_v2/test_live_episode_plan_runner.py`
 
@@ -48,7 +48,7 @@ Expected red command:
 python -m pytest tests/youtubebridge_v2/test_live_episode_plan_runner.py -q
 ```
 
-Expected red result before implementation: missing `YouTubeBridgeV2.runtime.live_episode_plan` or missing planned symbols.
+Expected red result before implementation: missing `YouTubeBridgeV2.live_episode_plan.runner` or missing planned symbols.
 
 ## Green Scope
 
@@ -75,7 +75,7 @@ After symbols exist, update `docs/api-reference-index.md` with Source values for
 
 - [ ] Create failing tests in `tests/youtubebridge_v2/test_live_episode_plan_runner.py`.
 - [ ] Run the red command and confirm expected missing module or symbol failure.
-- [ ] Create `YouTubeBridgeV2/runtime/live_episode_plan.py` with planned symbols.
+- [ ] Create `YouTubeBridgeV2/live_episode_plan/runner.py` with planned symbols.
 - [ ] Implement minimal validation, cursor advancement, and completion signal.
 - [ ] Run the green command and confirm all tests pass.
 - [ ] Refactor inside the allowed boundary and rerun tests.

@@ -314,13 +314,28 @@ Purpose:
 
 Concepts:
 - `LiveEpisodePlanContract`
+- `LiveEpisodePlanState`
 - `PlannedTurnIntent`
 - `PlanExecutionStatus`
 - `PlannedTurnResult`
 - `PlanCompletionSignal`
+- `validate_episode_plan_contract`
+- `next_planned_turn`
+- `record_planned_turn_result`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/live_episode_plan/runner.py::LiveEpisodePlanContract`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::LiveEpisodePlanState`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::PlannedTurnIntent`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::PlanExecutionStatus`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::PlannedTurnResult`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::PlanCompletionSignal`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::validate_episode_plan_contract`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::next_planned_turn`
+- `YouTubeBridgeV2/live_episode_plan/runner.py::record_planned_turn_result`
 
 ### Aftertalk
 

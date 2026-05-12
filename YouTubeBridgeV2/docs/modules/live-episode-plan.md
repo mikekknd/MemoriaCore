@@ -46,13 +46,17 @@ LiveEpisodePlan Runner 負責將已匯入的節目企劃轉成可執行的 plann
 
 ## Public Entrypoints
 
-本階段只描述 planned public contracts，不宣稱 source symbol 已存在。
+本節描述已存在的 LiveEpisodePlan Runner public contracts。實作位於 `YouTubeBridgeV2/live_episode_plan/runner.py`。
 
 - `LiveEpisodePlanContract`：匯入計畫的穩定欄位集合。
+- `LiveEpisodePlanState`：runner cursor 與已完成 turn id 的狀態摘要。
 - `PlannedTurnIntent`：交給 MemoriaCore Adapter 的 planned show 執行意圖。
 - `PlanExecutionStatus`：plan runner 對目前企劃狀態的判斷。
 - `PlannedTurnResult`：單一 planned turn 的執行後摘要。
 - `PlanCompletionSignal`：Runtime Phase 使用的 completion input。
+- `validate_episode_plan_contract(plan)`：驗證 plan dict 並回傳 sanitized contract summary。
+- `next_planned_turn(plan_state, audience_event_summary=None)`：依 cursor 產生下一個 planned turn intent。
+- `record_planned_turn_result(plan_state, turn_result)`：記錄 turn 完成並推進 cursor / completion signal。
 
 ## Execution Rules
 
