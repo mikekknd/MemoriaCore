@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Storage 負責定義 V2 session、phase state、events、interactions、adapter metadata 與 finalization result 的保存 contract。它提供 repository/interface 給 runtime application service 使用，並透過主專案既有 `StorageManager` 邊界存取資料，避免 V2 runtime core 或 V2 storage package 直接依賴 SQLite。
+Storage 負責定義 V2 session、phase state、events、interactions、adapter metadata 與 finalization result 的保存 contract。本階段落地的是 repository adapter skeleton：它提供 repository/interface 與主專案 `StorageManager`-like 邊界的映射，但尚未新增 durable V2 backend 或 Runtime Application Service storage adapter，避免 V2 runtime core 或 V2 storage package 直接依賴 SQLite。
 
 ## Ownership
 
@@ -36,7 +36,7 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 - LiveEpisodePlan Runner 讀寫 plan cursor 與 turn result。
 - Aftertalk 讀寫 aftertalk request/response summary。
 - MemoriaCore Adapter 與 YouTube Adapter 提供 normalized metadata。
-- Server/API Surface 透過 service 使用 repository。
+- Server/API Surface 透過 service-facing storage adapter 使用 repository；該 adapter 屬於後續 integration，不由本 skeleton 直接提供。
 - Observability 讀取 transition/event summaries。
 
 ## Out Of Scope
@@ -52,21 +52,29 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 
 ## Public Entrypoints
 
-本階段只描述 planned public contracts，不宣稱 source symbol 已存在。
+本模組的 repository adapter skeleton 已由 `YouTubeBridgeV2/storage/repositories.py` 實作。V2 repository 只委派到明確注入的 `StorageManager`-like 邊界，不在 `YouTubeBridgeV2/` 內直接存取 SQLite；未設定預設 backend 時，module-level helper 會丟 `StorageBackendNotConfigured`。
 
 - `SessionRepository`：session lifecycle 與 snapshot 讀取。
 - `PhaseTransitionRepository`：transition append 與 idempotency。
 - `EventRepository`：YouTube/system event append。
 - `InteractionRepository`：planned show、aftertalk、chat display interaction record。
 - `FinalizationRepository`：closing 與 ended metadata。
+- `StorageManagerBackedRepository`：聚合 repository facade，持有注入的 `StorageManager`-like 物件；不是 `RuntimeApplicationService` 的 storage adapter contract。
+- `read_live_session_snapshot(session_id)`：透過預設 repository 讀取 Runtime Phase snapshot；預設 backend 未設定時會丟 `StorageBackendNotConfigured`。
+- `append_phase_transition(session_id, transition)`：append transition record，依明確 transition id idempotent；缺 transition id 時回傳 contract error。
+- `append_live_event(session_id, event)`：append display-safe normalized event。
+- `append_interaction(session_id, interaction)`：append planned show / aftertalk response summary。
+- `StorageBackendNotConfigured`：預設 V2 backend 尚未 wiring 時的 explicit error。
+- `StorageRecordNotFound`：找不到 V2 session/record 時的 not found error。
+- `StorageContractError`：StorageManager 回傳資料不符合 V2 contract 時的 contract error。
 
 ## Persistence Rules
 
 | Data | Required Rule |
 | --- | --- |
-| storage backend | V2 repository must call `StorageManager` or a facade exposed by `core/storage_manager.py`; it must not import `sqlite3` or `aiosqlite`. |
+| storage backend | V2 repository must call an explicitly injected `StorageManager`-like backend or a facade exposed by `core/storage_manager.py`; it must not import `sqlite3` or `aiosqlite`. |
 | session snapshot | Must contain all Runtime Phase required fields or return contract error. |
-| phase transition | Append-only and idempotent by transition id. |
+| phase transition | Append-only and idempotent by explicit transition id. |
 | normalized event | Store display-safe summary separately from private adapter metadata. |
 | interaction | Store speaker, phase, public content summary, and correlation id. |
 | adapter metadata | Store redacted summary by default; raw payload requires explicit private storage policy. |
@@ -76,7 +84,9 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 ## Failure Modes
 
 - session 不存在時回傳 not found，不建立隱式 session。
+- 預設 backend 尚未設定時回傳 `StorageBackendNotConfigured`，不隱式建立真實 `StorageManager`。
 - duplicate transition id 應 idempotent。
+- transition id 缺漏時回傳 contract error，不使用固定 fallback id。
 - snapshot 缺少 Runtime Phase 必要欄位時回傳 contract error。
 - adapter metadata 過大時保存 redacted summary，不保存 raw hidden payload。
 - repository error 不應被轉成 phase decision。
@@ -91,9 +101,11 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 - finalization tests：closing result 與 ended metadata。
 - boundary tests：V2 模組不可直接依賴 SQLite implementation；V2 storage repository 只可依賴 `StorageManager` 邊界。
 - redaction tests：不保存 raw prompt 或 raw adapter payload 到 public metadata。
+- skeleton contract tests：預設 backend 未設定時明確失敗，aggregate facade 不宣稱自己是 Runtime Application Service storage adapter。
 
 ## Open Questions
 
 - 若 V2 需要新 SQLite schema 或 migration，實作位置必須在 `core/storage/` 與 `core/storage_manager.py` facade 內鎖定；`YouTubeBridgeV2/` 只保留 repository contract/adapter。
+- Runtime Application Service 需要一層 service-facing storage adapter，將 `create_session(command, now)`、`persist_transition(...)`、`request_manual_close(...)` 等 service contract 映射到 repository/backend；本 skeleton 不直接提供該 adapter。
 - runtime DB 檔案位置需沿用 repo `runtime/` 原則，並由 `StorageManager` 設定決定。
 - transition id 的生成責任需與 Observability 或 runtime service 對齊。

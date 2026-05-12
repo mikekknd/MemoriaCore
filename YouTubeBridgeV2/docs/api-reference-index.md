@@ -431,9 +431,39 @@ Concepts:
 - `InteractionRepository`
 - `FinalizationRepository`
 - `StorageManagerBackedRepository`
+- `read_live_session_snapshot`
+- `append_phase_transition`
+- `append_live_event`
+- `append_interaction`
+- `StorageBackendNotConfigured`
+- `StorageRecordNotFound`
+- `StorageContractError`
 
 Stability:
 - `provisional`
+
+Implementation status:
+- Adapter skeleton. The repository contracts require an explicitly injected
+  `StorageManager`-like V2 backend. The default helper path intentionally raises
+  `StorageBackendNotConfigured` until the durable backend is wired through
+  `core/storage/` and `core/storage_manager.py`.
+- `StorageManagerBackedRepository` is an aggregate repository facade, not the
+  `RuntimeApplicationService` storage adapter contract.
+
+Source:
+- `YouTubeBridgeV2/storage/repositories.py::SessionRepository`
+- `YouTubeBridgeV2/storage/repositories.py::PhaseTransitionRepository`
+- `YouTubeBridgeV2/storage/repositories.py::EventRepository`
+- `YouTubeBridgeV2/storage/repositories.py::InteractionRepository`
+- `YouTubeBridgeV2/storage/repositories.py::FinalizationRepository`
+- `YouTubeBridgeV2/storage/repositories.py::StorageManagerBackedRepository`
+- `YouTubeBridgeV2/storage/repositories.py::read_live_session_snapshot`
+- `YouTubeBridgeV2/storage/repositories.py::append_phase_transition`
+- `YouTubeBridgeV2/storage/repositories.py::append_live_event`
+- `YouTubeBridgeV2/storage/repositories.py::append_interaction`
+- `YouTubeBridgeV2/storage/repositories.py::StorageBackendNotConfigured`
+- `YouTubeBridgeV2/storage/repositories.py::StorageRecordNotFound`
+- `YouTubeBridgeV2/storage/repositories.py::StorageContractError`
 
 ### Server/API Surface
 

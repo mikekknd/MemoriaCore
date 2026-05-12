@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task by task. Steps use checkbox syntax for tracking.
 
-**Goal:** Implement V2 storage repositories for sessions, phase transitions, events, interactions, adapter metadata, and finalization records.
+**Goal:** Implement the V2 storage repository adapter skeleton for sessions, phase transitions, events, interactions, adapter metadata, and finalization records.
 
-**Architecture:** Storage is accessed through V2 repository interfaces backed by the main project `StorageManager` boundary. Runtime core consumes snapshots and writes decisions through service code, while SQLite details remain inside `core/storage/` and `core/storage_manager.py`.
+**Architecture:** Storage is accessed through V2 repository interfaces backed by an explicitly injected `StorageManager`-like boundary. Runtime core consumes snapshots and writes decisions through service code, while SQLite details remain inside `core/storage/` and `core/storage_manager.py`. This stage does not add the durable V2 backend or the Runtime Application Service storage adapter.
 
 **Tech Stack:** Python 3.12, pytest, `StorageManager`-backed repositories.
 
@@ -29,6 +29,7 @@ Planned tests: `tests/youtubebridge_v2/test_storage.py`
 - `append_phase_transition(session_id, transition)`
 - `append_live_event(session_id, event)`
 - `append_interaction(session_id, interaction)`
+- `StorageBackendNotConfigured`
 
 ## Red Cases
 
@@ -41,6 +42,9 @@ Planned tests: `tests/youtubebridge_v2/test_storage.py`
 - `test_finalization_record_moves_session_to_ended_metadata`
 - `test_public_metadata_redacts_raw_prompt_and_adapter_payload`
 - `test_v2_storage_uses_storage_manager_boundary`
+- `test_default_repository_without_configured_backend_fails_clearly`
+- `test_facade_does_not_claim_runtime_application_service_storage_contract`
+- `test_phase_transition_requires_explicit_transition_id`
 - `test_v2_modules_do_not_import_sqlite_or_aiosqlite`
 
 Expected red command:
@@ -53,11 +57,13 @@ Expected red result before implementation: missing `YouTubeBridgeV2.storage.repo
 
 ## Green Scope
 
-- Implement repository interfaces as adapters over `StorageManager`.
+- Implement repository interfaces as adapters over an injected `StorageManager`-like backend.
 - Use fake `StorageManager` objects for unit tests; use pytest temp paths only through `StorageManager` integration tests.
 - Preserve session snapshot fields needed by Runtime Phase.
 - Implement transition idempotency.
 - Keep raw hidden payloads out of public metadata.
+- Fail clearly with `StorageBackendNotConfigured` when the default backend has not been wired.
+- Do not expose the aggregate repository facade as the Runtime Application Service storage adapter.
 
 ## Refactor Boundary
 
@@ -67,7 +73,7 @@ Forbidden: importing `sqlite3` or `aiosqlite` from `YouTubeBridgeV2/`, direct SQ
 
 ## Adapter Strategy
 
-No external adapter dependency. Unit tests use fake `StorageManager`; integration tests that need durable storage use pytest temp paths through the real `StorageManager` lock.
+No external adapter dependency. Unit tests use fake `StorageManager`-like objects. Integration tests that need durable storage belong to the later backend wiring stage and must use pytest temp paths through the real `StorageManager` lock.
 
 ## Docs Sync
 
@@ -75,19 +81,21 @@ After implementation exists, add Source values for storage contracts. Update mod
 
 ## Execution Steps
 
-- [ ] Create failing tests in `tests/youtubebridge_v2/test_storage.py`.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create V2 storage package files and planned repository adapters.
-- [ ] Implement session snapshot, transition, event, interaction, and finalization persistence.
-- [ ] Add any required concrete SQLite persistence under `core/storage/` and expose it through `core/storage_manager.py`.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor repository internals and rerun tests.
-- [ ] Sync API reference Source values after symbols exist.
+- [x] Create failing tests in `tests/youtubebridge_v2/test_storage.py`.
+- [x] Run the red command and confirm expected failure.
+- [x] Create V2 storage package files and planned repository adapters.
+- [x] Implement session snapshot, transition, event, interaction, and finalization repository adapter skeleton.
+- [x] Confirm no concrete SQLite persistence is required for this repository-adapter stage; durable backend remains deferred to `StorageManager` / `core/storage/` / `core/storage_manager.py`.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor repository internals and rerun tests.
+- [x] Sync API reference Source values after symbols exist.
 
 ## Acceptance Criteria
 
-- Runtime Phase can read a complete snapshot through storage contracts.
+- Runtime Phase can read a complete snapshot through injected storage repository contracts.
 - Phase transitions are append-only and idempotent by transition id.
 - Public metadata is redacted.
 - V2 modules do not import SQLite internals.
-- All durable SQLite access goes through `StorageManager` and its allowed internal storage package.
+- The default helper path fails clearly until a durable V2 backend is configured.
+- The aggregate repository facade is distinct from the Runtime Application Service storage adapter contract.
+- Any future durable SQLite access must go through `StorageManager` and its allowed internal storage package.
