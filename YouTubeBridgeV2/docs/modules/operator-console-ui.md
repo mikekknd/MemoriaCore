@@ -1,0 +1,92 @@
+# Operator Console UI Module Design
+
+## Purpose
+
+Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 狀態、LiveEpisodePlan 進度、Aftertalk 開關、剩餘時間、closing 狀態、錯誤與手動控制入口。
+
+## Ownership
+
+- 擁有後台資訊架構與操作入口。
+- 擁有 phase/status/error 的 operator-facing 呈現。
+- 擁有 Aftertalk policy toggle 與 manual close 控制 UI。
+- 擁有 API/SSE 消費方式與 UI state mapping。
+- 不直接推進 phase、不呼叫 adapter、不寫 storage。
+
+## Inputs
+
+- phase status API/SSE event。
+- LiveEpisodePlan progress summary。
+- Aftertalk policy/status。
+- duration summary 與 closing status。
+- runtime error/diagnostic event。
+- operator action result。
+
+## Outputs
+
+- operator action request：aftertalk policy update、manual close、plan bind/import。
+- visible status model。
+- disabled/enabled control state。
+- operator error banner。
+
+## Dependencies
+
+- Server/API Surface 提供 endpoints 與 SSE。
+- Access Control / Security 定義 operator permission。
+- Observability 提供 diagnostic event。
+- Runtime modules 提供 public status summary，但 UI 不直接依賴 runtime internals。
+
+## Out Of Scope
+
+- Chat Display UI rendering。
+- runtime phase decision。
+- MemoriaCore/YouTube transport。
+- storage transaction。
+- TTS/presentation output。
+
+## Public Entrypoints
+
+本階段只描述 planned UI-facing contracts，不宣稱 source symbol 已存在。
+
+- `OperatorSessionStatusView`
+- `OperatorControlAction`
+- `AftertalkPolicyControl`
+- `ManualCloseCommand`
+- `OperatorDiagnosticBanner`
+
+## UI State Rules
+
+| State | Required UI Behavior |
+| --- | --- |
+| `planned_show` | Show plan progress, current turn summary, aftertalk policy, manual close. |
+| `aftertalk` | Show aftertalk active state, remaining time, manual close. |
+| `closing` | Disable destructive controls, show closing progress and finalization status. |
+| `ended` | Show final summary and read-only diagnostics. |
+| API action in flight | Disable the triggering control and keep status visible. |
+| SSE stale/disconnected | Show stale indicator and retry status. |
+| display-only permission | Hide operator controls entirely. |
+
+## Failure Modes
+
+- API failure 時保持既有狀態並顯示 error banner。
+- manual close in-flight 時控制項 disabled，避免重複提交。
+- display-only permission 不顯示 operator controls。
+- unknown phase 顯示 recoverable diagnostic，不自行改 phase。
+- SSE disconnect 時顯示 stale indicator。
+- hidden prompt/raw payload 不得顯示。
+
+## Test Strategy
+
+- phase rendering tests。
+- Aftertalk toggle tests。
+- remaining time display tests。
+- manual close action tests。
+- disabled state tests。
+- error banner tests。
+- permission boundary tests。
+- no direct adapter/storage call tests。
+
+## Open Questions
+
+- 前端技術是否沿用純 HTML/JS 或新建框架，需在 UI implementation plan 決定。
+- operator console 是否與 chat display 同頁或分離，需與實際直播操作流程對齊。
+- SSE reconnect 策略需與 Server/API Surface 設計對齊。

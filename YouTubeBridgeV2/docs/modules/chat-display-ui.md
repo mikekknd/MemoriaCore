@@ -1,0 +1,94 @@
+# Chat Display UI Module Design
+
+## Purpose
+
+Chat Display UI 負責直播畫面使用的 chat 顯示介面。它呈現觀眾留言、角色發言、Super Chat、系統 phase 狀態、Aftertalk/closing 狀態，以及 presentation/TTS 可用的顯示 metadata。
+
+## Ownership
+
+- 擁有 livestream-facing display event rendering。
+- 擁有 audience/character/system/Super Chat 的顯示分類。
+- 擁有 display-only metadata 與 styling hints。
+- 擁有不暴露 operator controls 的邊界。
+- 不擁有 runtime control、phase decision 或 adapter calls。
+
+## Inputs
+
+- display SSE event stream。
+- audience message event。
+- character response event。
+- Super Chat event。
+- system phase status event。
+- presentation/TTS metadata event。
+
+## Outputs
+
+- visible chat row model。
+- display status banner。
+- Super Chat visual metadata。
+- role label and avatar reference。
+- presentation/TTS display metadata pass-through。
+
+## Dependencies
+
+- Server/API Surface 提供 display stream。
+- Access Control / Security 提供 display read-only permission。
+- Storage/Observability 提供 event summaries。
+- Presentation/TTS 消費或補充 display metadata。
+
+## Out Of Scope
+
+- operator controls。
+- aftertalk policy toggle。
+- manual close command。
+- runtime phase transition。
+- MemoriaCore/YouTube transport。
+- storage writes。
+
+## Public Entrypoints
+
+本階段只描述 planned display contracts，不宣稱 source symbol 已存在。
+
+- `DisplayMessageEvent`
+- `DisplaySystemStateEvent`
+- `DisplaySuperChatEvent`
+- `DisplayCharacterResponseEvent`
+- `DisplayPresentationMetadata`
+
+## Display Event Rules
+
+| Event Type | Required Rendering |
+| --- | --- |
+| audience message | author display name, message text, timestamp, moderation/display flags |
+| character response | character label, response text, phase badge, optional presentation metadata |
+| Super Chat | amount/currency display metadata, message text, acknowledgement state if public |
+| system phase state | compact phase/aftertalk/closing status banner |
+| presentation metadata | display-safe voice/visual state only |
+| malformed event | safe fallback row and diagnostic marker |
+
+Display UI must never emit control requests or display raw hidden context.
+
+## Failure Modes
+
+- malformed display event 顯示 safe fallback，不中斷整個畫面。
+- unknown speaker 顯示 generic role label。
+- SSE disconnect 顯示 reconnect/stale state。
+- display permission 不得呼叫 control endpoints。
+- hidden prompt/raw payload/operator-only metadata 不得顯示。
+- Super Chat metadata 缺失時仍顯示基本訊息。
+
+## Test Strategy
+
+- event rendering tests。
+- role labeling tests。
+- Super Chat metadata tests。
+- aftertalk/closing status banner tests。
+- display-only permission tests。
+- malformed event fallback tests。
+- no control API call tests。
+
+## Open Questions
+
+- 實際視覺樣式需在 UI implementation plan 或 mock 中鎖定。
+- avatar/role color metadata 的來源需與 Storage 或 Presentation/TTS 對齊。
+- 是否需要瀏覽器 screenshot smoke test，需依最終前端技術決定。

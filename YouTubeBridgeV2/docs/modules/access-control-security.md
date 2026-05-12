@@ -1,0 +1,87 @@
+# Access Control / Security Module Design
+
+## Purpose
+
+Access Control / Security 負責 V2 API 的存取控制、loopback/API key 規則、MemoriaCore auth delegation、不可信 payload 邊界、secret handling 與安全錯誤回應。
+
+## Ownership
+
+- 擁有 API permission group 與 auth requirement metadata。
+- 擁有 operator、display、observer、internal scope 的區分。
+- 擁有 secret/config 的讀取邊界與不外洩規則。
+- 擁有 sanitized security error contract。
+- 不擁有 route business logic、phase decision、adapter payload mapping 或 UI rendering。
+
+## Inputs
+
+- HTTP request metadata：host、origin、headers、API key、session id。
+- route auth requirement。
+- MemoriaCore auth delegation config。
+- untrusted payload summary。
+
+## Outputs
+
+- `PermissionContext`：呼叫端身份、scope、可執行 action。
+- `AuthRequirement`：route 或 stream 的權限需求。
+- `SecurityErrorResponse`：sanitized error body。
+- `SecretBoundary`：可傳入 adapter 的 credential reference。
+
+## Dependencies
+
+- Server/API Surface 使用 permission context。
+- MemoriaCore Adapter 使用 auth delegation metadata。
+- Operator Console UI 與 Chat Display UI 依賴不同 permission group。
+- Observability 記錄 sanitized security event。
+
+## Out Of Scope
+
+- route handler 的 business command。
+- UI control layout。
+- MemoriaCore transport。
+- storage schema。
+- YouTube API credential exchange。
+
+## Public Entrypoints
+
+本階段只描述 planned public contracts，不宣稱 source symbol 已存在。
+
+- `AuthRequirement`
+- `PermissionContext`
+- `PermissionGroup`
+- `SecurityErrorResponse`
+- `SecretBoundary`
+
+## Permission Rules
+
+| Permission Group | Allowed Surface | Forbidden Surface |
+| --- | --- | --- |
+| `operator` | session control, aftertalk toggle, manual close, diagnostics | raw secrets, raw hidden prompt |
+| `display` | display stream, display-safe assets/metadata | manual close, aftertalk toggle, operator diagnostics |
+| `observer` | read-only status and redacted diagnostics | control endpoints, secret-bearing adapter config |
+| `internal` | service-to-service calls with secret boundary references | public response rendering |
+
+All denied requests must fail before Runtime Application Service command dispatch.
+
+## Failure Modes
+
+- missing API key 回傳 unauthorized，不暴露 expected secret。
+- invalid API key 回傳 unauthorized。
+- display scope 呼叫 operator action 回傳 forbidden。
+- untrusted payload 不得進入 logs 的 raw body。
+- secret/config 不得出現在 API response、SSE 或 public trace。
+- MemoriaCore auth delegation 缺失時回傳可診斷但不外洩的錯誤。
+
+## Test Strategy
+
+- auth tests：missing key、invalid key、loopback access。
+- permission tests：operator/display/observer/internal scope。
+- forbidden tests：display read-only scope 不能控制 runtime。
+- sanitized error tests：錯誤不含 secret 或 raw payload。
+- delegation tests：MemoriaCore credential 以 reference 傳遞。
+- integration boundary tests：Server/API Surface 不自行複製 security 判斷。
+
+## Open Questions
+
+- 開發模式是否允許 loopback bypass，需由 deployment policy 鎖定。
+- API key 儲存位置需與 repo secret/config 規範對齊。
+- MemoriaCore auth delegation 是否使用使用者 token 或 service token，需與主系統 auth 設計對齊。
