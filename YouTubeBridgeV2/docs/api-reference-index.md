@@ -444,7 +444,7 @@ Source:
 ### Storage
 
 Purpose:
-提供 V2 session、phase transition、event、interaction 與 finalization 的 repository contract。
+提供 V2 session、phase transition、event、interaction、finalization 與 runtime command idempotency 的 repository/durable storage contract。
 
 Concepts:
 - `SessionRepository`
@@ -462,20 +462,35 @@ Concepts:
 - `StorageContractError`
 - `RuntimeStoragePort`
 - `RuntimeStorageContractError`
+- `YouTubeBridgeV2RepositoryMixin`
+- `StorageManager(..., youtube_bridge_v2_db_path=None)`
+- `create_v2_session(record)`
+- `get_v2_session(session_id)`
+- `update_v2_session(session_id, patch)`
+- `get_v2_phase_transition(transition_id)`
+- `append_v2_phase_transition(session_id, record)`
+- `append_v2_live_event(session_id, record)`
+- `list_v2_live_events(session_id, limit=100)`
+- `append_v2_interaction(session_id, record)`
+- `append_v2_finalization(session_id, record)`
+- `get_v2_command_result(command_id)`
+- `save_v2_command_result(command_id, result)`
 
 Stability:
 - `provisional`
 
 Implementation status:
-- Adapter skeleton. The repository contracts require an explicitly injected
-  `StorageManager`-like V2 backend. The default helper path intentionally raises
-  `StorageBackendNotConfigured` until the durable backend is wired through
-  `core/storage/` and `core/storage_manager.py`.
+- Durable StorageManager backend exists in `core/storage/youtube_bridge_v2.py`.
+  The repository contracts still require an explicitly injected
+  `StorageManager`-like V2 backend; the default helper path intentionally raises
+  `StorageBackendNotConfigured` when no backend is configured.
 - `StorageManagerBackedRepository` is an aggregate repository facade, not the
   `RuntimeApplicationService` storage adapter contract.
 - `RuntimeStoragePort` is the application-service storage port. It maps runtime
-  commands to the injected StorageManager-like backend and still does not import
-  or own SQLite.
+  commands to the injected StorageManager-like backend, handles command result
+  JSON-safe persistence/rehydration, and still does not import or own SQLite.
+- SQLite access for V2 durable storage is allowed only through
+  `core/storage/youtube_bridge_v2.py` and `core/storage_manager.py`.
 
 Source:
 - `YouTubeBridgeV2/storage/repositories.py::SessionRepository`
@@ -493,6 +508,19 @@ Source:
 - `YouTubeBridgeV2/storage/repositories.py::StorageContractError`
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort`
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStorageContractError`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.create_v2_session`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.get_v2_session`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.update_v2_session`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.get_v2_phase_transition`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_phase_transition`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_live_event`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.list_v2_live_events`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_interaction`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_finalization`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.get_v2_command_result`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.save_v2_command_result`
+- `core/storage_manager.py::StorageManager`
 
 ### Query Service
 

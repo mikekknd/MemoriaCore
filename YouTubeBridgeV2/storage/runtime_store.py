@@ -11,8 +11,19 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from YouTubeBridgeV2.runtime.application_service import RuntimeCommand, RuntimeServiceEvent
-from YouTubeBridgeV2.runtime.phase import LiveSessionPhase, PhaseTransition
+from YouTubeBridgeV2.runtime.application_service import (
+    AdapterDispatchResult,
+    PersistedTransitionRef,
+    RecoveryDecision,
+    RuntimeCommand,
+    RuntimeServiceEvent,
+    RuntimeServiceResult,
+)
+from YouTubeBridgeV2.runtime.phase import (
+    LiveSessionPhase,
+    PhaseTransition,
+    PhaseTransitionReason,
+)
 from YouTubeBridgeV2.storage.repositories import (
     EventRepository,
     FinalizationRepository,
@@ -213,7 +224,10 @@ class RuntimeStoragePort:
         """讀取 command idempotency result。"""
 
         if hasattr(self._storage_manager, "get_v2_command_result"):
-            return self._storage_manager.get_v2_command_result(command_id)
+            result = self._storage_manager.get_v2_command_result(command_id)
+            if result is None:
+                return None
+            return _runtime_result_from_record(result)
         return None
 
     def save_command_result(self, command_id: str, result: object) -> None:
@@ -221,7 +235,7 @@ class RuntimeStoragePort:
 
         if not hasattr(self._storage_manager, "save_v2_command_result"):
             raise RuntimeStorageContractError("storage manager missing save_v2_command_result")
-        self._storage_manager.save_v2_command_result(command_id, result)
+        self._storage_manager.save_v2_command_result(command_id, _json_safe_value(result))
 
     def _update_session(self, session_id: str, patch: dict[str, object]):
         if not hasattr(self._storage_manager, "update_v2_session"):
@@ -262,9 +276,124 @@ def _object_to_dict(value: object) -> dict[str, object]:
     return {}
 
 
+def _runtime_result_from_record(record: object) -> RuntimeServiceResult:
+    data = _object_to_dict(record)
+    return RuntimeServiceResult(
+        status=str(data.get("status", "")),
+        session_id=str(data.get("session_id", "")),
+        phase=_optional_phase(data.get("phase")),
+        events=[
+            _runtime_event_from_record(event)
+            for event in _list_value(data.get("events"))
+        ],
+        errors=[
+            _object_to_dict(error)
+            for error in _list_value(data.get("errors"))
+        ],
+        correlation_id=str(data.get("correlation_id", "")),
+        transition_ref=_transition_ref_from_record(data.get("transition_ref")),
+        adapter_result=_adapter_result_from_record(data.get("adapter_result")),
+        recovery_decision=_recovery_decision_from_record(data.get("recovery_decision")),
+    )
+
+
+def _runtime_event_from_record(record: object) -> RuntimeServiceEvent:
+    data = _object_to_dict(record)
+    return RuntimeServiceEvent(
+        event_type=str(data.get("event_type", "")),
+        session_id=str(data.get("session_id", "")),
+        phase=_optional_phase(data.get("phase")),
+        payload=_object_to_dict(data.get("payload", {})),
+        correlation_id=str(data.get("correlation_id", "")),
+    )
+
+
+def _transition_ref_from_record(record: object) -> PersistedTransitionRef | None:
+    if record is None:
+        return None
+    data = _object_to_dict(record)
+    return PersistedTransitionRef(
+        transition_id=str(data.get("transition_id", "")),
+        session_id=str(data.get("session_id", "")),
+        previous_phase=_enum_value(data.get("previous_phase")),
+        next_phase=_phase(data.get("next_phase")),
+        reason=_reason(data.get("reason")),
+    )
+
+
+def _adapter_result_from_record(record: object) -> AdapterDispatchResult | None:
+    if record is None:
+        return None
+    data = _object_to_dict(record)
+    return AdapterDispatchResult(
+        status=str(data.get("status", "")),
+        summary=_object_to_dict(data.get("summary", {})),
+        retryable=bool(data.get("retryable", False)),
+    )
+
+
+def _recovery_decision_from_record(record: object) -> RecoveryDecision | None:
+    if record is None:
+        return None
+    data = _object_to_dict(record)
+    return RecoveryDecision(
+        action=str(data.get("action", "")),
+        reason=str(data.get("reason", "")),
+        session_id=str(data.get("session_id", "")),
+    )
+
+
+def _optional_phase(value: object) -> LiveSessionPhase | str | None:
+    if value is None:
+        return None
+    try:
+        return _phase(value)
+    except ValueError:
+        return str(value)
+
+
+def _phase(value: object) -> LiveSessionPhase:
+    if isinstance(value, LiveSessionPhase):
+        return value
+    return LiveSessionPhase(str(value))
+
+
+def _reason(value: object) -> PhaseTransitionReason:
+    if isinstance(value, PhaseTransitionReason):
+        return value
+    return PhaseTransitionReason(str(value))
+
+
 def _enum_value(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
+    return value
+
+
+def _list_value(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _json_safe_value(value: Any) -> Any:
+    if is_dataclass(value):
+        return _json_safe_value(asdict(value))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe_value(inner_value)
+            for key, inner_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
     return value
 
 
@@ -274,9 +403,12 @@ _PUBLIC_FORBIDDEN_KEYS = {
     "raw_payload",
     "raw_memoriacore_payload",
     "raw_adapter_payload",
+    "topic_pack",
     "raw_topic_pack",
     "youtube_raw",
     "memoriacore_raw",
+    "factcard",
+    "fact_card",
     "topic_pack_fact_cards",
     "raw_factcard",
     "raw_fact_card",

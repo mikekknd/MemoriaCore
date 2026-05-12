@@ -192,7 +192,10 @@ def _public_result_summary(aftertalk_result: dict[str, object]) -> dict[str, obj
 def _redact_public_value(value: Any) -> Any:
     forbidden_keys = {
         "hidden_prompt",
+        "topic_pack",
         "raw_topic_pack",
+        "factcard",
+        "fact_card",
         "raw_factcard",
         "raw_fact_card",
         "raw_payload",

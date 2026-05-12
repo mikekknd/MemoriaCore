@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Storage 負責定義 V2 session、phase state、events、interactions、adapter metadata 與 finalization result 的保存 contract。本階段落地的是 repository adapter skeleton：它提供 repository/interface 與主專案 `StorageManager`-like 邊界的映射，但尚未新增 durable V2 backend 或 Runtime Application Service storage adapter，避免 V2 runtime core 或 V2 storage package 直接依賴 SQLite。
+Storage 負責定義 V2 session、phase state、events、interactions、adapter metadata 與 finalization result 的保存 contract。Wave 2A 已落地 `StorageManager` durable backend：V2 package 仍只透過 repository/interface 與 `RuntimeStoragePort` 委派資料操作，實際 SQLite schema 與讀寫集中在 `core/storage/youtube_bridge_v2.py` 與 `core/storage_manager.py`。
 
 ## Ownership
 
@@ -36,13 +36,13 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 - LiveEpisodePlan Runner 讀寫 plan cursor 與 turn result。
 - Aftertalk 讀寫 aftertalk request/response summary。
 - MemoriaCore Adapter 與 YouTube Adapter 提供 normalized metadata。
-- Server/API Surface 透過 service-facing storage adapter 使用 repository；該 adapter 屬於後續 integration，不由本 skeleton 直接提供。
+- Server/API Surface 透過 `RuntimeStoragePort` 與 `V2QueryService` 使用 repository/backend，不直接碰 storage internals。
 - Observability 讀取 transition/event summaries。
 
 ## Out Of Scope
 
-- 具體 migration script。
-- 直接連線 SQLite 或選擇 SQLite implementation。
+- 另行建立 migration CLI 或 schema migration framework。
+- 在 `YouTubeBridgeV2/` 內直接連線 SQLite 或選擇 SQLite implementation。
 - 在 `YouTubeBridgeV2/` 內新增繞過 `StorageManager` 的 persistence backend。
 - FastAPI route。
 - YouTube/MemoriaCore transport。
@@ -52,7 +52,7 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 
 ## Public Entrypoints
 
-本模組的 repository adapter skeleton 已由 `YouTubeBridgeV2/storage/repositories.py` 實作。V2 repository 只委派到明確注入的 `StorageManager`-like 邊界，不在 `YouTubeBridgeV2/` 內直接存取 SQLite；未設定預設 backend 時，module-level helper 會丟 `StorageBackendNotConfigured`。
+本模組的 repository adapter 已由 `YouTubeBridgeV2/storage/repositories.py` 實作。V2 repository 只委派到明確注入的 `StorageManager`-like 邊界，不在 `YouTubeBridgeV2/` 內直接存取 SQLite；未設定預設 backend 時，module-level helper 會丟 `StorageBackendNotConfigured`。
 
 - `SessionRepository`：session lifecycle 與 snapshot 讀取。
 - `PhaseTransitionRepository`：transition append 與 idempotency。
@@ -67,12 +67,21 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 - `StorageBackendNotConfigured`：預設 V2 backend 尚未 wiring 時的 explicit error。
 - `StorageRecordNotFound`：找不到 V2 session/record 時的 not found error。
 - `StorageContractError`：StorageManager 回傳資料不符合 V2 contract 時的 contract error。
+- `RuntimeStoragePort`：`RuntimeApplicationService` 使用的 service-facing storage adapter，負責 command-to-storage mapping、event persistence 與 command idempotency round-trip。
+- `YouTubeBridgeV2RepositoryMixin`：主專案 `StorageManager` 的 durable V2 repository mixin，負責 `yb2_*` schema 初始化、CRUD/append methods 與 public redaction。
+- `StorageManager(..., youtube_bridge_v2_db_path=None)`：提供 V2 durable DB path 注入；預設使用 `runtime/youtubebridge_v2.db`。
+- `create_v2_session(record)` / `get_v2_session(session_id)` / `update_v2_session(session_id, patch)`：session durable contract。
+- `get_v2_phase_transition(transition_id)` / `append_v2_phase_transition(session_id, record)`：phase transition append-only/idempotent contract。
+- `append_v2_live_event(session_id, record)` / `list_v2_live_events(session_id, limit=100)`：public event history contract。
+- `append_v2_interaction(session_id, record)` / `append_v2_finalization(session_id, record)`：interaction/finalization persistence contract。
+- `get_v2_command_result(command_id)` / `save_v2_command_result(command_id, result)`：runtime command idempotency contract。
 
 ## Persistence Rules
 
 | Data | Required Rule |
 | --- | --- |
 | storage backend | V2 repository must call an explicitly injected `StorageManager`-like backend or a facade exposed by `core/storage_manager.py`; it must not import `sqlite3` or `aiosqlite`. |
+| durable DB path | Production default is `runtime/youtubebridge_v2.db`; tests inject `youtube_bridge_v2_db_path` via `StorageManager`. |
 | session snapshot | Must contain all Runtime Phase required fields or return contract error. |
 | phase transition | Append-only and idempotent by explicit transition id. |
 | normalized event | Store display-safe summary separately from private adapter metadata. |
@@ -94,18 +103,20 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 
 ## Test Strategy
 
+- durable schema tests：`StorageManager` 初始化 `yb2_*` tables 且可跨 instance idempotent 初始化。
 - create/read tests：session 建立與 snapshot 讀取。
 - transition tests：write、read、duplicate idempotency。
 - event tests：append normalized YouTube/system event。
 - interaction tests：planned show 與 aftertalk response summary。
 - finalization tests：closing result 與 ended metadata。
+- command result tests：`RuntimeServiceResult` 經 durable JSON round-trip 後仍回到 service contract，不變成裸 dict。
+- real-storage E2E tests：真 `StorageManager` + fake runners 跑 create session、planned show、aftertalk、manual close、closing、ended 與 restart/recovery。
 - boundary tests：V2 模組不可直接依賴 SQLite implementation；V2 storage repository 只可依賴 `StorageManager` 邊界。
 - redaction tests：不保存 raw prompt 或 raw adapter payload 到 public metadata。
-- skeleton contract tests：預設 backend 未設定時明確失敗，aggregate facade 不宣稱自己是 Runtime Application Service storage adapter。
+- repository contract tests：預設 backend 未設定時明確失敗，aggregate facade 不宣稱自己是 Runtime Application Service storage adapter。
 
 ## Open Questions
 
-- 若 V2 需要新 SQLite schema 或 migration，實作位置必須在 `core/storage/` 與 `core/storage_manager.py` facade 內鎖定；`YouTubeBridgeV2/` 只保留 repository contract/adapter。
-- Runtime Application Service 需要一層 service-facing storage adapter，將 `create_session(command, now)`、`persist_transition(...)`、`request_manual_close(...)` 等 service contract 映射到 repository/backend；本 skeleton 不直接提供該 adapter。
-- runtime DB 檔案位置需沿用 repo `runtime/` 原則，並由 `StorageManager` 設定決定。
-- transition id 的生成責任需與 Observability 或 runtime service 對齊。
+- 後續若需要 schema migration CLI 或 versioned migration，仍必須放在 `core/storage/` 或 `core/storage_manager.py` 邊界內，不可放進 `YouTubeBridgeV2/`。
+- Wave 2B 需要決定 `api/main.py` 如何 wiring 真 V2 composition；StorageManager durable backend 已可用，但 production runtime 尚未切換。
+- 更細的 private adapter metadata 是否需要獨立 private table，需等真 YouTube/MemoriaCore adapter wave 決定；目前 public tables 一律保存 redacted summary。

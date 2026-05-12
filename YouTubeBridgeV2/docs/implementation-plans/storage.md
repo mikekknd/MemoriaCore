@@ -6,6 +6,8 @@
 
 **Architecture:** Storage is accessed through V2 repository interfaces backed by an explicitly injected `StorageManager`-like boundary. Runtime core consumes snapshots and writes decisions through service code, while SQLite details remain inside `core/storage/` and `core/storage_manager.py`. This stage does not add the durable V2 backend or the Runtime Application Service storage adapter.
 
+**Status note:** This plan describes the earlier repository-adapter stage. Wave 2A durable backend and `RuntimeStoragePort` wiring are tracked in `storage-manager-durable-backend.md`.
+
 **Tech Stack:** Python 3.12, pytest, `StorageManager`-backed repositories.
 
 ---

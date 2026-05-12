@@ -64,7 +64,7 @@ planned_show -> aftertalk -> closing -> ended
 
 ### Storage
 
-負責定義 V2 session、phase state、events、interactions、adapter metadata 與 finalization result 的保存 contract。runtime core 透過 repository/interface 使用 storage；V2 storage 不直接連 SQLite，實際 SQLite 讀寫必須走主專案 `StorageManager`、`core/storage/` 與 `core/storage_manager.py` 邊界。
+負責定義 V2 session、phase state、events、interactions、adapter metadata 與 finalization result 的保存 contract。runtime core 透過 repository/interface 使用 storage；V2 storage 不直接連 SQLite，實際 SQLite 讀寫必須走主專案 `StorageManager`、`core/storage/` 與 `core/storage_manager.py` 邊界。Wave 2A 已建立 `core/storage/youtube_bridge_v2.py` durable backend，預設資料庫為 `runtime/youtubebridge_v2.db`。
 
 ### Server/API Surface
 
@@ -117,6 +117,16 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Runtime storage port：已建立 `RuntimeStoragePort`，只委派 StorageManager-like backend，不直接碰 SQLite。
 - [x] Query service：已建立 `V2QueryService`，供 session status、phase、event history、operator/display SSE 使用。
 - [x] Fake-backed vertical slice：已建立 tests 內 in-memory backend，覆蓋 create session、bind plan、planned show、aftertalk、manual/duration closing、ended 與 public payload redaction。
+
+## Integration Wave 2A 狀態
+
+- [x] StorageManager durable backend：已建立 `YouTubeBridgeV2RepositoryMixin` 與 `yb2_*` schema，SQLite 讀寫只存在於 `core/storage/`。
+- [x] StorageManager wiring：`StorageManager(..., youtube_bridge_v2_db_path=None)` 可注入測試 DB，production default 使用 `runtime/youtubebridge_v2.db`。
+- [x] Runtime storage round-trip：`RuntimeStoragePort` 會把 command result 存成 JSON-safe dict，讀回時還原為 `RuntimeServiceResult`。
+- [x] Real-storage vertical slice：已用真 `StorageManager` + fake runners 驗證 create session、bind plan、planned show、aftertalk、manual close、closing、ended。
+- [x] Restart/recovery：已驗證重建 `StorageManager` 與 composition 後可讀取同一 session snapshot 並執行 recovery decision。
+- [x] Command idempotency：已驗證重啟後重送相同 `command_id` 不重複 dispatch runner，且 replay result 保持 runtime service contract。
+- [ ] Production V2 wiring：`api/main.py` 尚未切換到真 V2 composition；此項保留給 Wave 2B。
 
 ## Module Design 文件
 

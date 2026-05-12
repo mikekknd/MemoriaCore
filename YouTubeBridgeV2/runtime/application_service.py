@@ -539,12 +539,24 @@ def _coerce_aftertalk_policy(value: AftertalkPolicy | str | None) -> AftertalkPo
 def _sanitize_public_payload(value: Any) -> Any:
     forbidden_keys = {
         "hidden_prompt",
+        "raw_prompt",
         "raw_payload",
+        "raw_memoriacore_payload",
+        "raw_adapter_payload",
+        "raw_topic_pack",
         "topic_pack",
+        "topic_pack_fact_cards",
         "factcard",
         "fact_card",
+        "raw_factcard",
+        "raw_fact_card",
+        "raw_fact_cards",
         "memoriacore_raw",
         "youtube_raw",
+        "access_token",
+        "authorization",
+        "secret",
+        "token",
     }
 
     if isinstance(value, dict):
