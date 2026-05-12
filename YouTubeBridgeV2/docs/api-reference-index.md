@@ -643,9 +643,22 @@ Concepts:
 - `SuperChatMetadata`
 - `YouTubeStreamStatus`
 - `YouTubeAdapterError`
+- `normalize_youtube_event`
+- `extract_super_chat_metadata`
+- `classify_youtube_error`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/adapters/youtube.py::NormalizedYouTubeEvent`
+- `YouTubeBridgeV2/adapters/youtube.py::YouTubePollingCursor`
+- `YouTubeBridgeV2/adapters/youtube.py::SuperChatMetadata`
+- `YouTubeBridgeV2/adapters/youtube.py::YouTubeStreamStatus`
+- `YouTubeBridgeV2/adapters/youtube.py::YouTubeAdapterError`
+- `YouTubeBridgeV2/adapters/youtube.py::normalize_youtube_event`
+- `YouTubeBridgeV2/adapters/youtube.py::extract_super_chat_metadata`
+- `YouTubeBridgeV2/adapters/youtube.py::classify_youtube_error`
 
 ### Presentation/TTS
 

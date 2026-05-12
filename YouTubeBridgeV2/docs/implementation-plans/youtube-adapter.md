@@ -6,24 +6,24 @@
 
 **Architecture:** The adapter owns YouTube API shapes and converts them to V2 normalized events. It does not decide phase, write storage directly, or render UI.
 
-**Tech Stack:** Python 3.12, pytest, YouTube client selected during adapter implementation.
+**Tech Stack:** Python 3.12, pytest. 本階段只建立 pure adapter contract，不選定或呼叫真實 YouTube client。
 
 ---
 
 ## Scope
 
-Planned source: `YouTubeBridgeV2/adapters/youtube.py`
+Source: `YouTubeBridgeV2/adapters/youtube.py`
 
-Planned tests: `tests/youtubebridge_v2/test_youtube_adapter.py`
+Tests: `tests/youtubebridge_v2/test_youtube_adapter.py`
 
-## Planned Symbols
+## Public Symbols
 
 - `NormalizedYouTubeEvent`
 - `YouTubePollingCursor`
 - `SuperChatMetadata`
 - `YouTubeStreamStatus`
 - `YouTubeAdapterError`
-- `normalize_youtube_event(raw_event)`
+- `normalize_youtube_event(raw_event, *, cursor=None)`
 - `extract_super_chat_metadata(raw_event)`
 - `classify_youtube_error(error)`
 
@@ -31,13 +31,13 @@ Planned tests: `tests/youtubebridge_v2/test_youtube_adapter.py`
 
 - `test_normalize_text_message_event`
 - `test_normalize_super_chat_event_with_metadata`
-- `test_pagination_cursor_is_preserved`
+- `test_pagination_cursor_is_preserved_and_advanced_immutably`
 - `test_duplicate_event_id_is_detected`
 - `test_live_ended_state_returns_stream_status`
 - `test_transient_api_error_is_retryable`
 - `test_auth_error_is_terminal`
 - `test_normalized_event_excludes_raw_youtube_payload`
-- `test_adapter_does_not_emit_phase_transition`
+- `test_adapter_does_not_emit_phase_transition_or_cross_boundary_side_effects`
 
 Expected red command:
 
@@ -70,13 +70,13 @@ After implementation exists, update API Source values for YouTube adapter contra
 
 ## Execution Steps
 
-- [ ] Create failing adapter tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create YouTube adapter module with planned symbols.
-- [ ] Implement event normalization, Super Chat extraction, cursor handling, and error classification.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor event helpers and rerun tests.
-- [ ] Sync API reference Source values after symbols exist.
+- [x] Create failing adapter tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create YouTube adapter module with planned symbols.
+- [x] Implement event normalization, Super Chat extraction, cursor handling, and error classification.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor event helpers and rerun tests.
+- [x] Sync API reference Source values after symbols exist.
 
 ## Acceptance Criteria
 

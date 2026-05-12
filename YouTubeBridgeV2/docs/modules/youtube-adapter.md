@@ -47,13 +47,16 @@ YouTube Adapter 負責 YouTube live chat polling、event normalization、Super C
 
 ## Public Entrypoints
 
-本階段只描述 planned public contracts，不宣稱 source symbol 已存在。
+本階段的 pure adapter contract 已由 `YouTubeBridgeV2/adapters/youtube.py` 提供。真實 YouTube transport/client 仍不在此模組內。
 
 - `NormalizedYouTubeEvent`
 - `YouTubePollingCursor`
 - `SuperChatMetadata`
 - `YouTubeStreamStatus`
 - `YouTubeAdapterError`
+- `normalize_youtube_event(raw_event, *, cursor=None)`
+- `extract_super_chat_metadata(raw_event)`
+- `classify_youtube_error(error)`
 
 ## Polling Rules
 
@@ -62,7 +65,7 @@ YouTube Adapter 負責 YouTube live chat polling、event normalization、Super C
 | first poll | Use configured live chat id/video id and empty cursor. |
 | next page token present | Persist cursor for next poll. |
 | duplicate event id | Skip duplicate and emit idempotent summary. |
-| Super Chat event | Extract display-safe metadata and preserve private reference if storage supports it. |
+| Super Chat event | Extract display-safe metadata; private reference persistence is deferred to Storage/Runtime integration. |
 | live ended | Emit `YouTubeStreamStatus.ended`; Runtime Application Service decides next command. |
 | transient failure | Return retryable adapter error and backoff hint. |
 | auth failure | Return terminal adapter error. |
@@ -87,7 +90,7 @@ YouTube Adapter 負責 YouTube live chat polling、event normalization、Super C
 - no phase side effect tests。
 - redaction tests：display/public metadata 不含 raw payload。
 
-## Open Questions
+## Deferred Questions
 
 - YouTube API client 版本與 authentication source 需在 adapter implementation plan 鎖定。
 - polling interval 與 backoff policy 需與 runtime service 設計對齊。
