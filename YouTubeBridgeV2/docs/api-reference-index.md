@@ -516,9 +516,20 @@ Concepts:
 - `PermissionContext`
 - `SecurityErrorResponse`
 - `SecretBoundary`
+- `resolve_permission_context`
+- `sanitize_security_error`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/server/security.py::AuthRequirement`
+- `YouTubeBridgeV2/server/security.py::PermissionGroup`
+- `YouTubeBridgeV2/server/security.py::PermissionContext`
+- `YouTubeBridgeV2/server/security.py::SecurityErrorResponse`
+- `YouTubeBridgeV2/server/security.py::SecretBoundary`
+- `YouTubeBridgeV2/server/security.py::resolve_permission_context`
+- `YouTubeBridgeV2/server/security.py::sanitize_security_error`
 
 ### Observability
 

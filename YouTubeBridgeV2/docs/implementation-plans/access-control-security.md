@@ -35,7 +35,14 @@ Planned tests: `tests/youtubebridge_v2/test_access_control_security.py`
 - `test_display_scope_cannot_call_manual_close`
 - `test_operator_scope_can_update_aftertalk_policy`
 - `test_security_error_does_not_include_raw_headers`
+- `test_security_error_code_is_allowlisted`
 - `test_memoria_secret_is_exposed_only_as_boundary_reference`
+- `test_secret_boundary_asdict_redacts_public_metadata`
+- `test_auth_requirement_serialization_does_not_expose_raw_api_keys`
+- `test_loopback_display_route_uses_required_group_by_default`
+- `test_route_id_requires_matching_action_even_when_group_matches`
+- `test_internal_key_cannot_enter_public_operator_surface`
+- `test_internal_key_can_enter_internal_surface`
 
 Expected red command:
 
@@ -51,6 +58,7 @@ Expected red result before implementation: missing `YouTubeBridgeV2.server.secur
 - Implement API key and loopback evaluation according to config.
 - Implement sanitized error body.
 - Implement secret boundary references for adapters.
+- Implement fail-safe route action checks and non-public raw key storage.
 
 ## Refactor Boundary
 
@@ -68,14 +76,14 @@ Add API Source values for security contracts after implementation exists.
 
 ## Execution Steps
 
-- [ ] Create failing security tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create security module with planned symbols.
-- [ ] Implement permission context resolution.
-- [ ] Implement sanitized errors and secret boundary references.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor private helpers and rerun tests.
-- [ ] Sync API reference Source values after symbols exist.
+- [x] Create failing security tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create security module with planned symbols.
+- [x] Implement permission context resolution.
+- [x] Implement sanitized errors and secret boundary references.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor private helpers and rerun tests.
+- [x] Sync API reference Source values after symbols exist.
 
 ## Acceptance Criteria
 
