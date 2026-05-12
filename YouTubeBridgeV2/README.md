@@ -2,7 +2,7 @@
 
 YouTubeBridgeV2 是新版 YouTube live runtime 的子專案入口。它會承接新的直播架構、phase controller、LiveEpisodePlan runner、Aftertalk、MemoriaCore group chat 整合、控制台與觀測設計。
 
-本目錄目前只建立專案索引與文件規範，不包含 runtime code。後續每個模組會先補 module design，再各自產生 implementation plan，並以 Red-Green-Refactor 作為實作 gate。
+本目錄已開始包含 V2 runtime code；後續每個模組仍需先補 module design，再各自產生 implementation plan，並以 Red-Green-Refactor 作為實作 gate。
 
 ## 先讀順序
 
@@ -73,7 +73,7 @@ V2 不承接下列舊行為作為正式架構：
 
 ## 概念接口
 
-本階段只建立概念接口，不新增程式 API：
+初始文件階段先建立概念接口；目前 runtime core 模組已逐步落地，實際 public source 以 `docs/api-reference-index.md` 的 Source 欄位為準：
 
 - `LiveSessionPhase`: `planned_show | aftertalk | closing | ended`
 - `AftertalkPolicy`: `disabled | auto`

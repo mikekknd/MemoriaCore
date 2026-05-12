@@ -67,7 +67,7 @@ Closing 不擁有：
 
 ## Public Entrypoints
 
-本階段只描述 planned public contracts，不宣稱 source symbol 已存在。
+本模組的 public contracts 已由 `YouTubeBridgeV2/runtime/closing.py` 實作。
 
 ### `ClosingStartContext`
 
@@ -105,6 +105,16 @@ Required Fields:
 - `display_summary`
 - `error_summary`
 
+### `build_closing_request(context, summary, pending_super_chats, policy)`
+
+Purpose:
+將 closing context、public session summary、pending Super Chat summary 與 policy 整理成 final closing intent。
+
+### `finalize_closing(context, adapter_result, policy)`
+
+Purpose:
+將 adapter/system result 映射成 `ClosingFinalizationResult` 與 `closing_completion_status`，不直接推進 Runtime Phase。
+
 ## Closing Flow
 
 | Step | Responsibility | Output |
@@ -139,6 +149,6 @@ Required Fields:
 
 ## Open Questions
 
-- final closing message 是否第一版必須呼叫 MemoriaCore，或允許 system-only finalization，需在 implementation plan 鎖定。
+- 第一版已允許 system-only finalization：`ClosingPolicy.final_message_enabled=False` 時不產生 adapter dispatch。
 - Super Chat acknowledgement 是否需要逐筆 response，需與 Chat Display UI 和 Storage 設計對齊。
 - 是否需要實際停止 YouTube livestream，需由未來 stream-control module 或 YouTube Adapter 擴充決定。

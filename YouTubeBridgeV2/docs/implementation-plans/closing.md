@@ -76,14 +76,14 @@ After implementation exists, update API Source values for closing contracts. Upd
 
 ## Execution Steps
 
-- [ ] Create failing closing tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create `YouTubeBridgeV2/runtime/closing.py` with planned symbols.
-- [ ] Implement request construction and Super Chat action mapping.
-- [ ] Implement finalization status mapping.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor redaction/status helpers and rerun tests.
-- [ ] Sync API reference Source values after symbols exist.
+- [x] Create failing closing tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create `YouTubeBridgeV2/runtime/closing.py` with planned symbols.
+- [x] Implement request construction and Super Chat action mapping.
+- [x] Implement finalization status mapping.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor redaction/status helpers and rerun tests.
+- [x] Sync API reference Source values after symbols exist.
 
 ## Acceptance Criteria
 

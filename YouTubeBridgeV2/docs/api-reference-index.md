@@ -401,9 +401,23 @@ Concepts:
 - `ClosingFinalizationResult`
 - `ClosingCompletionStatus`
 - `ClosingDisplayEvent`
+- `build_closing_request`
+- `finalize_closing`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/runtime/closing.py::ClosingStartContext`
+- `YouTubeBridgeV2/runtime/closing.py::ClosingReason`
+- `YouTubeBridgeV2/runtime/closing.py::ClosingPolicy`
+- `YouTubeBridgeV2/runtime/closing.py::ClosingRequest`
+- `YouTubeBridgeV2/runtime/closing.py::ClosingSuperChatAction`
+- `YouTubeBridgeV2/runtime/closing.py::ClosingFinalizationResult`
+- `YouTubeBridgeV2/runtime/closing.py::ClosingCompletionStatus`
+- `YouTubeBridgeV2/runtime/closing.py::ClosingDisplayEvent`
+- `YouTubeBridgeV2/runtime/closing.py::build_closing_request`
+- `YouTubeBridgeV2/runtime/closing.py::finalize_closing`
 
 ### Storage
 
