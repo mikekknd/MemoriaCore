@@ -6,17 +6,17 @@
 
 **Architecture:** Presentation/TTS is an event consumer. It queues display/voice output requests and records ack or timeout results without influencing runtime phase.
 
-**Tech Stack:** Python 3.12, pytest, optional TTS provider selected during implementation.
+**Tech Stack:** Python 3.12, pytest。第一版只建立 provider-neutral queue/request contract，不選定或呼叫真實 TTS provider。
 
 ---
 
 ## Scope
 
-Planned source: `YouTubeBridgeV2/presentation/tts.py`
+Source: `YouTubeBridgeV2/presentation/tts.py`
 
-Planned tests: `tests/youtubebridge_v2/test_presentation_tts.py`
+Tests: `tests/youtubebridge_v2/test_presentation_tts.py`
 
-## Planned Symbols
+## Public Symbols
 
 - `PresentationEvent`
 - `TTSRequest`
@@ -38,6 +38,7 @@ Planned tests: `tests/youtubebridge_v2/test_presentation_tts.py`
 - `test_delivery_timeout_marks_timeout_without_phase_change`
 - `test_malformed_event_is_skipped_safely`
 - `test_display_metadata_excludes_hidden_prompt_and_raw_payload`
+- `test_presentation_tts_does_not_cross_runtime_or_external_boundaries`
 
 Expected red command:
 
@@ -70,13 +71,13 @@ After implementation exists, update API Source values for Presentation/TTS contr
 
 ## Execution Steps
 
-- [ ] Create failing presentation/TTS tests.
-- [ ] Run the red command and confirm expected failure.
-- [ ] Create presentation package and planned symbols.
-- [ ] Implement event construction, queueing, ack, timeout, and disabled behavior.
-- [ ] Run the green command and confirm all tests pass.
-- [ ] Refactor queue/provider boundaries and rerun tests.
-- [ ] Sync API reference Source values after symbols exist.
+- [x] Create failing presentation/TTS tests.
+- [x] Run the red command and confirm expected failure.
+- [x] Create presentation package and planned symbols.
+- [x] Implement event construction, queueing, ack, timeout, and disabled behavior.
+- [x] Run the green command and confirm all tests pass.
+- [x] Refactor queue/provider boundaries and rerun tests.
+- [x] Sync API reference Source values after symbols exist.
 
 ## Acceptance Criteria
 

@@ -671,6 +671,21 @@ Concepts:
 - `DeliveryAck`
 - `DeliveryTimeoutResult`
 - `PresentationDisplayMetadata`
+- `build_presentation_event`
+- `enqueue_tts_request`
+- `record_delivery_ack`
+- `record_delivery_timeout`
 
 Stability:
 - `provisional`
+
+Source:
+- `YouTubeBridgeV2/presentation/tts.py::PresentationEvent`
+- `YouTubeBridgeV2/presentation/tts.py::TTSRequest`
+- `YouTubeBridgeV2/presentation/tts.py::DeliveryAck`
+- `YouTubeBridgeV2/presentation/tts.py::DeliveryTimeoutResult`
+- `YouTubeBridgeV2/presentation/tts.py::PresentationDisplayMetadata`
+- `YouTubeBridgeV2/presentation/tts.py::build_presentation_event`
+- `YouTubeBridgeV2/presentation/tts.py::enqueue_tts_request`
+- `YouTubeBridgeV2/presentation/tts.py::record_delivery_ack`
+- `YouTubeBridgeV2/presentation/tts.py::record_delivery_timeout`
