@@ -313,12 +313,15 @@ Wave 3A：`HANDLE_YOUTUBE_EVENT` command payload 會先經 YouTube adapter norma
 Wave 4A：scheduler tick contract 可產生 deterministic `RuntimeCommandType.TICK` command，並以單次 dispatch helper 委派 runtime service。
 Wave 4B：scheduler cycle contract 可對 explicit session refs 自動 dispatch planned_show、aftertalk、closing tick，phase decision 仍由 runtime service 決定。
 Wave 4C：scheduler recovery cycle 使用 `RuntimeCommandType.RECOVER` 與 state-marker command id，讓 restart recovery 可 idempotent replay。
+Wave 4D：operator automation control 可 durable 設定 enabled/paused，automation tick/recovery cycles 會尊重控制狀態。
 
 Concepts:
 - `RuntimeApplicationService`
 - `RuntimeCommand`
 - `RuntimeCommandType`
 - `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`
+- `RuntimeCommandType.UPDATE_AUTOMATION_CONTROL`
+- `RuntimeApplicationService.update_automation_control`
 - `AutomationTickPolicy`
 - `SchedulerRecoverySessionRef`
 - `SchedulerRecoveryIntent`
@@ -353,6 +356,7 @@ Source:
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeApplicationService`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommand`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommandType`
+- `YouTubeBridgeV2/runtime/application_service.py::RuntimeApplicationService.update_automation_control`
 - `YouTubeBridgeV2/runtime/automation.py::AutomationTickPolicy`
 - `YouTubeBridgeV2/runtime/automation.py::SchedulerRecoverySessionRef`
 - `YouTubeBridgeV2/runtime/automation.py::SchedulerRecoveryIntent`
@@ -661,6 +665,7 @@ Concepts:
 - `POST /v2/sessions/{session_id}/plan`
 - `GET /v2/sessions/{session_id}/phase`
 - `POST /v2/sessions/{session_id}/aftertalk-policy`
+- `POST /v2/sessions/{session_id}/automation-control`
 - `POST /v2/sessions/{session_id}/manual-close`
 - `POST /v2/sessions/{session_id}/tick`
 - `POST /v2/sessions/{session_id}/youtube-events`
@@ -672,6 +677,8 @@ Concepts:
 - `bind_plan_endpoint`
 - `get_phase_endpoint`
 - `update_aftertalk_policy_endpoint`
+- `AutomationControlRequest`
+- `update_automation_control_endpoint`
 - `manual_close_endpoint`
 - `TickRequest`
 - `tick_session_endpoint`
@@ -692,6 +699,8 @@ Source:
 - `YouTubeBridgeV2/server/routes.py::bind_plan_endpoint`
 - `YouTubeBridgeV2/server/routes.py::get_phase_endpoint`
 - `YouTubeBridgeV2/server/routes.py::update_aftertalk_policy_endpoint`
+- `YouTubeBridgeV2/server/routes.py::AutomationControlRequest`
+- `YouTubeBridgeV2/server/routes.py::update_automation_control_endpoint`
 - `YouTubeBridgeV2/server/routes.py::manual_close_endpoint`
 - `YouTubeBridgeV2/server/routes.py::TickRequest`
 - `YouTubeBridgeV2/server/routes.py::tick_session_endpoint`

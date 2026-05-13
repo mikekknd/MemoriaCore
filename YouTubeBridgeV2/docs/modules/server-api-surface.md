@@ -79,6 +79,7 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 | runtime tick | Create `RuntimeCommandType.TICK` and delegate to Runtime Application Service; route does not run adapters directly. |
 | YouTube event ingestion | Validate request and delegate `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`; route does not call YouTube adapter directly. |
 | aftertalk policy update | Validate policy and delegate command. |
+| automation control | Validate operator safety controls and delegate `RuntimeCommandType.UPDATE_AUTOMATION_CONTROL`; route does not mutate runtime state directly. |
 | operator stream | May expose operator-safe diagnostics and controls state. |
 | display stream | Must be display-safe and read-only. |
 | errors | Return sanitized stable error code and correlation id. |
@@ -91,6 +92,7 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 | `POST /v2/sessions` | `operator` |
 | `POST /v2/sessions/{session_id}/plan` | `operator` |
 | `POST /v2/sessions/{session_id}/aftertalk-policy` | `operator` |
+| `POST /v2/sessions/{session_id}/automation-control` | `operator` |
 | `POST /v2/sessions/{session_id}/manual-close` | `operator` |
 | `POST /v2/sessions/{session_id}/tick` | `operator` |
 | `POST /v2/sessions/{session_id}/youtube-events` | `operator` |

@@ -339,14 +339,15 @@ def _recovery_ref(value: object) -> SchedulerRecoverySessionRef:
     if isinstance(value, SchedulerRecoverySessionRef):
         return value
     data = value if isinstance(value, dict) else vars(value)
+    automation_enabled, automation_paused = _automation_flags(data)
     return SchedulerRecoverySessionRef(
         session_id=str(data["session_id"]),
         current_phase=data.get("current_phase"),
         plan_completed=bool(data.get("plan_completed", False)),
         manual_close_requested=bool(data.get("manual_close_requested", False)),
         closing_completed=bool(data.get("closing_completed", False)),
-        automation_enabled=bool(data.get("automation_enabled", True)),
-        automation_paused=bool(data.get("automation_paused", False)),
+        automation_enabled=automation_enabled,
+        automation_paused=automation_paused,
     )
 
 
@@ -354,12 +355,22 @@ def _session_ref(value: object) -> SchedulerSessionRef:
     if isinstance(value, SchedulerSessionRef):
         return value
     data = value if isinstance(value, dict) else vars(value)
+    automation_enabled, automation_paused = _automation_flags(data)
     return SchedulerSessionRef(
         session_id=str(data["session_id"]),
         current_phase=data.get("current_phase"),
-        automation_enabled=bool(data.get("automation_enabled", True)),
-        automation_paused=bool(data.get("automation_paused", False)),
+        automation_enabled=automation_enabled,
+        automation_paused=automation_paused,
     )
+
+
+def _automation_flags(data: object) -> tuple[bool, bool]:
+    mapping = data if isinstance(data, dict) else vars(data)
+    metadata = mapping.get("metadata", {})
+    control = metadata.get("automation_control", {}) if isinstance(metadata, dict) else {}
+    enabled = mapping.get("automation_enabled", control.get("enabled", True))
+    paused = mapping.get("automation_paused", control.get("paused", False))
+    return bool(enabled), bool(paused)
 
 
 def _recovery_command_id(

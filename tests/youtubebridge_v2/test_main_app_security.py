@@ -383,6 +383,11 @@ def test_main_app_v2_observer_key_can_read_status_events_and_operator_stream_onl
             "youtube_event": {"id": "yt-evt-1", "snippet": {}, "authorDetails": {}},
         },
     )
+    automation_response = client.post(
+        "/v2/sessions/observer-session/automation-control",
+        headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
+        json={"command_id": "cmd-observer-control", "paused": True},
+    )
 
     assert session_response.status_code == 200
     assert session_response.json()["session_id"] == "observer-session"
@@ -393,6 +398,7 @@ def test_main_app_v2_observer_key_can_read_status_events_and_operator_stream_onl
     _assert_security_error(tick_response, status_code=403, code="forbidden")
     _assert_security_error(write_response, status_code=403, code="forbidden")
     _assert_security_error(ingest_response, status_code=403, code="forbidden")
+    _assert_security_error(automation_response, status_code=403, code="forbidden")
     assert storage.get_v2_session("observer-write") is None
 
 
@@ -443,6 +449,11 @@ def test_main_app_v2_display_key_can_read_display_stream_only(
             "youtube_event": {"id": "yt-evt-1", "snippet": {}, "authorDetails": {}},
         },
     )
+    automation_response = client.post(
+        "/v2/sessions/display-session/automation-control",
+        headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
+        json={"command_id": "cmd-display-control", "paused": True},
+    )
 
     assert display_status == 200
     _assert_security_error(phase_response, status_code=403, code="forbidden")
@@ -451,6 +462,7 @@ def test_main_app_v2_display_key_can_read_display_stream_only(
     _assert_security_error(manual_close_response, status_code=403, code="forbidden")
     _assert_security_error(tick_response, status_code=403, code="forbidden")
     _assert_security_error(ingest_response, status_code=403, code="forbidden")
+    _assert_security_error(automation_response, status_code=403, code="forbidden")
 
 
 def test_main_app_v2_loopback_without_key_still_has_operator_access(

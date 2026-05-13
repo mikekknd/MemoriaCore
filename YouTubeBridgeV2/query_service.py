@@ -29,6 +29,7 @@ class V2QueryService:
                 "plan_completed": bool(record.get("plan_completed", False)),
                 "manual_close_requested": bool(record.get("manual_close_requested", False)),
                 "closing_completion_status": _closing_status(record),
+                "automation_control": _automation_control(record),
                 "public_summary": record.get("public_summary", {}),
             }
         )
@@ -45,6 +46,7 @@ class V2QueryService:
                 "plan_completed": bool(record.get("plan_completed", False)),
                 "manual_close_requested": bool(record.get("manual_close_requested", False)),
                 "closing_completion_status": _closing_status(record),
+                "automation_control": _automation_control(record),
             }
         )
 
@@ -111,6 +113,21 @@ def _closing_status(record: dict[str, object]) -> str:
     if bool(record.get("closing_completed", False)):
         return "complete"
     return "incomplete"
+
+
+def _automation_control(record: dict[str, object]) -> dict[str, object]:
+    metadata = record.get("metadata", {})
+    if isinstance(metadata, dict):
+        raw = metadata.get("automation_control", {})
+        if isinstance(raw, dict):
+            return _sanitize_public_payload(
+                {
+                    "enabled": bool(raw.get("enabled", True)),
+                    "paused": bool(raw.get("paused", False)),
+                    "reason": str(raw.get("reason", "") or ""),
+                }
+            )
+    return {"enabled": True, "paused": False, "reason": ""}
 
 
 def _object_to_dict(value: object) -> dict[str, object]:

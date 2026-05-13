@@ -134,6 +134,11 @@ Wave 4C restart/recovery hardening:
 - `SchedulerRecoverySessionRef` / `SchedulerRecoveryIntent` / `SchedulerRecoveryCycleResult` define restart recovery command dispatch through `recover_session(...)`。
 - Recovery command ids use phase + plan/manual-close/closing state markers instead of timestamps, so same state replays idempotently while changed state can advance to the next recovery command。
 
+Wave 4D operator controls:
+- `RuntimeCommandType.UPDATE_AUTOMATION_CONTROL` 與 `RuntimeApplicationService.update_automation_control(...)` 保存 durable `automation_control` metadata，不直接改 phase。
+- Automation tick/recovery refs 會讀取 top-level 或 metadata `automation_control.enabled/paused`，disabled/paused sessions 不 dispatch side effects。
+- `POST /v2/sessions/{session_id}/automation-control` 是 operator-only safety control；完整 UI 留給 Wave 5。
+
 ### `RuntimeCommand`
 
 Source:

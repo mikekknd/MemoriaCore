@@ -36,6 +36,7 @@ class RuntimeCommandType(str, Enum):
     TICK = "tick"
     HANDLE_YOUTUBE_EVENT = "handle_youtube_event"
     UPDATE_AFTERTALK_POLICY = "update_aftertalk_policy"
+    UPDATE_AUTOMATION_CONTROL = "update_automation_control"
     MANUAL_CLOSE = "manual_close"
     FINALIZE_CLOSING = "finalize_closing"
     RECOVER = "recover"
@@ -258,6 +259,35 @@ class RuntimeApplicationService:
             "update_aftertalk_policy",
             "aftertalk_policy_updated",
         )
+
+    def update_automation_control(
+        self,
+        command: RuntimeCommand,
+        now: datetime,
+    ) -> RuntimeServiceResult:
+        existing = self._existing_result(command)
+        if existing is not None:
+            return existing
+
+        snapshot = self._storage.update_automation_control(command, now)
+        control = _automation_control_summary(command.payload)
+        event = self._event(
+            event_type="automation_control_updated",
+            command=command,
+            phase=snapshot.current_phase,
+            payload={"operator_controls": {"automation_control": control}},
+        )
+        self._persist_event(event)
+        result = RuntimeServiceResult(
+            status="ok",
+            session_id=command.session_id,
+            phase=snapshot.current_phase,
+            events=[event],
+            errors=[],
+            correlation_id=_correlation_id(command),
+        )
+        self._save_result(command, result)
+        return result
 
     def request_manual_close(
         self,
@@ -627,6 +657,17 @@ def _youtube_contract_error(command: RuntimeCommand, message: str) -> RuntimeSer
         ],
         correlation_id=_correlation_id(command),
     )
+
+
+def _automation_control_summary(payload: dict[str, object]) -> dict[str, object]:
+    summary: dict[str, object] = {}
+    if "enabled" in payload:
+        summary["enabled"] = bool(payload["enabled"])
+    if "paused" in payload:
+        summary["paused"] = bool(payload["paused"])
+    if "reason" in payload:
+        summary["reason"] = str(payload.get("reason") or "")
+    return _sanitize_public_payload(summary)
 
 
 def _event_type(adapter_result: AdapterDispatchResult) -> str:

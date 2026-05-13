@@ -34,6 +34,10 @@ class FakeRuntimeService:
         self.calls.append(("update_aftertalk_policy", command, now))
         return _result(command, phase=LiveSessionPhase.AFTERTALK)
 
+    def update_automation_control(self, command, now):
+        self.calls.append(("update_automation_control", command, now))
+        return _result(command, phase=LiveSessionPhase.PLANNED_SHOW)
+
     def request_manual_close(self, command, now):
         self.calls.append(("request_manual_close", command, now))
         return _result(command, phase=LiveSessionPhase.CLOSING)
@@ -289,6 +293,45 @@ def test_aftertalk_policy_update_rejects_invalid_policy():
     response = client.post(
         "/v2/sessions/session-1/aftertalk-policy",
         json={"command_id": "cmd-policy", "aftertalk_policy": "legacy_director"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert service.calls == []
+
+
+def test_automation_control_delegates_to_runtime_service():
+    service = FakeRuntimeService()
+    client = TestClient(_app(runtime_service=service))
+
+    response = client.post(
+        "/v2/sessions/session-1/automation-control",
+        json={
+            "command_id": "cmd-control",
+            "paused": True,
+            "enabled": False,
+            "reason": "operator pause",
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.calls[0][0] == "update_automation_control"
+    command = service.calls[0][1]
+    assert command.command_type == RuntimeCommandType.UPDATE_AUTOMATION_CONTROL
+    assert command.payload == {
+        "enabled": False,
+        "paused": True,
+        "reason": "operator pause",
+    }
+
+
+def test_automation_control_requires_enabled_or_paused():
+    service = FakeRuntimeService()
+    client = TestClient(_app(runtime_service=service))
+
+    response = client.post(
+        "/v2/sessions/session-1/automation-control",
+        json={"command_id": "cmd-control", "reason": "missing flags"},
     )
 
     assert response.status_code == 422

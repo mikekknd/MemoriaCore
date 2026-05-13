@@ -54,6 +54,13 @@ class AftertalkPolicyRequest(BaseModel):
     aftertalk_policy: Literal["disabled", "auto"]
 
 
+class AutomationControlRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    enabled: bool | None = None
+    paused: bool | None = None
+    reason: str | None = None
+
+
 class ManualCloseRequest(BaseModel):
     command_id: str = Field(..., min_length=1)
     reason: str | None = None
@@ -187,6 +194,36 @@ def update_aftertalk_policy_endpoint(
         payload={"aftertalk_policy": body.aftertalk_policy},
     )
     return _call_runtime(runtime_service, "update_aftertalk_policy", command, now)
+
+
+@router.post("/sessions/{session_id}/automation-control", response_model=None)
+def update_automation_control_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Update runtime automation safety controls through runtime service."""
+
+    body = _validate_body(AutomationControlRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    if body.enabled is None and body.paused is None:
+        return _validation_error_response(raw_body)
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.UPDATE_AUTOMATION_CONTROL,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={
+            "enabled": body.enabled,
+            "paused": body.paused,
+            "reason": body.reason,
+        },
+    )
+    return _call_runtime(runtime_service, "update_automation_control", command, now)
 
 
 @router.post("/sessions/{session_id}/manual-close", response_model=None)
@@ -535,5 +572,6 @@ __all__ = [
     "operator_stream_endpoint",
     "router",
     "tick_session_endpoint",
+    "update_automation_control_endpoint",
     "update_aftertalk_policy_endpoint",
 ]

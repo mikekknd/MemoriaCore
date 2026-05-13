@@ -12,12 +12,16 @@ from tests.youtubebridge_v2.fakes import (
 )
 from YouTubeBridgeV2.app import create_v2_app
 from YouTubeBridgeV2.composition import create_v2_composition
+from YouTubeBridgeV2.query_service import V2QueryService
 from YouTubeBridgeV2.runtime.application_service import (
     RuntimeCommand,
     RuntimeCommandType,
     RuntimeServiceResult,
 )
-from YouTubeBridgeV2.runtime.automation import dispatch_scheduler_recovery_cycle
+from YouTubeBridgeV2.runtime.automation import (
+    dispatch_scheduler_cycle,
+    dispatch_scheduler_recovery_cycle,
+)
 from YouTubeBridgeV2.runtime.phase import LiveSessionPhase
 
 
@@ -336,3 +340,42 @@ def test_recovery_cycle_uses_new_state_marker_after_plan_completion(tmp_path):
     assert len(planned2.calls) == 1
     assert len(aftertalk2.calls) == 1
     assert restarted_storage.get_v2_session("session-plan-recovery")["current_phase"] == "aftertalk"
+
+
+def test_automation_control_pause_survives_restart_and_blocks_cycles(tmp_path):
+    storage = _storage_manager(tmp_path)
+    composition, _planned_show, _aftertalk, _closing = _composition(storage)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: STARTED_AT))
+    _create_session(client, "session-control")
+
+    result = composition.runtime_service.update_automation_control(
+        RuntimeCommand(
+            command_id="cmd-control",
+            session_id="session-control",
+            command_type=RuntimeCommandType.UPDATE_AUTOMATION_CONTROL,
+            issued_at=STARTED_AT,
+            payload={"paused": True, "reason": "operator pause"},
+        ),
+        STARTED_AT,
+    )
+
+    restarted_storage = _storage_manager(tmp_path)
+    restarted_composition, _planned2, _aftertalk2, _closing2 = _composition(
+        restarted_storage,
+    )
+    tick = dispatch_scheduler_cycle(
+        restarted_composition.runtime_service,
+        restarted_composition.storage.list_recoverable_sessions(),
+        STARTED_AT + timedelta(seconds=10),
+    )
+    recovery = dispatch_scheduler_recovery_cycle(
+        restarted_composition.runtime_service,
+        restarted_composition.storage.list_recoverable_sessions(),
+        STARTED_AT + timedelta(seconds=20),
+    )
+    session = V2QueryService(restarted_storage).get_session("session-control")
+
+    assert result.events[0].event_type == "automation_control_updated"
+    assert tick.skipped[0].skip_reason == "automation_paused"
+    assert recovery.skipped[0].skip_reason == "automation_paused"
+    assert session["automation_control"]["paused"] is True

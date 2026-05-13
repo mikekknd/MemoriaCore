@@ -149,6 +149,23 @@ class RuntimeStoragePort:
             {"aftertalk_policy": str(command.payload.get("aftertalk_policy", "auto"))},
         )
 
+    def update_automation_control(self, command: RuntimeCommand, now: datetime):
+        """更新 runtime automation safety controls 並回傳 snapshot。"""
+
+        payload = _object_to_dict(command.payload)
+        current: dict[str, object] = {}
+        if hasattr(self._storage_manager, "get_v2_session"):
+            record = self._storage_manager.get_v2_session(command.session_id) or {}
+            metadata = _object_to_dict(record.get("metadata", {}))
+            current = _object_to_dict(metadata.get("automation_control", {}))
+        control = {
+            "enabled": bool(payload.get("enabled", current.get("enabled", True))),
+            "paused": bool(payload.get("paused", current.get("paused", False))),
+            "reason": str(payload.get("reason", current.get("reason", "")) or ""),
+            "updated_at": now.isoformat(),
+        }
+        return self._update_session(command.session_id, {"automation_control": control})
+
     def finalize_closing(self, command: RuntimeCommand, now: datetime):
         """標記 closing 已完成並保存 finalization summary。"""
 

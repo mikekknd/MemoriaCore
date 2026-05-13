@@ -119,6 +119,7 @@ class FakeStorage:
         self.error_summaries = []
         self.youtube_events = []
         self.youtube_polling_cursor = None
+        self.snapshot_metadata = {}
         self.fail_persist_transition = False
 
     def get_command_result(self, command_id):
@@ -189,6 +190,17 @@ class FakeStorage:
     def save_youtube_polling_cursor(self, session_id, cursor, now):
         self.calls.append(("save_youtube_polling_cursor", session_id, now))
         self.youtube_polling_cursor = cursor
+
+    def update_automation_control(self, command, now):
+        self.calls.append(("update_automation_control", command.session_id, now))
+        control = {
+            "enabled": command.payload.get("enabled", True),
+            "paused": command.payload.get("paused", False),
+            "reason": command.payload.get("reason", ""),
+            "updated_at": now.isoformat(),
+        }
+        self.snapshot_metadata["automation_control"] = control
+        return self.snapshot
 
 
 class FakePhaseAdvancer:
@@ -518,6 +530,44 @@ def test_duplicate_command_id_does_not_repeat_adapter_call():
     assert result == existing
     assert not phase.calls
     assert not runner.calls
+
+
+def test_update_automation_control_persists_sanitized_operator_control():
+    storage = FakeStorage()
+    service = _service(storage=storage)
+
+    result = service.update_automation_control(
+        _command(
+            RuntimeCommandType.UPDATE_AUTOMATION_CONTROL,
+            command_id="cmd-control",
+            payload={
+                "paused": True,
+                "enabled": False,
+                "reason": "operator pause",
+                "raw_payload": {"token": "must not leak"},
+            },
+        ),
+        BASE_NOW,
+    )
+
+    assert result.status == "ok"
+    assert storage.snapshot_metadata["automation_control"] == {
+        "enabled": False,
+        "paused": True,
+        "reason": "operator pause",
+        "updated_at": BASE_NOW.isoformat(),
+    }
+    assert result.events[0].event_type == "automation_control_updated"
+    assert result.events[0].payload == {
+        "operator_controls": {
+            "automation_control": {
+                "enabled": False,
+                "paused": True,
+                "reason": "operator pause",
+            }
+        }
+    }
+    _assert_no_forbidden_payload(result)
 
 
 def test_retryable_adapter_error_is_persisted_with_redacted_summary():

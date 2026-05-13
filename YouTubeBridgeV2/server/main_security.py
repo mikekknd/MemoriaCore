@@ -116,6 +116,8 @@ def _session_child_requirement(child: str, method: str) -> tuple[PermissionGroup
         return PermissionGroup.OBSERVER, "phase"
     if child == "aftertalk-policy" and method == "POST":
         return PermissionGroup.OPERATOR, "aftertalk_policy"
+    if child == "automation-control" and method == "POST":
+        return PermissionGroup.OPERATOR, "automation_control"
     if child == "manual-close" and method == "POST":
         return PermissionGroup.OPERATOR, "manual_close"
     if child == "tick" and method == "POST":

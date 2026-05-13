@@ -230,6 +230,13 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Idempotency hardening：recovery command id 使用 phase + state markers，不使用 wall-clock timestamp，避免同一恢復狀態重複 side effects。
 - [x] Scope boundary：本階段不建立 background process、不新增 pause/resume controls。
 
+## Integration Wave 4D 狀態
+
+- [x] Operator safety control：`POST /v2/sessions/{session_id}/automation-control` 可 durable 設定 enabled/paused/reason。
+- [x] Automation gating：tick/recovery cycles 會尊重 `automation_control.enabled/paused`，paused/disabled 不 dispatch runner side effects。
+- [x] Security boundary：automation control route 是 operator-only；observer/display 無法寫入。
+- [x] Scope boundary：完整 operator console UI 留給 Wave 5。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

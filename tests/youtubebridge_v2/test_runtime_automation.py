@@ -259,6 +259,27 @@ def test_scheduler_recovery_cycle_calls_recover_session_and_skips_ended():
     assert result.skipped[0].skip_reason == "session_ended"
 
 
+def test_scheduler_cycles_respect_nested_automation_control_metadata():
+    service = FakeRuntimeService()
+    session = {
+        "session_id": "session-paused",
+        "current_phase": "planned_show",
+        "metadata": {
+            "automation_control": {
+                "enabled": True,
+                "paused": True,
+            }
+        },
+    }
+
+    tick = dispatch_scheduler_cycle(service, [session], NOW)
+    recovery = dispatch_scheduler_recovery_cycle(service, [session], NOW)
+
+    assert tick.skipped[0].skip_reason == "automation_paused"
+    assert recovery.skipped[0].skip_reason == "automation_paused"
+    assert service.calls == []
+
+
 def test_scheduler_cycle_auto_advances_planned_aftertalk_closing_to_ended():
     storage = InMemoryV2StorageManager()
     planned_show = FakePlannedShowRunner(storage)
