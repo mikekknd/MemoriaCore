@@ -126,7 +126,17 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Real-storage vertical slice：已用真 `StorageManager` + fake runners 驗證 create session、bind plan、planned show、aftertalk、manual close、closing、ended。
 - [x] Restart/recovery：已驗證重建 `StorageManager` 與 composition 後可讀取同一 session snapshot 並執行 recovery decision。
 - [x] Command idempotency：已驗證重啟後重送相同 `command_id` 不重複 dispatch runner，且 replay result 保持 runtime service contract。
-- [ ] Production V2 wiring：`api/main.py` 尚未切換到真 V2 composition；此項保留給 Wave 2B。
+- [x] Production V2 wiring：`api/main.py` 已在 Wave 2B 切換到真 V2 durable composition，外部 adapters 仍使用 explicit no-op runners。
+
+## Integration Wave 2B 狀態
+
+- [x] Production composition helper：已建立 `create_production_v2_composition(storage_manager)`，以主專案 `StorageManager` singleton 建立 V2 composition。
+- [x] Explicit no-op runners：已建立 planned show、aftertalk、closing 的 production-safe no-op runners，不呼叫 YouTube、MemoriaCore 或 TTS。
+- [x] Main app `/v2` wiring：`api/main.py` 已用 lazy cached composition 覆寫 V2 runtime/query dependencies。
+- [x] Loopback-only boundary：主 app `/v2` API/SSE 已限制 loopback；`/v2/static` 保持可服務前端資產。
+- [x] Missing-session query errors：status、events、operator/display stream 對不存在 session 回 sanitized 404。
+- [ ] API key permission matrix：operator/display/observer header auth 與 API key 儲存保留給後續 wave。
+- [ ] Real adapter runners：真 YouTube、MemoriaCore 與 TTS integration 保留給後續 wave。
 
 ## Module Design 文件
 

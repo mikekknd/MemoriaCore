@@ -21,7 +21,9 @@ from api.session_manager import session_manager
 from core.background_gatherer import start_background_gather_loop
 from api.middleware.auth import AuthMiddleware
 from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots, llm_tasks
+from YouTubeBridgeV2.production import create_production_v2_composition
 from YouTubeBridgeV2.server import routes as youtubebridge_v2_routes
+from YouTubeBridgeV2.server.main_security import V2LoopbackOnlyMiddleware
 
 
 def _persona_sync_candidate_character_ids(storage) -> list[str]:
@@ -162,6 +164,10 @@ def _cors_origins() -> list[str]:
 # AuthMiddleware 先註冊，讓後註冊的 CORS 成為外層 middleware，確保 401/403 也帶 CORS header。
 app.add_middleware(AuthMiddleware)
 
+# YouTubeBridgeV2 Wave 2B：主 app 只允許 loopback 存取 `/v2` API/SSE。
+# `/v2/static` 保持可被前端頁面載入。
+app.add_middleware(V2LoopbackOnlyMiddleware)
+
 # ── CORS（公開部署禁止使用萬用字元；需要額外 origin 請設 MEMORIACORE_CORS_ORIGINS）──
 app.add_middleware(
     CORSMiddleware,
@@ -192,85 +198,40 @@ app.include_router(admin_users.router, prefix=PREFIX)
 app.include_router(youtubebridge_v2_routes.router)
 
 
-class _UnavailableV2RuntimeService:
-    def create_session(self, command, now):
-        return self._result(command)
-
-    def bind_plan(self, command, now):
-        return self._result(command)
-
-    def update_aftertalk_policy(self, command, now):
-        return self._result(command)
-
-    def request_manual_close(self, command, now):
-        return self._result(command)
-
-    def _result(self, command):
-        return {
-            "status": "unconfigured",
-            "session_id": command.session_id,
-            "phase": "unknown",
-            "events": [],
-            "errors": [
-                {
-                    "code": "v2_runtime_not_configured",
-                    "message": "runtime service is not configured",
-                }
-            ],
-            "correlation_id": f"runtime-{command.command_id}",
-        }
+class V2RuntimeUnavailable(RuntimeError):
+    """主 app 尚未完成 StorageManager 初始化時的 V2 設定錯誤。"""
 
 
-class _UnavailableV2QueryService:
-    def get_session(self, session_id):
-        return self._status(session_id)
-
-    def get_phase(self, session_id):
-        return self._status(session_id)
-
-    def get_session_events(self, session_id, _limit):
-        return [self._event(session_id)]
-
-    def iter_operator_events(self, session_id):
-        return iter([self._event(session_id)])
-
-    def iter_display_events(self, _session_id):
-        return iter([])
-
-    def _status(self, session_id):
-        return {
-            "session_id": session_id,
-            "phase": "unknown",
-            "permission_group": "display",
-            "stream_state": "stale",
-            "error": {
-                "code": "v2_runtime_not_configured",
-                "message": "runtime service is not configured",
-            },
-            "diagnostics": {
-                "message": "runtime service is not configured",
-                "retryable": False,
-            },
-        }
-
-    def _event(self, session_id):
-        return {
-            "event_type": "operator_status",
-            "session_id": session_id,
-            "payload": self._status(session_id),
-        }
+_v2_composition_cache = None
+_v2_composition_storage_id = None
 
 
-def _get_unavailable_v2_runtime_service():
-    return _UnavailableV2RuntimeService()
+def _get_v2_composition():
+    """回傳與目前 StorageManager singleton 對應的 V2 production composition。"""
+
+    global _v2_composition_cache, _v2_composition_storage_id
+    try:
+        storage = get_storage()
+    except Exception as exc:
+        raise V2RuntimeUnavailable("V2 runtime storage is not initialized") from exc
+
+    storage_id = id(storage)
+    if _v2_composition_cache is None or _v2_composition_storage_id != storage_id:
+        _v2_composition_cache = create_production_v2_composition(storage)
+        _v2_composition_storage_id = storage_id
+    return _v2_composition_cache
 
 
-def _get_unavailable_v2_query_service():
-    return _UnavailableV2QueryService()
+def _get_v2_runtime_service():
+    return _get_v2_composition().runtime_service
 
 
-app.dependency_overrides[youtubebridge_v2_routes.get_runtime_service] = _get_unavailable_v2_runtime_service
-app.dependency_overrides[youtubebridge_v2_routes.get_query_service] = _get_unavailable_v2_query_service
+def _get_v2_query_service():
+    return _get_v2_composition().query_service
+
+
+app.dependency_overrides[youtubebridge_v2_routes.get_runtime_service] = _get_v2_runtime_service
+app.dependency_overrides[youtubebridge_v2_routes.get_query_service] = _get_v2_query_service
 
 
 # ── 根路由 → 一般入口 ────────────────────────────────────
@@ -291,6 +252,20 @@ app.mount("/v2/static", StaticFiles(directory=_v2_static_dir, html=True), name="
 
 
 # ── 全域例外處理 ──────────────────────────────────────────
+@app.exception_handler(V2RuntimeUnavailable)
+async def v2_runtime_unavailable_handler(request: Request, exc: V2RuntimeUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": "v2_runtime_unavailable",
+                "message": "V2 runtime is not initialized",
+            },
+            "correlation_id": "v2-runtime-unavailable",
+        },
+    )
+
+
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
     return JSONResponse(status_code=400, content={"error": {"code": "BAD_REQUEST", "message": str(exc)}})

@@ -373,19 +373,39 @@ def test_operator_console_static_entrypoint_is_served_by_api_app():
     assert 'id="operatorConsoleRoot"' in response.text
 
 
-def test_operator_console_api_dependencies_are_served_by_main_app():
+def test_operator_console_api_dependencies_are_served_by_main_app(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from api.main import app
+    import api.main as api_main
+    from core.storage_manager import StorageManager
 
-    client = TestClient(app)
+    storage = StorageManager(
+        prefs_file=str(tmp_path / "prefs.json"),
+        history_file=str(tmp_path / "history.json"),
+        persona_snapshot_db_path=str(tmp_path / "persona_snapshots.db"),
+        youtube_bridge_v2_db_path=str(tmp_path / "youtubebridge_v2.db"),
+    )
+    monkeypatch.setattr(api_main, "get_storage", lambda: storage)
+    monkeypatch.setattr(api_main, "_v2_composition_cache", None, raising=False)
+    monkeypatch.setattr(api_main, "_v2_composition_storage_id", None, raising=False)
+    client = TestClient(app, client=("127.0.0.1", 50000))
+
+    create_response = client.post(
+        "/v2/sessions",
+        json={
+            "command_id": "cmd-create",
+            "session_id": "session-1",
+            "aftertalk_policy": "auto",
+        },
+    )
+    assert create_response.status_code == 200
 
     phase_response = client.get("/v2/sessions/session-1/phase")
     assert phase_response.status_code == 200
     assert phase_response.json()["session_id"] == "session-1"
-    assert phase_response.json()["phase"] == "unknown"
-    assert phase_response.json()["permission_group"] == "display"
-    assert phase_response.json()["error"]["message"] == "runtime service is not configured"
+    assert phase_response.json()["phase"] == "planned_show"
+    assert "v2_runtime_not_configured" not in repr(phase_response.json())
 
     with client.stream("GET", "/v2/sessions/session-1/operator-stream") as stream_response:
         stream_response.read()
@@ -393,7 +413,8 @@ def test_operator_console_api_dependencies_are_served_by_main_app():
 
     assert stream_response.status_code == 200
     assert "operator_status" in text
-    assert "runtime service is not configured" in text
+    assert "planned_show" in text
+    assert "runtime service is not configured" not in text
     _assert_no_private_payload(text)
 
 

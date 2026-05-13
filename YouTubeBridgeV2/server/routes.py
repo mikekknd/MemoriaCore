@@ -11,12 +11,14 @@ import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from itertools import chain
 from typing import Any, Iterable, Literal
 
 from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from YouTubeBridgeV2.query_service import V2QueryServiceError
 from YouTubeBridgeV2.runtime.application_service import (
     RuntimeCommand,
     RuntimeCommandType,
@@ -100,14 +102,17 @@ def create_session_endpoint(
     return _call_runtime(runtime_service, "create_session", command, now)
 
 
-@router.get("/sessions/{session_id}")
+@router.get("/sessions/{session_id}", response_model=None)
 def get_session_endpoint(
     session_id: str,
     query_service: object = Depends(get_query_service),
-) -> dict[str, object]:
+) -> dict[str, object] | JSONResponse:
     """Return public V2 session status through query service."""
 
-    return _sanitize_public_payload(query_service.get_session(session_id))
+    try:
+        return _sanitize_public_payload(query_service.get_session(session_id))
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
 
 
 @router.post("/sessions/{session_id}/plan", response_model=None)
@@ -132,14 +137,17 @@ def bind_plan_endpoint(
     return _call_runtime(runtime_service, "bind_plan", command, now)
 
 
-@router.get("/sessions/{session_id}/phase")
+@router.get("/sessions/{session_id}/phase", response_model=None)
 def get_phase_endpoint(
     session_id: str,
     query_service: object = Depends(get_query_service),
-) -> dict[str, object]:
+) -> dict[str, object] | JSONResponse:
     """Return phase status body through query service."""
 
-    return _sanitize_public_payload(query_service.get_phase(session_id))
+    try:
+        return _sanitize_public_payload(query_service.get_phase(session_id))
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
 
 
 @router.post("/sessions/{session_id}/aftertalk-policy", response_model=None)
@@ -186,44 +194,55 @@ def manual_close_endpoint(
     return _call_runtime(runtime_service, "request_manual_close", command, now)
 
 
-@router.get("/sessions/{session_id}/events")
+@router.get("/sessions/{session_id}/events", response_model=None)
 def get_session_events_endpoint(
     session_id: str,
     limit: int = 100,
     query_service: object = Depends(get_query_service),
-) -> dict[str, object]:
+) -> dict[str, object] | JSONResponse:
     """Return public event history through query service."""
 
     safe_limit = max(1, min(int(limit), 500))
-    events = query_service.get_session_events(session_id, safe_limit)
+    try:
+        events = query_service.get_session_events(session_id, safe_limit)
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
     return {
         "session_id": session_id,
         "events": _sanitize_public_payload(list(events)),
     }
 
 
-@router.get("/sessions/{session_id}/operator-stream")
+@router.get("/sessions/{session_id}/operator-stream", response_model=None)
 def operator_stream_endpoint(
     session_id: str,
     query_service: object = Depends(get_query_service),
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """Return operator-safe SSE stream."""
 
+    try:
+        events = _prime_event_iterable(query_service.iter_operator_events(session_id))
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
     return StreamingResponse(
-        _sse_stream(query_service.iter_operator_events(session_id), display_safe=False),
+        _sse_stream(events, display_safe=False),
         media_type="text/event-stream",
     )
 
 
-@router.get("/sessions/{session_id}/display-stream")
+@router.get("/sessions/{session_id}/display-stream", response_model=None)
 def display_stream_endpoint(
     session_id: str,
     query_service: object = Depends(get_query_service),
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """Return display-safe SSE stream."""
 
+    try:
+        events = _prime_event_iterable(query_service.iter_display_events(session_id))
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
     return StreamingResponse(
-        _sse_stream(query_service.iter_display_events(session_id), display_safe=True),
+        _sse_stream(events, display_safe=True),
         media_type="text/event-stream",
     )
 
@@ -322,6 +341,28 @@ def _service_error_response(command: RuntimeCommand, _exc: Exception) -> JSONRes
             "correlation_id": f"runtime-{command.command_id}",
         },
     )
+
+
+def _query_not_found_response(session_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": {
+                "code": "session_not_found",
+                "message": "session not found",
+            },
+            "correlation_id": f"query-{session_id}",
+        },
+    )
+
+
+def _prime_event_iterable(events: Iterable[object]) -> Iterable[object]:
+    iterator = iter(events)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return iter(())
+    return chain((first,), iterator)
 
 
 def _sse_stream(

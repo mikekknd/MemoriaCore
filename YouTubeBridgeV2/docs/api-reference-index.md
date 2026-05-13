@@ -290,6 +290,7 @@ Concepts:
 - `create_v2_composition`
 - `V2RuntimeComposition`
 - `V2CompositionConfigurationError`
+- `create_production_v2_composition`
 
 Stability:
 - `provisional`
@@ -300,6 +301,7 @@ Source:
 - `YouTubeBridgeV2/composition.py::create_v2_composition`
 - `YouTubeBridgeV2/composition.py::V2RuntimeComposition`
 - `YouTubeBridgeV2/composition.py::V2CompositionConfigurationError`
+- `YouTubeBridgeV2/production.py::create_production_v2_composition`
 
 ### Runtime Application Service
 
@@ -315,6 +317,9 @@ Concepts:
 - `PersistedTransitionRef`
 - `AdapterDispatchResult`
 - `RecoveryDecision`
+- `NoopPlannedShowRunner`
+- `NoopAftertalkRunner`
+- `NoopClosingRunner`
 
 Stability:
 - `provisional`
@@ -328,6 +333,9 @@ Source:
 - `YouTubeBridgeV2/runtime/application_service.py::PersistedTransitionRef`
 - `YouTubeBridgeV2/runtime/application_service.py::AdapterDispatchResult`
 - `YouTubeBridgeV2/runtime/application_service.py::RecoveryDecision`
+- `YouTubeBridgeV2/runtime/noop_runners.py::NoopPlannedShowRunner`
+- `YouTubeBridgeV2/runtime/noop_runners.py::NoopAftertalkRunner`
+- `YouTubeBridgeV2/runtime/noop_runners.py::NoopClosingRunner`
 
 ### LiveEpisodePlan Runner
 
@@ -567,6 +575,7 @@ Concepts:
 - `get_session_events_endpoint`
 - `operator_stream_endpoint`
 - `display_stream_endpoint`
+- `session_not_found` error response
 
 Stability:
 - `provisional`
@@ -596,6 +605,7 @@ Concepts:
 - `SecretBoundary`
 - `resolve_permission_context`
 - `sanitize_security_error`
+- `V2LoopbackOnlyMiddleware`
 
 Stability:
 - `provisional`
@@ -608,6 +618,7 @@ Source:
 - `YouTubeBridgeV2/server/security.py::SecretBoundary`
 - `YouTubeBridgeV2/server/security.py::resolve_permission_context`
 - `YouTubeBridgeV2/server/security.py::sanitize_security_error`
+- `YouTubeBridgeV2/server/main_security.py::V2LoopbackOnlyMiddleware`
 
 ### Observability
 

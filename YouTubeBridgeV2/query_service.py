@@ -51,6 +51,7 @@ class V2QueryService:
     def get_session_events(self, session_id: str, limit: int) -> list[dict[str, object]]:
         """回傳 session event history 的 public projection。"""
 
+        self._session_record(session_id)
         return [_event_body(event) for event in self._events(session_id, limit)]
 
     def iter_operator_events(self, session_id: str) -> Iterable[dict[str, object]]:
