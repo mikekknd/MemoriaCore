@@ -121,6 +121,8 @@ Mutating routes 會把 Security module 解析出的 permission context 放入 `R
 - auth boundary tests：permission context 由 Security module 提供。
 - error response tests：sanitized error body。
 - side effect tests：routes 不直接呼叫 MemoriaCore、YouTube 或 storage internals。
+- YouTube ingestion fake-backed vertical tests：API route -> runtime -> storage/query/SSE，不接真 YouTube transport。
+- import boundary tests：route 不直接 import adapter/storage。
 
 ## Open Questions
 

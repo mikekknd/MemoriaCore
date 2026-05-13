@@ -205,6 +205,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Runtime handoff：route 建立 `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`，沿用 3A/3B normalization、cursor 與 storage path。
 - [x] Scope boundary：本階段不建立 scheduler/polling transport、不直接呼叫 YouTube API。
 
+## Integration Wave 3E 狀態
+
+- [x] Fake-backed ingestion tests：API route -> runtime -> storage/query/SSE path 覆蓋 text 與 Super Chat event。
+- [x] Duplicate boundary：API ingestion 會使用 persisted cursor skip duplicate event id，不重複 dispatch runner。
+- [x] Import/privacy boundary：V2 source 不引入 legacy runtime、Google/requests transport 或直接 SQLite；public API/SSE 不暴露 raw YouTube payload。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

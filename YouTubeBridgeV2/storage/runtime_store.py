@@ -251,7 +251,10 @@ class RuntimeStoragePort:
         if record is None:
             raise KeyError(session_id)
         metadata = _object_to_dict(record.get("metadata", {}))
-        raw_cursor = metadata.get("youtube_polling_cursor")
+        raw_cursor = metadata.get(
+            "youtube_polling_cursor",
+            record.get("youtube_polling_cursor"),
+        )
         if raw_cursor is None:
             return None
         return _youtube_polling_cursor(raw_cursor)

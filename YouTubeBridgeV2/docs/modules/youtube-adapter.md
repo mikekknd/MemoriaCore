@@ -77,6 +77,11 @@ Wave 3D API ingestion:
 - Route 只委派 runtime service；adapter normalization 仍在 `YouTubeBridgeV2/adapters/youtube.py`。
 - Scheduler/polling transport 保留給 Wave 4 runtime automation 或後續 YouTube transport item。
 
+Wave 3E fake-backed boundary tests:
+- Fake-backed API ingestion tests 覆蓋 text 與 Super Chat events，不需要真 YouTube transport。
+- Boundary tests 確認 V2 source 不 import legacy `YouTubeBridge/`、`googleapiclient`、`requests`、`sqlite3` 或 `aiosqlite`。
+- Public event/read/SSE assertions 確認 raw YouTube payload 與 credentials 不外洩。
+
 ## Polling Rules
 
 | Situation | Required Behavior |

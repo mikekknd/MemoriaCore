@@ -683,6 +683,9 @@ Returns:
 Source:
 - `YouTubeBridgeV2/server/routes.py::ingest_youtube_event_endpoint`
 
+Wave 3E Boundary Coverage:
+- `tests/youtubebridge_v2/test_youtube_ingestion_boundaries.py`
+
 ### Access Control / Security
 
 Purpose:
