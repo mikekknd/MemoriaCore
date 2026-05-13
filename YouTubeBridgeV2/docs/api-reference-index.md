@@ -331,6 +331,32 @@ Stability:
 Source:
 - `api/main.py::_cancel_lifespan_tasks`
 
+### `tests/youtubebridge_v2/test_legacy_boundary_audit.py`
+
+Purpose:
+Final Hardening audit，集中驗證 V2 production source 與主 app V2 mount 不依賴 legacy `YouTubeBridge/` runtime、直接 SQLite 或未批准外部 transport。
+
+Params:
+- 無。
+
+Returns:
+- pytest pass/fail audit result。
+
+Raises:
+- AssertionError — source import 或 direct legacy path reference 違反 V2 boundary 時。
+
+Side Effects:
+- 無；只讀取 source/docs。
+
+Since:
+- `YouTubeBridgeV2 v0.1`
+
+Stability:
+- `internal`
+
+Source:
+- `tests/youtubebridge_v2/test_legacy_boundary_audit.py`
+
 ### Runtime Application Service
 
 Purpose:

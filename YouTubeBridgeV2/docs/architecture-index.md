@@ -312,6 +312,7 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Full external E2E harness：新增 skipped-by-default `tests/youtubebridge_v2/test_full_external_e2e.py`，在 `YB2_FULL_EXTERNAL_E2E=1` 且提供 MemoriaCore base URL / character id 時，會用真 Memoria HTTP transport 跑 V2 create/plan/tick/display/TTS queue/ack/timeout round trip。
 - [x] Default safety boundary：未設定 opt-in env 時，full external E2E 不外呼；本階段不驗證 YouTube polling、真 TTS provider 或 PR readiness。
 - [x] Startup/shutdown validation：`tests/youtubebridge_v2/test_main_app_lifecycle.py` 驗證主 FastAPI app lifespan 可啟動 V2 durable routes/static、shutdown 會 stop bot managers，並確保取消的 lifespan background tasks 都被 await。
+- [x] Legacy boundary audit：`tests/youtubebridge_v2/test_legacy_boundary_audit.py` 集中掃描 V2 production source 與 `api/main.py` 的 V2 mount，確認沒有 legacy `YouTubeBridge/` runtime import、直接 SQLite、`requests`/Google YouTube transport 或直接 legacy runtime path dependency。
 
 ## Module Design 文件
 
