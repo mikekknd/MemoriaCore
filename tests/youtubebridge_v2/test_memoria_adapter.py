@@ -774,6 +774,47 @@ def test_memoria_response_is_normalized_with_session_id():
     _assert_no_private_payload(response.public_summary)
 
 
+def test_memoria_response_preserves_display_safe_presentation_metadata():
+    response = normalize_memoria_response(
+        {
+            "session_id": "memoria-session-2",
+            "message_id": "m1",
+            "character_id": "host",
+            "character_name": "Luna",
+            "role_label": "Host",
+            "voice_id": "voice-luna",
+            "reply": "Presentation-ready line",
+            "presentation": {
+                "voice_state": "speaking",
+                "visual_state": "focus",
+                "subtitle": "Presentation-ready line",
+                "raw_memoriacore_payload": {"token": "must not leak"},
+                "operator_only_metadata": {"manual_close": True},
+            },
+            "raw_payload": {"secret": "must not leak"},
+        },
+        _correlation(),
+    )
+
+    assert isinstance(response, NormalizedMemoriaResponse)
+    assert response.messages == (
+        {
+            "message_id": "m1",
+            "speaker_id": "host",
+            "content": "Presentation-ready line",
+            "speaker_name": "Luna",
+            "role_label": "Host",
+            "voice_id": "voice-luna",
+            "presentation": {
+                "voice_state": "speaking",
+                "visual_state": "focus",
+                "subtitle": "Presentation-ready line",
+            },
+        },
+    )
+    _assert_no_private_payload(response.messages)
+
+
 def test_group_chat_response_with_joined_reply_preserves_turns():
     response = normalize_memoria_response(
         {

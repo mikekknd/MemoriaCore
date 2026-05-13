@@ -193,6 +193,7 @@ def build_presentation_event(interaction: dict[str, object]) -> PresentationEven
         "character_name": character_name,
         "role_label": role_label,
         "response_text": response_text,
+        "phase": metadata.phase,
         "presentation": asdict(metadata),
     }
     return PresentationEvent(

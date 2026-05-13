@@ -291,6 +291,10 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Browser smoke：新增 opt-in Chat Display browser smoke，預設 skip，不讓一般 V2 suite 依賴本機 Chrome。
 - [x] Scope boundary：本階段不處理 presentation metadata integration 或 TTS queue/ack/timeout。
 
+## Integration Wave 6C 狀態
+
+- [x] Presentation metadata integration：Memoria runner completed interaction 會 append display-safe `presentation_character_response` live event。Display stream 會將它正規化為 `character_response`；TTS queue、ack、timeout 與 provider delivery 仍屬 Wave 6D 範圍。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

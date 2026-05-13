@@ -343,11 +343,46 @@ def _normalize_message(raw_message: dict[str, object]) -> dict[str, object] | No
     content = raw_message.get("content") or raw_message.get("text") or raw_message.get("reply")
     if not speaker_id or content is None:
         return None
-    return {
+    normalized: dict[str, object] = {
         "message_id": str(raw_message.get("message_id", raw_message.get("id", ""))),
         "speaker_id": str(speaker_id),
         "content": str(content),
     }
+    optional_fields = {
+        "speaker_name": raw_message.get("speaker_name")
+        or raw_message.get("character_name")
+        or raw_message.get("name"),
+        "role_label": raw_message.get("role_label") or raw_message.get("role"),
+        "voice_id": raw_message.get("voice_id"),
+    }
+    for key, value in optional_fields.items():
+        text = _optional_string(value)
+        if text:
+            normalized[key] = text
+
+    presentation = _display_safe_presentation_metadata(
+        raw_message.get("presentation") or raw_message.get("presentation_metadata")
+    )
+    if presentation:
+        normalized["presentation"] = presentation
+
+    return _redact_public_value(normalized)
+
+
+def _display_safe_presentation_metadata(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_keys = {
+        "voice_state",
+        "visual_state",
+        "subtitle",
+    }
+    metadata = {
+        key: value[key]
+        for key in allowed_keys
+        if key in value and _optional_string(value.get(key))
+    }
+    return _redact_public_value(metadata)
 
 
 def _invalid_response(message: str) -> MemoriaAdapterError:

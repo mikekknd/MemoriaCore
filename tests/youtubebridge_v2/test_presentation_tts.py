@@ -102,6 +102,7 @@ def test_completed_character_response_builds_presentation_event():
         "character_name": "Luna",
         "role_label": "Host",
         "response_text": "Welcome back to the planned show.",
+        "phase": "planned_show",
         "presentation": {
             "voice_state": "ready",
             "visual_state": "focus",

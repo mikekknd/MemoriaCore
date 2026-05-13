@@ -155,6 +155,53 @@ def test_normalize_runtime_event_becomes_system_state():
     _assert_no_private_payload(event)
 
 
+def test_normalize_presentation_character_response_event():
+    event = normalize_display_event(
+        {
+            "event_id": "presentation:interaction-1",
+            "event_type": "presentation_character_response",
+            "created_at": NOW,
+            "public_metadata": {
+                "interaction_id": "interaction-1",
+                "display_event": {
+                    "event_id": "presentation:interaction-1",
+                    "event_type": "character_response",
+                    "session_id": "session-1",
+                    "character_name": "Luna",
+                    "role_label": "Host",
+                    "response_text": "Hello display",
+                    "phase": "planned_show",
+                    "presentation": {
+                        "voice_state": "speaking",
+                        "visual_state": "focus",
+                        "raw_payload": {"token": "must not leak"},
+                    },
+                },
+                "operator_only_metadata": {"manual_close": True},
+            },
+        }
+    )
+
+    assert event == {
+        "display_contract_version": "v1",
+        "event_id": "presentation:interaction-1",
+        "event_type": "character_response",
+        "source_event_type": "presentation_character_response",
+        "created_at": NOW.isoformat(),
+        "public_payload": {
+            "character_name": "Luna",
+            "role_label": "Host",
+            "response_text": "Hello display",
+            "phase": "planned_show",
+            "presentation": {
+                "voice_state": "speaking",
+                "visual_state": "focus",
+            },
+        },
+    }
+    _assert_no_private_payload(event)
+
+
 def test_query_service_display_stream_yields_normalized_display_events():
     storage = FakeStorage()
     storage.events.append(

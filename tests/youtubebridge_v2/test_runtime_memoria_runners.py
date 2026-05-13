@@ -6,6 +6,7 @@ import pytest
 
 from tests.youtubebridge_v2.fakes import InMemoryV2StorageManager
 from YouTubeBridgeV2.adapters.memoria_http import MemoriaHttpTransportError
+from YouTubeBridgeV2.display.events import normalize_display_event
 from YouTubeBridgeV2.runtime.application_service import RuntimeCommand, RuntimeCommandType
 from YouTubeBridgeV2.runtime.memoria_runners import (
     MemoriaAftertalkRunner,
@@ -253,6 +254,65 @@ def test_planned_show_runner_sends_next_turn_and_advances_plan_state():
     _assert_no_private_payload(storage.interactions)
 
 
+def test_planned_show_runner_appends_presentation_display_event():
+    storage = InMemoryV2StorageManager()
+    port = _create_bound_session(storage)
+    transport = FakeMemoriaTransport(
+        {
+            "session_id": "memoria-1",
+            "message_id": "msg-1",
+            "character_id": "host",
+            "character_name": "Luna",
+            "role_label": "Host",
+            "voice_id": "voice-luna",
+            "reply": "Planned response",
+            "presentation": {
+                "voice_state": "speaking",
+                "visual_state": "focus",
+                "subtitle": "Planned response",
+                "raw_payload": {"token": "must not leak"},
+            },
+            "raw_payload": {"token": "must not leak"},
+        }
+    )
+    runner = MemoriaPlannedShowRunner(storage, transport)
+
+    result = runner.run(
+        command=_command("cmd-planned-display"),
+        snapshot=port.read_snapshot("session-runner"),
+        transition=_transition(LiveSessionPhase.PLANNED_SHOW, action="run_planned_show"),
+        now=NOW,
+    )
+
+    assert result.status == "ok"
+    assert len(storage.live_events) == 1
+    event = storage.live_events[0]
+    assert event["event_type"] == "presentation_character_response"
+    assert event["created_at"] == NOW
+    assert event["public_metadata"]["interaction_id"].endswith(":msg-1")
+    display_event = normalize_display_event(event)
+    assert display_event["event_type"] == "character_response"
+    assert display_event["source_event_type"] == "presentation_character_response"
+    assert display_event["public_payload"] == {
+        "character_name": "Luna",
+        "role_label": "Host",
+        "response_text": "Planned response",
+        "phase": "planned_show",
+        "presentation": {
+            "voice_state": "speaking",
+            "visual_state": "focus",
+            "phase": "planned_show",
+            "role_label": "Host",
+            "subtitle": "Planned response",
+            "public_payload": {
+                "correlation_id": "runtime-cmd-planned-display",
+                "request_id": "cmd-planned-display",
+            },
+        },
+    }
+    _assert_no_private_payload(storage.live_events)
+
+
 def test_aftertalk_runner_builds_group_chat_request_and_appends_interactions():
     storage = InMemoryV2StorageManager()
     port = _create_bound_session(storage)
@@ -284,6 +344,60 @@ def test_aftertalk_runner_builds_group_chat_request_and_appends_interactions():
     assert {item["phase"] for item in storage.interactions} == {"aftertalk"}
     _assert_no_private_payload(result)
     _assert_no_private_payload(storage.interactions)
+
+
+def test_aftertalk_runner_appends_one_presentation_display_event_per_message():
+    storage = InMemoryV2StorageManager()
+    port = _create_bound_session(storage)
+    storage.update_v2_session("session-runner", {"plan_completed": True})
+    transport = FakeMemoriaTransport(
+        {
+            "session_id": "memoria-2",
+            "turns": [
+                {
+                    "message_id": "a1",
+                    "character_id": "host",
+                    "character_name": "Luna",
+                    "role_label": "Host",
+                    "reply": "Aftertalk 1",
+                    "presentation": {"voice_state": "speaking"},
+                },
+                {
+                    "message_id": "a2",
+                    "character_id": "cohost",
+                    "character_name": "Mika",
+                    "role_label": "Cohost",
+                    "reply": "Aftertalk 2",
+                    "presentation": {"visual_state": "react"},
+                },
+            ],
+            "raw_memoriacore_payload": {"token": "must not leak"},
+        }
+    )
+    runner = MemoriaAftertalkRunner(storage, transport)
+
+    result = runner.run(
+        command=_command("cmd-aftertalk-display"),
+        snapshot=port.read_snapshot("session-runner"),
+        transition=_transition(LiveSessionPhase.AFTERTALK, action="continue_aftertalk"),
+        now=NOW,
+    )
+
+    assert result.status == "ok"
+    assert len(storage.interactions) == 2
+    assert len(storage.live_events) == 2
+    display_events = [normalize_display_event(event) for event in storage.live_events]
+    assert [event["public_payload"]["response_text"] for event in display_events] == [
+        "Aftertalk 1",
+        "Aftertalk 2",
+    ]
+    assert [event["public_payload"]["phase"] for event in display_events] == [
+        "aftertalk",
+        "aftertalk",
+    ]
+    assert display_events[0]["public_payload"]["presentation"]["voice_state"] == "speaking"
+    assert display_events[1]["public_payload"]["presentation"]["visual_state"] == "react"
+    _assert_no_private_payload(storage.live_events)
 
 
 def test_closing_runner_builds_final_message_and_marks_closing_completed():

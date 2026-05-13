@@ -1009,3 +1009,13 @@ Source:
 - `YouTubeBridgeV2/presentation/tts.py::enqueue_tts_request`
 - `YouTubeBridgeV2/presentation/tts.py::record_delivery_ack`
 - `YouTubeBridgeV2/presentation/tts.py::record_delivery_timeout`
+
+Wave 6C integration behavior:
+
+- Runtime Memoria runner 會對 completed character interaction 呼叫
+  `build_presentation_event(interaction)`。
+- 當 `event.should_present` 為 true，runner 會 append live event，包含
+  `event_type: "presentation_character_response"` 與
+  `public_metadata.display_event.event_type: "character_response"`。
+- Presentation live event 只是 display-safe projection；它不 enqueue TTS、不
+  acknowledge delivery、不處理 timeout delivery，也不改 runtime phase。

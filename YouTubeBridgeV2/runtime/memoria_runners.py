@@ -27,6 +27,7 @@ from YouTubeBridgeV2.live_episode_plan.runner import (
     next_planned_turn,
     record_planned_turn_result,
 )
+from YouTubeBridgeV2.presentation.tts import build_presentation_event
 from YouTubeBridgeV2.runtime.aftertalk import build_aftertalk_turn_request
 from YouTubeBridgeV2.runtime.application_service import (
     AdapterDispatchResult,
@@ -330,25 +331,135 @@ def _append_interactions(
         raise RuntimeError("storage manager missing append_v2_interaction")
     for index, message in enumerate(normalized.messages):
         message_id = str(message.get("message_id") or index + 1)
-        storage_manager.append_v2_interaction(
-            session_id,
-            _redact_public_value(
-                {
-                    "interaction_id": f"{session_id}:{command_id}:{phase.value}:{message_id}",
-                    "phase": phase.value,
-                    "speaker_id": str(message.get("speaker_id", "")),
-                    "public_content_summary": {
-                        "message_id": message_id,
-                        "speaker_id": str(message.get("speaker_id", "")),
-                        "content": str(message.get("content", "")),
-                        "mode": normalized.mode,
-                        "memoria_session_id": normalized.memoria_session_id,
-                    },
-                    "correlation_id": normalized.correlation.correlation_id,
-                    "created_at": now,
-                }
-            ),
+        interaction = _interaction_record_from_message(
+            session_id=session_id,
+            phase=phase,
+            command_id=command_id,
+            message_id=message_id,
+            message=message,
+            normalized=normalized,
+            now=now,
         )
+        stored = storage_manager.append_v2_interaction(
+            session_id,
+            _redact_public_value(interaction),
+        )
+        if isinstance(stored, dict):
+            presentation_source = {**interaction, **stored}
+        else:
+            presentation_source = interaction
+        _append_presentation_display_event(
+            storage_manager,
+            session_id=session_id,
+            interaction=presentation_source,
+            now=now,
+        )
+
+
+def _interaction_record_from_message(
+    *,
+    session_id: str,
+    phase: LiveSessionPhase,
+    command_id: str,
+    message_id: str,
+    message: dict[str, object],
+    normalized: NormalizedMemoriaResponse,
+    now: datetime,
+) -> dict[str, object]:
+    speaker_id = str(message.get("speaker_id", ""))
+    content = str(message.get("content", ""))
+    speaker_name = _optional_string(message.get("speaker_name") or message.get("character_name"))
+    role_label = _optional_string(message.get("role_label") or message.get("role"))
+    voice_id = _optional_string(message.get("voice_id"))
+    presentation = _object_to_dict(
+        message.get("presentation") or message.get("presentation_metadata") or {}
+    )
+    interaction_id = f"{session_id}:{command_id}:{phase.value}:{message_id}"
+    public_summary = {
+        "message_id": message_id,
+        "speaker_id": speaker_id,
+        "content": content,
+        "mode": normalized.mode,
+        "memoria_session_id": normalized.memoria_session_id,
+    }
+    if speaker_name:
+        public_summary["speaker_name"] = speaker_name
+    if role_label:
+        public_summary["role_label"] = role_label
+    if voice_id:
+        public_summary["voice_id"] = voice_id
+    if presentation:
+        public_summary["presentation"] = presentation
+    metadata = {
+        "correlation_id": normalized.correlation.correlation_id,
+        "request_id": normalized.correlation.request_id,
+        "trace_id": normalized.correlation.trace_id,
+    }
+    return _redact_public_value(
+        {
+            "interaction_id": interaction_id,
+            "event_id": f"presentation:{interaction_id}",
+            "status": "completed",
+            "session_id": session_id,
+            "phase": phase.value,
+            "speaker_id": speaker_id,
+            "character_id": speaker_id,
+            "character_name": speaker_name or speaker_id,
+            "role_label": role_label or _default_role_label(phase),
+            "response_text": content,
+            "completed_at": now,
+            "voice_id": voice_id or "",
+            "presentation": presentation,
+            "metadata": {
+                key: value
+                for key, value in metadata.items()
+                if value is not None
+            },
+            "public_content_summary": public_summary,
+            "correlation_id": normalized.correlation.correlation_id,
+            "created_at": now,
+        }
+    )
+
+
+def _append_presentation_display_event(
+    storage_manager: object,
+    *,
+    session_id: str,
+    interaction: dict[str, object],
+    now: datetime,
+) -> None:
+    if not hasattr(storage_manager, "append_v2_live_event"):
+        return
+    event = build_presentation_event(interaction)
+    if not event.should_present:
+        return
+    storage_manager.append_v2_live_event(
+        session_id,
+        _redact_public_value(
+            {
+                "event_id": event.event_id,
+                "event_type": "presentation_character_response",
+                "public_metadata": {
+                    "interaction_id": event.interaction_id,
+                    "display_event": event.display_event,
+                    "presentation": asdict(event.display_metadata),
+                    "public_payload": event.public_payload,
+                },
+                "created_at": now,
+            }
+        ),
+    )
+
+
+def _default_role_label(phase: LiveSessionPhase) -> str:
+    if phase is LiveSessionPhase.PLANNED_SHOW:
+        return "Planned Show"
+    if phase is LiveSessionPhase.AFTERTALK:
+        return "Aftertalk"
+    if phase is LiveSessionPhase.CLOSING:
+        return "Closing"
+    return "Character"
 
 
 def _append_finalization(
