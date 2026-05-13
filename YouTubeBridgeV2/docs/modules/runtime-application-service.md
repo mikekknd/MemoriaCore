@@ -124,6 +124,11 @@ Wave 4A scheduler contract:
 - `build_scheduler_tick_intent(...)` 產生 deterministic `RuntimeCommandType.TICK` command id，讓 scheduler tick 可走既有 command idempotency。
 - `dispatch_scheduler_tick(...)` 只做單次 runtime service delegation；background loop、phase automation policy、restart hardening 與 operator pause/resume controls 分別留給 4B/4C/4D。
 
+Wave 4B automation phase advancement:
+- `SchedulerSessionRef` / `SchedulerCycleResult` 定義一輪 scheduler cycle 的 explicit session input 與結果。
+- `build_scheduler_cycle_intents(...)` / `dispatch_scheduler_cycle(...)` 可對已知 active refs 自動發出 planned_show、aftertalk、closing tick。
+- Phase transition、duration policy、aftertalk policy 與 runner side effects 仍由 `RuntimeApplicationService` / Runtime Phase 決定；本階段不負責 durable active-session discovery、process lifecycle 或 pause/resume API。
+
 ### `RuntimeCommand`
 
 Source:

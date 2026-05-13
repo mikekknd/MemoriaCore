@@ -217,6 +217,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Single-dispatch helper：`dispatch_scheduler_tick(...)` 只委派 `RuntimeApplicationService.tick_session(...)`，不直接執行 adapter/storage/UI side effects。
 - [x] Scope boundary：本階段不啟動 background scheduler，不處理 4B automatic advancement、4C restart hardening 或 4D pause/resume controls。
 
+## Integration Wave 4B 狀態
+
+- [x] Scheduler cycle refs：`SchedulerSessionRef` 讓上層 scheduler 以 explicit refs 提供候選 session，不由 automation module 掃 storage。
+- [x] Automatic phase advancement：`dispatch_scheduler_cycle(...)` 可連續推進 `planned_show -> aftertalk -> closing -> ended`，沿用 runtime phase/duration/aftertalk policy。
+- [x] Scope boundary：本階段不建立 background process、不做 durable restart discovery、不新增 operator pause/resume controls。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

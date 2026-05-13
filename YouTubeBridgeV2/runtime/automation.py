@@ -48,6 +48,26 @@ class SchedulerTickIntent:
     payload: dict[str, object] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SchedulerSessionRef:
+    """Scheduler-owned reference to one candidate runtime session."""
+
+    session_id: str
+    current_phase: object | None = None
+    automation_enabled: bool = True
+    automation_paused: bool = False
+
+
+@dataclass(frozen=True)
+class SchedulerCycleResult:
+    """Summary for one scheduler cycle over explicit session refs."""
+
+    intents: tuple[SchedulerTickIntent, ...] = ()
+    dispatched: tuple[object, ...] = ()
+    skipped: tuple[SchedulerTickIntent, ...] = ()
+    next_run_delay_seconds: int = 5
+
+
 def build_scheduler_tick_intent(
     session_id: str,
     now: datetime,
@@ -76,6 +96,50 @@ def build_scheduler_tick_intent(
                 "issued_at": safe_now.isoformat(),
             },
         },
+    )
+
+
+def build_scheduler_cycle_intents(
+    sessions: object,
+    now: datetime,
+    policy: AutomationTickPolicy | None = None,
+) -> tuple[SchedulerTickIntent, ...]:
+    """Build deterministic tick intents for explicit scheduler session refs."""
+
+    tick_policy = policy or AutomationTickPolicy()
+    return tuple(
+        build_scheduler_tick_intent(
+            ref.session_id,
+            now,
+            _session_policy(tick_policy, ref),
+            current_phase=ref.current_phase,
+        )
+        for ref in (_session_ref(session) for session in _iter_sessions(sessions))
+    )
+
+
+def dispatch_scheduler_cycle(
+    runtime_service: object,
+    sessions: object,
+    now: datetime,
+    policy: AutomationTickPolicy | None = None,
+) -> SchedulerCycleResult:
+    """Dispatch one scheduler cycle through RuntimeApplicationService ticks."""
+
+    tick_policy = policy or AutomationTickPolicy()
+    intents = build_scheduler_cycle_intents(sessions, now, tick_policy)
+    dispatched: list[object] = []
+    skipped: list[SchedulerTickIntent] = []
+    for intent in intents:
+        if intent.should_dispatch:
+            dispatched.append(dispatch_scheduler_tick(runtime_service, intent, now))
+        else:
+            skipped.append(intent)
+    return SchedulerCycleResult(
+        intents=intents,
+        dispatched=tuple(dispatched),
+        skipped=tuple(skipped),
+        next_run_delay_seconds=tick_policy.interval_seconds,
     )
 
 
@@ -109,6 +173,41 @@ def dispatch_scheduler_tick(
         payload=dict(intent.payload),
     )
     return runtime_service.tick_session(command, now)
+
+
+def _session_policy(
+    policy: AutomationTickPolicy,
+    ref: SchedulerSessionRef,
+) -> AutomationTickPolicy:
+    return AutomationTickPolicy(
+        enabled=policy.enabled and ref.automation_enabled,
+        paused=policy.paused or ref.automation_paused,
+        interval_seconds=policy.interval_seconds,
+        command_prefix=policy.command_prefix,
+        source=policy.source,
+    )
+
+
+def _iter_sessions(sessions: object) -> tuple[object, ...]:
+    if sessions is None:
+        return ()
+    if isinstance(sessions, tuple):
+        return sessions
+    if isinstance(sessions, list):
+        return tuple(sessions)
+    return tuple(sessions)  # type: ignore[arg-type]
+
+
+def _session_ref(value: object) -> SchedulerSessionRef:
+    if isinstance(value, SchedulerSessionRef):
+        return value
+    data = value if isinstance(value, dict) else vars(value)
+    return SchedulerSessionRef(
+        session_id=str(data["session_id"]),
+        current_phase=data.get("current_phase"),
+        automation_enabled=bool(data.get("automation_enabled", True)),
+        automation_paused=bool(data.get("automation_paused", False)),
+    )
 
 
 def _skip_reason(policy: AutomationTickPolicy, current_phase: object | None) -> str:
@@ -149,7 +248,11 @@ def _int_value(value: object, default: int) -> int:
 
 __all__ = [
     "AutomationTickPolicy",
+    "SchedulerCycleResult",
+    "SchedulerSessionRef",
     "SchedulerTickIntent",
+    "build_scheduler_cycle_intents",
     "build_scheduler_tick_intent",
+    "dispatch_scheduler_cycle",
     "dispatch_scheduler_tick",
 ]
