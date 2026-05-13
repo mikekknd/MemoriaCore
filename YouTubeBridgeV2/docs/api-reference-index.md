@@ -357,6 +357,32 @@ Stability:
 Source:
 - `tests/youtubebridge_v2/test_legacy_boundary_audit.py`
 
+### `tests/youtubebridge_v2/test_docs_api_reference_sync.py`
+
+Purpose:
+Final Hardening docs/API sync audit，驗證 V2 FastAPI route declarations 與 API reference / Server API Surface module doc 保持同步。
+
+Params:
+- 無。
+
+Returns:
+- pytest pass/fail audit result。
+
+Raises:
+- AssertionError — route endpoint、endpoint function name 或 Final Hardening docs status 漏列時。
+
+Side Effects:
+- 無；只讀取 route declarations 與 Markdown docs。
+
+Since:
+- `YouTubeBridgeV2 v0.1`
+
+Stability:
+- `internal`
+
+Source:
+- `tests/youtubebridge_v2/test_docs_api_reference_sync.py`
+
 ### Runtime Application Service
 
 Purpose:

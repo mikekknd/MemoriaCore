@@ -55,6 +55,7 @@ Final Hardening startup/shutdown validation 使用 `tests/youtubebridge_v2/test_
 - `POST /v2/sessions/{session_id}/plan`
 - `GET /v2/sessions/{session_id}/phase`
 - `POST /v2/sessions/{session_id}/aftertalk-policy`
+- `POST /v2/sessions/{session_id}/automation-control`
 - `POST /v2/sessions/{session_id}/manual-close`
 - `POST /v2/sessions/{session_id}/tick`
 - `POST /v2/sessions/{session_id}/youtube-events`
@@ -75,6 +76,7 @@ Final Hardening startup/shutdown validation 使用 `tests/youtubebridge_v2/test_
 - `bind_plan_endpoint`
 - `get_phase_endpoint`
 - `update_aftertalk_policy_endpoint`
+- `update_automation_control_endpoint`
 - `manual_close_endpoint`
 - `tick_session_endpoint`
 - `ingest_youtube_event_endpoint`
