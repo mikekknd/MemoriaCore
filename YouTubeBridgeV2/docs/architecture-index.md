@@ -154,7 +154,14 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] LiveEpisodePlan state persistence：`RuntimeStoragePort.bind_plan(...)` 會驗證 plan contract，並保存 sanitized `live_episode_plan_state`，包含 `contract`、`cursor`、`completed_turn_ids`、`last_memoria_session_id`。
 - [x] Memoria runner vertical slice：已建立 injectable planned-show、aftertalk、closing runners，使用 `MemoriaTransportProtocol.send(...)`；未注入 transport 時 production composition 繼續使用 no-op runners。
 - [x] Fake-transport E2E：已驗證 API create/bind/tick/manual-close/tick 可跑完 `planned_show -> aftertalk -> closing -> ended`，且 durable StorageManager rebuild 後可 replay command result。
-- [ ] 真外部 transport：MemoriaCore HTTP transport、YouTube polling、TTS delivery 與 background scheduler 仍保留給後續 wave。
+- [ ] 真外部 transport：MemoriaCore production wiring toggle、YouTube polling、TTS delivery 與 background scheduler 仍保留給後續 wave。
+
+## Integration Wave 2E-A 狀態
+
+- [x] MemoriaCore transport config：已建立 `youtubebridge_v2_memoria_transport` prefs 設定解析，空設定代表未啟用，不硬寫 secret。
+- [x] Sync HTTP client boundary：已建立可注入 `SyncJsonHttpClientProtocol` 與 stdlib `UrllibSyncJsonHttpClient`。
+- [x] Memoria transport implementation：已建立 `MemoriaSyncHttpTransport`，符合 runner 使用的 `send(request) -> dict[str, object]`。
+- [ ] Production wiring toggle：仍保留給 Wave 2E-D；主 app 未設定時繼續 no-op，不意外外呼。
 
 ## Module Design 文件
 

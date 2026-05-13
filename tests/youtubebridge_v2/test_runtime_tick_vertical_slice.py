@@ -7,6 +7,10 @@ from fastapi.testclient import TestClient
 from core.storage_manager import StorageManager
 from tests.youtubebridge_v2.fakes import InMemoryV2StorageManager
 from YouTubeBridgeV2.app import create_v2_app
+from YouTubeBridgeV2.adapters.memoria_http import (
+    MemoriaHttpTransportConfig,
+    MemoriaSyncHttpTransport,
+)
 from YouTubeBridgeV2.composition import create_v2_composition
 from YouTubeBridgeV2.production import create_production_v2_composition
 from YouTubeBridgeV2.runtime.memoria_runners import (
@@ -182,6 +186,86 @@ def _storage_manager(tmp_path):
         persona_snapshot_db_path=str(tmp_path / "persona_snapshots.db"),
         youtube_bridge_v2_db_path=str(tmp_path / "youtubebridge_v2.db"),
     )
+
+
+class FakeSyncJsonClient:
+    def __init__(self, *responses: dict[str, object]) -> None:
+        self.responses = list(responses)
+        self.calls = []
+
+    def post_json(self, *, url, body, headers, timeout_seconds):
+        self.calls.append(
+            {
+                "url": url,
+                "body": dict(body),
+                "headers": dict(headers),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return self.responses.pop(0)
+
+
+def test_production_composition_accepts_memoria_sync_http_transport_with_fake_client(tmp_path):
+    storage = _storage_manager(tmp_path)
+    fake_client = FakeSyncJsonClient(
+        {
+            "session_id": "memoria-http-planned",
+            "message_id": "http-1",
+            "character_id": "host",
+            "reply": "http planned response",
+        }
+    )
+    transport = MemoriaSyncHttpTransport(
+        MemoriaHttpTransportConfig(
+            base_url="http://127.0.0.1:8088",
+            api_key="secret-token",
+            timeout_seconds=4,
+        ),
+        client=fake_client,
+    )
+    composition = create_production_v2_composition(storage, memoria_transport=transport)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: NOW))
+    _create_and_bind(client, "session-http-transport")
+
+    response = client.post(
+        "/v2/sessions/session-http-transport/tick",
+        json={"command_id": "cmd-http-planned"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert len(fake_client.calls) == 1
+    assert fake_client.calls[0]["url"] == "http://127.0.0.1:8088/api/v1/chat/sync"
+    assert fake_client.calls[0]["timeout_seconds"] == 4.0
+    assert fake_client.calls[0]["headers"]["Authorization"] == "Bearer secret-token"
+    assert "secret-token" not in repr(response.json())
+    assert (
+        storage.get_v2_session("session-http-transport")["metadata"][
+            "live_episode_plan_state"
+        ]["last_memoria_session_id"]
+        == "memoria-http-planned"
+    )
+
+
+def test_production_composition_without_memoria_transport_keeps_noop_runner(tmp_path):
+    storage = _storage_manager(tmp_path)
+    composition = create_production_v2_composition(storage)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: NOW))
+    _create_and_bind(client, "session-noop-transport")
+
+    response = client.post(
+        "/v2/sessions/session-noop-transport/tick",
+        json={"command_id": "cmd-noop-planned"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["events"][0]["payload"]["adapter_summary"] == {
+        "mode": "noop",
+        "runner": "planned_show",
+        "external_adapter": "not_configured",
+        "next_action": "run_planned_show",
+    }
 
 
 def test_real_storage_tick_flow_survives_storage_and_composition_rebuild(tmp_path):

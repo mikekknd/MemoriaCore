@@ -1,4 +1,5 @@
 import inspect
+import json
 
 from YouTubeBridgeV2.adapters.memoria import (
     MemoriaAdapterError,
@@ -8,6 +9,15 @@ from YouTubeBridgeV2.adapters.memoria import (
     build_memoria_request,
     classify_memoria_error,
     normalize_memoria_response,
+)
+from YouTubeBridgeV2.adapters.memoria_http import (
+    MEMORIA_TRANSPORT_PREFS_KEY,
+    MemoriaHttpConfigError,
+    MemoriaHttpTransportConfig,
+    MemoriaSyncHttpTransport,
+    UrllibSyncJsonHttpClient,
+    load_memoria_http_transport_config,
+    parse_memoria_http_transport_config,
 )
 from YouTubeBridgeV2.live_episode_plan.runner import PlannedTurnIntent
 from YouTubeBridgeV2.runtime.aftertalk import AftertalkCue, AftertalkTurnRequest
@@ -120,6 +130,203 @@ def _assert_no_private_payload(value):
         "memoriacore_raw",
     ):
         assert forbidden not in text
+
+
+class FakePrefsStorage:
+    def __init__(self, prefs):
+        self.prefs = prefs
+
+    def load_prefs(self):
+        return self.prefs
+
+
+def test_memoria_http_transport_config_loads_from_storage_prefs_without_secret_repr():
+    storage = FakePrefsStorage(
+        {
+            MEMORIA_TRANSPORT_PREFS_KEY: {
+                "base_url": "http://127.0.0.1:8088/",
+                "api_key": "secret-token",
+                "timeout_seconds": 7.5,
+            }
+        }
+    )
+
+    config = load_memoria_http_transport_config(storage)
+
+    assert isinstance(config, MemoriaHttpTransportConfig)
+    assert config.base_url == "http://127.0.0.1:8088"
+    assert config.api_key == "secret-token"
+    assert config.timeout_seconds == 7.5
+    assert (
+        config.resolve_url("/api/v1/chat/sync")
+        == "http://127.0.0.1:8088/api/v1/chat/sync"
+    )
+    assert config.public_summary() == {
+        "base_url": "http://127.0.0.1:8088",
+        "timeout_seconds": 7.5,
+        "has_api_key": True,
+    }
+    assert "secret-token" not in repr(config)
+    assert "secret-token" not in repr(config.public_summary())
+
+
+def test_memoria_http_transport_config_absent_or_blank_stays_disabled():
+    assert load_memoria_http_transport_config(FakePrefsStorage({})) is None
+    assert parse_memoria_http_transport_config({}) is None
+    assert parse_memoria_http_transport_config({"base_url": "   "}) is None
+
+
+def test_memoria_http_transport_config_rejects_invalid_url_and_timeout():
+    for raw in (
+        {"base_url": "file:///tmp/memoria"},
+        {"base_url": "http://127.0.0.1:8088", "timeout_seconds": 0},
+        {"base_url": "http://127.0.0.1:8088", "timeout_seconds": "slow"},
+    ):
+        try:
+            parse_memoria_http_transport_config(raw)
+        except MemoriaHttpConfigError as exc:
+            assert str(exc)
+        else:
+            raise AssertionError(f"expected invalid config to fail: {raw!r}")
+
+
+def test_memoria_http_transport_config_rejects_absolute_endpoint_override():
+    config = MemoriaHttpTransportConfig(
+        base_url="http://127.0.0.1:8088",
+        api_key="secret-token",
+    )
+
+    for endpoint in (
+        "https://example.test/steal",
+        "//example.test/steal",
+    ):
+        try:
+            config.resolve_url(endpoint)
+        except MemoriaHttpConfigError as exc:
+            assert "relative endpoint" in str(exc)
+        else:
+            raise AssertionError(f"expected absolute endpoint to fail: {endpoint!r}")
+
+
+class FakeSyncJsonClient:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def post_json(self, *, url, body, headers, timeout_seconds):
+        self.calls.append(
+            {
+                "url": url,
+                "body": dict(body),
+                "headers": dict(headers),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return self.response
+
+
+def test_memoria_sync_http_transport_posts_prepared_request_through_injected_client():
+    client = FakeSyncJsonClient(
+        {
+            "session_id": "memoria-session-2",
+            "message_id": "m1",
+            "character_id": "host",
+            "reply": "hello",
+        }
+    )
+    transport = MemoriaSyncHttpTransport(
+        MemoriaHttpTransportConfig(
+            base_url="http://127.0.0.1:8088",
+            api_key="secret-token",
+            timeout_seconds=3,
+        ),
+        client=client,
+    )
+    request = build_memoria_request(_planned_turn_intent(), _context())
+
+    response = transport.send(request)
+
+    assert response["reply"] == "hello"
+    assert len(client.calls) == 1
+    assert client.calls[0]["url"] == "http://127.0.0.1:8088/api/v1/chat/sync"
+    assert client.calls[0]["body"] == request.body
+    assert client.calls[0]["headers"]["Authorization"] == "Bearer secret-token"
+    assert client.calls[0]["headers"]["X-Correlation-Id"] == "corr-1"
+    assert client.calls[0]["headers"]["X-Request-Id"] == "request-1"
+    assert client.calls[0]["timeout_seconds"] == 3.0
+    assert transport.public_summary() == {
+        "transport": "memoria_sync_http",
+        "base_url": "http://127.0.0.1:8088",
+        "timeout_seconds": 3.0,
+        "has_api_key": True,
+    }
+    assert "secret-token" not in repr(transport)
+    assert "secret-token" not in repr(transport.public_summary())
+
+
+def test_memoria_sync_http_transport_omits_authorization_when_api_key_is_absent():
+    client = FakeSyncJsonClient(
+        {
+            "session_id": "memoria-session-2",
+            "message_id": "m1",
+            "character_id": "host",
+            "reply": "hello",
+        }
+    )
+    transport = MemoriaSyncHttpTransport(
+        MemoriaHttpTransportConfig(base_url="http://127.0.0.1:8088"),
+        client=client,
+    )
+
+    transport.send(build_memoria_request(_planned_turn_intent(), _context()))
+
+    assert "Authorization" not in client.calls[0]["headers"]
+
+
+class FakeUrlopenResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def test_urllib_sync_json_client_encodes_json_request(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["method"] = request.get_method()
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = request.data.decode("utf-8")
+        return FakeUrlopenResponse(b'{"ok": true, "reply": "received"}')
+
+    monkeypatch.setattr(
+        "YouTubeBridgeV2.adapters.memoria_http.urllib_request.urlopen",
+        fake_urlopen,
+    )
+    client = UrllibSyncJsonHttpClient()
+
+    response = client.post_json(
+        url="http://127.0.0.1:8088/api/v1/chat/sync",
+        body={"content": "hello"},
+        headers={"X-Request-Id": "request-1"},
+        timeout_seconds=2.5,
+    )
+
+    assert response == {"ok": True, "reply": "received"}
+    assert captured["url"] == "http://127.0.0.1:8088/api/v1/chat/sync"
+    assert captured["method"] == "POST"
+    assert captured["timeout"] == 2.5
+    assert json.loads(captured["body"]) == {"content": "hello"}
+    assert captured["headers"]["X-request-id"] == "request-1"
 
 
 def test_planned_turn_intent_maps_to_memoria_chat_request():

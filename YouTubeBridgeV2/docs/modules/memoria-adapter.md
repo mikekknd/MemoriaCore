@@ -46,7 +46,8 @@ MemoriaCore Adapter 負責把 V2 的 planned show intent、aftertalk request 與
 
 ## Public Entrypoints
 
-本模組的 public contracts 已由 `YouTubeBridgeV2/adapters/memoria.py` 實作。
+本模組的 public contracts 已由 `YouTubeBridgeV2/adapters/memoria.py` 與
+`YouTubeBridgeV2/adapters/memoria_http.py` 實作。
 
 - `MemoriaRequestPayload`：MemoriaCore request envelope。
 - `NormalizedMemoriaResponse`：V2 內部使用的 response shape。
@@ -55,6 +56,12 @@ MemoriaCore Adapter 負責把 V2 的 planned show intent、aftertalk request 與
 - `build_memoria_request(intent, context)`：將 planned show / aftertalk / closing intent 映射成 MemoriaCore request envelope。
 - `normalize_memoria_response(response_payload, correlation_metadata)`：將 MemoriaCore response payload 正規化成 V2 response 或 adapter error。
 - `classify_memoria_error(error)`：將 timeout、transport、auth 與 unknown error 分類成 adapter error，不改變 phase。
+- `MemoriaHttpTransportConfig`：真 MemoriaCore HTTP transport 的 public-safe 設定 contract。
+- `parse_memoria_http_transport_config(raw_config)`：從明確 mapping 解析 transport config；空設定代表未啟用。
+- `load_memoria_http_transport_config(storage_manager)`：從 `StorageManager.load_prefs()` 讀取 `youtubebridge_v2_memoria_transport`，不硬寫 secret。
+- `SyncJsonHttpClientProtocol`：可替換的同步 JSON client protocol，供單元測試注入 fake client。
+- `UrllibSyncJsonHttpClient`：stdlib `urllib.request` backed sync JSON client。
+- `MemoriaSyncHttpTransport`：符合 `MemoriaTransportProtocol.send(...)` 的真 HTTP transport implementation。
 
 ## Mapping Rules
 
@@ -77,6 +84,8 @@ Public summaries must include correlation metadata but not hidden prompts, raw r
 - auth delegation 缺失時回傳 auth failure。
 - hidden prompt 與 raw request 不得出現在 public summary。
 - group chat response 缺少 speaker metadata 時回傳 invalid response。
+- HTTP transport config 缺少 `base_url` 時視為未啟用；`base_url` 非 http/https 或 timeout 非正數時回設定錯誤，不啟動真外呼。
+- HTTP transport public summary 只能顯示 `base_url`、`timeout_seconds` 與 `has_api_key`，不得顯示 token/header/raw payload。
 
 ## Test Strategy
 

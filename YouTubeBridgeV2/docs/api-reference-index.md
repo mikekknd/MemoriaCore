@@ -421,6 +421,8 @@ Source:
 
 Purpose:
 將 V2 planned show / aftertalk / closing intent 轉成 MemoriaCore `/api/v1/chat/sync` request envelope，並正規化回覆與錯誤。
+HTTP transport config/client 條目定義真同步 transport 邊界，但 production
+`/v2` 在 Wave 2E-D 加入 opt-in toggle 前，仍需要明確注入 transport 才會外呼。
 
 Concepts:
 - `MemoriaRequestPayload`
@@ -430,6 +432,14 @@ Concepts:
 - `build_memoria_request`
 - `normalize_memoria_response`
 - `classify_memoria_error`
+- `MEMORIA_TRANSPORT_PREFS_KEY`
+- `MemoriaHttpConfigError`
+- `MemoriaHttpTransportConfig`
+- `SyncJsonHttpClientProtocol`
+- `UrllibSyncJsonHttpClient`
+- `MemoriaSyncHttpTransport`
+- `parse_memoria_http_transport_config`
+- `load_memoria_http_transport_config`
 
 Stability:
 - `provisional`
@@ -442,6 +452,14 @@ Source:
 - `YouTubeBridgeV2/adapters/memoria.py::build_memoria_request`
 - `YouTubeBridgeV2/adapters/memoria.py::normalize_memoria_response`
 - `YouTubeBridgeV2/adapters/memoria.py::classify_memoria_error`
+- `YouTubeBridgeV2/adapters/memoria_http.py::MEMORIA_TRANSPORT_PREFS_KEY`
+- `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaHttpConfigError`
+- `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaHttpTransportConfig`
+- `YouTubeBridgeV2/adapters/memoria_http.py::SyncJsonHttpClientProtocol`
+- `YouTubeBridgeV2/adapters/memoria_http.py::UrllibSyncJsonHttpClient`
+- `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaSyncHttpTransport`
+- `YouTubeBridgeV2/adapters/memoria_http.py::parse_memoria_http_transport_config`
+- `YouTubeBridgeV2/adapters/memoria_http.py::load_memoria_http_transport_config`
 
 ### Closing
 
