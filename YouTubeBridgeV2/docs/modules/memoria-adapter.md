@@ -104,6 +104,7 @@ Public summaries must include correlation metadata but not hidden prompts, raw r
 - privacy tests：public summary 不含 hidden prompt/raw payload。
 - side effect tests：adapter 不寫 storage、不改 phase、不更新 UI。
 - real integration harness：`tests/youtubebridge_v2/test_memoria_real_integration.py` 預設 skip；只有設定 `YB2_MEMORIA_INTEGRATION=1`、`YB2_MEMORIA_BASE_URL` 與 `YB2_MEMORIA_CHARACTER_ID` 時才會呼叫本機 MemoriaCore。
+- full external V2 E2E harness：`tests/youtubebridge_v2/test_full_external_e2e.py` 預設 skip；只有設定 `YB2_FULL_EXTERNAL_E2E=1`、MemoriaCore base URL 與 character id 時，才會把真 Memoria HTTP transport 接進 V2 runtime/display/TTS round trip。
 
 ## Open Questions
 

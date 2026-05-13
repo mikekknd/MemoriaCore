@@ -481,6 +481,10 @@ Concepts:
 - `MemoriaSyncHttpTransport`
 - `parse_memoria_http_transport_config`
 - `load_memoria_http_transport_config`
+- `YB2_FULL_EXTERNAL_E2E`
+- `YB2_EXTERNAL_MEMORIA_BASE_URL`
+- `YB2_EXTERNAL_MEMORIA_CHARACTER_ID`
+- `test_full_external_v2_memoria_display_tts_round_trip`
 
 Stability:
 - `provisional`
@@ -502,6 +506,17 @@ Source:
 - `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaSyncHttpTransport`
 - `YouTubeBridgeV2/adapters/memoria_http.py::parse_memoria_http_transport_config`
 - `YouTubeBridgeV2/adapters/memoria_http.py::load_memoria_http_transport_config`
+- `tests/youtubebridge_v2/test_full_external_e2e.py::test_full_external_v2_memoria_display_tts_round_trip`
+
+External E2E behavior:
+
+- `YB2_FULL_EXTERNAL_E2E=1` 明確啟用 full external V2 E2E；預設未設定時
+  skip，不呼叫外部 MemoriaCore。
+- `YB2_EXTERNAL_MEMORIA_BASE_URL` / `YB2_MEMORIA_BASE_URL` 指向真
+  MemoriaCore HTTP base URL；`YB2_EXTERNAL_MEMORIA_CHARACTER_ID` /
+  `YB2_MEMORIA_CHARACTER_ID` 指定 planned turn speaker。
+- Harness 驗證 V2 create/plan/tick/display stream/TTS queue/ack/timeout；不代表
+  YouTube polling、真 TTS provider 或 startup/shutdown validation 已完成。
 
 ### Closing
 

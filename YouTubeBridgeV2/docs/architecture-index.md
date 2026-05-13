@@ -307,6 +307,11 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Browser smoke boundary：新增 skipped-by-default browser E2E smoke，可用本機 Playwright Chrome 啟動 temporary V2 app 驗證 desktop/mobile Chat Display 與 queue/ack/timeout API。
 - [x] Scope boundary：本階段仍不實作真實 TTS provider、audio playback、OBS/browser callback 或 roadmap checkbox 更新。
 
+## Final Hardening 狀態
+
+- [x] Full external E2E harness：新增 skipped-by-default `tests/youtubebridge_v2/test_full_external_e2e.py`，在 `YB2_FULL_EXTERNAL_E2E=1` 且提供 MemoriaCore base URL / character id 時，會用真 Memoria HTTP transport 跑 V2 create/plan/tick/display/TTS queue/ack/timeout round trip。
+- [x] Default safety boundary：未設定 opt-in env 時，full external E2E 不外呼；本階段不驗證 YouTube polling、真 TTS provider、8088 startup/shutdown 或 PR readiness。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：
