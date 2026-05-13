@@ -42,6 +42,10 @@ class FakeRuntimeService:
         self.calls.append(("tick_session", command, now))
         return _result(command, phase=LiveSessionPhase.AFTERTALK)
 
+    def handle_youtube_event(self, command, now):
+        self.calls.append(("handle_youtube_event", command, now))
+        return _result(command, phase=LiveSessionPhase.PLANNED_SHOW)
+
 
 class FailingRuntimeService:
     def create_session(self, command, now):
@@ -324,6 +328,65 @@ def test_tick_session_delegates_to_runtime_service():
     assert command.command_type == RuntimeCommandType.TICK
     assert command.command_id == "cmd-tick"
     assert command.payload == {}
+
+
+def test_ingest_youtube_event_delegates_to_runtime_service():
+    service = FakeRuntimeService()
+    client = TestClient(_app(runtime_service=service))
+
+    response = client.post(
+        "/v2/sessions/session-1/youtube-events",
+        json={
+            "command_id": "cmd-youtube-api",
+            "youtube_event": {
+                "id": "yt-evt-1",
+                "snippet": {
+                    "type": "textMessageEvent",
+                    "displayMessage": "Hello runtime",
+                    "textMessageDetails": {"messageText": "Hello runtime"},
+                },
+                "authorDetails": {"displayName": "Mika", "channelId": "channel-1"},
+                "raw_payload": {"access_token": "must not leak"},
+            },
+            "polling_cursor": {
+                "live_chat_id": "live-chat-1",
+                "next_page_token": "page-1",
+                "polling_interval_millis": 1500,
+                "seen_event_ids": [],
+            },
+            "page_info": {
+                "next_page_token": "page-2",
+                "polling_interval_millis": 2500,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert service.calls[0][0] == "handle_youtube_event"
+    command = service.calls[0][1]
+    assert command.command_type == RuntimeCommandType.HANDLE_YOUTUBE_EVENT
+    assert command.command_id == "cmd-youtube-api"
+    assert command.session_id == "session-1"
+    assert command.payload["youtube_event"]["id"] == "yt-evt-1"
+    assert command.payload["polling_cursor"]["live_chat_id"] == "live-chat-1"
+    assert command.payload["page_info"]["next_page_token"] == "page-2"
+    _assert_no_private_payload(response.json())
+
+
+def test_ingest_youtube_event_requires_event_payload():
+    service = FakeRuntimeService()
+    client = TestClient(_app(runtime_service=service))
+
+    response = client.post(
+        "/v2/sessions/session-1/youtube-events",
+        json={"command_id": "cmd-youtube-api"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert service.calls == []
+    _assert_no_private_payload(response.json())
 
 
 def test_get_session_events_returns_event_history():

@@ -53,6 +53,7 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 - `POST /v2/sessions/{session_id}/aftertalk-policy`
 - `POST /v2/sessions/{session_id}/manual-close`
 - `POST /v2/sessions/{session_id}/tick`
+- `POST /v2/sessions/{session_id}/youtube-events`
 - `GET /v2/sessions/{session_id}/events`
 - `GET /v2/sessions/{session_id}/operator-stream`
 - `GET /v2/sessions/{session_id}/display-stream`
@@ -63,6 +64,7 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 - `update_aftertalk_policy_endpoint`
 - `manual_close_endpoint`
 - `tick_session_endpoint`
+- `ingest_youtube_event_endpoint`
 - `get_session_events_endpoint`
 - `operator_stream_endpoint`
 - `display_stream_endpoint`
@@ -75,6 +77,7 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 | phase/status reads | Read via runtime service or query service, not direct storage internals. |
 | manual close | Create command; do not mutate phase in route handler. |
 | runtime tick | Create `RuntimeCommandType.TICK` and delegate to Runtime Application Service; route does not run adapters directly. |
+| YouTube event ingestion | Validate request and delegate `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`; route does not call YouTube adapter directly. |
 | aftertalk policy update | Validate policy and delegate command. |
 | operator stream | May expose operator-safe diagnostics and controls state. |
 | display stream | Must be display-safe and read-only. |
@@ -90,6 +93,7 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 | `POST /v2/sessions/{session_id}/aftertalk-policy` | `operator` |
 | `POST /v2/sessions/{session_id}/manual-close` | `operator` |
 | `POST /v2/sessions/{session_id}/tick` | `operator` |
+| `POST /v2/sessions/{session_id}/youtube-events` | `operator` |
 | `GET /v2/sessions/{session_id}` | `observer` or `operator` |
 | `GET /v2/sessions/{session_id}/phase` | `observer` or `operator` |
 | `GET /v2/sessions/{session_id}/events` | `observer` or `operator` |

@@ -241,6 +241,7 @@ def _allowed_actions(group: PermissionGroup) -> tuple[str, ...]:
             "update_aftertalk_policy",
             "manual_close",
             "tick_session",
+            "ingest_youtube_event",
             "bind_plan",
             "create_session",
         )
@@ -274,6 +275,8 @@ _ROUTE_ACTIONS = {
     "tick": "tick_session",
     "tick_session": "tick_session",
     "update_aftertalk_policy": "update_aftertalk_policy",
+    "youtube_event_ingest": "ingest_youtube_event",
+    "youtube_events": "ingest_youtube_event",
 }
 
 

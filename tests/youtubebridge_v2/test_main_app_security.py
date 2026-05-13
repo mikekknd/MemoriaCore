@@ -38,6 +38,17 @@ class CapturingRuntimeService:
             "correlation_id": f"runtime-{command.command_id}",
         }
 
+    def handle_youtube_event(self, command, now):
+        self.commands.append(command)
+        return {
+            "status": "ok",
+            "session_id": command.session_id,
+            "phase": LiveSessionPhase.PLANNED_SHOW,
+            "events": [],
+            "errors": [],
+            "correlation_id": f"runtime-{command.command_id}",
+        }
+
 
 def _storage_manager(tmp_path):
     return StorageManager(
@@ -287,6 +298,40 @@ def test_main_app_v2_tick_command_receives_api_key_permission_context(
     assert "tick_session" in permission.allowed_actions
 
 
+def test_main_app_v2_youtube_event_command_receives_operator_permission_context(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage_manager(tmp_path)
+    _save_api_keys(storage)
+    api_main = _install_test_storage(monkeypatch, storage)
+    service = CapturingRuntimeService()
+    monkeypatch.setitem(
+        api_main.app.dependency_overrides,
+        api_main.youtubebridge_v2_routes.get_runtime_service,
+        lambda: service,
+    )
+    client = _remote_client(api_main.app)
+
+    response = client.post(
+        "/v2/sessions/session-sec/youtube-events",
+        headers={"x-youtubebridgev2-api-key": OPERATOR_KEY},
+        json={
+            "command_id": "cmd-capture-youtube",
+            "youtube_event": {"id": "yt-evt-1", "snippet": {}, "authorDetails": {}},
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(service.commands) == 1
+    permission = service.commands[0].permission_context
+    assert permission is not None
+    assert permission.auth_method == "api_key"
+    assert permission.permission_group == PermissionGroup.OPERATOR
+    assert permission.is_loopback is False
+    assert "ingest_youtube_event" in permission.allowed_actions
+
+
 def test_main_app_v2_observer_key_can_read_status_events_and_operator_stream_only(
     tmp_path,
     monkeypatch,
@@ -330,6 +375,14 @@ def test_main_app_v2_observer_key_can_read_status_events_and_operator_stream_onl
         headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
         json={"command_id": "cmd-observer-write", "session_id": "observer-write"},
     )
+    ingest_response = client.post(
+        "/v2/sessions/observer-session/youtube-events",
+        headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
+        json={
+            "command_id": "cmd-observer-youtube",
+            "youtube_event": {"id": "yt-evt-1", "snippet": {}, "authorDetails": {}},
+        },
+    )
 
     assert session_response.status_code == 200
     assert session_response.json()["session_id"] == "observer-session"
@@ -339,6 +392,7 @@ def test_main_app_v2_observer_key_can_read_status_events_and_operator_stream_onl
     _assert_security_error(display_response, status_code=403, code="forbidden")
     _assert_security_error(tick_response, status_code=403, code="forbidden")
     _assert_security_error(write_response, status_code=403, code="forbidden")
+    _assert_security_error(ingest_response, status_code=403, code="forbidden")
     assert storage.get_v2_session("observer-write") is None
 
 
@@ -381,6 +435,14 @@ def test_main_app_v2_display_key_can_read_display_stream_only(
         headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
         json={"command_id": "cmd-display-tick"},
     )
+    ingest_response = client.post(
+        "/v2/sessions/display-session/youtube-events",
+        headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
+        json={
+            "command_id": "cmd-display-youtube",
+            "youtube_event": {"id": "yt-evt-1", "snippet": {}, "authorDetails": {}},
+        },
+    )
 
     assert display_status == 200
     _assert_security_error(phase_response, status_code=403, code="forbidden")
@@ -388,6 +450,7 @@ def test_main_app_v2_display_key_can_read_display_stream_only(
     _assert_security_error(operator_response, status_code=403, code="forbidden")
     _assert_security_error(manual_close_response, status_code=403, code="forbidden")
     _assert_security_error(tick_response, status_code=403, code="forbidden")
+    _assert_security_error(ingest_response, status_code=403, code="forbidden")
 
 
 def test_main_app_v2_loopback_without_key_still_has_operator_access(

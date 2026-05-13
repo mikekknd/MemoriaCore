@@ -625,6 +625,7 @@ Concepts:
 - `POST /v2/sessions/{session_id}/aftertalk-policy`
 - `POST /v2/sessions/{session_id}/manual-close`
 - `POST /v2/sessions/{session_id}/tick`
+- `POST /v2/sessions/{session_id}/youtube-events`
 - `GET /v2/sessions/{session_id}/events`
 - `GET /v2/sessions/{session_id}/operator-stream`
 - `GET /v2/sessions/{session_id}/display-stream`
@@ -636,6 +637,8 @@ Concepts:
 - `manual_close_endpoint`
 - `TickRequest`
 - `tick_session_endpoint`
+- `YouTubeEventIngestRequest`
+- `ingest_youtube_event_endpoint`
 - `get_session_events_endpoint`
 - `operator_stream_endpoint`
 - `display_stream_endpoint`
@@ -654,9 +657,31 @@ Source:
 - `YouTubeBridgeV2/server/routes.py::manual_close_endpoint`
 - `YouTubeBridgeV2/server/routes.py::TickRequest`
 - `YouTubeBridgeV2/server/routes.py::tick_session_endpoint`
+- `YouTubeBridgeV2/server/routes.py::YouTubeEventIngestRequest`
+- `YouTubeBridgeV2/server/routes.py::ingest_youtube_event_endpoint`
 - `YouTubeBridgeV2/server/routes.py::get_session_events_endpoint`
 - `YouTubeBridgeV2/server/routes.py::operator_stream_endpoint`
 - `YouTubeBridgeV2/server/routes.py::display_stream_endpoint`
+
+### Ingest YouTube Event Endpoint
+
+Purpose:
+接受一筆 operator-supplied YouTube event payload，並委派 `RuntimeApplicationService.handle_youtube_event(...)`。
+
+Route:
+- `POST /v2/sessions/{session_id}/youtube-events`
+
+Request:
+- `command_id`
+- `youtube_event`
+- optional `polling_cursor`
+- optional `page_info`
+
+Returns:
+- sanitized runtime service result body。
+
+Source:
+- `YouTubeBridgeV2/server/routes.py::ingest_youtube_event_endpoint`
 
 ### Access Control / Security
 

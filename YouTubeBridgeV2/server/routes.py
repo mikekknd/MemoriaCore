@@ -63,6 +63,13 @@ class TickRequest(BaseModel):
     command_id: str = Field(..., min_length=1)
 
 
+class YouTubeEventIngestRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    youtube_event: dict[str, object]
+    polling_cursor: dict[str, object] | None = None
+    page_info: dict[str, object] | None = None
+
+
 def get_runtime_service() -> object:
     """FastAPI dependency placeholder for Runtime Application Service."""
 
@@ -228,6 +235,34 @@ def tick_session_endpoint(
         payload={},
     )
     return _call_runtime(runtime_service, "tick_session", command, now)
+
+
+@router.post("/sessions/{session_id}/youtube-events", response_model=None)
+def ingest_youtube_event_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Ingest one YouTube event by delegating to runtime service."""
+
+    body = _validate_body(YouTubeEventIngestRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.HANDLE_YOUTUBE_EVENT,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={
+            "youtube_event": body.youtube_event,
+            "polling_cursor": body.polling_cursor,
+            "page_info": body.page_info,
+        },
+    )
+    return _call_runtime(runtime_service, "handle_youtube_event", command, now)
 
 
 @router.get("/sessions/{session_id}/events", response_model=None)
@@ -495,6 +530,7 @@ __all__ = [
     "get_runtime_service",
     "get_session_endpoint",
     "get_session_events_endpoint",
+    "ingest_youtube_event_endpoint",
     "manual_close_endpoint",
     "operator_stream_endpoint",
     "router",

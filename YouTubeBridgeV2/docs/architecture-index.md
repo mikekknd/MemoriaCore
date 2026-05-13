@@ -199,6 +199,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Closing acknowledgement intent：pending Super Chat 會進入 `ClosingRequest.super_chat_actions` 與 Memoria closing external context。
 - [x] Scope boundary：本階段不實際回覆 YouTube、不更新 acknowledgement durable status、不建立 scheduler/API ingestion path。
 
+## Integration Wave 3D 狀態
+
+- [x] API ingestion path：`POST /v2/sessions/{session_id}/youtube-events` 可將 operator-supplied YouTube event 送入 runtime。
+- [x] Runtime handoff：route 建立 `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`，沿用 3A/3B normalization、cursor 與 storage path。
+- [x] Scope boundary：本階段不建立 scheduler/polling transport、不直接呼叫 YouTube API。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

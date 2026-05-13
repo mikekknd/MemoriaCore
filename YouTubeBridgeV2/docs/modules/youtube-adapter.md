@@ -72,6 +72,11 @@ Wave 3C Super Chat handoff:
 - normalized `youtube_super_chat` event 的 `public_payload.super_chat` 是 closing acknowledgement 的資料來源。
 - Adapter 不決定 acknowledgement wording，也不呼叫 YouTube 回覆；closing runner 只建立 handoff intent。
 
+Wave 3D API ingestion:
+- `POST /v2/sessions/{session_id}/youtube-events` 是第一個 externally supplied YouTube event ingestion path。
+- Route 只委派 runtime service；adapter normalization 仍在 `YouTubeBridgeV2/adapters/youtube.py`。
+- Scheduler/polling transport 保留給 Wave 4 runtime automation 或後續 YouTube transport item。
+
 ## Polling Rules
 
 | Situation | Required Behavior |

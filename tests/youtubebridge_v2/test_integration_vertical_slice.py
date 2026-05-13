@@ -181,6 +181,55 @@ def test_fake_backed_vertical_slice_reaches_aftertalk_closing_and_ended():
     _assert_no_private_payload(display_text)
 
 
+def test_youtube_event_api_ingestion_persists_normalized_public_event():
+    composition, _storage, planned_show, *_ = _integration_composition()
+    client = TestClient(create_v2_app(composition, now_provider=lambda: STARTED_AT))
+    client.post(
+        "/v2/sessions",
+        json={
+            "command_id": "cmd-create-youtube",
+            "session_id": "session-youtube-api",
+            "aftertalk_policy": "auto",
+        },
+    )
+
+    response = client.post(
+        "/v2/sessions/session-youtube-api/youtube-events",
+        json={
+            "command_id": "cmd-youtube-event",
+            "youtube_event": {
+                "id": "yt-evt-api-1",
+                "snippet": {
+                    "type": "textMessageEvent",
+                    "publishedAt": "2026-05-12T08:10:00Z",
+                    "displayMessage": "Hello from API",
+                    "textMessageDetails": {"messageText": "Hello from API"},
+                },
+                "authorDetails": {
+                    "displayName": "Mika",
+                    "channelId": "channel-1",
+                    "isChatModerator": True,
+                },
+                "raw_payload": {"access_token": "must not leak"},
+            },
+        },
+    )
+    events_response = client.get("/v2/sessions/session-youtube-api/events?limit=20")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    events = events_response.json()["events"]
+    assert any(
+        event["event_id"] == "yt-evt-api-1"
+        and event["event_type"] == "youtube_text_message"
+        and event["public_payload"]["public_payload"]["message_text"] == "Hello from API"
+        for event in events
+    )
+    assert len(planned_show.calls) == 1
+    _assert_no_private_payload(response.json())
+    _assert_no_private_payload(events_response.json())
+
+
 def test_repeated_command_id_does_not_duplicate_transition_or_runner_dispatch():
     composition, storage, planned_show, *_ = _integration_composition()
     client = TestClient(create_v2_app(composition, now_provider=lambda: STARTED_AT))

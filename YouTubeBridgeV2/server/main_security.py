@@ -120,6 +120,8 @@ def _session_child_requirement(child: str, method: str) -> tuple[PermissionGroup
         return PermissionGroup.OPERATOR, "manual_close"
     if child == "tick" and method == "POST":
         return PermissionGroup.OPERATOR, "tick_session"
+    if child == "youtube-events" and method == "POST":
+        return PermissionGroup.OPERATOR, "youtube_event_ingest"
     if child == "events" and method == "GET":
         return PermissionGroup.OBSERVER, "events"
     if child == "operator-stream" and method == "GET":
