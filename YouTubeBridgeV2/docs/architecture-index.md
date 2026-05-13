@@ -223,6 +223,13 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Automatic phase advancement：`dispatch_scheduler_cycle(...)` 可連續推進 `planned_show -> aftertalk -> closing -> ended`，沿用 runtime phase/duration/aftertalk policy。
 - [x] Scope boundary：本階段不建立 background process、不做 durable restart discovery、不新增 operator pause/resume controls。
 
+## Integration Wave 4C 狀態
+
+- [x] Durable recovery listing：`StorageManager.list_v2_sessions_for_recovery(...)` / `RuntimeStoragePort.list_recoverable_sessions(...)` 可列出 restart bootstrap 需要的 non-ended sessions。
+- [x] Recovery cycle：`dispatch_scheduler_recovery_cycle(...)` 以 `RuntimeCommandType.RECOVER` 委派 `RuntimeApplicationService.recover_session(...)`。
+- [x] Idempotency hardening：recovery command id 使用 phase + state markers，不使用 wall-clock timestamp，避免同一恢復狀態重複 side effects。
+- [x] Scope boundary：本階段不建立 background process、不新增 pause/resume controls。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

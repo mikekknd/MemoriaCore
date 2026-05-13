@@ -142,6 +142,35 @@ def test_duplicate_create_v2_session_does_not_overwrite_existing_snapshot(tmp_pa
     assert loaded["public_summary"] == {"title": "kept"}
 
 
+def test_list_v2_sessions_for_recovery_returns_active_sessions_only(tmp_path):
+    storage = _storage(tmp_path)
+    storage.create_v2_session(_session_record(session_id="planned-session"))
+    storage.create_v2_session(
+        _session_record(
+            session_id="closing-session",
+            current_phase="closing",
+            plan_completed=True,
+        )
+    )
+    storage.create_v2_session(
+        _session_record(
+            session_id="ended-session",
+            current_phase="ended",
+            plan_completed=True,
+            closing_completed=True,
+        )
+    )
+
+    sessions = storage.list_v2_sessions_for_recovery(limit=10)
+
+    assert [session["session_id"] for session in sessions] == [
+        "planned-session",
+        "closing-session",
+    ]
+    assert all(session["current_phase"] != "ended" for session in sessions)
+    _assert_no_private_payload(sessions)
+
+
 def test_update_v2_session_preserves_snapshot_contract(tmp_path):
     storage = _storage(tmp_path)
     storage.create_v2_session(_session_record())

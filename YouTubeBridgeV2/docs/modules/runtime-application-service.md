@@ -129,6 +129,11 @@ Wave 4B automation phase advancement:
 - `build_scheduler_cycle_intents(...)` / `dispatch_scheduler_cycle(...)` 可對已知 active refs 自動發出 planned_show、aftertalk、closing tick。
 - Phase transition、duration policy、aftertalk policy 與 runner side effects 仍由 `RuntimeApplicationService` / Runtime Phase 決定；本階段不負責 durable active-session discovery、process lifecycle 或 pause/resume API。
 
+Wave 4C restart/recovery hardening:
+- `RuntimeStoragePort.list_recoverable_sessions(...)` delegates to durable `StorageManager.list_v2_sessions_for_recovery(...)` so restart bootstrap can recover non-ended sessions without importing storage into automation。
+- `SchedulerRecoverySessionRef` / `SchedulerRecoveryIntent` / `SchedulerRecoveryCycleResult` define restart recovery command dispatch through `recover_session(...)`。
+- Recovery command ids use phase + plan/manual-close/closing state markers instead of timestamps, so same state replays idempotently while changed state can advance to the next recovery command。
+
 ### `RuntimeCommand`
 
 Source:

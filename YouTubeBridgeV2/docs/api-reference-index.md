@@ -312,6 +312,7 @@ Purpose:
 Wave 3A：`HANDLE_YOUTUBE_EVENT` command payload 會先經 YouTube adapter normalization，保存 normalized public/display event 後再交回 tick dispatch。
 Wave 4A：scheduler tick contract 可產生 deterministic `RuntimeCommandType.TICK` command，並以單次 dispatch helper 委派 runtime service。
 Wave 4B：scheduler cycle contract 可對 explicit session refs 自動 dispatch planned_show、aftertalk、closing tick，phase decision 仍由 runtime service 決定。
+Wave 4C：scheduler recovery cycle 使用 `RuntimeCommandType.RECOVER` 與 state-marker command id，讓 restart recovery 可 idempotent replay。
 
 Concepts:
 - `RuntimeApplicationService`
@@ -319,11 +320,17 @@ Concepts:
 - `RuntimeCommandType`
 - `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`
 - `AutomationTickPolicy`
+- `SchedulerRecoverySessionRef`
+- `SchedulerRecoveryIntent`
+- `SchedulerRecoveryCycleResult`
 - `SchedulerSessionRef`
 - `SchedulerCycleResult`
 - `SchedulerTickIntent`
+- `build_scheduler_recovery_intents`
 - `build_scheduler_cycle_intents`
 - `build_scheduler_tick_intent`
+- `dispatch_scheduler_recovery_cycle`
+- `dispatch_scheduler_recovery`
 - `dispatch_scheduler_cycle`
 - `dispatch_scheduler_tick`
 - `RuntimeServiceResult`
@@ -347,11 +354,17 @@ Source:
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommand`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommandType`
 - `YouTubeBridgeV2/runtime/automation.py::AutomationTickPolicy`
+- `YouTubeBridgeV2/runtime/automation.py::SchedulerRecoverySessionRef`
+- `YouTubeBridgeV2/runtime/automation.py::SchedulerRecoveryIntent`
+- `YouTubeBridgeV2/runtime/automation.py::SchedulerRecoveryCycleResult`
 - `YouTubeBridgeV2/runtime/automation.py::SchedulerSessionRef`
 - `YouTubeBridgeV2/runtime/automation.py::SchedulerCycleResult`
 - `YouTubeBridgeV2/runtime/automation.py::SchedulerTickIntent`
+- `YouTubeBridgeV2/runtime/automation.py::build_scheduler_recovery_intents`
 - `YouTubeBridgeV2/runtime/automation.py::build_scheduler_cycle_intents`
 - `YouTubeBridgeV2/runtime/automation.py::build_scheduler_tick_intent`
+- `YouTubeBridgeV2/runtime/automation.py::dispatch_scheduler_recovery_cycle`
+- `YouTubeBridgeV2/runtime/automation.py::dispatch_scheduler_recovery`
 - `YouTubeBridgeV2/runtime/automation.py::dispatch_scheduler_cycle`
 - `YouTubeBridgeV2/runtime/automation.py::dispatch_scheduler_tick`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeServiceResult`
@@ -543,12 +556,14 @@ Concepts:
 - `youtube_polling_cursor`
 - `RuntimeStoragePort.save_youtube_polling_cursor(session_id, cursor, now)`
 - `RuntimeStoragePort.load_youtube_polling_cursor(session_id)`
+- `RuntimeStoragePort.list_recoverable_sessions(limit=100)`
 - `RuntimeStorageContractError`
 - `YouTubeBridgeV2RepositoryMixin`
 - `StorageManager(..., youtube_bridge_v2_db_path=None)`
 - `create_v2_session(record)`
 - `get_v2_session(session_id)`
 - `update_v2_session(session_id, patch)`
+- `list_v2_sessions_for_recovery(limit=100)`
 - `get_v2_phase_transition(transition_id)`
 - `append_v2_phase_transition(session_id, record)`
 - `append_v2_live_event(session_id, record)`
@@ -574,6 +589,9 @@ Implementation status:
 - Wave 3B：YouTube polling cursor 以 `youtube_polling_cursor` 存在 session
   metadata，讓 restart 後可恢復 `next_page_token`、polling interval 與
   seen event ids。
+- Wave 4C：`RuntimeStoragePort.list_recoverable_sessions(...)` 委派 durable
+  `list_v2_sessions_for_recovery(...)`，供 restart recovery bootstrap 取得
+  non-ended session records。
 - SQLite access for V2 durable storage is allowed only through
   `core/storage/youtube_bridge_v2.py` and `core/storage_manager.py`.
 
@@ -594,11 +612,13 @@ Source:
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort`
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort.save_youtube_polling_cursor`
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort.load_youtube_polling_cursor`
+- `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort.list_recoverable_sessions`
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStorageContractError`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.create_v2_session`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.get_v2_session`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.update_v2_session`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.list_v2_sessions_for_recovery`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.get_v2_phase_transition`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_phase_transition`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_live_event`

@@ -115,6 +115,18 @@ class RuntimeStoragePort:
 
         return self._sessions.read_live_session_snapshot(session_id)
 
+    def list_recoverable_sessions(self, limit: int = 100) -> list[dict[str, object]]:
+        """List durable non-ended session records for restart recovery bootstrap."""
+
+        if not hasattr(self._storage_manager, "list_v2_sessions_for_recovery"):
+            raise RuntimeStorageContractError(
+                "storage manager missing list_v2_sessions_for_recovery"
+            )
+        return [
+            _sanitize_public_payload(_object_to_dict(session))
+            for session in self._storage_manager.list_v2_sessions_for_recovery(limit)
+        ]
+
     def request_manual_close(self, session_id: str, command_id: str, now: datetime):
         """保存 manual close request，phase 轉換仍交給 Runtime Phase 決定。"""
 

@@ -17,6 +17,7 @@ from YouTubeBridgeV2.runtime.application_service import (
     RuntimeCommandType,
     RuntimeServiceResult,
 )
+from YouTubeBridgeV2.runtime.automation import dispatch_scheduler_recovery_cycle
 from YouTubeBridgeV2.runtime.phase import LiveSessionPhase
 
 
@@ -259,3 +260,79 @@ def test_real_storage_repeated_command_id_survives_restart_without_duplicate_dis
     ) is not None
     _assert_no_private_payload(first_result)
     _assert_no_private_payload(repeated_result)
+
+
+def test_recovery_cycle_after_restart_resumes_closing_then_marks_ended_idempotently(
+    tmp_path,
+):
+    storage = _storage_manager(tmp_path)
+    composition, _planned_show, _aftertalk, _closing = _composition(storage)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: STARTED_AT))
+    _create_session(client, "session-recovery-cycle")
+    storage.update_v2_session(
+        "session-recovery-cycle",
+        {
+            "current_phase": "closing",
+            "plan_completed": True,
+            "manual_close_requested": True,
+            "closing_completed": False,
+        },
+    )
+
+    restarted_storage = _storage_manager(tmp_path)
+    restarted_composition, _planned2, _aftertalk2, closing2 = _composition(
+        restarted_storage,
+    )
+    first = dispatch_scheduler_recovery_cycle(
+        restarted_composition.runtime_service,
+        restarted_composition.storage.list_recoverable_sessions(),
+        STARTED_AT + timedelta(seconds=10),
+    )
+    second = dispatch_scheduler_recovery_cycle(
+        restarted_composition.runtime_service,
+        restarted_composition.storage.list_recoverable_sessions(),
+        STARTED_AT + timedelta(seconds=20),
+    )
+    repeated_second = dispatch_scheduler_recovery_cycle(
+        restarted_composition.runtime_service,
+        restarted_composition.storage.list_recoverable_sessions(),
+        STARTED_AT + timedelta(seconds=20),
+    )
+
+    assert [result.phase for result in first.dispatched] == [LiveSessionPhase.CLOSING]
+    assert [result.phase for result in second.dispatched] == [LiveSessionPhase.ENDED]
+    assert [result.phase for result in repeated_second.dispatched] == []
+    assert len(closing2.calls) == 1
+    assert restarted_storage.get_v2_session("session-recovery-cycle")["current_phase"] == "ended"
+
+
+def test_recovery_cycle_uses_new_state_marker_after_plan_completion(tmp_path):
+    storage = _storage_manager(tmp_path)
+    composition, _planned_show, _aftertalk, _closing = _composition(storage)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: STARTED_AT))
+    _create_session(client, "session-plan-recovery")
+
+    restarted_storage = _storage_manager(tmp_path)
+    restarted_composition, planned2, aftertalk2, _closing2 = _composition(
+        restarted_storage,
+    )
+    first = dispatch_scheduler_recovery_cycle(
+        restarted_composition.runtime_service,
+        restarted_composition.storage.list_recoverable_sessions(),
+        STARTED_AT + timedelta(seconds=10),
+    )
+    second = dispatch_scheduler_recovery_cycle(
+        restarted_composition.runtime_service,
+        restarted_composition.storage.list_recoverable_sessions(),
+        STARTED_AT + timedelta(seconds=20),
+    )
+
+    assert [intent.command_id for intent in first.intents] == [
+        "scheduler:recover:session-plan-recovery:planned_show:plan_open:auto:closing_open"
+    ]
+    assert [intent.command_id for intent in second.intents] == [
+        "scheduler:recover:session-plan-recovery:planned_show:plan_done:auto:closing_open"
+    ]
+    assert len(planned2.calls) == 1
+    assert len(aftertalk2.calls) == 1
+    assert restarted_storage.get_v2_session("session-plan-recovery")["current_phase"] == "aftertalk"

@@ -195,6 +195,26 @@ class YouTubeBridgeV2RepositoryMixin:
             return None
         return _session_from_row(row)
 
+    def list_v2_sessions_for_recovery(self, limit: int = 100) -> list[dict[str, object]]:
+        safe_limit = max(1, min(int(limit), 500))
+        with closing(self._init_youtube_bridge_v2_db()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT session_id, current_phase, session_started_at, plan_completed,
+                       aftertalk_policy, duration_policy_json, manual_close_requested,
+                       closing_completed, public_summary_json, metadata_json, plan_id,
+                       manual_close_json, ended_at, created_at, updated_at
+                FROM yb2_sessions
+                WHERE current_phase != 'ended'
+                ORDER BY updated_at ASC, created_at ASC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            )
+            rows = cursor.fetchall()
+        return [_session_from_row(row) for row in rows]
+
     def update_v2_session(self, session_id: str, patch: dict[str, object]) -> dict[str, object]:
         current = self.get_v2_session(session_id)
         if current is None:

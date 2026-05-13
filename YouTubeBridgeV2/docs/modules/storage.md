@@ -71,9 +71,11 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 - `live_episode_plan_state`：session metadata 內的 sanitized plan execution state，包含 `contract`、`cursor`、`completed_turn_ids`、`last_memoria_session_id`。
 - `youtube_polling_cursor`：session metadata 內的 sanitized YouTube polling cursor，包含 `live_chat_id`、`next_page_token`、`polling_interval_millis`、`seen_event_ids` 與 `updated_at`。
 - `RuntimeStoragePort.save_youtube_polling_cursor(session_id, cursor, now)` / `load_youtube_polling_cursor(session_id)`：runtime-facing cursor persistence/recovery boundary。
+- `RuntimeStoragePort.list_recoverable_sessions(limit=100)`：restart bootstrap 使用的 service-facing non-ended session listing，不讓 automation module 直接掃 storage。
 - `YouTubeBridgeV2RepositoryMixin`：主專案 `StorageManager` 的 durable V2 repository mixin，負責 `yb2_*` schema 初始化、CRUD/append methods 與 public redaction。
 - `StorageManager(..., youtube_bridge_v2_db_path=None)`：提供 V2 durable DB path 注入；預設使用 `runtime/youtubebridge_v2.db`。
 - `create_v2_session(record)` / `get_v2_session(session_id)` / `update_v2_session(session_id, patch)`：session durable contract。
+- `list_v2_sessions_for_recovery(limit=100)`：durable non-ended session listing，供 restart recovery bootstrap 轉成 scheduler recovery refs。
 - `get_v2_phase_transition(transition_id)` / `append_v2_phase_transition(session_id, record)`：phase transition append-only/idempotent contract。
 - `append_v2_live_event(session_id, record)` / `list_v2_live_events(session_id, limit=100)`：public event history contract。
 - `append_v2_interaction(session_id, record)` / `append_v2_finalization(session_id, record)`：interaction/finalization persistence contract。

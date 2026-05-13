@@ -15,9 +15,12 @@ from YouTubeBridgeV2.runtime.application_service import RuntimeCommand
 from YouTubeBridgeV2.runtime.application_service import RuntimeCommandType
 from YouTubeBridgeV2.runtime.automation import (
     AutomationTickPolicy,
+    SchedulerRecoverySessionRef,
     SchedulerSessionRef,
+    build_scheduler_recovery_intents,
     build_scheduler_cycle_intents,
     build_scheduler_tick_intent,
+    dispatch_scheduler_recovery_cycle,
     dispatch_scheduler_cycle,
     dispatch_scheduler_tick,
 )
@@ -38,6 +41,17 @@ class FakeRuntimeService:
             "status": "ok",
             "session_id": command.session_id,
             "phase": "planned_show",
+            "events": [],
+            "errors": [],
+            "correlation_id": f"runtime-{command.command_id}",
+        }
+
+    def recover_session(self, command, now):
+        self.calls.append((command, now))
+        return {
+            "status": "ok",
+            "session_id": command.session_id,
+            "phase": "closing",
             "events": [],
             "errors": [],
             "correlation_id": f"runtime-{command.command_id}",
@@ -186,6 +200,63 @@ def test_scheduler_cycle_builds_intents_from_mapping_refs():
     assert intents[0].should_dispatch is False
     assert intents[0].skip_reason == "automation_disabled"
     assert intents[0].next_run_delay_seconds == 15
+
+
+def test_scheduler_recovery_intents_use_state_markers_not_wall_clock():
+    intents = build_scheduler_recovery_intents(
+        [
+            SchedulerRecoverySessionRef(
+                "session-1",
+                current_phase=LiveSessionPhase.PLANNED_SHOW,
+                plan_completed=False,
+            ),
+            SchedulerRecoverySessionRef(
+                "session-1",
+                current_phase=LiveSessionPhase.PLANNED_SHOW,
+                plan_completed=True,
+            ),
+        ],
+        NOW,
+        AutomationTickPolicy(),
+    )
+
+    assert [intent.command_id for intent in intents] == [
+        "scheduler:recover:session-1:planned_show:plan_open:auto:closing_open",
+        "scheduler:recover:session-1:planned_show:plan_done:auto:closing_open",
+    ]
+    assert all(intent.command_type is RuntimeCommandType.RECOVER for intent in intents)
+
+
+def test_scheduler_recovery_cycle_calls_recover_session_and_skips_ended():
+    service = FakeRuntimeService()
+    result = dispatch_scheduler_recovery_cycle(
+        service,
+        [
+            {
+                "session_id": "closing",
+                "current_phase": "closing",
+                "plan_completed": True,
+                "manual_close_requested": True,
+                "closing_completed": False,
+            },
+            {
+                "session_id": "ended",
+                "current_phase": "ended",
+                "plan_completed": True,
+                "closing_completed": True,
+            },
+        ],
+        NOW,
+    )
+
+    assert [command.command_type for command, _now in service.calls] == [
+        RuntimeCommandType.RECOVER
+    ]
+    assert service.calls[0][0].command_id == (
+        "scheduler:recover:closing:closing:plan_done:manual_close:closing_open"
+    )
+    assert [intent.session_id for intent in result.skipped] == ["ended"]
+    assert result.skipped[0].skip_reason == "session_ended"
 
 
 def test_scheduler_cycle_auto_advances_planned_aftertalk_closing_to_ended():
