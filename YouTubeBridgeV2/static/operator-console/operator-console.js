@@ -33,7 +33,7 @@ export class OperatorSessionStatusView {
   static fromStatus(status = {}, options = {}) {
     const phase = String(status.phase || "unknown");
     const permissionGroup = String(
-      options.permissionGroup || status.permission_group || "display",
+      options.permissionGroup || status.permission_group || status.permissionGroup || "display",
     );
     const canControl = permissionGroup === "operator";
     const closingState = String(status.closing_completion_status || "not_started");
@@ -77,7 +77,9 @@ export class OperatorSessionStatusView {
         : diagnosticBannerFromMetadata(diagnostics),
       controls: {
         aftertalkDisabled: !canControl || controlsDisabled,
+        bindPlanDisabled: !canControl || controlsDisabled,
         manualCloseDisabled: !canControl || controlsDisabled,
+        tickDisabled: !canControl || controlsDisabled,
       },
       streamState,
       streamStateLabel: localizedStreamState(streamState),
@@ -123,6 +125,77 @@ export class AftertalkPolicyControl {
     return AftertalkPolicyControl.action({
       sessionId,
       policy,
+      commandIdFactory,
+    }).send(fetchImpl);
+  }
+}
+
+export class CreateSessionCommand {
+  static action({
+    sessionId,
+    aftertalkPolicy = "auto",
+    commandIdFactory = defaultCommandId,
+  }) {
+    return new OperatorControlAction({
+      sessionId,
+      endpoint: "/v2/sessions",
+      body: {
+        command_id: commandIdFactory("create-session"),
+        session_id: sessionId,
+        aftertalk_policy: aftertalkPolicy,
+      },
+    });
+  }
+
+  static send({
+    sessionId,
+    aftertalkPolicy = "auto",
+    fetchImpl = globalThis.fetch,
+    commandIdFactory,
+  }) {
+    return CreateSessionCommand.action({
+      sessionId,
+      aftertalkPolicy,
+      commandIdFactory,
+    }).send(fetchImpl);
+  }
+}
+
+export class BindPlanCommand {
+  static action({sessionId, plan, commandIdFactory = defaultCommandId}) {
+    return new OperatorControlAction({
+      sessionId,
+      endpoint: `/v2/sessions/${encodeURIComponent(sessionId)}/plan`,
+      body: {
+        command_id: commandIdFactory("bind-plan"),
+        plan,
+      },
+    });
+  }
+
+  static send({sessionId, plan, fetchImpl = globalThis.fetch, commandIdFactory}) {
+    return BindPlanCommand.action({
+      sessionId,
+      plan,
+      commandIdFactory,
+    }).send(fetchImpl);
+  }
+}
+
+export class TickSessionCommand {
+  static action({sessionId, commandIdFactory = defaultCommandId}) {
+    return new OperatorControlAction({
+      sessionId,
+      endpoint: `/v2/sessions/${encodeURIComponent(sessionId)}/tick`,
+      body: {
+        command_id: commandIdFactory("tick"),
+      },
+    });
+  }
+
+  static send({sessionId, fetchImpl = globalThis.fetch, commandIdFactory}) {
+    return TickSessionCommand.action({
+      sessionId,
       commandIdFactory,
     }).send(fetchImpl);
   }
@@ -288,9 +361,8 @@ export function mountOperatorConsole({
   const target = root || document.getElementById("operatorConsoleRoot");
   if (!target) return;
   if (!sessionId) {
-    target.innerHTML = new OperatorDiagnosticBanner({
-      message: translate("missing_session_id", "Missing session_id"),
-    }).render();
+    target.innerHTML = renderSessionCreatePanel();
+    bindSessionCreateControls(target, {fetchImpl});
     return;
   }
   let latestStatus = initialStatus || null;
@@ -346,6 +418,41 @@ function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
     });
   }
 
+  const tick = root.querySelector("[data-testid='tick-button']");
+  if (tick) {
+    tick.addEventListener("click", async () => {
+      render(status, {inFlightAction: "tick"});
+      try {
+        const next = await TickSessionCommand.send({sessionId, fetchImpl});
+        render({...status, ...next});
+      } catch (error) {
+        render({...status, error});
+      }
+    });
+  }
+
+  const bindPlan = root.querySelector("[data-testid='bind-plan-button']");
+  if (bindPlan) {
+    bindPlan.addEventListener("click", async () => {
+      const input = root.querySelector("[data-testid='plan-json-input']");
+      let plan;
+      try {
+        plan = parsePlanJsonForOperator(input?.value || "");
+      } catch (error) {
+        render({...status, error});
+        return;
+      }
+      render(status, {inFlightAction: "bind_plan"});
+      try {
+        await BindPlanCommand.send({sessionId, plan, fetchImpl});
+        const nextStatus = await loadOperatorStatus({sessionId, fetchImpl});
+        render(nextStatus);
+      } catch (error) {
+        render({...status, error});
+      }
+    });
+  }
+
   const close = root.querySelector("[data-testid='manual-close-button']");
   if (close) {
     close.addEventListener("click", async () => {
@@ -363,16 +470,96 @@ function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
 function renderOperatorControls(view) {
   const aftertalkChecked = view.aftertalkPolicy === "auto" ? " checked" : "";
   const aftertalkDisabled = view.controls.aftertalkDisabled ? " disabled" : "";
+  const bindDisabled = view.controls.bindPlanDisabled ? " disabled" : "";
   const manualDisabled = view.controls.manualCloseDisabled ? " disabled" : "";
+  const tickDisabled = view.controls.tickDisabled ? " disabled" : "";
   return `
     <section class="operator-controls" data-testid="operator-controls">
-      <label class="toggle">
-        <input data-testid="aftertalk-toggle" type="checkbox"${aftertalkChecked}${aftertalkDisabled}>
-        <span>${escapeHtml(translate("aftertalk", "Aftertalk"))}</span>
-      </label>
-      <button data-testid="manual-close-button"${manualDisabled}>${escapeHtml(translate("manual_close", "Manual Close"))}</button>
+      <div class="control-row">
+        <label class="toggle">
+          <input data-testid="aftertalk-toggle" type="checkbox"${aftertalkChecked}${aftertalkDisabled}>
+          <span>${escapeHtml(translate("aftertalk", "Aftertalk"))}</span>
+        </label>
+        <button data-testid="tick-button"${tickDisabled}>${escapeHtml(translate("tick", "Tick"))}</button>
+        <button data-testid="manual-close-button"${manualDisabled}>${escapeHtml(translate("manual_close", "Manual Close"))}</button>
+      </div>
+      <div class="plan-bind-control">
+        <label for="operatorPlanJson">${escapeHtml(translate("plan_json", "Plan JSON"))}</label>
+        <textarea id="operatorPlanJson" data-testid="plan-json-input" rows="6" spellcheck="false"></textarea>
+        <button data-testid="bind-plan-button"${bindDisabled}>${escapeHtml(translate("bind_plan", "Bind Plan"))}</button>
+      </div>
     </section>
   `;
+}
+
+function renderSessionCreatePanel(errorBanner = null) {
+  const errorHtml = errorBanner
+    ? errorBanner.render()
+    : new OperatorDiagnosticBanner({
+      message: translate("missing_session_id", "Missing session_id"),
+    }).render();
+  return `
+    <section class="operator-console setup-console">
+      ${errorHtml}
+      <header class="console-header">
+        <div>
+          <span class="eyeline">YouTubeBridgeV2</span>
+          <h1>${escapeHtml(translate("title", "Operator Console"))}</h1>
+        </div>
+      </header>
+      <form class="operator-controls setup-form" data-testid="create-session-form">
+        <label>
+          <span>${escapeHtml(translate("session", "Session"))}</span>
+          <input data-testid="create-session-id-input" name="session_id" autocomplete="off">
+        </label>
+        <label>
+          <span>${escapeHtml(translate("aftertalk", "Aftertalk"))}</span>
+          <select data-testid="create-aftertalk-policy" name="aftertalk_policy">
+            <option value="auto">auto</option>
+            <option value="disabled">disabled</option>
+          </select>
+        </label>
+        <button data-testid="create-session-button" type="submit">${escapeHtml(translate("create_session", "Create Session"))}</button>
+      </form>
+    </section>
+  `;
+}
+
+function bindSessionCreateControls(root, {fetchImpl}) {
+  const form = root.querySelector("[data-testid='create-session-form']");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = root.querySelector("[data-testid='create-session-id-input']");
+    const policy = root.querySelector("[data-testid='create-aftertalk-policy']");
+    const nextSessionId = String(input?.value || "").trim();
+    if (!nextSessionId) {
+      root.innerHTML = renderSessionCreatePanel();
+      bindSessionCreateControls(root, {fetchImpl});
+      return;
+    }
+    try {
+      await CreateSessionCommand.send({
+        sessionId: nextSessionId,
+        aftertalkPolicy: String(policy?.value || "auto"),
+        fetchImpl,
+      });
+      const status = await loadOperatorStatus({sessionId: nextSessionId, fetchImpl});
+      if (typeof history !== "undefined" && typeof location !== "undefined" && history.replaceState) {
+        const url = new URL(location.href);
+        url.searchParams.set("session_id", nextSessionId);
+        history.replaceState({}, "", url);
+      }
+      mountOperatorConsole({root, sessionId: nextSessionId, fetchImpl, initialStatus: status});
+    } catch (error) {
+      root.innerHTML = renderSessionCreatePanel(
+        new OperatorDiagnosticBanner({
+          message: error.message || translate("request_failed", "request failed"),
+        }),
+      );
+      bindSessionCreateControls(root, {fetchImpl});
+    }
+  });
 }
 
 function renderPlanProgress(progress) {
@@ -388,6 +575,20 @@ function renderPlanProgress(progress) {
       <p>${escapeHtml(progress.currentTurnTitle)}</p>
     </section>
   `;
+}
+
+export function parsePlanJsonForOperator(raw) {
+  try {
+    const parsed = JSON.parse(String(raw || ""));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("invalid");
+    }
+    return sanitizePublicValue(parsed);
+  } catch {
+    throw new OperatorDiagnosticBanner({
+      message: translate("invalid_plan_json", "invalid plan JSON"),
+    });
+  }
 }
 
 function normalizePublicSummary(summary = {}, sessionId = "") {
@@ -580,7 +781,7 @@ if (typeof document !== "undefined") {
     await initOperatorConsoleI18n();
     const root = document.getElementById("operatorConsoleRoot");
     const sessionId = root?.dataset.sessionId || new URLSearchParams(location.search).get("session_id");
-    if (root && sessionId) {
+    if (root) {
       mountOperatorConsole({root, sessionId});
     }
   };

@@ -24,7 +24,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -200,8 +202,53 @@ input:disabled {
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
+  flex-direction: column;
   gap: 12px;
   padding: 12px;
+}
+
+.control-row,
+.plan-bind-control,
+.setup-form {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.control-row {
+  align-items: center;
+  grid-template-columns: minmax(140px, 1fr) auto auto;
+}
+
+.plan-bind-control {
+  flex: 1;
+}
+
+.plan-bind-control label,
+.setup-form label span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+input,
+select,
+textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  min-height: 34px;
+  padding: 7px 9px;
+}
+
+textarea {
+  min-height: 108px;
+  resize: vertical;
+  width: 100%;
+}
+
+.setup-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, auto) auto;
 }
 
 .toggle {
@@ -254,5 +301,10 @@ input:disabled {
   .operator-controls {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .control-row,
+  .setup-form {
+    grid-template-columns: 1fr;
   }
 }

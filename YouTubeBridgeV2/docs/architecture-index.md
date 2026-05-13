@@ -244,6 +244,14 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Automation status：status dashboard 顯示 durable `automation_control` running/paused/disabled 狀態與 public reason。
 - [x] Scope boundary：本階段不新增 create/bind/tick/API key management UI；那些保留給 Wave 5B/5D。
 
+## Integration Wave 5B 狀態
+
+- [x] Create session control：no-session Operator Console 可送出 `POST /v2/sessions` 建立 V2 session。
+- [x] Bind plan control：operator controls 可送出 sanitized plan JSON 到 `POST /v2/sessions/{session_id}/plan`。
+- [x] Tick/manual close controls：operator controls 可呼叫 `POST /v2/sessions/{session_id}/tick` 與既有 manual close route。
+- [x] Permission-aware status：main-app status/phase reads 會帶 request `permission_group`，讓 UI 只對 operator 顯示 controls。
+- [x] Scope boundary：本階段不新增 API key management UI，也不擴張 aftertalk policy contract。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

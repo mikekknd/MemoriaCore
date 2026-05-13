@@ -15,7 +15,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 ## Inputs
 
 - phase status API/SSE event。
-- durable session public status (`GET /v2/sessions/{session_id}`)，包含 `public_summary` 與 `automation_control`。
+- durable session public status (`GET /v2/sessions/{session_id}`)，包含 `public_summary`、`automation_control` 與 request `permission_group`。
 - LiveEpisodePlan progress summary。
 - Aftertalk policy/status。
 - duration summary 與 closing status。
@@ -24,7 +24,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 
 ## Outputs
 
-- operator action request：aftertalk policy update、manual close、plan bind/import。
+- operator action request：create session、plan bind/import、tick、aftertalk policy update、manual close。
 - visible status model。
 - disabled/enabled control state。
 - operator error banner。
@@ -82,7 +82,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 - unknown phase 顯示 recoverable diagnostic，不自行改 phase。
 - SSE disconnect 時顯示 stale indicator。
 - hidden prompt/raw payload 不得顯示。
-- UI action 只送出 `/v2/sessions/{session_id}/aftertalk-policy` 與 `/v2/sessions/{session_id}/manual-close` request envelope，不直接 import runtime、呼叫 adapter 或寫 storage。
+- UI action 只送出 `/v2/sessions`、`/v2/sessions/{session_id}/plan`、`/v2/sessions/{session_id}/tick`、`/v2/sessions/{session_id}/aftertalk-policy` 與 `/v2/sessions/{session_id}/manual-close` request envelope，不直接 import runtime、呼叫 adapter 或寫 storage。
 
 ## Test Strategy
 

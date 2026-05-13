@@ -125,12 +125,16 @@ def create_session_endpoint(
 @router.get("/sessions/{session_id}", response_model=None)
 def get_session_endpoint(
     session_id: str,
+    request: Request,
     query_service: object = Depends(get_query_service),
 ) -> dict[str, object] | JSONResponse:
     """Return public V2 session status through query service."""
 
     try:
-        return _sanitize_public_payload(query_service.get_session(session_id))
+        return _status_with_permission_context(
+            query_service.get_session(session_id),
+            request,
+        )
     except V2QueryServiceError:
         return _query_not_found_response(session_id)
 
@@ -162,12 +166,16 @@ def bind_plan_endpoint(
 @router.get("/sessions/{session_id}/phase", response_model=None)
 def get_phase_endpoint(
     session_id: str,
+    request: Request,
     query_service: object = Depends(get_query_service),
 ) -> dict[str, object] | JSONResponse:
     """Return phase status body through query service."""
 
     try:
-        return _sanitize_public_payload(query_service.get_phase(session_id))
+        return _status_with_permission_context(
+            query_service.get_phase(session_id),
+            request,
+        )
     except V2QueryServiceError:
         return _query_not_found_response(session_id)
 
@@ -376,6 +384,15 @@ def _command(
 
 def _request_permission_context(request: Request) -> object | None:
     return getattr(request.state, "youtubebridge_v2_permission", None)
+
+
+def _status_with_permission_context(body: object, request: Request) -> dict[str, object]:
+    data = _object_to_dict(body).copy()
+    permission_context = _request_permission_context(request)
+    permission_group = getattr(permission_context, "permission_group", "")
+    if permission_group:
+        data["permission_group"] = _enum_value(permission_group)
+    return _sanitize_public_payload(data)
 
 
 def _validate_body(model_type: type[BaseModel], raw_body: object) -> BaseModel | JSONResponse:

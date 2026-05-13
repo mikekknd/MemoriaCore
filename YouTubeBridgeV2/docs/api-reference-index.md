@@ -802,6 +802,7 @@ Source:
 Purpose:
 定義後台控制 UI 消費的 session status、control action 與 diagnostic contract。
 Wave 5A：初始 status dashboard 以 `GET /v2/sessions/{session_id}` 作為 durable source，phase-only endpoint 不再是初始載入來源。
+Wave 5B：main-app status/phase response 會包含 request `permission_group`，operator controls 只在 operator context 顯示。
 
 Concepts:
 - `GET /v2/static/operator-console/index.html`
@@ -809,6 +810,9 @@ Concepts:
 - `OperatorSessionStatusView`
 - `OperatorControlAction`
 - `AftertalkPolicyControl`
+- `CreateSessionCommand`
+- `BindPlanCommand`
+- `TickSessionCommand`
 - `ManualCloseCommand`
 - `OperatorDiagnosticBanner`
 - `renderOperatorConsole`
@@ -828,6 +832,9 @@ Source:
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::OperatorSessionStatusView`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::OperatorControlAction`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::AftertalkPolicyControl`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::CreateSessionCommand`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::BindPlanCommand`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::TickSessionCommand`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::ManualCloseCommand`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::OperatorDiagnosticBanner`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::renderOperatorConsole`

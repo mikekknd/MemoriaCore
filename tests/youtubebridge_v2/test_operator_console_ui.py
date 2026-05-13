@@ -148,6 +148,25 @@ console.log(JSON.stringify({view, html: ui.renderOperatorConsole(view)}));
     assert 'data-testid="plan-progress"' in result["html"]
 
 
+def test_operator_console_renders_runtime_control_inputs_for_operator():
+    result = _run_node_json(
+        """
+const view = ui.OperatorSessionStatusView.fromStatus({
+  session_id: "session-1",
+  phase: "planned_show",
+  permission_group: "operator"
+});
+const html = ui.renderOperatorConsole(view);
+console.log(JSON.stringify({view, html}));
+"""
+    )
+
+    assert 'data-testid="plan-json-input"' in result["html"]
+    assert 'data-testid="bind-plan-button"' in result["html"]
+    assert 'data-testid="tick-button"' in result["html"]
+    assert 'data-testid="manual-close-button"' in result["html"]
+
+
 def test_operator_console_renders_aftertalk_policy_status():
     result = _run_node_json(
         """
@@ -196,6 +215,103 @@ console.log(JSON.stringify({calls, response}));
     ]
 
 
+def test_create_session_command_sends_create_request():
+    result = _run_node_json(
+        """
+const calls = [];
+const fetchImpl = async (url, options) => {
+  calls.push({url, method: options.method, body: JSON.parse(options.body)});
+  return {ok: true, json: async () => ({status: "ok", session_id: "session-1"})};
+};
+const response = await ui.CreateSessionCommand.send({
+  sessionId: "session-1",
+  aftertalkPolicy: "auto",
+  fetchImpl,
+  commandIdFactory: () => "cmd-create"
+});
+console.log(JSON.stringify({calls, response}));
+"""
+    )
+
+    assert result["calls"] == [
+        {
+            "url": "/v2/sessions",
+            "method": "POST",
+            "body": {
+                "command_id": "cmd-create",
+                "session_id": "session-1",
+                "aftertalk_policy": "auto",
+            },
+        }
+    ]
+
+
+def test_bind_plan_command_sends_plan_request_without_private_payload():
+    result = _run_node_json(
+        """
+const calls = [];
+const fetchImpl = async (url, options) => {
+  calls.push({url, method: options.method, body: JSON.parse(options.body)});
+  return {ok: true, json: async () => ({status: "ok"})};
+};
+const response = await ui.BindPlanCommand.send({
+  sessionId: "session-1",
+  plan: {
+    plan_id: "plan-1",
+    title: "Operator Plan",
+    raw_payload: {token: "must not leak"},
+    turns: []
+  },
+  fetchImpl,
+  commandIdFactory: () => "cmd-bind"
+});
+console.log(JSON.stringify({calls, response}));
+"""
+    )
+
+    assert result["calls"] == [
+        {
+            "url": "/v2/sessions/session-1/plan",
+            "method": "POST",
+            "body": {
+                "command_id": "cmd-bind",
+                "plan": {
+                    "plan_id": "plan-1",
+                    "title": "Operator Plan",
+                    "turns": [],
+                },
+            },
+        }
+    ]
+    _assert_no_private_payload(result)
+
+
+def test_tick_session_command_sends_tick_request():
+    result = _run_node_json(
+        """
+const calls = [];
+const fetchImpl = async (url, options) => {
+  calls.push({url, method: options.method, body: JSON.parse(options.body)});
+  return {ok: true, json: async () => ({status: "ok", phase: "aftertalk"})};
+};
+const response = await ui.TickSessionCommand.send({
+  sessionId: "session-1",
+  fetchImpl,
+  commandIdFactory: () => "cmd-tick"
+});
+console.log(JSON.stringify({calls, response}));
+"""
+    )
+
+    assert result["calls"] == [
+        {
+            "url": "/v2/sessions/session-1/tick",
+            "method": "POST",
+            "body": {"command_id": "cmd-tick"},
+        }
+    ]
+
+
 def test_load_operator_status_fetches_durable_session_status_api():
     result = _run_node_json(
         """
@@ -234,6 +350,7 @@ const fetchImpl = async () => ({
   json: async () => ({
     session_id: "session-1",
     phase: "planned_show",
+    permission_group: "operator",
     public_summary: {title: "Loaded Durable Title"},
     automation_control: {enabled: true, paused: true, reason: "hold"}
   })
@@ -251,6 +368,7 @@ console.log(JSON.stringify({html: root.innerHTML}));
 
     assert "Loaded Durable Title" in result["html"]
     assert 'data-testid="automation-state"' in result["html"]
+    assert 'data-testid="operator-controls"' in result["html"]
     assert "hold" in result["html"]
 
 
@@ -318,6 +436,10 @@ console.log(JSON.stringify({view, html: ui.renderOperatorConsole(view)}));
 
     assert result["view"]["controls"]["manualCloseDisabled"] is True
     assert result["view"]["controls"]["aftertalkDisabled"] is True
+    assert result["view"]["controls"]["tickDisabled"] is True
+    assert result["view"]["controls"]["bindPlanDisabled"] is True
+    assert 'data-testid="tick-button" disabled' in result["html"]
+    assert 'data-testid="bind-plan-button" disabled' in result["html"]
     assert 'data-testid="manual-close-button" disabled' in result["html"]
 
 
@@ -411,17 +533,34 @@ console.log(JSON.stringify({url: source.url, statuses, stale}));
     assert result["stale"][0]["stream_state"] == "stale"
 
 
-def test_missing_session_id_renders_diagnostic():
+def test_missing_session_id_renders_create_session_controls():
     result = _run_node_json(
         """
-const root = {innerHTML: ""};
+const root = {innerHTML: "", querySelector: () => null};
 ui.mountOperatorConsole({root});
 console.log(JSON.stringify({html: root.innerHTML}));
 """
     )
 
-    assert 'data-testid="error-banner"' in result["html"]
+    assert 'data-testid="create-session-form"' in result["html"]
+    assert 'data-testid="create-session-id-input"' in result["html"]
+    assert 'data-testid="create-session-button"' in result["html"]
     assert "session" in result["html"].lower()
+
+
+def test_parse_plan_json_for_operator_rejects_invalid_json_safely():
+    result = _run_node_json(
+        """
+try {
+  ui.parsePlanJsonForOperator("{bad json");
+} catch (error) {
+  console.log(JSON.stringify({message: error.message, error}));
+}
+"""
+    )
+
+    assert result["message"] == "invalid plan JSON"
+    _assert_no_private_payload(result)
 
 
 def test_operator_console_static_entrypoint_links_assets():
@@ -438,6 +577,13 @@ def test_operator_console_static_entrypoint_links_assets():
     assert 'data-i18n="youtubebridge_v2.operator_console.loading"' in html
 
 
+def test_operator_console_page_init_mounts_without_session_id():
+    source = UI_MODULE.read_text(encoding="utf-8")
+
+    assert "if (root && sessionId)" not in source
+    assert "mountOperatorConsole({root, sessionId});" in source
+
+
 def test_operator_console_i18n_keys_are_registered():
     zh = json.loads((ROOT / "static" / "locales" / "zh-TW.json").read_text(encoding="utf-8"))
     en = json.loads((ROOT / "static" / "locales" / "en-US.json").read_text(encoding="utf-8"))
@@ -452,6 +598,11 @@ def test_operator_console_i18n_keys_are_registered():
         "youtubebridge_v2.operator_console.automation_running",
         "youtubebridge_v2.operator_console.automation_paused",
         "youtubebridge_v2.operator_console.automation_disabled",
+        "youtubebridge_v2.operator_console.create_session",
+        "youtubebridge_v2.operator_console.bind_plan",
+        "youtubebridge_v2.operator_console.tick",
+        "youtubebridge_v2.operator_console.plan_json",
+        "youtubebridge_v2.operator_console.invalid_plan_json",
         "youtubebridge_v2.operator_console.manual_close",
         "youtubebridge_v2.operator_console.read_only",
         "youtubebridge_v2.operator_console.stream_connected",
@@ -509,6 +660,7 @@ def test_operator_console_api_dependencies_are_served_by_main_app(tmp_path, monk
     status = status_response.json()
     assert status["session_id"] == "session-1"
     assert status["phase"] == "planned_show"
+    assert status["permission_group"] == "operator"
     assert "public_summary" in status
     assert status["automation_control"] == {
         "enabled": True,
@@ -516,6 +668,45 @@ def test_operator_console_api_dependencies_are_served_by_main_app(tmp_path, monk
         "reason": "",
     }
     assert "v2_runtime_not_configured" not in repr(status)
+
+    bind_response = client.post(
+        "/v2/sessions/session-1/plan",
+        json={
+            "command_id": "cmd-bind",
+            "plan": {
+                "plan_id": "plan-ui",
+                "title": "Operator UI Plan",
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "purpose": "Verify operator UI plan bind route.",
+                        "topic_cue": "UI route smoke.",
+                        "speaker_policy": {
+                            "type": "fixed",
+                            "speaker_ids": ["host"],
+                        },
+                        "audience_insertion": {
+                            "enabled": False,
+                            "allow_super_chats": False,
+                        },
+                    }
+                ],
+            },
+        },
+    )
+    assert bind_response.status_code == 200
+
+    tick_response = client.post(
+        "/v2/sessions/session-1/tick",
+        json={"command_id": "cmd-tick"},
+    )
+    assert tick_response.status_code == 200
+
+    manual_close_response = client.post(
+        "/v2/sessions/session-1/manual-close",
+        json={"command_id": "cmd-close", "reason": "operator"},
+    )
+    assert manual_close_response.status_code == 200
 
     with client.stream("GET", "/v2/sessions/session-1/operator-stream") as stream_response:
         stream_response.read()
