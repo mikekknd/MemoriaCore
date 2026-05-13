@@ -107,6 +107,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 - error banner tests。
 - permission boundary tests。
 - API key panel tests：operator 顯示、display-only 隱藏、create/list/delete 不回顯 raw key。
+- Browser regression smoke：`YOUTUBEBRIDGE_V2_BROWSER_SMOKE=1` 啟用 `tests/youtubebridge_v2/test_operator_console_browser_smoke.py`，針對 live 8088 server 驗證 desktop/mobile、API key create/delete、no raw key DOM 與 console/network health。
 - no direct adapter/storage call tests。
 
 ## Open Questions

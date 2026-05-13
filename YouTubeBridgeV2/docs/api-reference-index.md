@@ -849,6 +849,7 @@ Wave 5A：初始 status dashboard 以 `GET /v2/sessions/{session_id}` 作為 dur
 Wave 5B：main-app status/phase response 會包含 request `permission_group`，operator controls 只在 operator context 顯示。
 Wave 5C：Aftertalk policy control 更新成功後重新讀 `GET /v2/sessions/{session_id}`，不靠 optimistic local patch 作為最終狀態。
 Wave 5D：API key management panel 透過 operator-only `/v2/api-keys` endpoints 新增、刷新與撤銷 key；UI 只顯示 fingerprint/prefix。
+Wave 5E：新增 opt-in browser regression harness `tests/youtubebridge_v2/test_operator_console_browser_smoke.py`，用 live `/v2` server 驗證 operator controls 與 responsive layout。
 
 Concepts:
 - `GET /v2/static/operator-console/index.html`

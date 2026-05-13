@@ -265,6 +265,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Operator Console panel：operator controls 可新增、刷新與撤銷 API key；display/observer context 不顯示管理 UI。
 - [x] Scope boundary：本階段不處理 5E browser regression checklist，不修改 roadmap checkbox。
 
+## Integration Wave 5E 狀態
+
+- [x] Browser regression harness：新增 opt-in pytest smoke，預設 skip，不讓一般 V2 suite 依賴本機瀏覽器。
+- [x] UI coverage：harness 驗證 Operator Console desktop/mobile、operator controls、API key create/delete、no raw key DOM、console/network health。
+- [x] Scope boundary：本階段只驗證 Operator Console，不進入 Wave 6 Chat Display / Presentation / TTS。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：
