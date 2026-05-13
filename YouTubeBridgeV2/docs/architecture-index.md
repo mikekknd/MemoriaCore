@@ -135,8 +135,17 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Main app `/v2` wiring：`api/main.py` 已用 lazy cached composition 覆寫 V2 runtime/query dependencies。
 - [x] Loopback-only boundary：主 app `/v2` API/SSE 已限制 loopback；`/v2/static` 保持可服務前端資產。
 - [x] Missing-session query errors：status、events、operator/display stream 對不存在 session 回 sanitized 404。
-- [ ] API key permission matrix：operator/display/observer header auth 與 API key 儲存保留給後續 wave。
+- [x] API key permission matrix：Wave 2C 已使用 prefs-backed API key 設定完成 operator/display/observer header auth，loopback request 仍以 operator 通過。
 - [ ] Real adapter runners：真 YouTube、MemoriaCore 與 TTS integration 保留給後續 wave。
+
+## Integration Wave 2C 狀態
+
+- [x] API key 設定來源：`StorageManager.load_prefs()` 的 `youtubebridge_v2_api_keys` list 為唯一 2C secret source。
+- [x] Main app security middleware：`V2MainSecurityMiddleware` 已套用於主 app `/v2` API/SSE，排除 `/v2/static`。
+- [x] Permission matrix：operator 可控制與讀取所有 V2 API/SSE，observer 僅可讀 status/events/operator stream，display 僅可讀 display stream。
+- [x] Fail-closed 行為：未設定有效 key、空 key 或無效 permission group 時，非 loopback request 不會進入 runtime dispatch。
+- [x] Sanitized security errors：auth failure 回 stable `401/403` body，不暴露 API key、header 或 fingerprint。
+- [ ] API key 管理 UI：prefs 寫入與輪替 UI 保留給後續 wave。
 
 ## Module Design 文件
 

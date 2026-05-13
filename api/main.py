@@ -23,7 +23,7 @@ from api.middleware.auth import AuthMiddleware
 from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots, llm_tasks
 from YouTubeBridgeV2.production import create_production_v2_composition
 from YouTubeBridgeV2.server import routes as youtubebridge_v2_routes
-from YouTubeBridgeV2.server.main_security import V2LoopbackOnlyMiddleware
+from YouTubeBridgeV2.server.main_security import V2MainSecurityMiddleware
 
 
 def _persona_sync_candidate_character_ids(storage) -> list[str]:
@@ -164,9 +164,9 @@ def _cors_origins() -> list[str]:
 # AuthMiddleware 先註冊，讓後註冊的 CORS 成為外層 middleware，確保 401/403 也帶 CORS header。
 app.add_middleware(AuthMiddleware)
 
-# YouTubeBridgeV2 Wave 2B：主 app 只允許 loopback 存取 `/v2` API/SSE。
-# `/v2/static` 保持可被前端頁面載入。
-app.add_middleware(V2LoopbackOnlyMiddleware)
+# YouTubeBridgeV2 Wave 2C：主 app `/v2` API/SSE 支援 loopback operator
+# 與 prefs-backed API key permission matrix；`/v2/static` 保持可服務前端資產。
+app.add_middleware(V2MainSecurityMiddleware, storage_getter=lambda: get_storage())
 
 # ── CORS（公開部署禁止使用萬用字元；需要額外 origin 請設 MEMORIACORE_CORS_ORIGINS）──
 app.add_middleware(

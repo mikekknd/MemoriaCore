@@ -14,7 +14,7 @@ from enum import Enum
 from itertools import chain
 from typing import Any, Iterable, Literal
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -79,6 +79,7 @@ def get_now() -> datetime:
 
 @router.post("/sessions", response_model=None)
 def create_session_endpoint(
+    request: Request,
     raw_body: object = Body(...),
     runtime_service: object = Depends(get_runtime_service),
     now: datetime = Depends(get_now),
@@ -93,6 +94,7 @@ def create_session_endpoint(
         session_id=body.session_id,
         command_type=RuntimeCommandType.CREATE_SESSION,
         now=now,
+        permission_context=_request_permission_context(request),
         payload={
             "plan_id": body.plan_id,
             "aftertalk_policy": body.aftertalk_policy,
@@ -118,6 +120,7 @@ def get_session_endpoint(
 @router.post("/sessions/{session_id}/plan", response_model=None)
 def bind_plan_endpoint(
     session_id: str,
+    request: Request,
     raw_body: object = Body(...),
     runtime_service: object = Depends(get_runtime_service),
     now: datetime = Depends(get_now),
@@ -132,6 +135,7 @@ def bind_plan_endpoint(
         session_id=session_id,
         command_type=RuntimeCommandType.BIND_PLAN,
         now=now,
+        permission_context=_request_permission_context(request),
         payload={"plan": body.plan},
     )
     return _call_runtime(runtime_service, "bind_plan", command, now)
@@ -153,6 +157,7 @@ def get_phase_endpoint(
 @router.post("/sessions/{session_id}/aftertalk-policy", response_model=None)
 def update_aftertalk_policy_endpoint(
     session_id: str,
+    request: Request,
     raw_body: object = Body(...),
     runtime_service: object = Depends(get_runtime_service),
     now: datetime = Depends(get_now),
@@ -167,6 +172,7 @@ def update_aftertalk_policy_endpoint(
         session_id=session_id,
         command_type=RuntimeCommandType.UPDATE_AFTERTALK_POLICY,
         now=now,
+        permission_context=_request_permission_context(request),
         payload={"aftertalk_policy": body.aftertalk_policy},
     )
     return _call_runtime(runtime_service, "update_aftertalk_policy", command, now)
@@ -175,6 +181,7 @@ def update_aftertalk_policy_endpoint(
 @router.post("/sessions/{session_id}/manual-close", response_model=None)
 def manual_close_endpoint(
     session_id: str,
+    request: Request,
     raw_body: object = Body(...),
     runtime_service: object = Depends(get_runtime_service),
     now: datetime = Depends(get_now),
@@ -189,6 +196,7 @@ def manual_close_endpoint(
         session_id=session_id,
         command_type=RuntimeCommandType.MANUAL_CLOSE,
         now=now,
+        permission_context=_request_permission_context(request),
         payload={"reason": body.reason},
     )
     return _call_runtime(runtime_service, "request_manual_close", command, now)
@@ -253,6 +261,7 @@ def _command(
     session_id: str,
     command_type: RuntimeCommandType,
     now: datetime,
+    permission_context: object | None = None,
     payload: dict[str, object],
 ) -> RuntimeCommand:
     return RuntimeCommand(
@@ -260,9 +269,13 @@ def _command(
         session_id=session_id,
         command_type=command_type,
         issued_at=now,
-        permission_context=None,
+        permission_context=permission_context,
         payload={key: value for key, value in payload.items() if value is not None},
     )
+
+
+def _request_permission_context(request: Request) -> object | None:
+    return getattr(request.state, "youtubebridge_v2_permission", None)
 
 
 def _validate_body(model_type: type[BaseModel], raw_body: object) -> BaseModel | JSONResponse:

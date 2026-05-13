@@ -603,8 +603,12 @@ Concepts:
 - `PermissionContext`
 - `SecurityErrorResponse`
 - `SecretBoundary`
+- `V2_API_KEYS_PREFS_KEY`
+- `V2ApiKeyConfig`
+- `load_v2_api_key_config`
 - `resolve_permission_context`
 - `sanitize_security_error`
+- `V2MainSecurityMiddleware`
 - `V2LoopbackOnlyMiddleware`
 
 Stability:
@@ -616,8 +620,12 @@ Source:
 - `YouTubeBridgeV2/server/security.py::PermissionContext`
 - `YouTubeBridgeV2/server/security.py::SecurityErrorResponse`
 - `YouTubeBridgeV2/server/security.py::SecretBoundary`
+- `YouTubeBridgeV2/server/auth_config.py::V2_API_KEYS_PREFS_KEY`
+- `YouTubeBridgeV2/server/auth_config.py::V2ApiKeyConfig`
+- `YouTubeBridgeV2/server/auth_config.py::load_v2_api_key_config`
 - `YouTubeBridgeV2/server/security.py::resolve_permission_context`
 - `YouTubeBridgeV2/server/security.py::sanitize_security_error`
+- `YouTubeBridgeV2/server/main_security.py::V2MainSecurityMiddleware`
 - `YouTubeBridgeV2/server/main_security.py::V2LoopbackOnlyMiddleware`
 
 ### Observability

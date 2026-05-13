@@ -223,7 +223,7 @@ def _is_allowed(actual: PermissionGroup, required: PermissionGroup) -> bool:
     if actual is PermissionGroup.INTERNAL:
         return False
     if required is PermissionGroup.OBSERVER:
-        return actual in {PermissionGroup.OBSERVER, PermissionGroup.DISPLAY, PermissionGroup.OPERATOR}
+        return actual in {PermissionGroup.OBSERVER, PermissionGroup.OPERATOR}
     if required is PermissionGroup.DISPLAY:
         return actual in {PermissionGroup.DISPLAY, PermissionGroup.OPERATOR}
     if required is PermissionGroup.OPERATOR:

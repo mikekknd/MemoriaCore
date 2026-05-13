@@ -9,6 +9,7 @@ from YouTubeBridgeV2.server.security import (
     resolve_permission_context,
     sanitize_security_error,
 )
+from YouTubeBridgeV2.server.auth_config import load_v2_api_key_config
 
 
 class FakeClient:
@@ -21,6 +22,18 @@ class FakeRequest:
         self.headers = headers or {}
         self.client = FakeClient(host)
         self.url = type("URL", (), {"path": path})()
+
+
+class FakePrefsStorage:
+    def load_prefs(self):
+        return {
+            "youtubebridge_v2_api_keys": [
+                {"key": "operator-secret", "permission_group": "operator"},
+                {"key": "display-secret", "permission_group": "display"},
+                {"key": "bad-secret", "permission_group": "admin"},
+                {"key": "", "permission_group": "observer"},
+            ]
+        }
 
 
 def _requirement(**overrides):
@@ -119,6 +132,30 @@ def test_display_scope_can_read_display_stream():
     assert result.permission_group == PermissionGroup.DISPLAY
     assert "read_display_stream" in result.allowed_actions
     assert "manual_close" not in result.allowed_actions
+
+
+def test_display_scope_cannot_satisfy_observer_requirement():
+    result = resolve_permission_context(
+        FakeRequest(headers={"x-youtubebridgev2-api-key": "display-secret"}),
+        _requirement(permission_group=PermissionGroup.OBSERVER),
+    )
+
+    assert isinstance(result, SecurityErrorResponse)
+    assert result.status_code == 403
+    assert result.error["code"] == "forbidden"
+    _assert_no_secret(result)
+
+
+def test_display_scope_cannot_read_observer_route_action():
+    result = resolve_permission_context(
+        FakeRequest(headers={"x-youtubebridgev2-api-key": "display-secret"}),
+        _requirement(permission_group=PermissionGroup.OBSERVER, route_id="events"),
+    )
+
+    assert isinstance(result, SecurityErrorResponse)
+    assert result.status_code == 403
+    assert result.error["code"] == "forbidden"
+    _assert_no_secret(result)
 
 
 def test_display_scope_cannot_call_manual_close():
@@ -265,3 +302,17 @@ def test_auth_requirement_serialization_does_not_expose_raw_api_keys():
     serialized = asdict(requirement)
     assert "valid_api_keys" not in serialized
     _assert_no_secret(serialized)
+
+
+def test_v2_api_key_config_serialization_does_not_expose_raw_api_keys():
+    config = load_v2_api_key_config(FakePrefsStorage())
+
+    assert config.as_auth_mapping() == {
+        "operator-secret": PermissionGroup.OPERATOR,
+        "display-secret": PermissionGroup.DISPLAY,
+    }
+    _assert_no_secret(config)
+    if is_dataclass(config):
+        _assert_no_secret(asdict(config))
+    if hasattr(config, "__dict__"):
+        _assert_no_secret(vars(config))

@@ -6,6 +6,8 @@
 
 **Architecture:** `api/main.py` owns only main-app dependency wiring and loopback-only boundary. `YouTubeBridgeV2/production.py` creates a production composition from the existing `StorageManager` singleton. No-op runners keep Wave 2B free of real YouTube, MemoriaCore, and TTS side effects.
 
+**Status note:** Wave 2C supersedes the Wave 2B loopback-only boundary with `V2MainSecurityMiddleware`, adding prefs-backed API key permission checks while preserving loopback operator access.
+
 **Tech Stack:** Python, FastAPI, pytest, `StorageManager`, YouTubeBridgeV2 runtime composition.
 
 ---
