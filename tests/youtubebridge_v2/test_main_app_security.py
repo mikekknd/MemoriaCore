@@ -236,6 +236,85 @@ def test_main_app_v2_operator_key_accepts_x_api_key_alias(
     assert storage.get_v2_session("x-api-key-session")["current_phase"] == "planned_show"
 
 
+def test_main_app_v2_loopback_operator_can_manage_api_keys_without_secret_echo(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage_manager(tmp_path)
+    _save_api_keys(storage)
+    api_main = _install_test_storage(monkeypatch, storage)
+    client = _loopback_client(api_main.app)
+
+    create_response = client.post(
+        "/v2/api-keys",
+        json={"key": "new-display-secret", "permission_group": "display"},
+    )
+    assert create_response.status_code == 200
+    body = create_response.json()
+    assert body["status"] == "ok"
+    assert body["api_key"]["permission_group"] == "display"
+    assert body["api_key"]["key_fingerprint"]
+    assert body["api_key"]["key_prefix"] == body["api_key"]["key_fingerprint"][:12]
+    assert "new-display-secret" not in create_response.text
+
+    list_response = client.get("/v2/api-keys")
+    assert list_response.status_code == 200
+    list_body = list_response.json()
+    assert any(
+        entry["permission_group"] == "display"
+        and entry["key_fingerprint"] == body["api_key"]["key_fingerprint"]
+        for entry in list_body["api_keys"]
+    )
+    assert "new-display-secret" not in list_response.text
+
+    display_client = _remote_client(api_main.app)
+    display_stream = display_client.get(
+        "/v2/sessions/missing/display-stream",
+        headers={"x-youtubebridgev2-api-key": "new-display-secret"},
+    )
+    assert display_stream.status_code in {200, 404}
+
+    delete_response = client.delete(f"/v2/api-keys/{body['api_key']['key_fingerprint']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["removed"] == 1
+
+    rejected_after_delete = display_client.get(
+        "/v2/sessions/missing/display-stream",
+        headers={"x-youtubebridgev2-api-key": "new-display-secret"},
+    )
+    assert rejected_after_delete.status_code == 401
+
+
+def test_main_app_v2_api_key_management_requires_operator_permission(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage_manager(tmp_path)
+    _save_api_keys(storage)
+    api_main = _install_test_storage(monkeypatch, storage)
+    client = _remote_client(api_main.app)
+
+    observer_response = client.get(
+        "/v2/api-keys",
+        headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
+    )
+    display_response = client.post(
+        "/v2/api-keys",
+        headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
+        json={"key": "not-allowed", "permission_group": "observer"},
+    )
+    invalid_group = client.post(
+        "/v2/api-keys",
+        headers={"x-youtubebridgev2-api-key": OPERATOR_KEY},
+        json={"key": "bad", "permission_group": "admin"},
+    )
+
+    _assert_security_error(observer_response, status_code=403, code="forbidden")
+    _assert_security_error(display_response, status_code=403, code="forbidden")
+    assert invalid_group.status_code == 422
+    assert "not-allowed" not in repr(storage.load_prefs())
+
+
 def test_main_app_v2_runtime_command_receives_api_key_permission_context(
     tmp_path,
     monkeypatch,

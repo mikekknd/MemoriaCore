@@ -24,6 +24,7 @@ class V2RuntimeComposition:
     runtime_service: RuntimeApplicationService
     query_service: V2QueryService
     storage: RuntimeStoragePort
+    storage_manager: object
 
 
 def create_v2_composition(
@@ -66,6 +67,7 @@ def create_v2_composition(
         runtime_service=runtime_service,
         query_service=query_service,
         storage=storage,
+        storage_manager=storage_manager,
     )
 
 

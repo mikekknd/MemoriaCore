@@ -258,6 +258,13 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Permission boundary：aftertalk control 只在 operator context 顯示，display-only 仍隱藏 controls。
 - [x] Scope boundary：本階段不改 aftertalk runtime policy contract，不新增 API key management UI。
 
+## Integration Wave 5D 狀態
+
+- [x] API key management API：新增 operator-only `GET/POST/DELETE /v2/api-keys`，寫入 Wave 2C 同一組 prefs-backed API key config。
+- [x] Secret boundary：management response 只暴露 `key_fingerprint`、`key_prefix` 與 `permission_group`，不回顯 raw key。
+- [x] Operator Console panel：operator controls 可新增、刷新與撤銷 API key；display/observer context 不顯示管理 UI。
+- [x] Scope boundary：本階段不處理 5E browser regression checklist，不修改 roadmap checkbox。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

@@ -244,6 +244,7 @@ def _allowed_actions(group: PermissionGroup) -> tuple[str, ...]:
             "ingest_youtube_event",
             "bind_plan",
             "create_session",
+            "manage_api_keys",
         )
     if group is PermissionGroup.DISPLAY:
         return ("read_display_stream", "read_display_assets")
@@ -262,6 +263,7 @@ _ROUTE_ACTIONS = {
     "get_phase": "read_status",
     "get_session": "read_status",
     "manual_close": "manual_close",
+    "manage_api_keys": "manage_api_keys",
     "operator_stream": "read_operator_stream",
     "operator_stream_endpoint": "read_operator_stream",
     "phase": "read_status",

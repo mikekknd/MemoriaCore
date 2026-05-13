@@ -9,6 +9,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 - 擁有後台資訊架構與操作入口。
 - 擁有 phase/status/error 的 operator-facing 呈現。
 - 擁有 Aftertalk policy toggle 與 manual close 控制 UI。
+- 擁有 API key management panel，僅呈現 fingerprint/prefix 與 permission group。
 - 擁有 API/SSE 消費方式與 UI state mapping。
 - 不直接推進 phase、不呼叫 adapter、不寫 storage。
 
@@ -25,6 +26,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 ## Outputs
 
 - operator action request：create session、plan bind/import、tick、aftertalk policy update、manual close。
+- API key management request：create/upsert、refresh list、revoke by fingerprint。
 - visible status model。
 - disabled/enabled control state。
 - operator error banner。
@@ -54,7 +56,13 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 - `OperatorSessionStatusView`
 - `OperatorControlAction`
 - `AftertalkPolicyControl`
+- `CreateSessionCommand`
+- `BindPlanCommand`
+- `TickSessionCommand`
 - `ManualCloseCommand`
+- `ApiKeyListCommand`
+- `ApiKeyCreateCommand`
+- `ApiKeyDeleteCommand`
 - `OperatorDiagnosticBanner`
 - `renderOperatorConsole(view)`
 - `loadOperatorStatus({sessionId, fetchImpl})`
@@ -74,6 +82,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 | SSE stale/disconnected | Show stale indicator and retry status. |
 | display-only permission | Hide operator controls entirely. |
 | Aftertalk policy update | 成功後重新讀 `GET /v2/sessions/{session_id}`，以 durable status 作為畫面真相來源。 |
+| API key management | 只在 operator context 顯示；列表只顯示 fingerprint/prefix 與 permission group。 |
 
 ## Failure Modes
 
@@ -81,10 +90,12 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 - Aftertalk policy update 成功後必須重新讀 `GET /v2/sessions/{session_id}`，不靠 optimistic local patch 作為最終狀態。
 - manual close in-flight 時控制項 disabled，避免重複提交。
 - display-only permission 不顯示 operator controls。
+- API key create 成功後清空 key input；raw key 不得回顯在 DOM、error banner 或 list response。
+- API key revoke 只能送出 fingerprint，不把 raw key 放入 URL。
 - unknown phase 顯示 recoverable diagnostic，不自行改 phase。
 - SSE disconnect 時顯示 stale indicator。
 - hidden prompt/raw payload 不得顯示。
-- UI action 只送出 `/v2/sessions`、`/v2/sessions/{session_id}/plan`、`/v2/sessions/{session_id}/tick`、`/v2/sessions/{session_id}/aftertalk-policy` 與 `/v2/sessions/{session_id}/manual-close` request envelope，不直接 import runtime、呼叫 adapter 或寫 storage。
+- UI action 只送出 `/v2/sessions`、`/v2/sessions/{session_id}/plan`、`/v2/sessions/{session_id}/tick`、`/v2/sessions/{session_id}/aftertalk-policy`、`/v2/sessions/{session_id}/manual-close` 與 `/v2/api-keys` request envelope，不直接 import runtime、呼叫 adapter 或寫 storage。
 
 ## Test Strategy
 
@@ -95,6 +106,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 - disabled state tests。
 - error banner tests。
 - permission boundary tests。
+- API key panel tests：operator 顯示、display-only 隱藏、create/list/delete 不回顯 raw key。
 - no direct adapter/storage call tests。
 
 ## Open Questions

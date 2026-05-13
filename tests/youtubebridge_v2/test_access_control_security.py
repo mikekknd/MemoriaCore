@@ -182,6 +182,17 @@ def test_operator_scope_can_update_aftertalk_policy():
     assert "manual_close" in result.allowed_actions
 
 
+def test_operator_permission_can_manage_api_keys():
+    result = resolve_permission_context(
+        FakeRequest(headers={"x-youtubebridgev2-api-key": "operator-secret"}),
+        _requirement(permission_group=PermissionGroup.OPERATOR, route_id="manage_api_keys"),
+    )
+
+    assert isinstance(result, PermissionContext)
+    assert result.permission_group == PermissionGroup.OPERATOR
+    assert "manage_api_keys" in result.allowed_actions
+
+
 def test_route_id_requires_matching_action_even_when_group_matches():
     result = resolve_permission_context(
         FakeRequest(headers={"x-youtubebridgev2-api-key": "display-secret"}),

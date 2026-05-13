@@ -55,7 +55,11 @@ Wave 2C 已將主 app `/v2` API/SSE 升級為 `V2MainSecurityMiddleware`。此 m
 - `resolve_permission_context(request, requirement)`
 - `sanitize_security_error(error)`
 - `V2ApiKeyConfig`
+- `V2ApiKeyPublicEntry`
 - `load_v2_api_key_config(storage_manager)`
+- `list_v2_api_key_entries(storage_manager)`
+- `upsert_v2_api_key_entry(storage_manager, key, permission_group)`
+- `delete_v2_api_key_entry(storage_manager, key_fingerprint)`
 - `V2MainSecurityMiddleware`
 - `V2LoopbackOnlyMiddleware`
 
@@ -86,6 +90,8 @@ Wave 2C 的 API key config 固定讀取 prefs key `youtubebridge_v2_api_keys`：
 
 2C 只接受 `operator`、`display`、`observer`。空 key、非 list config、無效 permission group 或讀取失敗都採 fail-closed，非 loopback request 會被拒絕。Env var、hybrid source 與 API key 管理 UI 不屬於 2C。
 
+Wave 5D 新增 operator-only API key management surface，仍寫入相同 prefs key。`GET /v2/api-keys`、`POST /v2/api-keys` 與 `DELETE /v2/api-keys/{key_fingerprint}` 只允許 operator context，response 只回傳 `key_fingerprint`、`key_prefix` 與 `permission_group`。Raw key 只存在於 operator submit request 與 prefs storage，不得出現在 response、SSE、UI HTML 或 sanitized diagnostics。
+
 ## Failure Modes
 
 - missing API key 回傳 unauthorized，不暴露 expected secret。
@@ -101,11 +107,12 @@ Wave 2C 的 API key config 固定讀取 prefs key `youtubebridge_v2_api_keys`：
 - auth tests：missing key、invalid key、loopback access。
 - permission tests：operator/display/observer/internal scope。
 - forbidden tests：display read-only scope 不能控制 runtime。
+- API key management tests：operator 可新增/列出/撤銷；observer/display 不能進入管理 surface；response 不回顯 raw key。
 - sanitized error tests：錯誤不含 secret、raw payload 或非 allowlisted error code。
 - delegation tests：MemoriaCore credential 以 reference 傳遞。
 - integration boundary tests：Server/API Surface 不自行複製 security 判斷。
 
 ## Open Questions
 
-- API key 管理 UI、輪替與撤銷流程尚未設計；目前由 prefs 手動或後續控制台功能寫入。
+- API key 到期日、命名 label 與 rotation reminder 尚未設計；目前以 fingerprint revoke 完成撤銷。
 - MemoriaCore auth delegation 是否使用使用者 token 或 service token，需與主系統 auth 設計對齊。

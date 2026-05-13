@@ -71,6 +71,7 @@ export class OperatorSessionStatusView {
         status.duration_summary?.remaining_time_seconds,
       ),
       planProgress: normalizePlanProgress(status.live_episode_plan || status.plan_progress),
+      apiKeys: normalizeApiKeyList(status.api_keys || status.apiKeys || []),
       diagnostics,
       errorBanner: status.error
         ? OperatorDiagnosticBanner.fromError(status.error)
@@ -78,6 +79,7 @@ export class OperatorSessionStatusView {
       controls: {
         aftertalkDisabled: !canControl || controlsDisabled,
         bindPlanDisabled: !canControl || controlsDisabled,
+        apiKeyDisabled: !canControl || controlsDisabled,
         manualCloseDisabled: !canControl || controlsDisabled,
         tickDisabled: !canControl || controlsDisabled,
       },
@@ -224,6 +226,55 @@ export class ManualCloseCommand {
       reason,
       commandIdFactory,
     }).send(fetchImpl);
+  }
+}
+
+export class ApiKeyListCommand {
+  static async send({fetchImpl = globalThis.fetch} = {}) {
+    const response = await fetchImpl("/v2/api-keys");
+    const payload = await safeJson(response);
+    if (!response.ok) {
+      throw OperatorDiagnosticBanner.fromError(payload);
+    }
+    return normalizeApiKeyList(payload.api_keys || payload.apiKeys || payload);
+  }
+}
+
+export class ApiKeyCreateCommand {
+  static async send({
+    key,
+    permissionGroup,
+    fetchImpl = globalThis.fetch,
+  } = {}) {
+    const response = await fetchImpl("/v2/api-keys", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        key,
+        permission_group: permissionGroup,
+      }),
+    });
+    const payload = await safeJson(response);
+    if (!response.ok) {
+      throw OperatorDiagnosticBanner.fromError(payload);
+    }
+    return sanitizePublicValue(payload);
+  }
+}
+
+export class ApiKeyDeleteCommand {
+  static async send({
+    keyFingerprint,
+    fetchImpl = globalThis.fetch,
+  } = {}) {
+    const response = await fetchImpl(`/v2/api-keys/${encodeURIComponent(keyFingerprint)}`, {
+      method: "DELETE",
+    });
+    const payload = await safeJson(response);
+    if (!response.ok) {
+      throw OperatorDiagnosticBanner.fromError(payload);
+    }
+    return sanitizePublicValue(payload);
   }
 }
 
@@ -404,6 +455,15 @@ export function mountOperatorConsole({
 }
 
 function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
+  const refreshApiKeys = async () => {
+    try {
+      const apiKeys = await ApiKeyListCommand.send({fetchImpl});
+      render({...status, api_keys: apiKeys});
+    } catch (error) {
+      render({...status, error});
+    }
+  };
+
   const aftertalk = root.querySelector("[data-testid='aftertalk-toggle']");
   if (aftertalk) {
     aftertalk.addEventListener("change", async () => {
@@ -466,12 +526,57 @@ function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
       }
     });
   }
+
+  const apiKeyCreate = root.querySelector("[data-testid='api-key-create-button']");
+  if (apiKeyCreate) {
+    apiKeyCreate.addEventListener("click", async () => {
+      const input = root.querySelector("[data-testid='api-key-input']");
+      const permission = root.querySelector("[data-testid='api-key-permission-select']");
+      const key = String(input?.value || "").trim();
+      if (!key) return;
+      render(status, {inFlightAction: "api_key"});
+      try {
+        await ApiKeyCreateCommand.send({
+          key,
+          permissionGroup: String(permission?.value || "observer"),
+          fetchImpl,
+        });
+        if (input) input.value = "";
+        await refreshApiKeys();
+      } catch (error) {
+        render({...status, error});
+      }
+    });
+  }
+
+  const apiKeyRefresh = root.querySelector("[data-testid='api-key-refresh-button']");
+  if (apiKeyRefresh) {
+    apiKeyRefresh.addEventListener("click", refreshApiKeys);
+  }
+
+  const apiKeyDeleteButtons = typeof root.querySelectorAll === "function"
+    ? root.querySelectorAll("[data-testid='api-key-delete-button']")
+    : [];
+  for (const button of apiKeyDeleteButtons) {
+    button.addEventListener("click", async () => {
+      const keyFingerprint = button.dataset.keyFingerprint || "";
+      if (!keyFingerprint) return;
+      render(status, {inFlightAction: "api_key"});
+      try {
+        await ApiKeyDeleteCommand.send({keyFingerprint, fetchImpl});
+        await refreshApiKeys();
+      } catch (error) {
+        render({...status, error});
+      }
+    });
+  }
 }
 
 function renderOperatorControls(view) {
   const aftertalkChecked = view.aftertalkPolicy === "auto" ? " checked" : "";
   const aftertalkDisabled = view.controls.aftertalkDisabled ? " disabled" : "";
   const bindDisabled = view.controls.bindPlanDisabled ? " disabled" : "";
+  const apiKeyDisabled = view.controls.apiKeyDisabled ? " disabled" : "";
   const manualDisabled = view.controls.manualCloseDisabled ? " disabled" : "";
   const tickDisabled = view.controls.tickDisabled ? " disabled" : "";
   return `
@@ -488,6 +593,22 @@ function renderOperatorControls(view) {
         <label for="operatorPlanJson">${escapeHtml(translate("plan_json", "Plan JSON"))}</label>
         <textarea id="operatorPlanJson" data-testid="plan-json-input" rows="6" spellcheck="false"></textarea>
         <button data-testid="bind-plan-button"${bindDisabled}>${escapeHtml(translate("bind_plan", "Bind Plan"))}</button>
+      </div>
+      <div class="api-key-control" data-testid="api-key-panel">
+        <div class="control-heading">
+          <strong>${escapeHtml(translate("api_keys", "API Keys"))}</strong>
+          <button data-testid="api-key-refresh-button" type="button"${apiKeyDisabled}>${escapeHtml(translate("refresh", "Refresh"))}</button>
+        </div>
+        <div class="api-key-create-row">
+          <input data-testid="api-key-input" type="password" autocomplete="off" placeholder="${escapeHtml(translate("api_key_placeholder", "New API key"))}"${apiKeyDisabled}>
+          <select data-testid="api-key-permission-select"${apiKeyDisabled}>
+            <option value="operator">operator</option>
+            <option value="display">display</option>
+            <option value="observer">observer</option>
+          </select>
+          <button data-testid="api-key-create-button" type="button"${apiKeyDisabled}>${escapeHtml(translate("create_api_key", "Create Key"))}</button>
+        </div>
+        <div class="api-key-list" data-testid="api-key-list">${renderApiKeyList(view.apiKeys || [])}</div>
       </div>
     </section>
   `;
@@ -578,6 +699,20 @@ function renderPlanProgress(progress) {
   `;
 }
 
+function renderApiKeyList(apiKeys) {
+  const entries = normalizeApiKeyList(apiKeys);
+  if (entries.length === 0) {
+    return `<p class="muted">${escapeHtml(translate("api_keys_empty", "No API keys"))}</p>`;
+  }
+  return entries.map((entry) => `
+    <div class="api-key-entry">
+      <span>${escapeHtml(entry.keyPrefix)}</span>
+      <strong>${escapeHtml(entry.permissionGroup)}</strong>
+      <button data-testid="api-key-delete-button" type="button" data-key-fingerprint="${escapeHtml(entry.keyFingerprint)}">${escapeHtml(translate("delete_api_key", "Revoke"))}</button>
+    </div>
+  `).join("");
+}
+
 export function parsePlanJsonForOperator(raw) {
   try {
     const parsed = JSON.parse(String(raw || ""));
@@ -649,6 +784,27 @@ function normalizePlanProgress(plan = {}) {
     label: total > 0 ? `${current} / ${total}` : "0 / 0",
     percent,
   };
+}
+
+function normalizeApiKeyList(payload = []) {
+  const entries = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload.api_keys)
+      ? payload.api_keys
+      : Array.isArray(payload.apiKeys)
+        ? payload.apiKeys
+        : [];
+  return entries.map((entry) => {
+    const safe = sanitizePublicValue(entry || {});
+    const keyFingerprint = String(safe.key_fingerprint || safe.keyFingerprint || "");
+    const keyPrefix = String(safe.key_prefix || safe.keyPrefix || keyFingerprint.slice(0, 12));
+    const permissionGroup = String(safe.permission_group || safe.permissionGroup || "observer");
+    return {
+      keyFingerprint,
+      keyPrefix,
+      permissionGroup,
+    };
+  }).filter((entry) => entry.keyFingerprint);
 }
 
 function formatRemainingTime(seconds) {

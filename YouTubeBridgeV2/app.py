@@ -46,6 +46,7 @@ def create_v2_app(
         raise V2AppConfigurationError("YouTubeBridgeV2 composition is required")
     runtime_service = _required_attr(composition, "runtime_service")
     query_service = _required_attr(composition, "query_service")
+    storage_manager = getattr(composition, "storage_manager", None)
     clock = now_provider or (lambda: datetime.now(timezone.utc))
 
     app = FastAPI(
@@ -56,6 +57,8 @@ def create_v2_app(
     app.include_router(routes.router)
     app.dependency_overrides[routes.get_runtime_service] = lambda: runtime_service
     app.dependency_overrides[routes.get_query_service] = lambda: query_service
+    if storage_manager is not None:
+        app.dependency_overrides[routes.get_storage_manager] = lambda: storage_manager
     app.dependency_overrides[routes.get_now] = clock
 
     static_dir = Path(__file__).resolve().parent / "static"

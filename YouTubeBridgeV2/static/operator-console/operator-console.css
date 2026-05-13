@@ -230,6 +230,61 @@ input:disabled {
   font-size: 12px;
 }
 
+.control-heading,
+.api-key-create-row,
+.api-key-entry {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+}
+
+.control-heading {
+  grid-template-columns: 1fr auto;
+}
+
+.api-key-control {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  width: 100%;
+}
+
+.api-key-create-row {
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, auto) auto;
+}
+
+.api-key-list {
+  display: grid;
+  gap: 8px;
+}
+
+.api-key-entry {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  grid-template-columns: minmax(130px, 1fr) minmax(90px, auto) auto;
+  min-height: 38px;
+  padding: 7px 9px;
+}
+
+.api-key-entry span,
+.api-key-entry strong {
+  overflow-wrap: anywhere;
+}
+
+.api-key-entry span {
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+}
+
+.api-key-entry strong {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 input,
 select,
 textarea {
@@ -304,6 +359,8 @@ textarea {
   }
 
   .control-row,
+  .api-key-create-row,
+  .api-key-entry,
   .setup-form {
     grid-template-columns: 1fr;
   }

@@ -98,6 +98,10 @@ def _route_requirement(path: str, method: str) -> tuple[PermissionGroup, str]:
         return PermissionGroup.OPERATOR, ""
 
     http_method = method.upper()
+    if parts[1] == "api-keys":
+        if len(parts) in {2, 3} and http_method in {"GET", "POST", "DELETE"}:
+            return PermissionGroup.OPERATOR, "manage_api_keys"
+
     if parts[1] == "sessions":
         if len(parts) == 2 and http_method == "POST":
             return PermissionGroup.OPERATOR, "create_session"

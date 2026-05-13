@@ -232,6 +232,7 @@ def _get_v2_query_service():
 
 app.dependency_overrides[youtubebridge_v2_routes.get_runtime_service] = _get_v2_runtime_service
 app.dependency_overrides[youtubebridge_v2_routes.get_query_service] = _get_v2_query_service
+app.dependency_overrides[youtubebridge_v2_routes.get_storage_manager] = lambda: get_storage()
 
 
 # ── 根路由 → 一般入口 ────────────────────────────────────

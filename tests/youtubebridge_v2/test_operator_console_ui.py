@@ -489,6 +489,142 @@ console.log(JSON.stringify({calls, response}));
     ]
 
 
+def test_api_key_commands_use_management_endpoints_without_echoing_secret():
+    result = _run_node_json(
+        """
+const calls = [];
+const fetchImpl = async (url, options = {}) => {
+  calls.push({url, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null});
+  return {
+    ok: true,
+    json: async () => ({
+      status: "ok",
+      api_key: {key_fingerprint: "abc123def456", key_prefix: "abc123def456", permission_group: "display"},
+      api_keys: [{key_fingerprint: "abc123def456", key_prefix: "abc123def456", permission_group: "display"}]
+    })
+  };
+};
+const created = await ui.ApiKeyCreateCommand.send({
+  key: "new-display-secret",
+  permissionGroup: "display",
+  fetchImpl
+});
+const listed = await ui.ApiKeyListCommand.send({fetchImpl});
+const deleted = await ui.ApiKeyDeleteCommand.send({
+  keyFingerprint: "abc123def456",
+  fetchImpl
+});
+console.log(JSON.stringify({calls, created, listed, deleted}));
+"""
+    )
+
+    assert result["calls"][0] == {
+        "url": "/v2/api-keys",
+        "method": "POST",
+        "body": {"key": "new-display-secret", "permission_group": "display"},
+    }
+    assert result["calls"][1] == {"url": "/v2/api-keys", "method": "GET", "body": None}
+    assert result["calls"][2]["url"] == "/v2/api-keys/abc123def456"
+    assert result["calls"][2]["method"] == "DELETE"
+    _assert_no_private_payload(
+        {
+            "created": result["created"],
+            "listed": result["listed"],
+            "deleted": result["deleted"],
+        }
+    )
+
+
+def test_operator_console_renders_api_key_management_for_operator():
+    result = _run_node_json(
+        """
+const view = ui.OperatorSessionStatusView.fromStatus({
+  session_id: "session-1",
+  phase: "planned_show",
+  permission_group: "operator"
+});
+const html = ui.renderOperatorConsole(view);
+console.log(JSON.stringify({view, html}));
+"""
+    )
+
+    assert 'data-testid="api-key-panel"' in result["html"]
+    assert 'data-testid="api-key-input"' in result["html"]
+    assert 'data-testid="api-key-permission-select"' in result["html"]
+    assert 'data-testid="api-key-create-button"' in result["html"]
+    assert 'data-testid="api-key-refresh-button"' in result["html"]
+
+
+def test_api_key_panel_creates_refreshes_and_deletes_without_rendering_secret():
+    result = _run_node_json(
+        """
+const calls = [];
+let createHandler = null;
+let refreshHandler = null;
+let deleteHandler = null;
+const elements = {
+  apiKeyInput: {value: "new-display-secret"},
+  permissionSelect: {value: "display"},
+  createButton: {addEventListener: (_event, handler) => { createHandler = handler; }},
+  refreshButton: {addEventListener: (_event, handler) => { refreshHandler = handler; }},
+  deleteButton: {dataset: {keyFingerprint: "abc123def456"}, addEventListener: (_event, handler) => { deleteHandler = handler; }},
+};
+const root = {
+  innerHTML: "",
+  querySelector: (selector) => {
+    if (selector === "[data-testid='aftertalk-toggle']") return null;
+    if (selector === "[data-testid='tick-button']") return null;
+    if (selector === "[data-testid='bind-plan-button']") return null;
+    if (selector === "[data-testid='manual-close-button']") return null;
+    if (selector === "[data-testid='api-key-input']") return elements.apiKeyInput;
+    if (selector === "[data-testid='api-key-permission-select']") return elements.permissionSelect;
+    if (selector === "[data-testid='api-key-create-button']") return elements.createButton;
+    if (selector === "[data-testid='api-key-refresh-button']") return elements.refreshButton;
+    return null;
+  },
+  querySelectorAll: (selector) => selector === "[data-testid='api-key-delete-button']"
+    ? [elements.deleteButton]
+    : []
+};
+const fetchImpl = async (url, options = {}) => {
+  calls.push({url, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null});
+  return {
+    ok: true,
+    json: async () => ({
+      status: "ok",
+      api_keys: [{key_fingerprint: "abc123def456", key_prefix: "abc123def456", permission_group: "display"}],
+      api_key: {key_fingerprint: "abc123def456", key_prefix: "abc123def456", permission_group: "display"}
+    })
+  };
+};
+ui.mountOperatorConsole({
+  root,
+  sessionId: "session-1",
+  fetchImpl,
+  eventSourceFactory: () => null,
+  initialStatus: {session_id: "session-1", phase: "planned_show", permission_group: "operator"}
+});
+await createHandler();
+await refreshHandler();
+await deleteHandler();
+console.log(JSON.stringify({calls, html: root.innerHTML, inputValue: elements.apiKeyInput.value}));
+"""
+    )
+
+    assert result["calls"][0]["url"] == "/v2/api-keys"
+    assert result["calls"][0]["method"] == "POST"
+    assert result["calls"][1]["url"] == "/v2/api-keys"
+    assert result["calls"][1]["method"] == "GET"
+    assert result["calls"][2]["url"] == "/v2/api-keys"
+    assert result["calls"][2]["method"] == "GET"
+    assert result["calls"][3]["url"] == "/v2/api-keys/abc123def456"
+    assert result["calls"][3]["method"] == "DELETE"
+    assert result["inputValue"] == ""
+    assert "abc123def456" in result["html"]
+    assert "new-display-secret" not in result["html"]
+    _assert_no_private_payload(result["html"])
+
+
 def test_controls_disable_while_action_is_in_flight():
     result = _run_node_json(
         """
@@ -678,6 +814,12 @@ def test_operator_console_i18n_keys_are_registered():
         "youtubebridge_v2.operator_console.stream_stale",
         "youtubebridge_v2.operator_console.diagnostics_unavailable",
         "youtubebridge_v2.operator_console.missing_session_id",
+        "youtubebridge_v2.operator_console.api_keys",
+        "youtubebridge_v2.operator_console.refresh",
+        "youtubebridge_v2.operator_console.api_key_placeholder",
+        "youtubebridge_v2.operator_console.create_api_key",
+        "youtubebridge_v2.operator_console.delete_api_key",
+        "youtubebridge_v2.operator_console.api_keys_empty",
     ):
         assert key in zh
         assert key in en

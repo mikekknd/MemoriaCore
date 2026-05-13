@@ -57,6 +57,12 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 - `GET /v2/sessions/{session_id}/events`
 - `GET /v2/sessions/{session_id}/operator-stream`
 - `GET /v2/sessions/{session_id}/display-stream`
+- `GET /v2/api-keys`
+- `POST /v2/api-keys`
+- `DELETE /v2/api-keys/{key_fingerprint}`
+- `list_api_keys_endpoint`
+- `create_api_key_endpoint`
+- `delete_api_key_endpoint`
 - `create_session_endpoint`
 - `get_session_endpoint`
 - `bind_plan_endpoint`
@@ -80,6 +86,7 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 | YouTube event ingestion | Validate request and delegate `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`; route does not call YouTube adapter directly. |
 | aftertalk policy update | Validate policy and delegate command. |
 | automation control | Validate operator safety controls and delegate `RuntimeCommandType.UPDATE_AUTOMATION_CONTROL`; route does not mutate runtime state directly. |
+| API key management | Read/write `StorageManager` prefs only through the API key config helpers; public response exposes fingerprint/prefix and permission group only. |
 | operator stream | May expose operator-safe diagnostics and controls state. |
 | display stream | Must be display-safe and read-only. |
 | errors | Return sanitized stable error code and correlation id. |
@@ -89,6 +96,9 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 
 | Endpoint Group | Required Permission |
 | --- | --- |
+| `GET /v2/api-keys` | `operator` |
+| `POST /v2/api-keys` | `operator` |
+| `DELETE /v2/api-keys/{key_fingerprint}` | `operator` |
 | `POST /v2/sessions` | `operator` |
 | `POST /v2/sessions/{session_id}/plan` | `operator` |
 | `POST /v2/sessions/{session_id}/aftertalk-policy` | `operator` |
@@ -130,4 +140,4 @@ Mutating routes 會把 Security module 解析出的 permission context 放入 `R
 
 - application service 的檔案與 class 名稱需在 runtime implementation plan 鎖定。
 - SSE 是否使用單一路由加 query scope 或分開路由，需與 UI 設計對齊。
-- API key 管理 UI 與 key rotation 尚未設計；Server/API Surface 只消費 Security module 的 permission result。
+- API key rotation policy 目前以 create/upsert + revoke 表達；是否要加入到期日或命名 label 留待後續 hardening。

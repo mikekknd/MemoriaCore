@@ -672,6 +672,13 @@ Concepts:
 - `GET /v2/sessions/{session_id}/events`
 - `GET /v2/sessions/{session_id}/operator-stream`
 - `GET /v2/sessions/{session_id}/display-stream`
+- `GET /v2/api-keys`
+- `POST /v2/api-keys`
+- `DELETE /v2/api-keys/{key_fingerprint}`
+- `ApiKeyCreateRequest`
+- `list_api_keys_endpoint`
+- `create_api_key_endpoint`
+- `delete_api_key_endpoint`
 - `create_session_endpoint`
 - `get_session_endpoint`
 - `bind_plan_endpoint`
@@ -709,6 +716,35 @@ Source:
 - `YouTubeBridgeV2/server/routes.py::get_session_events_endpoint`
 - `YouTubeBridgeV2/server/routes.py::operator_stream_endpoint`
 - `YouTubeBridgeV2/server/routes.py::display_stream_endpoint`
+- `YouTubeBridgeV2/server/routes.py::ApiKeyCreateRequest`
+- `YouTubeBridgeV2/server/routes.py::list_api_keys_endpoint`
+- `YouTubeBridgeV2/server/routes.py::create_api_key_endpoint`
+- `YouTubeBridgeV2/server/routes.py::delete_api_key_endpoint`
+
+### API Key Management Endpoints
+
+Purpose:
+讓 operator 透過 V2 durable API 管理 prefs-backed API keys，而不是手動編輯 prefs。
+
+Routes:
+- `GET /v2/api-keys`
+- `POST /v2/api-keys`
+- `DELETE /v2/api-keys/{key_fingerprint}`
+
+Auth:
+- `operator` only；loopback 視為 operator。
+
+Returns:
+- Sanitized key entries：`key_fingerprint`、`key_prefix`、`permission_group`。
+- 不回傳 raw key。
+
+Side Effects:
+- `POST` 與 `DELETE` 會寫入 `StorageManager.save_prefs(...)` 的 `youtubebridge_v2_api_keys`。
+
+Source:
+- `YouTubeBridgeV2/server/routes.py::list_api_keys_endpoint`
+- `YouTubeBridgeV2/server/routes.py::create_api_key_endpoint`
+- `YouTubeBridgeV2/server/routes.py::delete_api_key_endpoint`
 
 ### Ingest YouTube Event Endpoint
 
@@ -746,7 +782,11 @@ Concepts:
 - `SecretBoundary`
 - `V2_API_KEYS_PREFS_KEY`
 - `V2ApiKeyConfig`
+- `V2ApiKeyPublicEntry`
 - `load_v2_api_key_config`
+- `list_v2_api_key_entries`
+- `upsert_v2_api_key_entry`
+- `delete_v2_api_key_entry`
 - `resolve_permission_context`
 - `sanitize_security_error`
 - `V2MainSecurityMiddleware`
@@ -763,7 +803,11 @@ Source:
 - `YouTubeBridgeV2/server/security.py::SecretBoundary`
 - `YouTubeBridgeV2/server/auth_config.py::V2_API_KEYS_PREFS_KEY`
 - `YouTubeBridgeV2/server/auth_config.py::V2ApiKeyConfig`
+- `YouTubeBridgeV2/server/auth_config.py::V2ApiKeyPublicEntry`
 - `YouTubeBridgeV2/server/auth_config.py::load_v2_api_key_config`
+- `YouTubeBridgeV2/server/auth_config.py::list_v2_api_key_entries`
+- `YouTubeBridgeV2/server/auth_config.py::upsert_v2_api_key_entry`
+- `YouTubeBridgeV2/server/auth_config.py::delete_v2_api_key_entry`
 - `YouTubeBridgeV2/server/security.py::resolve_permission_context`
 - `YouTubeBridgeV2/server/security.py::sanitize_security_error`
 - `YouTubeBridgeV2/server/main_security.py::V2MainSecurityMiddleware`
@@ -804,6 +848,7 @@ Purpose:
 Wave 5A：初始 status dashboard 以 `GET /v2/sessions/{session_id}` 作為 durable source，phase-only endpoint 不再是初始載入來源。
 Wave 5B：main-app status/phase response 會包含 request `permission_group`，operator controls 只在 operator context 顯示。
 Wave 5C：Aftertalk policy control 更新成功後重新讀 `GET /v2/sessions/{session_id}`，不靠 optimistic local patch 作為最終狀態。
+Wave 5D：API key management panel 透過 operator-only `/v2/api-keys` endpoints 新增、刷新與撤銷 key；UI 只顯示 fingerprint/prefix。
 
 Concepts:
 - `GET /v2/static/operator-console/index.html`
@@ -815,6 +860,9 @@ Concepts:
 - `BindPlanCommand`
 - `TickSessionCommand`
 - `ManualCloseCommand`
+- `ApiKeyListCommand`
+- `ApiKeyCreateCommand`
+- `ApiKeyDeleteCommand`
 - `OperatorDiagnosticBanner`
 - `renderOperatorConsole`
 - `loadOperatorStatus`
@@ -837,6 +885,9 @@ Source:
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::BindPlanCommand`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::TickSessionCommand`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::ManualCloseCommand`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::ApiKeyListCommand`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::ApiKeyCreateCommand`
+- `YouTubeBridgeV2/static/operator-console/operator-console.js::ApiKeyDeleteCommand`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::OperatorDiagnosticBanner`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::renderOperatorConsole`
 - `YouTubeBridgeV2/static/operator-console/operator-console.js::loadOperatorStatus`

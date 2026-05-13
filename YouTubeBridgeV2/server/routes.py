@@ -18,6 +18,11 @@ from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from YouTubeBridgeV2.server.auth_config import (
+    delete_v2_api_key_entry,
+    list_v2_api_key_entries,
+    upsert_v2_api_key_entry,
+)
 from YouTubeBridgeV2.query_service import V2QueryServiceError
 from YouTubeBridgeV2.runtime.application_service import (
     RuntimeCommand,
@@ -34,6 +39,10 @@ class RuntimeServiceNotConfigured(RuntimeError):
 
 class QueryServiceNotConfigured(RuntimeError):
     """V2 query service 尚未由 application wiring 注入."""
+
+
+class StorageManagerNotConfigured(RuntimeError):
+    """StorageManager 尚未由 application wiring 注入."""
 
 
 class SessionCreateRequest(BaseModel):
@@ -77,6 +86,11 @@ class YouTubeEventIngestRequest(BaseModel):
     page_info: dict[str, object] | None = None
 
 
+class ApiKeyCreateRequest(BaseModel):
+    key: str = Field(..., min_length=1)
+    permission_group: Literal["operator", "display", "observer"]
+
+
 def get_runtime_service() -> object:
     """FastAPI dependency placeholder for Runtime Application Service."""
 
@@ -89,10 +103,72 @@ def get_query_service() -> object:
     raise QueryServiceNotConfigured("query service dependency is not configured")
 
 
+def get_storage_manager() -> object:
+    """FastAPI dependency placeholder for StorageManager-backed prefs."""
+
+    raise StorageManagerNotConfigured("storage manager dependency is not configured")
+
+
 def get_now() -> datetime:
     """FastAPI dependency for deterministic command timestamps in tests."""
 
     return datetime.now(timezone.utc)
+
+
+@router.get("/api-keys", response_model=None)
+def list_api_keys_endpoint(
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object]:
+    """Return sanitized V2 API key entries for operator management."""
+
+    return {
+        "api_keys": [
+            _object_to_dict(entry)
+            for entry in list_v2_api_key_entries(storage_manager)
+        ]
+    }
+
+
+@router.post("/api-keys", response_model=None)
+def create_api_key_endpoint(
+    raw_body: object = Body(...),
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object] | JSONResponse:
+    """Create or update a V2 API key entry without echoing the raw key."""
+
+    body = _validate_body(ApiKeyCreateRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    try:
+        entry = upsert_v2_api_key_entry(
+            storage_manager,
+            key=body.key,
+            permission_group=body.permission_group,
+        )
+    except ValueError:
+        return _validation_error_response(raw_body)
+    return {
+        "status": "ok",
+        "api_key": _object_to_dict(entry),
+    }
+
+
+@router.delete("/api-keys/{key_fingerprint}", response_model=None)
+def delete_api_key_endpoint(
+    key_fingerprint: str,
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object]:
+    """Revoke a V2 API key by fingerprint."""
+
+    removed = delete_v2_api_key_entry(storage_manager, key_fingerprint=key_fingerprint)
+    return {
+        "status": "ok",
+        "removed": removed,
+        "api_keys": [
+            _object_to_dict(entry)
+            for entry in list_v2_api_key_entries(storage_manager)
+        ],
+    }
 
 
 @router.post("/sessions", response_model=None)
@@ -575,13 +651,18 @@ def _sanitize_payload(value: Any, forbidden_keys: set[str]) -> Any:
 
 
 __all__ = [
+    "ApiKeyCreateRequest",
     "bind_plan_endpoint",
     "create_session_endpoint",
+    "create_api_key_endpoint",
+    "delete_api_key_endpoint",
     "display_stream_endpoint",
     "get_now",
     "get_phase_endpoint",
     "get_query_service",
     "get_runtime_service",
+    "get_storage_manager",
+    "list_api_keys_endpoint",
     "get_session_endpoint",
     "get_session_events_endpoint",
     "ingest_youtube_event_endpoint",
