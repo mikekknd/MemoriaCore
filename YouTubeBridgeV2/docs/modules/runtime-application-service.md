@@ -119,6 +119,11 @@ Wave 3B status:
 - `HANDLE_YOUTUBE_EVENT` 會優先使用 command payload 的 `polling_cursor`，否則從 storage 讀取 `youtube_polling_cursor`。
 - cursor 會在 event persistence 後 advance 並寫回 session metadata；duplicate event id 只保存 ignored event summary，不 dispatch runner。
 
+Wave 4A scheduler contract:
+- `AutomationTickPolicy` 與 `SchedulerTickIntent` 定義 scheduler/tick loop 的 command envelope。
+- `build_scheduler_tick_intent(...)` 產生 deterministic `RuntimeCommandType.TICK` command id，讓 scheduler tick 可走既有 command idempotency。
+- `dispatch_scheduler_tick(...)` 只做單次 runtime service delegation；background loop、phase automation policy、restart hardening 與 operator pause/resume controls 分別留給 4B/4C/4D。
+
 ### `RuntimeCommand`
 
 Source:

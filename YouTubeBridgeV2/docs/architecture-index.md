@@ -211,6 +211,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Duplicate boundary：API ingestion 會使用 persisted cursor skip duplicate event id，不重複 dispatch runner。
 - [x] Import/privacy boundary：V2 source 不引入 legacy runtime、Google/requests transport 或直接 SQLite；public API/SSE 不暴露 raw YouTube payload。
 
+## Integration Wave 4A 狀態
+
+- [x] Scheduler tick contract：`AutomationTickPolicy` / `SchedulerTickIntent` 可產生 deterministic runtime tick command。
+- [x] Single-dispatch helper：`dispatch_scheduler_tick(...)` 只委派 `RuntimeApplicationService.tick_session(...)`，不直接執行 adapter/storage/UI side effects。
+- [x] Scope boundary：本階段不啟動 background scheduler，不處理 4B automatic advancement、4C restart hardening 或 4D pause/resume controls。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

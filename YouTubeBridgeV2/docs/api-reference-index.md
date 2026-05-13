@@ -310,12 +310,17 @@ Source:
 Purpose:
 協調 V2 session command workflow，負責 snapshot read、phase decision dispatch、storage write、adapter call、event publish、idempotency 與 recovery。
 Wave 3A：`HANDLE_YOUTUBE_EVENT` command payload 會先經 YouTube adapter normalization，保存 normalized public/display event 後再交回 tick dispatch。
+Wave 4A：scheduler tick contract 可產生 deterministic `RuntimeCommandType.TICK` command，並以單次 dispatch helper 委派 runtime service。
 
 Concepts:
 - `RuntimeApplicationService`
 - `RuntimeCommand`
 - `RuntimeCommandType`
 - `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`
+- `AutomationTickPolicy`
+- `SchedulerTickIntent`
+- `build_scheduler_tick_intent`
+- `dispatch_scheduler_tick`
 - `RuntimeServiceResult`
 - `RuntimeServiceEvent`
 - `PersistedTransitionRef`
@@ -336,6 +341,10 @@ Source:
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeApplicationService`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommand`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeCommandType`
+- `YouTubeBridgeV2/runtime/automation.py::AutomationTickPolicy`
+- `YouTubeBridgeV2/runtime/automation.py::SchedulerTickIntent`
+- `YouTubeBridgeV2/runtime/automation.py::build_scheduler_tick_intent`
+- `YouTubeBridgeV2/runtime/automation.py::dispatch_scheduler_tick`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeServiceResult`
 - `YouTubeBridgeV2/runtime/application_service.py::RuntimeServiceEvent`
 - `YouTubeBridgeV2/runtime/application_service.py::PersistedTransitionRef`
