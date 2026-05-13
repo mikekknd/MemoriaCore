@@ -71,6 +71,7 @@ export class OperatorSessionStatusView {
         status.duration_summary?.remaining_time_seconds,
       ),
       planProgress: normalizePlanProgress(status.live_episode_plan || status.plan_progress),
+      episodePlans: normalizeEpisodePlanList(status.episode_plans || status.episodePlans || []),
       apiKeys: normalizeApiKeyList(status.api_keys || status.apiKeys || []),
       diagnostics,
       errorBanner: status.error
@@ -79,6 +80,7 @@ export class OperatorSessionStatusView {
       controls: {
         aftertalkDisabled: !canControl || controlsDisabled,
         bindPlanDisabled: !canControl || controlsDisabled,
+        episodePlanDisabled: !canControl || controlsDisabled,
         apiKeyDisabled: !canControl || controlsDisabled,
         manualCloseDisabled: !canControl || controlsDisabled,
         tickDisabled: !canControl || controlsDisabled,
@@ -181,6 +183,17 @@ export class BindPlanCommand {
       plan,
       commandIdFactory,
     }).send(fetchImpl);
+  }
+}
+
+export class EpisodePlanListCommand {
+  static async send({fetchImpl = globalThis.fetch} = {}) {
+    const response = await fetchImpl("/v2/episode-plans");
+    const payload = await safeJson(response);
+    if (!response.ok) {
+      throw OperatorDiagnosticBanner.fromError(payload);
+    }
+    return normalizeEpisodePlanList(payload.episode_plans || payload.episodePlans || payload);
   }
 }
 
@@ -379,6 +392,7 @@ export function connectOperatorStream({
   source.onmessage = (event) => {
     const payload = parseStreamPayload(event?.data);
     if (!payload) return;
+    if (payload.event_type && payload.event_type !== "operator_status") return;
     onStatus(operatorStatusFromEvent(payload));
   };
   source.onerror = () => {
@@ -418,26 +432,55 @@ export function mountOperatorConsole({
   }
   let latestStatus = initialStatus || null;
   let stream = null;
+  let episodePlansRequested = false;
 
   const render = (status, options = {}) => {
+    if (
+      options.skipIfUnchanged
+      && latestStatus
+      && !statusPatchChangesCurrent(latestStatus, status)
+    ) {
+      return;
+    }
+    const controlState = readOperatorControlState(target);
     latestStatus = {...(latestStatus || {}), ...status};
     target.innerHTML = renderOperatorConsole(
       OperatorSessionStatusView.fromStatus(latestStatus, {sessionId, ...options}),
     );
+    restoreOperatorControlState(target, controlState);
     bindOperatorControls(target, {sessionId, fetchImpl, render, status: latestStatus});
+  };
+  const loadEpisodePlansOnce = () => {
+    if (episodePlansRequested) return;
+    const view = OperatorSessionStatusView.fromStatus(latestStatus || {}, {sessionId});
+    if (!view.canControl || view.episodePlans.length > 0) return;
+    if (
+      typeof target.querySelector === "function"
+      && !target.querySelector("[data-testid='episode-plan-select']")
+    ) {
+      return;
+    }
+    episodePlansRequested = true;
+    EpisodePlanListCommand.send({fetchImpl})
+      .then((episodePlans) => render({episode_plans: episodePlans}))
+      .catch((error) => render({error}));
   };
   const ensureStream = () => {
     if (stream) return;
     stream = connectOperatorStream({
       sessionId,
       eventSourceFactory,
-      onStatus: (status) => render({...status, stream_state: "connected"}),
+      onStatus: (status) => render(
+        {...status, stream_state: "connected"},
+        {skipIfUnchanged: true},
+      ),
       onStale: (status) => render(status),
     });
   };
 
   if (initialStatus) {
     render(initialStatus);
+    loadEpisodePlansOnce();
     ensureStream();
     return;
   }
@@ -445,6 +488,7 @@ export function mountOperatorConsole({
   loadOperatorStatus({sessionId, fetchImpl})
     .then((view) => {
       render(view);
+      loadEpisodePlansOnce();
       ensureStream();
     })
     .catch((error) => {
@@ -455,6 +499,15 @@ export function mountOperatorConsole({
 }
 
 function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
+  const refreshEpisodePlans = async () => {
+    try {
+      const episodePlans = await EpisodePlanListCommand.send({fetchImpl});
+      render({...status, episode_plans: episodePlans});
+    } catch (error) {
+      render({...status, error});
+    }
+  };
+
   const refreshApiKeys = async () => {
     try {
       const apiKeys = await ApiKeyListCommand.send({fetchImpl});
@@ -511,6 +564,24 @@ function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
       } catch (error) {
         render({...status, error});
       }
+    });
+  }
+
+  const episodePlanRefresh = root.querySelector("[data-testid='episode-plan-refresh-button']");
+  if (episodePlanRefresh) {
+    episodePlanRefresh.addEventListener("click", refreshEpisodePlans);
+  }
+
+  const episodePlanLoad = root.querySelector("[data-testid='episode-plan-load-button']");
+  if (episodePlanLoad) {
+    episodePlanLoad.addEventListener("click", async () => {
+      const select = root.querySelector("[data-testid='episode-plan-select']");
+      const input = root.querySelector("[data-testid='plan-json-input']");
+      const plans = normalizeEpisodePlanList(status.episode_plans || status.episodePlans || []);
+      const selected = String(select?.value || "");
+      const entry = plans.find((plan) => plan.id === selected || plan.planId === selected) || plans[0];
+      if (!entry || !input) return;
+      input.value = JSON.stringify(entry.plan, null, 2);
     });
   }
 
@@ -572,13 +643,56 @@ function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
   }
 }
 
+function readOperatorControlState(root) {
+  if (!root || typeof root.querySelector !== "function") {
+    return {};
+  }
+  return {
+    episodePlanId: String(
+      root.querySelector("[data-testid='episode-plan-select']")?.value || "",
+    ),
+    planJson: String(
+      root.querySelector("[data-testid='plan-json-input']")?.value || "",
+    ),
+  };
+}
+
+function restoreOperatorControlState(root, state = {}) {
+  if (!root || typeof root.querySelector !== "function") {
+    return;
+  }
+  const select = root.querySelector("[data-testid='episode-plan-select']");
+  if (select && state.episodePlanId) {
+    select.value = state.episodePlanId;
+  }
+  const input = root.querySelector("[data-testid='plan-json-input']");
+  if (input && state.planJson) {
+    input.value = state.planJson;
+  }
+}
+
+function statusPatchChangesCurrent(current = {}, patch = {}) {
+  for (const [key, value] of Object.entries(patch || {})) {
+    const currentValue = current[key];
+    if (key === "stream_state" && !currentValue && value === "connected") {
+      continue;
+    }
+    if (JSON.stringify(currentValue ?? null) !== JSON.stringify(value ?? null)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function renderOperatorControls(view) {
   const aftertalkChecked = view.aftertalkPolicy === "auto" ? " checked" : "";
   const aftertalkDisabled = view.controls.aftertalkDisabled ? " disabled" : "";
   const bindDisabled = view.controls.bindPlanDisabled ? " disabled" : "";
+  const episodePlanDisabled = view.controls.episodePlanDisabled ? " disabled" : "";
   const apiKeyDisabled = view.controls.apiKeyDisabled ? " disabled" : "";
   const manualDisabled = view.controls.manualCloseDisabled ? " disabled" : "";
   const tickDisabled = view.controls.tickDisabled ? " disabled" : "";
+  const noEpisodePlans = episodePlanSelectDisabled(view.episodePlans);
   return `
     <section class="operator-controls" data-testid="operator-controls">
       <div class="control-row">
@@ -591,6 +705,16 @@ function renderOperatorControls(view) {
       </div>
       <div class="plan-bind-control">
         <label for="operatorPlanJson">${escapeHtml(translate("plan_json", "Plan JSON"))}</label>
+        <div class="episode-plan-picker" data-testid="episode-plan-picker">
+          <label for="operatorEpisodePlanSelect">${escapeHtml(translate("episode_plans", "Episode Plans"))}</label>
+          <div class="episode-plan-picker-row">
+            <select id="operatorEpisodePlanSelect" data-testid="episode-plan-select"${episodePlanDisabled || noEpisodePlans}>
+              ${renderEpisodePlanOptions(view.episodePlans || [])}
+            </select>
+            <button data-testid="episode-plan-refresh-button" type="button"${episodePlanDisabled}>${escapeHtml(translate("refresh", "Refresh"))}</button>
+            <button data-testid="episode-plan-load-button" type="button"${episodePlanDisabled || noEpisodePlans}>${escapeHtml(translate("load_episode_plan", "Load Plan"))}</button>
+          </div>
+        </div>
         <textarea id="operatorPlanJson" data-testid="plan-json-input" rows="6" spellcheck="false"></textarea>
         <button data-testid="bind-plan-button"${bindDisabled}>${escapeHtml(translate("bind_plan", "Bind Plan"))}</button>
       </div>
@@ -612,6 +736,23 @@ function renderOperatorControls(view) {
       </div>
     </section>
   `;
+}
+
+function episodePlanSelectDisabled(episodePlans) {
+  return normalizeEpisodePlanList(episodePlans).length === 0 ? " disabled" : "";
+}
+
+function renderEpisodePlanOptions(episodePlans) {
+  const entries = normalizeEpisodePlanList(episodePlans);
+  if (entries.length === 0) {
+    return `<option value="">${escapeHtml(translate("episode_plans_empty", "No episode plans"))}</option>`;
+  }
+  return entries.map((entry) => {
+    const label = entry.folder
+      ? `${entry.title} (${entry.folder})`
+      : entry.title;
+    return `<option value="${escapeHtml(entry.id)}">${escapeHtml(label)}</option>`;
+  }).join("");
 }
 
 function renderSessionCreatePanel(errorBanner = null) {
@@ -805,6 +946,31 @@ function normalizeApiKeyList(payload = []) {
       permissionGroup,
     };
   }).filter((entry) => entry.keyFingerprint);
+}
+
+function normalizeEpisodePlanList(payload = []) {
+  const entries = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload.episode_plans)
+      ? payload.episode_plans
+      : Array.isArray(payload.episodePlans)
+        ? payload.episodePlans
+        : [];
+  return entries.map((entry) => {
+    const safe = sanitizePublicValue(entry || {});
+    const plan = sanitizePublicValue(safe.plan || {});
+    const planId = String(safe.plan_id || safe.planId || plan.plan_id || "");
+    const id = String(safe.id || planId || safe.folder || "");
+    const title = String(safe.title || plan.title || plan.plan_title || planId || id);
+    return {
+      id,
+      planId,
+      title,
+      folder: String(safe.folder || ""),
+      filename: String(safe.filename || "episode-plan.json"),
+      plan,
+    };
+  }).filter((entry) => entry.id && entry.plan && typeof entry.plan === "object");
 }
 
 function formatRemainingTime(seconds) {

@@ -315,6 +315,34 @@ def test_main_app_v2_api_key_management_requires_operator_permission(
     assert "not-allowed" not in repr(storage.load_prefs())
 
 
+def test_main_app_v2_episode_plans_requires_operator_permission(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage_manager(tmp_path)
+    _save_api_keys(storage)
+    api_main = _install_test_storage(monkeypatch, storage)
+    client = _remote_client(api_main.app)
+
+    operator_response = client.get(
+        "/v2/episode-plans",
+        headers={"x-youtubebridgev2-api-key": OPERATOR_KEY},
+    )
+    observer_response = client.get(
+        "/v2/episode-plans",
+        headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
+    )
+    display_response = client.get(
+        "/v2/episode-plans",
+        headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
+    )
+
+    assert operator_response.status_code == 200
+    assert "episode_plans" in operator_response.json()
+    _assert_security_error(observer_response, status_code=403, code="forbidden")
+    _assert_security_error(display_response, status_code=403, code="forbidden")
+
+
 def test_main_app_v2_runtime_command_receives_api_key_permission_context(
     tmp_path,
     monkeypatch,

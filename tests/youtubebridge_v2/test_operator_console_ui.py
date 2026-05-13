@@ -355,6 +355,402 @@ console.log(JSON.stringify({calls, response}));
     _assert_no_private_payload(result)
 
 
+def test_episode_plan_list_command_fetches_plan_packages_without_private_payload():
+    result = _run_node_json(
+        """
+const calls = [];
+const fetchImpl = async (url, options = {}) => {
+  calls.push({url, method: options.method || "GET"});
+  return {
+    ok: true,
+    json: async () => ({
+      episode_plans: [{
+        id: "Alpha",
+        plan_id: "plan-alpha",
+        title: "Alpha Show",
+        folder: "Alpha",
+        filename: "episode-plan.json",
+        plan: {
+          plan_id: "plan-alpha",
+          title: "Alpha Show",
+          turns: [],
+          raw_payload: {token: "must not leak"}
+        }
+      }]
+    })
+  };
+};
+const plans = await ui.EpisodePlanListCommand.send({fetchImpl});
+console.log(JSON.stringify({calls, plans}));
+"""
+    )
+
+    assert result["calls"] == [{"url": "/v2/episode-plans", "method": "GET"}]
+    assert result["plans"] == [
+        {
+            "id": "Alpha",
+            "planId": "plan-alpha",
+            "title": "Alpha Show",
+            "folder": "Alpha",
+            "filename": "episode-plan.json",
+            "plan": {
+                "plan_id": "plan-alpha",
+                "title": "Alpha Show",
+                "turns": [],
+            },
+        }
+    ]
+    _assert_no_private_payload(result)
+
+
+def test_operator_console_renders_episode_plan_picker_for_operator():
+    result = _run_node_json(
+        """
+const view = ui.OperatorSessionStatusView.fromStatus({
+  session_id: "session-1",
+  phase: "planned_show",
+  permission_group: "operator",
+  episode_plans: [{
+    id: "Alpha",
+    plan_id: "plan-alpha",
+    title: "Alpha Show",
+    folder: "Alpha",
+    filename: "episode-plan.json",
+    plan: {plan_id: "plan-alpha", title: "Alpha Show", turns: []}
+  }]
+});
+const html = ui.renderOperatorConsole(view);
+console.log(JSON.stringify({view, html}));
+"""
+    )
+
+    assert result["view"]["episodePlans"][0]["planId"] == "plan-alpha"
+    assert 'data-testid="episode-plan-select"' in result["html"]
+    assert 'data-testid="episode-plan-refresh-button"' in result["html"]
+    assert 'data-testid="episode-plan-load-button"' in result["html"]
+    assert "Alpha Show" in result["html"]
+    _assert_no_private_payload(result)
+
+
+def test_episode_plan_picker_loads_selected_plan_into_textarea():
+    result = _run_node_json(
+        """
+let loadHandler = null;
+let refreshHandler = null;
+const elements = {
+  select: {value: "plan-beta"},
+  loadButton: {addEventListener: (_event, handler) => { loadHandler = handler; }},
+  refreshButton: {addEventListener: (_event, handler) => { refreshHandler = handler; }},
+  textarea: {value: ""}
+};
+const root = {
+  innerHTML: "",
+  querySelector: (selector) => {
+    if (selector === "[data-testid='episode-plan-select']") return elements.select;
+    if (selector === "[data-testid='episode-plan-load-button']") return elements.loadButton;
+    if (selector === "[data-testid='episode-plan-refresh-button']") return elements.refreshButton;
+    if (selector === "[data-testid='plan-json-input']") return elements.textarea;
+    if (selector === "[data-testid='aftertalk-toggle']") return null;
+    if (selector === "[data-testid='tick-button']") return null;
+    if (selector === "[data-testid='bind-plan-button']") return null;
+    if (selector === "[data-testid='manual-close-button']") return null;
+    if (selector === "[data-testid='api-key-input']") return null;
+    if (selector === "[data-testid='api-key-permission-select']") return null;
+    if (selector === "[data-testid='api-key-create-button']") return null;
+    if (selector === "[data-testid='api-key-refresh-button']") return null;
+    return null;
+  },
+  querySelectorAll: () => []
+};
+const fetchImpl = async () => {
+  throw new Error("load should not call API");
+};
+ui.mountOperatorConsole({
+  root,
+  sessionId: "session-1",
+  fetchImpl,
+  eventSourceFactory: () => null,
+  initialStatus: {
+    session_id: "session-1",
+    phase: "planned_show",
+    permission_group: "operator",
+    episode_plans: [
+      {
+        id: "plan-alpha",
+        plan_id: "plan-alpha",
+        title: "Alpha Show",
+        folder: "Alpha",
+        filename: "episode-plan.json",
+        plan: {plan_id: "plan-alpha", title: "Alpha Show", turns: []}
+      },
+      {
+        id: "plan-beta",
+        plan_id: "plan-beta",
+        title: "Beta Show",
+        folder: "Beta",
+        filename: "episode-plan.json",
+        plan: {plan_id: "plan-beta", title: "Beta Show", turns: [{id: "turn-1"}]}
+      }
+    ]
+  }
+});
+await loadHandler();
+console.log(JSON.stringify({
+  textareaValue: elements.textarea.value,
+  refreshBound: Boolean(refreshHandler),
+}));
+"""
+    )
+
+    loaded = json.loads(result["textareaValue"])
+    assert loaded == {
+        "plan_id": "plan-beta",
+        "title": "Beta Show",
+        "turns": [{"id": "turn-1"}],
+    }
+    assert result["refreshBound"] is True
+
+
+def test_mount_operator_console_loads_episode_plan_packages_for_operator():
+    result = _run_node_json(
+        """
+const calls = [];
+const root = {
+  innerHTML: "",
+  querySelector: (selector) => selector === "[data-testid='episode-plan-select']" ? {} : null,
+  querySelectorAll: () => []
+};
+const fetchImpl = async (url) => {
+  calls.push(url);
+  return {
+    ok: true,
+    json: async () => ({
+      episode_plans: [{
+        id: "Gamma",
+        plan_id: "plan-gamma",
+        title: "Gamma Show",
+        folder: "Gamma",
+        filename: "episode-plan.json",
+        plan: {plan_id: "plan-gamma", title: "Gamma Show", turns: []}
+      }]
+    })
+  };
+};
+ui.mountOperatorConsole({
+  root,
+  sessionId: "session-1",
+  fetchImpl,
+  eventSourceFactory: () => null,
+  initialStatus: {
+    session_id: "session-1",
+    phase: "planned_show",
+    permission_group: "operator"
+  }
+});
+await new Promise((resolve) => setTimeout(resolve, 0));
+console.log(JSON.stringify({calls, html: root.innerHTML}));
+"""
+    )
+
+    assert result["calls"] == ["/v2/episode-plans"]
+    assert "Gamma Show" in result["html"]
+
+
+def test_operator_console_preserves_plan_picker_state_across_stream_rerender():
+    result = _run_node_json(
+        """
+let source = null;
+const makeElements = (html) => {
+  const hasPlanOptions = html.includes('value="plan-alpha"') && html.includes('value="plan-beta"');
+  return {
+    episodePlanSelect: hasPlanOptions ? {value: "plan-alpha"} : null,
+    planJsonInput: html.includes('data-testid="plan-json-input"') ? {value: ""} : null,
+  };
+};
+const root = {
+  _html: "",
+  _elements: {},
+  set innerHTML(value) {
+    this._html = value;
+    this._elements = makeElements(value);
+  },
+  get innerHTML() {
+    return this._html;
+  },
+  querySelector(selector) {
+    if (selector === "[data-testid='episode-plan-select']") return this._elements.episodePlanSelect;
+    if (selector === "[data-testid='plan-json-input']") return this._elements.planJsonInput;
+    if (selector === "[data-testid='episode-plan-load-button']") return {addEventListener: () => {}};
+    if (selector === "[data-testid='episode-plan-refresh-button']") return {addEventListener: () => {}};
+    if (selector === "[data-testid='aftertalk-toggle']") return null;
+    if (selector === "[data-testid='tick-button']") return null;
+    if (selector === "[data-testid='bind-plan-button']") return null;
+    if (selector === "[data-testid='manual-close-button']") return null;
+    if (selector === "[data-testid='api-key-input']") return null;
+    if (selector === "[data-testid='api-key-permission-select']") return null;
+    if (selector === "[data-testid='api-key-create-button']") return null;
+    if (selector === "[data-testid='api-key-refresh-button']") return null;
+    return null;
+  },
+  querySelectorAll: () => []
+};
+class FakeSource {
+  constructor(url) {
+    this.url = url;
+    source = this;
+  }
+}
+ui.mountOperatorConsole({
+  root,
+  sessionId: "session-1",
+  fetchImpl: async () => ({ok: true, json: async () => ({})}),
+  eventSourceFactory: (url) => new FakeSource(url),
+  initialStatus: {
+    session_id: "session-1",
+    phase: "planned_show",
+    permission_group: "operator",
+    episode_plans: [
+      {
+        id: "plan-alpha",
+        plan_id: "plan-alpha",
+        title: "Alpha Show",
+        folder: "Alpha",
+        filename: "episode-plan.json",
+        plan: {plan_id: "plan-alpha", title: "Alpha Show", turns: []}
+      },
+      {
+        id: "plan-beta",
+        plan_id: "plan-beta",
+        title: "Beta Show",
+        folder: "Beta",
+        filename: "episode-plan.json",
+        plan: {plan_id: "plan-beta", title: "Beta Show", turns: []}
+      }
+    ]
+  }
+});
+root.querySelector("[data-testid='episode-plan-select']").value = "plan-beta";
+root.querySelector("[data-testid='plan-json-input']").value = '{"plan_id":"draft"}';
+source.onmessage({
+  data: JSON.stringify({
+    event_type: "operator_status",
+    session_id: "session-1",
+    payload: {phase: "aftertalk", permission_group: "operator"}
+  })
+});
+console.log(JSON.stringify({
+  selected: root.querySelector("[data-testid='episode-plan-select']").value,
+  planJson: root.querySelector("[data-testid='plan-json-input']").value,
+}));
+"""
+    )
+
+    assert result == {
+        "selected": "plan-beta",
+        "planJson": '{"plan_id":"draft"}',
+    }
+
+
+def test_operator_console_ignores_duplicate_stream_status_without_rebuilding_controls():
+    result = _run_node_json(
+        """
+let source = null;
+let renderCount = 0;
+const makeElements = (html) => {
+  const hasPlanOptions = html.includes('value="plan-alpha"') && html.includes('value="plan-beta"');
+  return {
+    episodePlanSelect: hasPlanOptions ? {value: "plan-alpha"} : null,
+    planJsonInput: html.includes('data-testid="plan-json-input"') ? {value: ""} : null,
+  };
+};
+const root = {
+  _html: "",
+  _elements: {},
+  set innerHTML(value) {
+    renderCount += 1;
+    this._html = value;
+    this._elements = makeElements(value);
+  },
+  get innerHTML() {
+    return this._html;
+  },
+  querySelector(selector) {
+    if (selector === "[data-testid='episode-plan-select']") return this._elements.episodePlanSelect;
+    if (selector === "[data-testid='plan-json-input']") return this._elements.planJsonInput;
+    if (selector === "[data-testid='episode-plan-load-button']") return {addEventListener: () => {}};
+    if (selector === "[data-testid='episode-plan-refresh-button']") return {addEventListener: () => {}};
+    if (selector === "[data-testid='aftertalk-toggle']") return null;
+    if (selector === "[data-testid='tick-button']") return null;
+    if (selector === "[data-testid='bind-plan-button']") return null;
+    if (selector === "[data-testid='manual-close-button']") return null;
+    if (selector === "[data-testid='api-key-input']") return null;
+    if (selector === "[data-testid='api-key-permission-select']") return null;
+    if (selector === "[data-testid='api-key-create-button']") return null;
+    if (selector === "[data-testid='api-key-refresh-button']") return null;
+    return null;
+  },
+  querySelectorAll: () => []
+};
+class FakeSource {
+  constructor(url) {
+    this.url = url;
+    source = this;
+  }
+}
+ui.mountOperatorConsole({
+  root,
+  sessionId: "session-1",
+  fetchImpl: async () => ({ok: true, json: async () => ({})}),
+  eventSourceFactory: (url) => new FakeSource(url),
+  initialStatus: {
+    session_id: "session-1",
+    phase: "planned_show",
+    permission_group: "operator",
+    episode_plans: [
+      {
+        id: "plan-alpha",
+        plan_id: "plan-alpha",
+        title: "Alpha Show",
+        folder: "Alpha",
+        filename: "episode-plan.json",
+        plan: {plan_id: "plan-alpha", title: "Alpha Show", turns: []}
+      },
+      {
+        id: "plan-beta",
+        plan_id: "plan-beta",
+        title: "Beta Show",
+        folder: "Beta",
+        filename: "episode-plan.json",
+        plan: {plan_id: "plan-beta", title: "Beta Show", turns: []}
+      }
+    ]
+  }
+});
+root.querySelector("[data-testid='episode-plan-select']").value = "plan-beta";
+source.onmessage({
+  data: JSON.stringify({
+    event_type: "operator_status",
+    session_id: "session-1",
+    payload: {
+      session_id: "session-1",
+      phase: "planned_show",
+      permission_group: "operator"
+    }
+  })
+});
+console.log(JSON.stringify({
+  renderCount,
+  selected: root.querySelector("[data-testid='episode-plan-select']").value,
+}));
+"""
+    )
+
+    assert result == {
+        "renderCount": 1,
+        "selected": "plan-beta",
+    }
+
+
 def test_tick_session_command_sends_tick_request():
     result = _run_node_json(
         """
@@ -738,6 +1134,34 @@ console.log(JSON.stringify({url: source.url, statuses, stale}));
     assert result["stale"][0]["stream_state"] == "stale"
 
 
+def test_operator_stream_ignores_event_history_messages_for_status_updates():
+    result = _run_node_json(
+        """
+class FakeSource {
+  constructor(url) {
+    this.url = url;
+  }
+}
+const statuses = [];
+const source = ui.connectOperatorStream({
+  sessionId: "session 1",
+  eventSourceFactory: (url) => new FakeSource(url),
+  onStatus: (status) => statuses.push(status),
+});
+source.onmessage({
+  data: JSON.stringify({
+    event_id: "evt-1",
+    event_type: "phase_update",
+    public_payload: {phase: "aftertalk"}
+  })
+});
+console.log(JSON.stringify({statuses}));
+"""
+    )
+
+    assert result["statuses"] == []
+
+
 def test_missing_session_id_renders_create_session_controls():
     result = _run_node_json(
         """
@@ -807,6 +1231,9 @@ def test_operator_console_i18n_keys_are_registered():
         "youtubebridge_v2.operator_console.bind_plan",
         "youtubebridge_v2.operator_console.tick",
         "youtubebridge_v2.operator_console.plan_json",
+        "youtubebridge_v2.operator_console.episode_plans",
+        "youtubebridge_v2.operator_console.load_episode_plan",
+        "youtubebridge_v2.operator_console.episode_plans_empty",
         "youtubebridge_v2.operator_console.invalid_plan_json",
         "youtubebridge_v2.operator_console.manual_close",
         "youtubebridge_v2.operator_console.read_only",

@@ -797,10 +797,12 @@ Concepts:
 - `GET /v2/api-keys`
 - `POST /v2/api-keys`
 - `DELETE /v2/api-keys/{key_fingerprint}`
+- `GET /v2/episode-plans`
 - `ApiKeyCreateRequest`
 - `list_api_keys_endpoint`
 - `create_api_key_endpoint`
 - `delete_api_key_endpoint`
+- `list_episode_plans_endpoint`
 - `create_session_endpoint`
 - `get_session_endpoint`
 - `bind_plan_endpoint`
@@ -848,6 +850,29 @@ Source:
 - `YouTubeBridgeV2/server/routes.py::list_api_keys_endpoint`
 - `YouTubeBridgeV2/server/routes.py::create_api_key_endpoint`
 - `YouTubeBridgeV2/server/routes.py::delete_api_key_endpoint`
+- `YouTubeBridgeV2/server/routes.py::list_episode_plans_endpoint`
+
+### Episode Plan Package Endpoint
+
+Purpose:
+讓 operator 從本機 `runtime/YouTubeBridge/EpisodePlans/**/episode-plan.json`
+讀取既有 LiveEpisodePlan packages，回傳可貼入/綁定的 sanitized plan。
+
+Route:
+- `GET /v2/episode-plans`
+
+Auth:
+- `operator` only；loopback 視為 operator。
+
+Returns:
+- `episode_plans` array：`id`、`plan_id`、`title`、relative `folder`、`filename`、`updated_at`、sanitized `plan`。
+- 若來源是 planner 完整格式且沒有頂層 `turns`，route 會把 `segments[].planned_turn_contracts`
+  投影成 V2 `BindPlan` 可用的 `plan.turns`。
+- 不回傳 absolute filesystem path、hidden prompt、raw payload、token/secret-like fields。
+- invalid JSON 或非 object plan file 會被跳過。
+
+Source:
+- `YouTubeBridgeV2/server/routes.py::list_episode_plans_endpoint`
 
 ### API Key Management Endpoints
 

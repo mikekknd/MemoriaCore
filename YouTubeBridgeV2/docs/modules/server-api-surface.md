@@ -68,9 +68,11 @@ Final Hardening startup/shutdown validation 使用 `tests/youtubebridge_v2/test_
 - `GET /v2/api-keys`
 - `POST /v2/api-keys`
 - `DELETE /v2/api-keys/{key_fingerprint}`
+- `GET /v2/episode-plans`
 - `list_api_keys_endpoint`
 - `create_api_key_endpoint`
 - `delete_api_key_endpoint`
+- `list_episode_plans_endpoint`
 - `create_session_endpoint`
 - `get_session_endpoint`
 - `bind_plan_endpoint`
@@ -99,6 +101,7 @@ Final Hardening startup/shutdown validation 使用 `tests/youtubebridge_v2/test_
 | aftertalk policy update | Validate policy and delegate command. |
 | automation control | Validate operator safety controls and delegate `RuntimeCommandType.UPDATE_AUTOMATION_CONTROL`; route does not mutate runtime state directly. |
 | API key management | Read/write `StorageManager` prefs only through the API key config helpers; public response exposes fingerprint/prefix and permission group only. |
+| episode plan package list | Read local `runtime/YouTubeBridge/EpisodePlans/**/episode-plan.json` packages, skip invalid JSON, project planner `segments[].planned_turn_contracts` into bindable `plan.turns` when needed, return sanitized bindable plan objects, and never expose absolute filesystem paths. |
 | TTS queue read | Read via `V2QueryService.get_tts_queue(...)`; route does not inspect storage internals. |
 | TTS ack/timeout | Delegate to StorageManager-like delivery methods, sanitize public result, and never mutate runtime phase from route handler. |
 | operator stream | May expose operator-safe diagnostics and controls state. |
@@ -117,6 +120,7 @@ Display UI 使用的可渲染 projection。
 | `GET /v2/api-keys` | `operator` |
 | `POST /v2/api-keys` | `operator` |
 | `DELETE /v2/api-keys/{key_fingerprint}` | `operator` |
+| `GET /v2/episode-plans` | `operator` |
 | `POST /v2/sessions` | `operator` |
 | `POST /v2/sessions/{session_id}/plan` | `operator` |
 | `POST /v2/sessions/{session_id}/aftertalk-policy` | `operator` |

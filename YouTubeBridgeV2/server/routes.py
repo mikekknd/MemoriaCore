@@ -12,12 +12,14 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import chain
+from pathlib import Path
 from typing import Any, Iterable, Literal
 
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from core.runtime_paths import runtime_path
 from YouTubeBridgeV2.display.events import sanitize_display_value
 from YouTubeBridgeV2.server.auth_config import (
     delete_v2_api_key_entry,
@@ -180,6 +182,14 @@ def delete_api_key_endpoint(
             for entry in list_v2_api_key_entries(storage_manager)
         ],
     }
+
+
+@router.get("/episode-plans", response_model=None)
+def list_episode_plans_endpoint() -> dict[str, object]:
+    """Return sanitized local EpisodePlans packages for operator plan binding."""
+
+    root = runtime_path("YouTubeBridge", "EpisodePlans")
+    return {"episode_plans": _list_episode_plan_packages(root)}
 
 
 @router.post("/sessions", response_model=None)
@@ -545,6 +555,206 @@ def _request_permission_context(request: Request) -> object | None:
     return getattr(request.state, "youtubebridge_v2_permission", None)
 
 
+def _list_episode_plan_packages(root: Path) -> list[dict[str, object]]:
+    if not root.exists() or not root.is_dir():
+        return []
+
+    plans: list[dict[str, object]] = []
+    for plan_path in sorted(root.rglob("episode-plan.json")):
+        package = _episode_plan_package(root, plan_path)
+        if package:
+            plans.append(package)
+    return sorted(
+        plans,
+        key=lambda item: (
+            str(item.get("title") or "").casefold(),
+            str(item.get("plan_id") or "").casefold(),
+            str(item.get("folder") or "").casefold(),
+        ),
+    )
+
+
+def _episode_plan_package(root: Path, plan_path: Path) -> dict[str, object] | None:
+    try:
+        raw_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(raw_plan, dict):
+        return None
+
+    plan = _sanitize_public_payload(raw_plan)
+    if not isinstance(plan, dict):
+        return None
+    plan = _bindable_episode_plan(plan)
+    try:
+        folder = plan_path.parent.relative_to(root).as_posix()
+    except ValueError:
+        return None
+    plan_id = str(plan.get("plan_id") or folder or plan_path.parent.name)
+    title = str(plan.get("title") or plan.get("plan_title") or plan_id)
+    try:
+        updated_at = datetime.fromtimestamp(plan_path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        updated_at = ""
+    return {
+        "id": folder or plan_id,
+        "plan_id": plan_id,
+        "title": title,
+        "folder": folder,
+        "filename": plan_path.name,
+        "updated_at": updated_at,
+        "plan": plan,
+    }
+
+
+def _bindable_episode_plan(plan: dict[str, object]) -> dict[str, object]:
+    if isinstance(plan.get("turns"), list):
+        return plan
+    turns = _turns_from_planner_segments(plan)
+    if not turns:
+        return plan
+    return {**plan, "turns": turns}
+
+
+def _turns_from_planner_segments(plan: dict[str, object]) -> list[dict[str, object]]:
+    segments = plan.get("segments")
+    if not isinstance(segments, list):
+        return []
+
+    participant_ids = _participant_ids(plan)
+    turns: list[dict[str, object]] = []
+    for segment_index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            continue
+        contracts = segment.get("planned_turn_contracts")
+        if not isinstance(contracts, list):
+            continue
+        for turn_index, raw_turn in enumerate(contracts):
+            if not isinstance(raw_turn, dict):
+                continue
+            turn = _planner_turn_to_bindable_turn(
+                raw_turn,
+                segment=segment,
+                segment_index=segment_index,
+                turn_index=turn_index,
+                participant_ids=participant_ids,
+            )
+            if turn:
+                turns.append(turn)
+    return turns
+
+
+def _planner_turn_to_bindable_turn(
+    raw_turn: dict[str, object],
+    *,
+    segment: dict[str, object],
+    segment_index: int,
+    turn_index: int,
+    participant_ids: list[str],
+) -> dict[str, object] | None:
+    segment_id = _clean_text(segment.get("segment_id")) or f"segment_{segment_index + 1}"
+    turn_id = _clean_text(raw_turn.get("turn_id")) or f"{segment_id}_turn_{turn_index + 1}"
+    intent = _clean_text(raw_turn.get("intent"))
+    purpose = intent or _clean_text(segment.get("goal")) or _clean_text(segment.get("title"))
+    speaker_policy = _bindable_speaker_policy(raw_turn.get("speaker_policy"), participant_ids)
+    if not turn_id or not purpose or not speaker_policy["speaker_ids"]:
+        return None
+    return {
+        "id": turn_id,
+        "purpose": purpose,
+        "topic_cue": _planner_topic_cue(raw_turn, segment, intent),
+        "speaker_policy": speaker_policy,
+        "audience_insertion": _bindable_audience_insertion(raw_turn),
+    }
+
+
+def _bindable_speaker_policy(
+    raw_policy: object,
+    participant_ids: list[str],
+) -> dict[str, object]:
+    policy = raw_policy if isinstance(raw_policy, dict) else {}
+    policy_type = _clean_text(policy.get("type") or policy.get("selection_mode")) or "fixed"
+    speaker_ids = _string_list(policy.get("speaker_ids"))
+    if not speaker_ids:
+        speaker_ids = _string_list(policy.get("allowed_character_ids"))
+    if not speaker_ids:
+        speaker_ids = _string_list(policy.get("allowed_participant_ids"))
+    if not speaker_ids:
+        speaker_ids = participant_ids
+    return {
+        "type": policy_type,
+        "speaker_ids": speaker_ids,
+    }
+
+
+def _bindable_audience_insertion(raw_turn: dict[str, object]) -> dict[str, bool]:
+    raw_policy = raw_turn.get("audience_insertion")
+    if not isinstance(raw_policy, dict):
+        raw_policy = raw_turn.get("audience_event_policy")
+    policy = raw_policy if isinstance(raw_policy, dict) else {}
+    return {
+        "enabled": bool(policy.get("enabled", False)),
+        "allow_super_chats": bool(policy.get("allow_super_chats", False)),
+    }
+
+
+def _planner_topic_cue(
+    raw_turn: dict[str, object],
+    segment: dict[str, object],
+    intent: str,
+) -> str:
+    lines = [
+        _prefixed_line("Segment", _clean_text(segment.get("title") or segment.get("segment_id"))),
+        _prefixed_line("Goal", _clean_text(segment.get("goal"))),
+        _prefixed_line("Intent", intent),
+    ]
+    evidence = raw_turn.get("evidence_brief")
+    if isinstance(evidence, dict):
+        lines.append(_prefixed_line("Facts", "; ".join(_string_list(evidence.get("facts_to_state")))))
+        lines.append(
+            _prefixed_line(
+                "Source boundaries",
+                "; ".join(_string_list(evidence.get("source_boundaries"))),
+            )
+        )
+    return "\n".join(line for line in lines if line)
+
+
+def _prefixed_line(label: str, value: str) -> str:
+    if not value:
+        return ""
+    return f"{label}: {value}"
+
+
+def _participant_ids(plan: dict[str, object]) -> list[str]:
+    participants = plan.get("participants")
+    if not isinstance(participants, list):
+        return []
+    ids: list[str] = []
+    for participant in participants:
+        if not isinstance(participant, dict):
+            continue
+        participant_id = _clean_text(participant.get("character_id") or participant.get("participant_id"))
+        if participant_id and participant_id not in ids:
+            ids.append(participant_id)
+    return ids
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        text = _clean_text(item)
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _clean_text(value: object) -> str:
+    return str(value or "").replace("\r", "\n").strip()
+
+
 def _status_with_permission_context(body: object, request: Request) -> dict[str, object]:
     data = _object_to_dict(body).copy()
     permission_context = _request_permission_context(request)
@@ -741,6 +951,7 @@ __all__ = [
     "get_runtime_service",
     "get_storage_manager",
     "get_tts_queue_endpoint",
+    "list_episode_plans_endpoint",
     "list_api_keys_endpoint",
     "get_session_endpoint",
     "get_session_events_endpoint",

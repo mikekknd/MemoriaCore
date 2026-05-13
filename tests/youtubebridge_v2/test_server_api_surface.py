@@ -1,10 +1,15 @@
 import ast
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from YouTubeBridgeV2.live_episode_plan.runner import (
+    PlanExecutionStatus,
+    validate_episode_plan_contract,
+)
 from YouTubeBridgeV2.runtime.application_service import (
     RuntimeCommand,
     RuntimeCommandType,
@@ -290,6 +295,166 @@ def test_bind_plan_delegates_to_runtime_service():
     command = service.calls[0][1]
     assert command.command_type == RuntimeCommandType.BIND_PLAN
     assert command.payload == {"plan": {"plan_id": "plan-1"}}
+
+
+def test_list_episode_plans_reads_child_episode_plan_json_packages(tmp_path, monkeypatch):
+    root = tmp_path / "EpisodePlans"
+    alpha_dir = root / "Alpha"
+    beta_dir = root / "Nested" / "Beta"
+    broken_dir = root / "Broken"
+    alpha_dir.mkdir(parents=True)
+    beta_dir.mkdir(parents=True)
+    broken_dir.mkdir(parents=True)
+    (alpha_dir / "episode-plan.json").write_text(
+        json.dumps(
+            {
+                "plan_id": "plan-alpha",
+                "title": "Alpha Show",
+                "turns": [],
+                "raw_topic_pack": {"hidden_prompt": "must not leak"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (beta_dir / "episode-plan.json").write_text(
+        json.dumps(
+            {
+                "plan_id": "plan-beta",
+                "title": "Beta Show",
+                "turns": [{"id": "turn-1", "hidden_prompt": "must not leak"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (broken_dir / "episode-plan.json").write_text("{not json", encoding="utf-8")
+    (root / "ignored.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(routes, "runtime_path", lambda *parts: root, raising=False)
+    client = TestClient(_app())
+
+    response = client.get("/v2/episode-plans")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["plan_id"] for entry in body["episode_plans"]] == [
+        "plan-alpha",
+        "plan-beta",
+    ]
+    assert body["episode_plans"][0] == {
+        "id": "Alpha",
+        "plan_id": "plan-alpha",
+        "title": "Alpha Show",
+        "folder": "Alpha",
+        "filename": "episode-plan.json",
+        "updated_at": body["episode_plans"][0]["updated_at"],
+        "plan": {"plan_id": "plan-alpha", "title": "Alpha Show", "turns": []},
+    }
+    assert body["episode_plans"][1]["folder"] == "Nested/Beta"
+    assert body["episode_plans"][1]["plan"]["turns"] == [{"id": "turn-1"}]
+    _assert_no_private_payload(body)
+
+
+def test_list_episode_plans_projects_planner_segments_to_bindable_turns(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "EpisodePlans"
+    plan_dir = root / "PlannerPackage"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "episode-plan.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "live_episode_plan.v1",
+                "plan_id": "planner-plan",
+                "title": "Planner Format Show",
+                "participants": [
+                    {"participant_id": "p_host", "display_name": "Host"},
+                    {"participant_id": "p_analyst", "display_name": "Analyst"},
+                ],
+                "segments": [
+                    {
+                        "segment_id": "opening",
+                        "title": "Opening",
+                        "goal": "Open the show.",
+                        "planned_turn_contracts": [
+                            {
+                                "turn_id": "opening_turn_01",
+                                "turn_type": "opening",
+                                "intent": "Host opens with a short greeting.",
+                                "speaker_policy": {
+                                    "selection_mode": "fixed",
+                                    "allowed_participant_ids": ["p_host"],
+                                },
+                                "evidence_brief": {
+                                    "facts_to_state": ["Fact A"],
+                                    "source_boundaries": ["Boundary A"],
+                                },
+                            },
+                            {
+                                "turn_id": "opening_turn_02",
+                                "turn_type": "cohost_intro",
+                                "intent": "Analyst explains the source boundary.",
+                                "speaker_policy": {
+                                    "selection_mode": "fixed",
+                                    "allowed_character_ids": ["character-analyst"],
+                                },
+                            },
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(routes, "runtime_path", lambda *parts: root, raising=False)
+    client = TestClient(_app())
+
+    response = client.get("/v2/episode-plans")
+
+    assert response.status_code == 200
+    plan = response.json()["episode_plans"][0]["plan"]
+    assert plan["turns"] == [
+        {
+            "id": "opening_turn_01",
+            "purpose": "Host opens with a short greeting.",
+            "topic_cue": (
+                "Segment: Opening\n"
+                "Goal: Open the show.\n"
+                "Intent: Host opens with a short greeting.\n"
+                "Facts: Fact A\n"
+                "Source boundaries: Boundary A"
+            ),
+            "speaker_policy": {
+                "type": "fixed",
+                "speaker_ids": ["p_host"],
+            },
+            "audience_insertion": {
+                "enabled": False,
+                "allow_super_chats": False,
+            },
+        },
+        {
+            "id": "opening_turn_02",
+            "purpose": "Analyst explains the source boundary.",
+            "topic_cue": (
+                "Segment: Opening\n"
+                "Goal: Open the show.\n"
+                "Intent: Analyst explains the source boundary."
+            ),
+            "speaker_policy": {
+                "type": "fixed",
+                "speaker_ids": ["character-analyst"],
+            },
+            "audience_insertion": {
+                "enabled": False,
+                "allow_super_chats": False,
+            },
+        },
+    ]
+    contract = validate_episode_plan_contract(plan)
+    assert contract.status is PlanExecutionStatus.RUNNING
+    assert contract.validation_errors == ()
+    _assert_no_private_payload(plan)
 
 
 def test_get_phase_returns_phase_status_body():

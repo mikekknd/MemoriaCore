@@ -46,7 +46,9 @@ button:hover {
 }
 
 button:disabled,
-input:disabled {
+input:disabled,
+select:disabled,
+textarea:disabled {
   cursor: not-allowed;
   opacity: .45;
 }
@@ -231,6 +233,7 @@ input:disabled {
 }
 
 .control-heading,
+.episode-plan-picker-row,
 .api-key-create-row,
 .api-key-entry {
   align-items: center;
@@ -240,6 +243,15 @@ input:disabled {
 
 .control-heading {
   grid-template-columns: 1fr auto;
+}
+
+.episode-plan-picker {
+  display: grid;
+  gap: 6px;
+}
+
+.episode-plan-picker-row {
+  grid-template-columns: minmax(180px, 1fr) auto auto;
 }
 
 .api-key-control {
@@ -359,6 +371,7 @@ textarea {
   }
 
   .control-row,
+  .episode-plan-picker-row,
   .api-key-create-row,
   .api-key-entry,
   .setup-form {
