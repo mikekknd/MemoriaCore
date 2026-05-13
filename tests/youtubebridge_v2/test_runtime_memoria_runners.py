@@ -146,6 +146,74 @@ def _assert_no_private_payload(value: object) -> None:
         assert forbidden not in text
 
 
+def _append_super_chat_event(storage: InMemoryV2StorageManager) -> None:
+    storage.append_v2_live_event(
+        "session-runner",
+        {
+            "event_id": "sc-1",
+            "event_type": "youtube_super_chat",
+            "public_metadata": {
+                "public_payload": {
+                    "event_id": "sc-1",
+                    "event_type": "super_chat",
+                    "author_display_name": "Rin",
+                    "message_text": "Great stream",
+                    "published_at": "2026-05-12T08:05:00Z",
+                    "super_chat": {
+                        "super_chat_id": "sc-1",
+                        "amount_micros": 150000000,
+                        "currency": "TWD",
+                        "amount_display_string": "NT$150",
+                        "public_message": "Great stream",
+                        "acknowledgement_status": "pending",
+                    },
+                },
+                "display_event": {
+                    "event_id": "sc-1",
+                    "event_type": "super_chat",
+                    "author_display_name": "Rin",
+                    "message_text": "Great stream",
+                    "raw_youtube_payload": {"access_token": "must not leak"},
+                },
+            },
+        },
+    )
+
+
+def _append_ignored_super_chat_events(storage: InMemoryV2StorageManager) -> None:
+    storage.append_v2_live_event(
+        "session-runner",
+        {
+            "event_id": "sc-acknowledged",
+            "event_type": "youtube_super_chat",
+            "public_metadata": {
+                "public_payload": {
+                    "author_display_name": "Mika",
+                    "super_chat": {
+                        "super_chat_id": "sc-acknowledged",
+                        "amount_display_string": "NT$75",
+                        "public_message": "Thanks",
+                        "acknowledgement_status": "acknowledged",
+                    },
+                },
+            },
+        },
+    )
+    storage.append_v2_live_event(
+        "session-runner",
+        {
+            "event_id": "sc-malformed",
+            "event_type": "youtube_super_chat",
+            "public_metadata": {
+                "public_payload": {
+                    "author_display_name": "Kai",
+                    "message_text": "Missing metadata",
+                },
+            },
+        },
+    )
+
+
 def test_planned_show_runner_sends_next_turn_and_advances_plan_state():
     storage = InMemoryV2StorageManager()
     port = _create_bound_session(storage)
@@ -253,6 +321,82 @@ def test_closing_runner_builds_final_message_and_marks_closing_completed():
     assert session["closing_completed"] is True
     _assert_no_private_payload(result)
     _assert_no_private_payload(storage.finalizations)
+
+
+def test_closing_runner_loads_pending_super_chats_from_youtube_events():
+    storage = InMemoryV2StorageManager()
+    port = _create_bound_session(storage)
+    storage.update_v2_session("session-runner", {"current_phase": "closing"})
+    _append_super_chat_event(storage)
+    transport = FakeMemoriaTransport(
+        {
+            "session_id": "memoria-3",
+            "message_id": "close-1",
+            "character_id": "host",
+            "reply": "Closing message",
+        }
+    )
+    runner = MemoriaClosingRunner(storage, transport)
+
+    result = runner.run(
+        command=_command("cmd-closing-super-chat"),
+        snapshot=port.read_snapshot("session-runner"),
+        transition=_transition(
+            LiveSessionPhase.CLOSING,
+            action="start_closing",
+            reason=PhaseTransitionReason.MANUAL_CLOSE,
+        ),
+        now=NOW,
+    )
+
+    closing_context = transport.requests[0].body["external_context"]["closing"]
+    assert result.status == "ok"
+    assert closing_context["super_chat_actions"] == [
+        {
+            "super_chat_id": "sc-1",
+            "action_type": "acknowledge",
+            "status": "pending",
+            "author_display_name": "Rin",
+            "amount_display_string": "NT$150",
+            "public_message": "Great stream",
+            "error_summary": {},
+        }
+    ]
+    _assert_no_private_payload(transport.requests[0].body)
+    _assert_no_private_payload(result)
+
+
+def test_closing_runner_ignores_acknowledged_or_malformed_super_chat_events():
+    storage = InMemoryV2StorageManager()
+    port = _create_bound_session(storage)
+    storage.update_v2_session("session-runner", {"current_phase": "closing"})
+    _append_ignored_super_chat_events(storage)
+    transport = FakeMemoriaTransport(
+        {
+            "session_id": "memoria-3",
+            "message_id": "close-1",
+            "character_id": "host",
+            "reply": "Closing message",
+        }
+    )
+    runner = MemoriaClosingRunner(storage, transport)
+
+    result = runner.run(
+        command=_command("cmd-closing-super-chat-ignored"),
+        snapshot=port.read_snapshot("session-runner"),
+        transition=_transition(
+            LiveSessionPhase.CLOSING,
+            action="start_closing",
+            reason=PhaseTransitionReason.MANUAL_CLOSE,
+        ),
+        now=NOW,
+    )
+
+    closing_context = transport.requests[0].body["external_context"]["closing"]
+    assert result.status == "ok"
+    assert closing_context["super_chat_actions"] == []
+    _assert_no_private_payload(transport.requests[0].body)
+    _assert_no_private_payload(result)
 
 
 def test_closing_runner_terminal_adapter_error_finalizes_with_system_summary():

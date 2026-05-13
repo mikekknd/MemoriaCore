@@ -472,6 +472,7 @@ Source:
 
 Purpose:
 定義 `closing` phase 內 final message、Super Chat acknowledgement、finalization result 與 `closing_completion_status` contract。
+Wave 3C：`youtube_super_chat` live event 的 sanitized public metadata 可由 closing runner 轉成 `ClosingSuperChatAction`，並交給 Memoria closing external context。
 
 Concepts:
 - `ClosingStartContext`

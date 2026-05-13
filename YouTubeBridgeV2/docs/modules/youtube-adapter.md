@@ -68,6 +68,10 @@ Wave 3B cursor handoff:
 - Runtime 可把 storage/payload cursor 傳入 `normalize_youtube_event(..., cursor=cursor)`，讓 duplicate event id 變成 `duplicate=True`、`should_dispatch=False`。
 - Adapter 仍不保存 cursor；cursor persistence 屬於 Storage/Runtime boundary。
 
+Wave 3C Super Chat handoff:
+- normalized `youtube_super_chat` event 的 `public_payload.super_chat` 是 closing acknowledgement 的資料來源。
+- Adapter 不決定 acknowledgement wording，也不呼叫 YouTube 回覆；closing runner 只建立 handoff intent。
+
 ## Polling Rules
 
 | Situation | Required Behavior |

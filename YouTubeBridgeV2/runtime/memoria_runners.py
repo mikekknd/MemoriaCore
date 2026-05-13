@@ -247,7 +247,7 @@ class MemoriaClosingRunner:
         closing_request = build_closing_request(
             context,
             _object_to_dict(session.get("public_summary", {})),
-            _list_of_dicts(_object_to_dict(command.payload).get("pending_super_chats")),
+            _pending_super_chats(self._storage_manager, command),
             policy,
         )
 
@@ -612,6 +612,47 @@ def _list_value(value: object) -> list[object]:
 
 def _list_of_dicts(value: object) -> list[dict[str, object]]:
     return [item for item in _list_value(value) if isinstance(item, dict)]
+
+
+def _pending_super_chats(
+    storage_manager: object,
+    command: RuntimeCommand,
+) -> list[dict[str, object]]:
+    payload = _object_to_dict(command.payload)
+    pending = _list_of_dicts(payload.get("pending_super_chats"))
+    if hasattr(storage_manager, "list_v2_live_events"):
+        for event in storage_manager.list_v2_live_events(command.session_id, 500):
+            pending_item = _super_chat_from_event(_object_to_dict(event))
+            if pending_item is not None:
+                pending.append(pending_item)
+    return _redact_public_value(pending)
+
+
+def _super_chat_from_event(event: dict[str, object]) -> dict[str, object] | None:
+    if str(event.get("event_type", "")) != "youtube_super_chat":
+        return None
+    metadata = _object_to_dict(event.get("public_metadata", {}))
+    public_payload = _object_to_dict(metadata.get("public_payload", {}))
+    super_chat = _object_to_dict(public_payload.get("super_chat", {}))
+    if not super_chat:
+        return None
+    if str(super_chat.get("acknowledgement_status", "pending")) != "pending":
+        return None
+    display_event = _object_to_dict(metadata.get("display_event", {}))
+    return _redact_public_value(
+        {
+            "super_chat_id": super_chat.get("super_chat_id") or event.get("event_id"),
+            "author_display_name": public_payload.get(
+                "author_display_name",
+                display_event.get("author_display_name", ""),
+            ),
+            "amount_display_string": super_chat.get("amount_display_string", ""),
+            "message_text": super_chat.get(
+                "public_message",
+                public_payload.get("message_text", display_event.get("message_text", "")),
+            ),
+        }
+    )
 
 
 def _json_safe_value(value: Any) -> Any:

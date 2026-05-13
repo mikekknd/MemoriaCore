@@ -193,6 +193,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Restart recovery：重建 `StorageManager` 後可讀回 `YouTubePollingCursor`，seen event ids 不遺失。
 - [x] Duplicate skip：runtime 用 cursor 判定 duplicate event id 時，只保存 ignored event summary，不重複 dispatch runner。
 
+## Integration Wave 3C 狀態
+
+- [x] Super Chat metadata handoff：closing runner 可從 `youtube_super_chat` live event 讀取 pending Super Chat public metadata。
+- [x] Closing acknowledgement intent：pending Super Chat 會進入 `ClosingRequest.super_chat_actions` 與 Memoria closing external context。
+- [x] Scope boundary：本階段不實際回覆 YouTube、不更新 acknowledgement durable status、不建立 scheduler/API ingestion path。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

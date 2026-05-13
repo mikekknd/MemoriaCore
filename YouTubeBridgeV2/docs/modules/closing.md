@@ -121,6 +121,10 @@ Wave 2D runtime integration:
 - runner 只透過 StorageManager-like `append_v2_interaction(...)` 與 `append_v2_finalization(...)` 保存 public summary。
 - `append_v2_finalization(...)` 完成後會讓 session `closing_completed=true`，下一個 runtime tick 可進入 `ended`。
 
+Wave 3C status:
+- `MemoriaClosingRunner` 會從 V2 live event history 讀取 `youtube_super_chat` normalized event，轉成 `ClosingSuperChatAction`。
+- closing handoff 只使用 sanitized public metadata；raw YouTube payload 不進 Memoria closing context。
+
 ## Closing Flow
 
 | Step | Responsibility | Output |
