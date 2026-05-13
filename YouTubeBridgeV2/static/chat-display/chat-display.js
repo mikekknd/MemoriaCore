@@ -208,6 +208,21 @@ export function renderDisplayEvents(events = []) {
     .join("");
 }
 
+export function renderChatDisplayShell({events = [], streamStatus = null} = {}) {
+  const statusHtml = streamStatus ? DisplaySystemStateEvent.fromEvent({
+    event_type: "system_state",
+    public_payload: streamStatus,
+  }).render() : "";
+  return `
+    <section class="chat-display-shell" data-testid="chat-display-shell">
+      <div class="display-event-list" data-testid="display-event-list" aria-live="polite">
+        ${renderDisplayEvents(events)}
+      </div>
+      ${statusHtml ? `<div class="stream-status" data-testid="stream-status">${statusHtml}</div>` : ""}
+    </section>
+  `;
+}
+
 export function connectDisplayStream({
   sessionId,
   eventSourceFactory = defaultEventSourceFactory,
@@ -251,6 +266,7 @@ export function mountChatDisplay({
   sessionId,
   eventSourceFactory = defaultEventSourceFactory,
   initialEvents = [],
+  maxEvents = 80,
 } = {}) {
   const target = root || document.getElementById("chatDisplayRoot");
   if (!target) return;
@@ -265,31 +281,33 @@ export function mountChatDisplay({
     return;
   }
   const events = [];
+  let streamStatus = null;
 
   const render = () => {
-    target.innerHTML = renderDisplayEvents(events);
+    target.innerHTML = renderChatDisplayShell({events, streamStatus});
+    scrollDisplayToLatest(target);
   };
 
   for (const event of initialEvents) {
     events.push(normalizeDisplayEvent(event));
   }
+  events.splice(0, events.length, ...trimDisplayEvents(events, maxEvents));
   render();
 
   connectDisplayStream({
     sessionId,
     eventSourceFactory,
     onEvent: (event) => {
+      streamStatus = null;
       events.push(event);
+      events.splice(0, events.length, ...trimDisplayEvents(events, maxEvents));
       render();
     },
     onStale: (state) => {
-      events.push(DisplaySystemStateEvent.fromEvent({
-        event_type: "system_state",
-        public_payload: {
-          phase: "unknown",
-          message: state.message,
-        },
-      }));
+      streamStatus = {
+        phase: "unknown",
+        message: state.message,
+      };
       render();
     },
   });
@@ -417,6 +435,23 @@ function toFiniteNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function trimDisplayEvents(events, maxEvents) {
+  const limit = toFiniteNumber(maxEvents);
+  if (limit === null || limit <= 0 || events.length <= limit) return events;
+  return events.slice(events.length - limit);
+}
+
+function scrollDisplayToLatest(target) {
+  if (typeof target?.querySelector !== "function") return;
+  const list = target.querySelector("[data-testid='display-event-list']");
+  if (!list) return;
+  if (typeof list.scrollTo === "function") {
+    list.scrollTo({top: list.scrollHeight});
+  } else {
+    list.scrollTop = list.scrollHeight;
+  }
 }
 
 function objectValue(value) {

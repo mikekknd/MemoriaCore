@@ -284,6 +284,13 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Privacy boundary：display contract 與 route final pass 會移除 nested raw payload、operator controls、token/secret key patterns 與 auth-like text。
 - [x] Scope boundary：本階段不處理 Chat Display visual redesign、presentation metadata wiring 或 TTS queue/ack/timeout E2E。
 
+## Integration Wave 6B 狀態
+
+- [x] Stream UI shell：Chat Display root 使用穩定 shell 與 `display-event-list`，適合 browser source/OBS 顯示。
+- [x] Bounded stream：`mountChatDisplay(...)` 支援 `maxEvents`，避免長時間直播 DOM 無限制增長。
+- [x] Browser smoke：新增 opt-in Chat Display browser smoke，預設 skip，不讓一般 V2 suite 依賴本機 Chrome。
+- [x] Scope boundary：本階段不處理 presentation metadata integration 或 TTS queue/ack/timeout。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

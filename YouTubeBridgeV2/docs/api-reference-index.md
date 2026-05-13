@@ -924,9 +924,11 @@ Concepts:
 - `DisplayPresentationMetadata`
 - `renderDisplayEvent`
 - `renderDisplayEvents`
+- `renderChatDisplayShell`
 - `connectDisplayStream`
 - `initChatDisplayI18n`
 - `mountChatDisplay`
+- `test_chat_display_browser_smoke_renders_live_display_stream`
 
 Stability:
 - `provisional`
@@ -944,9 +946,11 @@ Source:
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::DisplayPresentationMetadata`
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::renderDisplayEvent`
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::renderDisplayEvents`
+- `YouTubeBridgeV2/static/chat-display/chat-display.js::renderChatDisplayShell`
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::connectDisplayStream`
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::initChatDisplayI18n`
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::mountChatDisplay`
+- `tests/youtubebridge_v2/test_chat_display_browser_smoke.py::test_chat_display_browser_smoke_renders_live_display_stream`
 
 ### YouTube Adapter
 

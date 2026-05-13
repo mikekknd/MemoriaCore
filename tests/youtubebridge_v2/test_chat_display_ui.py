@@ -363,6 +363,75 @@ console.log(JSON.stringify({url: source.url, events, stale}));
     assert re.search(r"method\s*:\s*['\"]POST", source) is None
 
 
+def test_mount_chat_display_uses_stable_stream_shell_and_bounded_event_list():
+    result = _run_node_json(
+        """
+const root = {innerHTML: "", dataset: {}};
+const sources = [];
+class FakeSource {
+  constructor(url) {
+    this.url = url;
+    sources.push(this);
+  }
+}
+ui.mountChatDisplay({
+  root,
+  sessionId: "session-shell",
+  eventSourceFactory: (url) => new FakeSource(url),
+  initialEvents: [
+    {event_type: "audience_message", sequence: 1, public_payload: {author_display_name: "A", message_text: "first"}},
+    {event_type: "audience_message", sequence: 2, public_payload: {author_display_name: "B", message_text: "second"}}
+  ],
+  maxEvents: 2
+});
+sources[0].onmessage({
+  data: JSON.stringify({
+    event_type: "audience_message",
+    sequence: 3,
+    public_payload: {author_display_name: "C", message_text: "third"}
+  })
+});
+console.log(JSON.stringify({html: root.innerHTML, sourceUrl: sources[0].url}));
+"""
+    )
+
+    assert 'data-testid="chat-display-shell"' in result["html"]
+    assert 'data-testid="display-event-list"' in result["html"]
+    assert result["sourceUrl"] == "/v2/sessions/session-shell/display-stream"
+    assert "first" not in result["html"]
+    assert "second" in result["html"]
+    assert "third" in result["html"]
+
+
+def test_mount_chat_display_shows_single_stale_banner():
+    result = _run_node_json(
+        """
+const root = {innerHTML: "", dataset: {}};
+const sources = [];
+class FakeSource {
+  constructor(url) {
+    sources.push(this);
+  }
+}
+ui.mountChatDisplay({
+  root,
+  sessionId: "session-stale",
+  eventSourceFactory: (url) => new FakeSource(url),
+  initialEvents: [
+    {event_type: "audience_message", public_payload: {author_display_name: "A", message_text: "visible"}}
+  ]
+});
+sources[0].onerror(new Error("disconnect one"));
+sources[0].onerror(new Error("disconnect two"));
+console.log(JSON.stringify({html: root.innerHTML}));
+"""
+    )
+
+    assert result["html"].count('data-testid="status-banner"') == 1
+    assert "visible" in result["html"]
+    assert "Display stream is stale" in result["html"]
+
+
 def test_chat_display_missing_session_id_renders_system_banner():
     result = _run_node_json(
         """
@@ -419,6 +488,16 @@ def test_chat_display_static_entrypoint_links_assets_and_i18n():
     assert 'id="chatDisplayRoot"' in html
     assert '/static/shared/i18n.js' in html
     assert 'data-i18n="youtubebridge_v2.chat_display.loading"' in html
+
+
+def test_chat_display_css_stream_layout_is_bottom_anchored_without_viewport_font_scaling():
+    css = UI_CSS.read_text(encoding="utf-8")
+
+    assert ".display-event-list" in css
+    assert "justify-content: flex-end" in css
+    assert "overflow-anchor: auto" in css
+    assert "font-size: clamp(" not in css
+    assert re.search(r"font-size\s*:\s*[^;]*vw", css) is None
 
 
 def test_chat_display_i18n_keys_are_registered():

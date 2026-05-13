@@ -27,9 +27,32 @@ body {
   align-items: stretch;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  justify-content: flex-end;
   min-height: 100vh;
   padding: 18px;
+}
+
+.chat-display-shell {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 36px);
+  min-height: 0;
+}
+
+.display-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: flex-end;
+  min-height: 0;
+  overflow-anchor: auto;
+  overflow-y: auto;
+}
+
+.stream-status {
+  flex: 0 0 auto;
 }
 
 .chat-row,
@@ -147,6 +170,10 @@ body {
 @media (max-width: 640px) {
   .chat-display-root {
     padding: 10px;
+  }
+
+  .chat-display-shell {
+    max-height: calc(100vh - 20px);
   }
 
   .chat-row,
