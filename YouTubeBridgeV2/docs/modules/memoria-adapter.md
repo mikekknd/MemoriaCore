@@ -90,6 +90,7 @@ Public summaries must include correlation metadata but not hidden prompts, raw r
 - HTTP 401/403 auth failure 為 terminal，不重試，public summary 只保留 `error_type`、`retryable` 與 `status_code`。
 - HTTP invalid JSON 或 non-object JSON response 為 terminal `invalid_response`，不得把 raw body 寫進 public summary。
 - HTTP transport public summary 只能顯示 `base_url`、`timeout_seconds`、`max_attempts` 與 `has_api_key`，不得顯示 token/header/raw payload。
+- real integration harness 缺少 opt-in env 或必要 base URL / character id 時必須 skip，不得嘗試外呼。
 
 ## Test Strategy
 
@@ -100,6 +101,7 @@ Public summaries must include correlation metadata but not hidden prompts, raw r
 - auth tests：缺少 delegation 時失敗。
 - privacy tests：public summary 不含 hidden prompt/raw payload。
 - side effect tests：adapter 不寫 storage、不改 phase、不更新 UI。
+- real integration harness：`tests/youtubebridge_v2/test_memoria_real_integration.py` 預設 skip；只有設定 `YB2_MEMORIA_INTEGRATION=1`、`YB2_MEMORIA_BASE_URL` 與 `YB2_MEMORIA_CHARACTER_ID` 時才會呼叫本機 MemoriaCore。
 
 ## Open Questions
 

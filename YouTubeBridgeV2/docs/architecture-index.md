@@ -169,7 +169,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Auth terminal mapping：HTTP 401/403 會轉成 terminal `auth_failure`，不重試。
 - [x] Invalid response mapping：invalid JSON / non-object JSON response 會轉成 terminal `invalid_response`。
 - [x] Sanitized error summary：URL、headers、token、authorization 與 raw payload 不進入 transport public summary 或 runner adapter summary。
-- [ ] Real MemoriaCore integration harness：仍保留給 Wave 2E-C。
+- [ ] Production wiring toggle：仍保留給 Wave 2E-D。
+
+## Integration Wave 2E-C 狀態
+
+- [x] Real MemoriaCore integration harness：已建立 opt-in pytest harness，可在本機 MemoriaCore 8088 與明確 character id 設定下跑 real `/api/v1/chat/sync` round-trip。
+- [x] Default pytest independence：未設定 `YB2_MEMORIA_INTEGRATION=1` 時，real external test skip，不依賴 MemoriaCore service、API key 或本機角色資料。
 - [ ] Production wiring toggle：仍保留給 Wave 2E-D。
 
 ## Module Design 文件
