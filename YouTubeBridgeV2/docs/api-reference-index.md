@@ -305,6 +305,32 @@ Source:
 - `YouTubeBridgeV2/production.py::create_production_v2_composition`
 - `YouTubeBridgeV2/production.py::load_production_memoria_transport`
 
+### `api.main._cancel_lifespan_tasks(...)`
+
+Purpose:
+取消並 await 主 FastAPI lifespan 建立的 background tasks，確保 shutdown 不會因第一個 `CancelledError` 提早結束而漏掉後續 task。
+
+Params:
+- `*tasks: asyncio.Task | None` — lifespan startup 建立的可選 background tasks。
+
+Returns:
+- `None`。
+
+Raises:
+- `BaseException` — task 以非 cancellation exception 結束時會重新拋出，避免 shutdown 靜默吞掉非預期錯誤。
+
+Side Effects:
+- 取消並 await 傳入的 background tasks；不啟動外部服務、不寫入 V2 storage。
+
+Since:
+- `YouTubeBridgeV2 v0.1`
+
+Stability:
+- `internal`
+
+Source:
+- `api/main.py::_cancel_lifespan_tasks`
+
 ### Runtime Application Service
 
 Purpose:

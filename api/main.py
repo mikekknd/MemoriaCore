@@ -47,6 +47,23 @@ def _should_log_persona_sync_skip(reason: str) -> bool:
     return not any(reason.startswith(prefix) for prefix in quiet_prefixes)
 
 
+async def _cancel_lifespan_tasks(*tasks: asyncio.Task | None) -> None:
+    """取消並等待 FastAPI lifespan 的背景 task 結束。"""
+
+    active_tasks = [task for task in tasks if task is not None]
+    for task in active_tasks:
+        task.cancel()
+    if not active_tasks:
+        return
+
+    results = await asyncio.gather(*active_tasks, return_exceptions=True)
+    for result in results:
+        if result is None or isinstance(result, asyncio.CancelledError):
+            continue
+        if isinstance(result, BaseException):
+            raise result
+
+
 # ── Lifespan：啟動 / 關機 ────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -121,18 +138,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await get_telegram_bot_manager().stop_all()
     await get_discord_bot_manager().stop_all()
-    cleanup_task.cancel()
-    if bg_gather_task:
-        bg_gather_task.cancel()
-    persona_sync_task.cancel()
-
-    try:
-        await cleanup_task
-        if bg_gather_task:
-            await bg_gather_task
-        await persona_sync_task
-    except asyncio.CancelledError:
-        pass
+    await _cancel_lifespan_tasks(cleanup_task, bg_gather_task, persona_sync_task)
 
 
 # ── 應用程式實例 ──────────────────────────────────────────
