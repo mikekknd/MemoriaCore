@@ -59,6 +59,11 @@ Display stream 會將它正規化為 `event_type: "character_response"`，並透
 `public_payload.presentation` 攜帶 display-safe voice/visual/subtitle metadata。
 UI 繼續使用既有 character row 呈現，不呼叫 runtime control API。
 
+Wave 6E 新增 display + TTS E2E verification：real storage/runtime tick 產生的
+presentation event 會經 `/display-stream` 進入 `chat-display.js` renderer，驗證
+character response、presentation metadata、private payload redaction 與同一回覆的
+TTS queue/ack/timeout API 可一起通過。
+
 - `DisplayMessageEvent`
 - `DisplaySystemStateEvent`
 - `DisplaySuperChatEvent`
@@ -111,6 +116,9 @@ Audience display flags are rendered only from an allowlist of public-safe flag n
 - malformed event fallback tests。
 - no control API call tests。
 - Wave 6B browser smoke：opt-in `tests/youtubebridge_v2/test_chat_display_browser_smoke.py` 會使用 live 8088 `/v2` server 驗證 desktop/mobile stream render、bounded shell、no private payload 與 no horizontal overflow。
+- Wave 6E E2E tests：`tests/youtubebridge_v2/test_display_tts_e2e.py`
+  會用 real V2 storage/runtime/display stream 驗證 presentation metadata 可被
+  Chat Display renderer 呈現，並提供 skipped-by-default browser smoke。
 
 ## Open Questions
 

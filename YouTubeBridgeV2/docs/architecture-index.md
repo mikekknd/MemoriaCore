@@ -301,6 +301,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Ack/timeout API：新增 `/v2/sessions/{session_id}/tts-queue`、`/v2/sessions/{session_id}/tts-deliveries/{delivery_id}/ack` 與 `/timeout`，ack/timeout 只更新 delivery state，不要求 runtime phase transition。
 - [x] Scope boundary：本階段不實作真實 TTS provider、browser playback callback 或 display + TTS E2E；這些留給後續 Wave 6E / provider integration。
 
+## Integration Wave 6E 狀態
+
+- [x] Display + TTS E2E：新增 always-on real-storage/API/UI-render round trip，驗證 Memoria planned response 同時出現在 display stream、Chat Display renderer 與 TTS delivery queue。
+- [x] Browser smoke boundary：新增 skipped-by-default browser E2E smoke，可用本機 Playwright Chrome 啟動 temporary V2 app 驗證 desktop/mobile Chat Display 與 queue/ack/timeout API。
+- [x] Scope boundary：本階段仍不實作真實 TTS provider、audio playback、OBS/browser callback 或 roadmap checkbox 更新。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

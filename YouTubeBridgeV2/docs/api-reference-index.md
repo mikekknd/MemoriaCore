@@ -957,6 +957,8 @@ Concepts:
 - `initChatDisplayI18n`
 - `mountChatDisplay`
 - `test_chat_display_browser_smoke_renders_live_display_stream`
+- `test_display_stream_renders_presentation_and_tts_queue_round_trip`
+- `test_browser_chat_display_renders_presentation_and_tts_queue`
 
 Stability:
 - `provisional`
@@ -979,6 +981,8 @@ Source:
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::initChatDisplayI18n`
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::mountChatDisplay`
 - `tests/youtubebridge_v2/test_chat_display_browser_smoke.py::test_chat_display_browser_smoke_renders_live_display_stream`
+- `tests/youtubebridge_v2/test_display_tts_e2e.py::test_display_stream_renders_presentation_and_tts_queue_round_trip`
+- `tests/youtubebridge_v2/test_display_tts_e2e.py::test_browser_chat_display_renders_presentation_and_tts_queue`
 
 ### YouTube Adapter
 
@@ -1056,3 +1060,11 @@ Wave 6D integration behavior:
 - `POST /v2/sessions/{session_id}/tts-deliveries/{delivery_id}/ack` 與
   `/timeout` 只更新 delivery state，回傳
   `phase_transition_requested: false`，不觸發 phase transition。
+
+Wave 6E verification behavior:
+
+- `tests/youtubebridge_v2/test_display_tts_e2e.py` 驗證 real storage/runtime
+  tick 產生的 presentation response 可經 display stream 被
+  `chat-display.js` renderer 呈現，且同一 response 建立 TTS delivery queue。
+- Ack 與 timeout 驗證會確認 `phase_transition_requested: false` 且 phase 不變；
+  browser smoke skipped by default，只在本機 Chrome opt-in 時執行。
