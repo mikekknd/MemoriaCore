@@ -78,11 +78,32 @@ input:disabled {
   margin: 0;
 }
 
+.header-meta {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.header-meta strong {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.header-meta span {
+  color: var(--text2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .eyeline,
 .label,
 .muted {
   color: var(--text2);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .stream-state {
@@ -124,10 +145,23 @@ input:disabled {
   font-size: 20px;
   font-weight: 650;
   line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .phase-panel strong {
   color: var(--accent);
+}
+
+.panel[data-automation-state="running"] strong {
+  color: var(--accent2);
+}
+
+.panel[data-automation-state="paused"] strong {
+  color: var(--warn);
+}
+
+.panel[data-automation-state="disabled"] strong {
+  color: var(--text2);
 }
 
 .plan-panel {

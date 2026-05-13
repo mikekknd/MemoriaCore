@@ -237,6 +237,13 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Security boundary：automation control route 是 operator-only；observer/display 無法寫入。
 - [x] Scope boundary：完整 operator console UI 留給 Wave 5。
 
+## Integration Wave 5A 狀態
+
+- [x] Durable status source：Operator Console 初始載入讀取 `GET /v2/sessions/{session_id}`，而不是 phase-only endpoint。
+- [x] Session identity：status dashboard 顯示 sanitized `public_summary` title 與 `session_id`。
+- [x] Automation status：status dashboard 顯示 durable `automation_control` running/paused/disabled 狀態與 public reason。
+- [x] Scope boundary：本階段不新增 create/bind/tick/API key management UI；那些保留給 Wave 5B/5D。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

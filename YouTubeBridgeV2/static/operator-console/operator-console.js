@@ -42,11 +42,23 @@ export class OperatorSessionStatusView {
     const aftertalkPolicy = String(status.aftertalk_policy || "disabled");
     const streamState = String(status.stream_state || options.streamState || "connected");
     const diagnostics = sanitizePublicValue(status.diagnostics || {});
+    const sessionId = String(options.sessionId || status.session_id || "");
+    const publicSummary = normalizePublicSummary(
+      status.public_summary || status.publicSummary || {title: status.statusTitle},
+      sessionId,
+    );
+    const automationControl = normalizeAutomationControl(
+      status.automation_control || status.automationControl || {},
+    );
 
     return new OperatorSessionStatusView({
-      sessionId: String(options.sessionId || status.session_id || ""),
+      sessionId,
+      statusTitle: publicSummary.title,
+      publicSummary,
       phase,
       phaseLabel: localizedPhaseLabel(phase),
+      automationControl,
+      automationStateLabel: localizedAutomationState(automationControl),
       aftertalkPolicy,
       aftertalkPolicyLabel: localizedAftertalkPolicy(aftertalkPolicy),
       aftertalkStateLabel: phase === "aftertalk"
@@ -179,6 +191,10 @@ export function renderOperatorConsole(viewLike) {
         <div>
           <span class="eyeline">YouTubeBridgeV2</span>
           <h1>${escapeHtml(translate("title", "Operator Console"))}</h1>
+          <div class="header-meta">
+            <strong data-testid="status-title">${escapeHtml(view.statusTitle)}</strong>
+            <span data-testid="session-id">${escapeHtml(translate("session", "Session"))}: ${escapeHtml(view.sessionId)}</span>
+          </div>
         </div>
         <span class="stream-state" data-state="${escapeHtml(view.streamState)}">${escapeHtml(view.streamStateLabel)}</span>
       </header>
@@ -191,6 +207,11 @@ export function renderOperatorConsole(viewLike) {
         <section class="panel">
           <span class="label">${escapeHtml(translate("remaining_time", "Remaining Time"))}</span>
           <strong data-testid="remaining-time">${escapeHtml(view.remainingTimeLabel)}</strong>
+        </section>
+        <section class="panel" data-automation-state="${escapeHtml(automationStateName(view.automationControl))}">
+          <span class="label">${escapeHtml(translate("automation", "Automation"))}</span>
+          <strong data-testid="automation-state">${escapeHtml(view.automationStateLabel)}</strong>
+          <span class="muted">${escapeHtml(view.automationControl.reason || "")}</span>
         </section>
         <section class="panel">
           <span class="label">${escapeHtml(translate("aftertalk", "Aftertalk"))}</span>
@@ -212,7 +233,7 @@ export async function loadOperatorStatus({
   sessionId,
   fetchImpl = globalThis.fetch,
 } = {}) {
-  const response = await fetchImpl(`/v2/sessions/${encodeURIComponent(sessionId)}/phase`);
+  const response = await fetchImpl(`/v2/sessions/${encodeURIComponent(sessionId)}`);
   const payload = await safeJson(response);
   if (!response.ok) {
     throw OperatorDiagnosticBanner.fromError(payload);
@@ -367,6 +388,46 @@ function renderPlanProgress(progress) {
       <p>${escapeHtml(progress.currentTurnTitle)}</p>
     </section>
   `;
+}
+
+function normalizePublicSummary(summary = {}, sessionId = "") {
+  const safe = sanitizePublicValue(summary || {});
+  const title = String(
+    safe.title
+    || safe.plan_title
+    || safe.plan_id
+    || sessionId
+    || translate("untitled_session", "Untitled session"),
+  );
+  return {
+    title,
+    planId: String(safe.plan_id || ""),
+  };
+}
+
+function normalizeAutomationControl(control = {}) {
+  const safe = sanitizePublicValue(control || {});
+  return {
+    enabled: safe.enabled === undefined ? true : Boolean(safe.enabled),
+    paused: Boolean(safe.paused),
+    reason: String(safe.reason || ""),
+  };
+}
+
+function localizedAutomationState(control) {
+  if (!control.enabled) {
+    return translate("automation_disabled", "disabled");
+  }
+  if (control.paused) {
+    return translate("automation_paused", "paused");
+  }
+  return translate("automation_running", "running");
+}
+
+function automationStateName(control) {
+  if (!control.enabled) return "disabled";
+  if (control.paused) return "paused";
+  return "running";
 }
 
 function normalizePlanProgress(plan = {}) {

@@ -801,9 +801,11 @@ Source:
 
 Purpose:
 定義後台控制 UI 消費的 session status、control action 與 diagnostic contract。
+Wave 5A：初始 status dashboard 以 `GET /v2/sessions/{session_id}` 作為 durable source，phase-only endpoint 不再是初始載入來源。
 
 Concepts:
 - `GET /v2/static/operator-console/index.html`
+- `GET /v2/sessions/{session_id}`
 - `OperatorSessionStatusView`
 - `OperatorControlAction`
 - `AftertalkPolicyControl`

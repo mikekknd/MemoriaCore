@@ -66,6 +66,46 @@ console.log(JSON.stringify({view, html}));
     assert 'data-phase="aftertalk"' in result["html"]
 
 
+def test_operator_console_renders_durable_session_identity_and_automation_state():
+    result = _run_node_json(
+        """
+const view = ui.OperatorSessionStatusView.fromStatus({
+  session_id: "session-1",
+  phase: "planned_show",
+  public_summary: {
+    title: "May Showcase",
+    plan_id: "plan-1",
+    raw_payload: {token: "must not leak"}
+  },
+  automation_control: {
+    enabled: true,
+    paused: true,
+    reason: "operator pause",
+    raw_payload: {authorization: "Bearer secret"}
+  }
+});
+const html = ui.renderOperatorConsole(view);
+console.log(JSON.stringify({view, html}));
+"""
+    )
+
+    assert result["view"]["statusTitle"] == "May Showcase"
+    assert result["view"]["sessionId"] == "session-1"
+    assert result["view"]["automationControl"] == {
+        "enabled": True,
+        "paused": True,
+        "reason": "operator pause",
+    }
+    assert result["view"]["automationStateLabel"] == "paused"
+    assert 'data-testid="status-title"' in result["html"]
+    assert 'data-testid="session-id"' in result["html"]
+    assert 'data-testid="automation-state"' in result["html"]
+    assert "May Showcase" in result["html"]
+    assert "session-1" in result["html"]
+    assert "operator pause" in result["html"]
+    _assert_no_private_payload(result)
+
+
 def test_missing_permission_group_defaults_to_display_only():
     result = _run_node_json(
         """
@@ -154,6 +194,64 @@ console.log(JSON.stringify({calls, response}));
             },
         }
     ]
+
+
+def test_load_operator_status_fetches_durable_session_status_api():
+    result = _run_node_json(
+        """
+const calls = [];
+const fetchImpl = async (url) => {
+  calls.push(url);
+  return {
+    ok: true,
+    json: async () => ({
+      session_id: "session-1",
+      phase: "planned_show",
+      public_summary: {title: "Durable Status"},
+      automation_control: {enabled: false, paused: false, reason: "maintenance"}
+    })
+  };
+};
+const view = await ui.loadOperatorStatus({sessionId: "session 1", fetchImpl});
+console.log(JSON.stringify({calls, view}));
+"""
+    )
+
+    assert result["calls"] == ["/v2/sessions/session%201"]
+    assert result["view"]["statusTitle"] == "Durable Status"
+    assert result["view"]["automationStateLabel"] == "disabled"
+
+
+def test_mount_operator_console_preserves_loaded_durable_status_fields():
+    result = _run_node_json(
+        """
+const root = {
+  innerHTML: "",
+  querySelector: () => null
+};
+const fetchImpl = async () => ({
+  ok: true,
+  json: async () => ({
+    session_id: "session-1",
+    phase: "planned_show",
+    public_summary: {title: "Loaded Durable Title"},
+    automation_control: {enabled: true, paused: true, reason: "hold"}
+  })
+});
+ui.mountOperatorConsole({
+  root,
+  sessionId: "session-1",
+  fetchImpl,
+  eventSourceFactory: () => null
+});
+await new Promise((resolve) => setTimeout(resolve, 0));
+console.log(JSON.stringify({html: root.innerHTML}));
+"""
+    )
+
+    assert "Loaded Durable Title" in result["html"]
+    assert 'data-testid="automation-state"' in result["html"]
+    assert "hold" in result["html"]
 
 
 def test_remaining_time_is_displayed_from_phase_status():
@@ -347,8 +445,13 @@ def test_operator_console_i18n_keys_are_registered():
 
     for key in (
         "youtubebridge_v2.operator_console.title",
+        "youtubebridge_v2.operator_console.session",
         "youtubebridge_v2.operator_console.phase",
         "youtubebridge_v2.operator_console.phase_unknown",
+        "youtubebridge_v2.operator_console.automation",
+        "youtubebridge_v2.operator_console.automation_running",
+        "youtubebridge_v2.operator_console.automation_paused",
+        "youtubebridge_v2.operator_console.automation_disabled",
         "youtubebridge_v2.operator_console.manual_close",
         "youtubebridge_v2.operator_console.read_only",
         "youtubebridge_v2.operator_console.stream_connected",
@@ -401,11 +504,18 @@ def test_operator_console_api_dependencies_are_served_by_main_app(tmp_path, monk
     )
     assert create_response.status_code == 200
 
-    phase_response = client.get("/v2/sessions/session-1/phase")
-    assert phase_response.status_code == 200
-    assert phase_response.json()["session_id"] == "session-1"
-    assert phase_response.json()["phase"] == "planned_show"
-    assert "v2_runtime_not_configured" not in repr(phase_response.json())
+    status_response = client.get("/v2/sessions/session-1")
+    assert status_response.status_code == 200
+    status = status_response.json()
+    assert status["session_id"] == "session-1"
+    assert status["phase"] == "planned_show"
+    assert "public_summary" in status
+    assert status["automation_control"] == {
+        "enabled": True,
+        "paused": False,
+        "reason": "",
+    }
+    assert "v2_runtime_not_configured" not in repr(status)
 
     with client.stream("GET", "/v2/sessions/session-1/operator-stream") as stream_response:
         stream_response.read()

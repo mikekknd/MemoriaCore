@@ -15,6 +15,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 ## Inputs
 
 - phase status API/SSE event。
+- durable session public status (`GET /v2/sessions/{session_id}`)，包含 `public_summary` 與 `automation_control`。
 - LiveEpisodePlan progress summary。
 - Aftertalk policy/status。
 - duration summary 與 closing status。
@@ -48,6 +49,7 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 本階段 UI-facing contracts 已由 `YouTubeBridgeV2/static/operator-console/` 實作。
 
 - Served entrypoint: `/v2/static/operator-console/index.html`
+- Initial status source: `GET /v2/sessions/{session_id}` durable session status。
 - Main app wiring: `api/main.py` includes the V2 router and serves `/v2/static`.
 - `OperatorSessionStatusView`
 - `OperatorControlAction`
