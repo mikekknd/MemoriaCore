@@ -131,6 +131,35 @@ def classify_memoria_error(error: BaseException) -> MemoriaAdapterError:
             public_summary={"error_type": "timeout", "retryable": True},
         )
 
+    explicit_error_type = _optional_string(getattr(error, "error_type", None))
+    explicit_retryable = getattr(error, "retryable", None)
+    explicit_summary = getattr(error, "public_summary", None)
+    if explicit_error_type and explicit_retryable is not None:
+        summary = _redact_public_value(
+            explicit_summary
+            if isinstance(explicit_summary, dict)
+            else {
+                "error_type": explicit_error_type,
+                "retryable": bool(explicit_retryable),
+            }
+        )
+        if not summary:
+            summary = {
+                "error_type": explicit_error_type,
+                "retryable": bool(explicit_retryable),
+            }
+        if isinstance(summary, dict):
+            summary.setdefault("error_type", explicit_error_type)
+            summary.setdefault("retryable", bool(explicit_retryable))
+        if status_code is not None and "status_code" not in summary:
+            summary["status_code"] = status_code
+        return MemoriaAdapterError(
+            error_type=explicit_error_type,
+            retryable=bool(explicit_retryable),
+            status_code=status_code,
+            public_summary=summary,
+        )
+
     if status_code in {401, 403}:
         return MemoriaAdapterError(
             error_type="auth_failure",
@@ -514,6 +543,13 @@ def _redact_public_value(value: Any) -> Any:
         "secret",
         "token",
     }
+    forbidden_text = (
+        "authorization",
+        "bearer ",
+        "secret-token",
+        "token=",
+        "x-api-key",
+    )
     if isinstance(value, dict):
         return {
             key: _redact_public_value(inner)
@@ -524,6 +560,10 @@ def _redact_public_value(value: Any) -> Any:
         return [_redact_public_value(item) for item in value]
     if isinstance(value, tuple):
         return tuple(_redact_public_value(item) for item in value)
+    if isinstance(value, str):
+        lowered = value.lower()
+        if any(marker in lowered for marker in forbidden_text):
+            return "[redacted]"
     return value
 
 

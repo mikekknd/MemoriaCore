@@ -435,6 +435,7 @@ Concepts:
 - `MEMORIA_TRANSPORT_PREFS_KEY`
 - `MemoriaHttpConfigError`
 - `MemoriaHttpTransportConfig`
+- `MemoriaHttpTransportError`
 - `SyncJsonHttpClientProtocol`
 - `UrllibSyncJsonHttpClient`
 - `MemoriaSyncHttpTransport`
@@ -455,6 +456,7 @@ Source:
 - `YouTubeBridgeV2/adapters/memoria_http.py::MEMORIA_TRANSPORT_PREFS_KEY`
 - `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaHttpConfigError`
 - `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaHttpTransportConfig`
+- `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaHttpTransportError`
 - `YouTubeBridgeV2/adapters/memoria_http.py::SyncJsonHttpClientProtocol`
 - `YouTubeBridgeV2/adapters/memoria_http.py::UrllibSyncJsonHttpClient`
 - `YouTubeBridgeV2/adapters/memoria_http.py::MemoriaSyncHttpTransport`

@@ -1,5 +1,6 @@
 import inspect
 import json
+from urllib.error import HTTPError, URLError
 
 from YouTubeBridgeV2.adapters.memoria import (
     MemoriaAdapterError,
@@ -14,6 +15,7 @@ from YouTubeBridgeV2.adapters.memoria_http import (
     MEMORIA_TRANSPORT_PREFS_KEY,
     MemoriaHttpConfigError,
     MemoriaHttpTransportConfig,
+    MemoriaHttpTransportError,
     MemoriaSyncHttpTransport,
     UrllibSyncJsonHttpClient,
     load_memoria_http_transport_config,
@@ -157,6 +159,7 @@ def test_memoria_http_transport_config_loads_from_storage_prefs_without_secret_r
     assert config.base_url == "http://127.0.0.1:8088"
     assert config.api_key == "secret-token"
     assert config.timeout_seconds == 7.5
+    assert config.max_attempts == 2
     assert (
         config.resolve_url("/api/v1/chat/sync")
         == "http://127.0.0.1:8088/api/v1/chat/sync"
@@ -164,6 +167,7 @@ def test_memoria_http_transport_config_loads_from_storage_prefs_without_secret_r
     assert config.public_summary() == {
         "base_url": "http://127.0.0.1:8088",
         "timeout_seconds": 7.5,
+        "max_attempts": 2,
         "has_api_key": True,
     }
     assert "secret-token" not in repr(config)
@@ -208,6 +212,20 @@ def test_memoria_http_transport_config_rejects_absolute_endpoint_override():
             raise AssertionError(f"expected absolute endpoint to fail: {endpoint!r}")
 
 
+def test_memoria_http_transport_config_rejects_secret_bearing_base_url():
+    for raw in (
+        {"base_url": "http://user:pass@127.0.0.1:8088"},
+        {"base_url": "http://127.0.0.1:8088?token=secret"},
+        {"base_url": "http://127.0.0.1:8088/#secret-token"},
+    ):
+        try:
+            parse_memoria_http_transport_config(raw)
+        except MemoriaHttpConfigError as exc:
+            assert "base_url" in str(exc)
+        else:
+            raise AssertionError(f"expected secret-bearing base URL to fail: {raw!r}")
+
+
 class FakeSyncJsonClient:
     def __init__(self, response):
         self.response = response
@@ -223,6 +241,26 @@ class FakeSyncJsonClient:
             }
         )
         return self.response
+
+
+class SequencedSyncJsonClient:
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def post_json(self, *, url, body, headers, timeout_seconds):
+        self.calls.append(
+            {
+                "url": url,
+                "body": dict(body),
+                "headers": dict(headers),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def test_memoria_sync_http_transport_posts_prepared_request_through_injected_client():
@@ -258,6 +296,7 @@ def test_memoria_sync_http_transport_posts_prepared_request_through_injected_cli
         "transport": "memoria_sync_http",
         "base_url": "http://127.0.0.1:8088",
         "timeout_seconds": 3.0,
+        "max_attempts": 2,
         "has_api_key": True,
     }
     assert "secret-token" not in repr(transport)
@@ -283,6 +322,124 @@ def test_memoria_sync_http_transport_omits_authorization_when_api_key_is_absent(
     assert "Authorization" not in client.calls[0]["headers"]
 
 
+def test_memoria_sync_http_transport_retries_timeout_then_returns_success():
+    client = SequencedSyncJsonClient(
+        MemoriaHttpTransportError(
+            error_type="timeout",
+            retryable=True,
+            public_summary={"error_type": "timeout", "retryable": True},
+        ),
+        {
+            "session_id": "memoria-session-2",
+            "message_id": "m1",
+            "character_id": "host",
+            "reply": "after retry",
+        },
+    )
+    transport = MemoriaSyncHttpTransport(
+        MemoriaHttpTransportConfig(base_url="http://127.0.0.1:8088", max_attempts=2),
+        client=client,
+    )
+
+    response = transport.send(build_memoria_request(_planned_turn_intent(), _context()))
+
+    assert response["reply"] == "after retry"
+    assert len(client.calls) == 2
+
+
+def test_memoria_sync_http_transport_retries_5xx_then_returns_success():
+    client = SequencedSyncJsonClient(
+        MemoriaHttpTransportError(
+            error_type="transport_failure",
+            retryable=True,
+            status_code=503,
+            public_summary={
+                "error_type": "transport_failure",
+                "retryable": True,
+                "status_code": 503,
+            },
+        ),
+        {
+            "session_id": "memoria-session-2",
+            "message_id": "m1",
+            "character_id": "host",
+            "reply": "server recovered",
+        },
+    )
+    transport = MemoriaSyncHttpTransport(
+        MemoriaHttpTransportConfig(base_url="http://127.0.0.1:8088", max_attempts=2),
+        client=client,
+    )
+
+    response = transport.send(build_memoria_request(_planned_turn_intent(), _context()))
+
+    assert response["reply"] == "server recovered"
+    assert len(client.calls) == 2
+
+
+def test_memoria_sync_http_transport_does_not_retry_auth_failure():
+    client = SequencedSyncJsonClient(
+        MemoriaHttpTransportError(
+            error_type="auth_failure",
+            retryable=False,
+            status_code=401,
+            public_summary={
+                "error_type": "auth_failure",
+                "retryable": False,
+                "status_code": 401,
+            },
+        ),
+        {
+            "session_id": "must-not-send",
+            "message_id": "m2",
+            "character_id": "host",
+            "reply": "should not happen",
+        },
+    )
+    transport = MemoriaSyncHttpTransport(
+        MemoriaHttpTransportConfig(base_url="http://127.0.0.1:8088", max_attempts=3),
+        client=client,
+    )
+
+    try:
+        transport.send(build_memoria_request(_planned_turn_intent(), _context()))
+    except MemoriaHttpTransportError as exc:
+        assert exc.error_type == "auth_failure"
+        assert exc.retryable is False
+        assert exc.status_code == 401
+    else:
+        raise AssertionError("expected auth failure to raise")
+    assert len(client.calls) == 1
+
+
+def test_memoria_sync_http_transport_exhausted_retry_raises_last_retryable_error():
+    client = SequencedSyncJsonClient(
+        MemoriaHttpTransportError(
+            error_type="timeout",
+            retryable=True,
+            public_summary={"error_type": "timeout", "retryable": True},
+        ),
+        MemoriaHttpTransportError(
+            error_type="timeout",
+            retryable=True,
+            public_summary={"error_type": "timeout", "retryable": True},
+        ),
+    )
+    transport = MemoriaSyncHttpTransport(
+        MemoriaHttpTransportConfig(base_url="http://127.0.0.1:8088", max_attempts=2),
+        client=client,
+    )
+
+    try:
+        transport.send(build_memoria_request(_planned_turn_intent(), _context()))
+    except MemoriaHttpTransportError as exc:
+        assert exc.error_type == "timeout"
+        assert exc.retryable is True
+    else:
+        raise AssertionError("expected exhausted timeout retry to raise")
+    assert len(client.calls) == 2
+
+
 class FakeUrlopenResponse:
     def __init__(self, body):
         self.body = body
@@ -295,6 +452,19 @@ class FakeUrlopenResponse:
 
     def read(self):
         return self.body
+
+
+def _assert_no_transport_secret(value):
+    text = repr(value).lower()
+    for forbidden in (
+        "secret-token",
+        "authorization",
+        "x-api-key",
+        "token=secret",
+        "raw_payload",
+        "bearer",
+    ):
+        assert forbidden not in text
 
 
 def test_urllib_sync_json_client_encodes_json_request(monkeypatch):
@@ -327,6 +497,179 @@ def test_urllib_sync_json_client_encodes_json_request(monkeypatch):
     assert captured["timeout"] == 2.5
     assert json.loads(captured["body"]) == {"content": "hello"}
     assert captured["headers"]["X-request-id"] == "request-1"
+
+
+def test_urllib_sync_json_client_maps_5xx_http_error_to_retryable_transport_error(monkeypatch):
+    def fake_urlopen(_request, timeout=None):
+        raise HTTPError(
+            url="http://127.0.0.1:8088/api/v1/chat/sync?token=secret",
+            code=503,
+            msg="Service Unavailable",
+            hdrs={"Authorization": "Bearer secret-token"},
+            fp=None,
+        )
+
+    monkeypatch.setattr(
+        "YouTubeBridgeV2.adapters.memoria_http.urllib_request.urlopen",
+        fake_urlopen,
+    )
+    client = UrllibSyncJsonHttpClient()
+
+    try:
+        client.post_json(
+            url="http://127.0.0.1:8088/api/v1/chat/sync?token=secret",
+            body={"content": "hello"},
+            headers={"Authorization": "Bearer secret-token"},
+            timeout_seconds=2.5,
+        )
+    except MemoriaHttpTransportError as exc:
+        assert exc.error_type == "transport_failure"
+        assert exc.retryable is True
+        assert exc.status_code == 503
+        _assert_no_transport_secret(exc.public_summary)
+        _assert_no_transport_secret(str(exc))
+    else:
+        raise AssertionError("expected transport error")
+
+
+def test_urllib_sync_json_client_maps_401_http_error_to_terminal_auth_failure(monkeypatch):
+    def fake_urlopen(_request, timeout=None):
+        raise HTTPError(
+            url="http://127.0.0.1:8088/api/v1/chat/sync?token=secret",
+            code=401,
+            msg="Unauthorized",
+            hdrs={"Authorization": "Bearer secret-token"},
+            fp=None,
+        )
+
+    monkeypatch.setattr(
+        "YouTubeBridgeV2.adapters.memoria_http.urllib_request.urlopen",
+        fake_urlopen,
+    )
+    client = UrllibSyncJsonHttpClient()
+
+    try:
+        client.post_json(
+            url="http://127.0.0.1:8088/api/v1/chat/sync?token=secret",
+            body={"content": "hello"},
+            headers={"Authorization": "Bearer secret-token"},
+            timeout_seconds=2.5,
+        )
+    except MemoriaHttpTransportError as exc:
+        assert exc.error_type == "auth_failure"
+        assert exc.retryable is False
+        assert exc.status_code == 401
+        _assert_no_transport_secret(exc.public_summary)
+    else:
+        raise AssertionError("expected auth failure")
+
+
+def test_urllib_sync_json_client_maps_timeout_to_retryable_transport_error(monkeypatch):
+    def fake_urlopen(_request, timeout=None):
+        raise TimeoutError("timed out with token=secret")
+
+    monkeypatch.setattr(
+        "YouTubeBridgeV2.adapters.memoria_http.urllib_request.urlopen",
+        fake_urlopen,
+    )
+    client = UrllibSyncJsonHttpClient()
+
+    try:
+        client.post_json(
+            url="http://127.0.0.1:8088/api/v1/chat/sync",
+            body={"content": "hello"},
+            headers={"Authorization": "Bearer secret-token"},
+            timeout_seconds=2.5,
+        )
+    except MemoriaHttpTransportError as exc:
+        assert exc.error_type == "timeout"
+        assert exc.retryable is True
+        _assert_no_transport_secret(exc.public_summary)
+    else:
+        raise AssertionError("expected timeout")
+
+
+def test_urllib_sync_json_client_maps_urlerror_to_retryable_transport_failure(monkeypatch):
+    def fake_urlopen(_request, timeout=None):
+        raise URLError("connection failed with token=secret")
+
+    monkeypatch.setattr(
+        "YouTubeBridgeV2.adapters.memoria_http.urllib_request.urlopen",
+        fake_urlopen,
+    )
+    client = UrllibSyncJsonHttpClient()
+
+    try:
+        client.post_json(
+            url="http://127.0.0.1:8088/api/v1/chat/sync",
+            body={"content": "hello"},
+            headers={"Authorization": "Bearer secret-token"},
+            timeout_seconds=2.5,
+        )
+    except MemoriaHttpTransportError as exc:
+        assert exc.error_type == "transport_failure"
+        assert exc.retryable is True
+        _assert_no_transport_secret(exc.public_summary)
+    else:
+        raise AssertionError("expected transport failure")
+
+
+def test_urllib_sync_json_client_maps_invalid_json_to_terminal_invalid_response(monkeypatch):
+    def fake_urlopen(_request, timeout=None):
+        return FakeUrlopenResponse(b'{"raw_payload": "secret"')
+
+    monkeypatch.setattr(
+        "YouTubeBridgeV2.adapters.memoria_http.urllib_request.urlopen",
+        fake_urlopen,
+    )
+    client = UrllibSyncJsonHttpClient()
+
+    try:
+        client.post_json(
+            url="http://127.0.0.1:8088/api/v1/chat/sync",
+            body={"content": "hello"},
+            headers={"Authorization": "Bearer secret-token"},
+            timeout_seconds=2.5,
+        )
+    except MemoriaHttpTransportError as exc:
+        assert exc.error_type == "invalid_response"
+        assert exc.retryable is False
+        _assert_no_transport_secret(exc.public_summary)
+    else:
+        raise AssertionError("expected invalid response")
+
+
+def test_memoria_http_transport_error_redacts_secret_like_summary_strings():
+    error = MemoriaHttpTransportError(
+        error_type="transport_failure",
+        retryable=True,
+        public_summary={
+            "error_type": "transport_failure",
+            "retryable": True,
+            "message": "upstream returned secret-token",
+        },
+    )
+
+    assert error.public_summary == {
+        "error_type": "transport_failure",
+        "retryable": True,
+        "message": "[redacted]",
+    }
+    _assert_no_transport_secret(error.public_summary)
+
+
+def test_memoria_http_transport_error_public_summary_keeps_required_fields():
+    error = MemoriaHttpTransportError(
+        error_type="timeout",
+        retryable=True,
+        public_summary={"message": "retry later"},
+    )
+
+    assert error.public_summary == {
+        "message": "retry later",
+        "error_type": "timeout",
+        "retryable": True,
+    }
 
 
 def test_planned_turn_intent_maps_to_memoria_chat_request():
@@ -557,6 +900,66 @@ def test_auth_failure_is_classified_as_terminal():
         "error_type": "auth_failure",
         "retryable": False,
         "status_code": 401,
+    }
+
+
+def test_classify_memoria_error_preserves_sanitized_transport_error_summary():
+    error = classify_memoria_error(
+        MemoriaHttpTransportError(
+            error_type="invalid_response",
+            retryable=False,
+            public_summary={
+                "error_type": "invalid_response",
+                "retryable": False,
+                "raw_payload": {"token": "secret-token"},
+                "message": "bad json",
+            },
+        )
+    )
+
+    assert isinstance(error, MemoriaAdapterError)
+    assert error.error_type == "invalid_response"
+    assert error.retryable is False
+    assert error.public_summary == {
+        "error_type": "invalid_response",
+        "retryable": False,
+        "message": "bad json",
+    }
+    _assert_no_transport_secret(error.public_summary)
+
+
+def test_classify_memoria_error_redacts_explicit_transport_summary_strings():
+    class FakeExplicitTransportError(Exception):
+        error_type = "transport_failure"
+        retryable = True
+        public_summary = {
+            "error_type": "transport_failure",
+            "retryable": True,
+            "message": "upstream returned secret-token",
+        }
+
+    error = classify_memoria_error(FakeExplicitTransportError("transport failed"))
+
+    assert error.public_summary == {
+        "error_type": "transport_failure",
+        "retryable": True,
+        "message": "[redacted]",
+    }
+    _assert_no_transport_secret(error.public_summary)
+
+
+def test_classify_memoria_error_adds_required_fields_to_partial_summary():
+    class FakeExplicitTransportError(Exception):
+        error_type = "invalid_response"
+        retryable = False
+        public_summary = {"message": "bad response"}
+
+    error = classify_memoria_error(FakeExplicitTransportError("transport failed"))
+
+    assert error.public_summary == {
+        "message": "bad response",
+        "error_type": "invalid_response",
+        "retryable": False,
     }
 
 

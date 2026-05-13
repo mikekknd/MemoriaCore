@@ -57,6 +57,7 @@ MemoriaCore Adapter 負責把 V2 的 planned show intent、aftertalk request 與
 - `normalize_memoria_response(response_payload, correlation_metadata)`：將 MemoriaCore response payload 正規化成 V2 response 或 adapter error。
 - `classify_memoria_error(error)`：將 timeout、transport、auth 與 unknown error 分類成 adapter error，不改變 phase。
 - `MemoriaHttpTransportConfig`：真 MemoriaCore HTTP transport 的 public-safe 設定 contract。
+- `MemoriaHttpTransportError`：sync HTTP transport 產生的 sanitized error，提供 `error_type`、`retryable`、`status_code` 與 public-safe summary。
 - `parse_memoria_http_transport_config(raw_config)`：從明確 mapping 解析 transport config；空設定代表未啟用。
 - `load_memoria_http_transport_config(storage_manager)`：從 `StorageManager.load_prefs()` 讀取 `youtubebridge_v2_memoria_transport`，不硬寫 secret。
 - `SyncJsonHttpClientProtocol`：可替換的同步 JSON client protocol，供單元測試注入 fake client。
@@ -72,7 +73,7 @@ MemoriaCore Adapter 負責把 V2 的 planned show intent、aftertalk request 與
 | `ClosingRequest` | `/api/v1/chat/sync` public live scope with final message context | final response summary or adapter error |
 | timeout | no response body assumption | retryable `MemoriaAdapterError` |
 | auth failure | terminal error | sanitized auth failure summary |
-| invalid response | terminal or retryable by classification | redacted invalid response summary |
+| invalid response | terminal error | redacted invalid response summary |
 
 Public summaries must include correlation metadata but not hidden prompts, raw request payloads, raw response payloads, or raw Topic Pack content.
 
@@ -84,8 +85,11 @@ Public summaries must include correlation metadata but not hidden prompts, raw r
 - auth delegation 缺失時回傳 auth failure。
 - hidden prompt 與 raw request 不得出現在 public summary。
 - group chat response 缺少 speaker metadata 時回傳 invalid response。
-- HTTP transport config 缺少 `base_url` 時視為未啟用；`base_url` 非 http/https 或 timeout 非正數時回設定錯誤，不啟動真外呼。
-- HTTP transport public summary 只能顯示 `base_url`、`timeout_seconds` 與 `has_api_key`，不得顯示 token/header/raw payload。
+- HTTP transport config 缺少 `base_url` 時視為未啟用；`base_url` 非 http/https、帶 credentials/query/fragment，或 timeout 非正數時回設定錯誤，不啟動真外呼。
+- HTTP timeout 與 5xx transport failure 可依 `max_attempts` retry；重試耗盡後回 retryable sanitized error。
+- HTTP 401/403 auth failure 為 terminal，不重試，public summary 只保留 `error_type`、`retryable` 與 `status_code`。
+- HTTP invalid JSON 或 non-object JSON response 為 terminal `invalid_response`，不得把 raw body 寫進 public summary。
+- HTTP transport public summary 只能顯示 `base_url`、`timeout_seconds`、`max_attempts` 與 `has_api_key`，不得顯示 token/header/raw payload。
 
 ## Test Strategy
 
@@ -101,4 +105,4 @@ Public summaries must include correlation metadata but not hidden prompts, raw r
 
 - 目前 adapter request target 已確認為 MemoriaCore `/api/v1/chat/sync`；streaming transport 是否使用 `/api/v1/chat/stream-sync` 由後續 runtime service 決定。
 - correlation id 是否由 Server/API Surface 或 Observability 產生需後續決定。
-- retry 次數與 backoff policy 需與 runtime service 設計對齊。
+- backoff policy 需與 runtime service 設計對齊；目前 sync transport 只定義 `max_attempts` 重試次數，不 sleep。

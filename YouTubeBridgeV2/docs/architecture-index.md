@@ -163,6 +163,15 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Memoria transport implementation：已建立 `MemoriaSyncHttpTransport`，符合 runner 使用的 `send(request) -> dict[str, object]`。
 - [ ] Production wiring toggle：仍保留給 Wave 2E-D；主 app 未設定時繼續 no-op，不意外外呼。
 
+## Integration Wave 2E-B 狀態
+
+- [x] Timeout / 5xx retry：`MemoriaSyncHttpTransport` 會依 `max_attempts` retry retryable transport errors。
+- [x] Auth terminal mapping：HTTP 401/403 會轉成 terminal `auth_failure`，不重試。
+- [x] Invalid response mapping：invalid JSON / non-object JSON response 會轉成 terminal `invalid_response`。
+- [x] Sanitized error summary：URL、headers、token、authorization 與 raw payload 不進入 transport public summary 或 runner adapter summary。
+- [ ] Real MemoriaCore integration harness：仍保留給 Wave 2E-C。
+- [ ] Production wiring toggle：仍保留給 Wave 2E-D。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

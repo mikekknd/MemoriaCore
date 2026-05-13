@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tests.youtubebridge_v2.fakes import InMemoryV2StorageManager
+from YouTubeBridgeV2.adapters.memoria_http import MemoriaHttpTransportError
 from YouTubeBridgeV2.runtime.application_service import RuntimeCommand, RuntimeCommandType
 from YouTubeBridgeV2.runtime.memoria_runners import (
     MemoriaAftertalkRunner,
@@ -329,6 +330,45 @@ def test_memoria_transport_timeout_returns_retryable_adapter_summary():
     assert result.retryable is True
     assert result.summary == {"error_type": "timeout", "retryable": True}
     assert storage.interactions == []
+    _assert_no_private_payload(result)
+
+
+def test_runner_error_summary_redacts_http_transport_secret_payload():
+    storage = InMemoryV2StorageManager()
+    port = _create_bound_session(storage)
+    runner = MemoriaPlannedShowRunner(
+        storage,
+        FakeMemoriaTransport(
+            MemoriaHttpTransportError(
+                error_type="transport_failure",
+                retryable=True,
+                status_code=503,
+                public_summary={
+                    "error_type": "transport_failure",
+                    "retryable": True,
+                    "status_code": 503,
+                    "url": "http://127.0.0.1:8088/api/v1/chat/sync?token=secret",
+                    "headers": {"Authorization": "Bearer secret-token"},
+                    "raw_payload": {"token": "secret-token"},
+                },
+            )
+        ),
+    )
+
+    result = runner.run(
+        command=_command("cmd-http-secret"),
+        snapshot=port.read_snapshot("session-runner"),
+        transition=_transition(LiveSessionPhase.PLANNED_SHOW, action="run_planned_show"),
+        now=NOW,
+    )
+
+    assert result.status == "error"
+    assert result.retryable is True
+    assert result.summary == {
+        "error_type": "transport_failure",
+        "retryable": True,
+        "status_code": 503,
+    }
     _assert_no_private_payload(result)
 
 
