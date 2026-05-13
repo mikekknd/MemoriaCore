@@ -65,6 +65,36 @@ def test_memory_pipeline_dialogue_text_contains_group_labels(monkeypatch):
     assert "user: 我下午想去吃壽司" in prompt_text
 
 
+def test_memory_pipeline_accepts_fenced_json_with_trailing_commas():
+    """process_memory_pipeline 應容忍模型回傳 fenced JSON 與 trailing comma。"""
+    from core.memory_analyzer import MemoryAnalyzer
+
+    router = MagicMock()
+    router.generate = MagicMock(return_value="""```json
+{
+  "new_memories": [
+    {
+      "entities": ["鋼琴", "練習"],
+      "summary": "使用者討論鋼琴練習策略",
+      "potential_preferences": [{"tag": "喜歡音樂學習策略", "intensity": 0.9}],
+    },
+  ],
+  "healed_entities": [],
+}
+```""")
+
+    analyzer = MemoryAnalyzer(memory_sys=MagicMock(embed_provider=None))
+    result = analyzer.process_memory_pipeline(
+        [{"role": "user", "content": "我在研究鋼琴練習技巧"}],
+        last_block=None,
+        router=router,
+        embed_model="bge",
+    )
+
+    assert "error" not in result
+    assert result["healed_entities"] == []
+
+
 def test_extract_user_facts_dialogue_text_skips_followup(monkeypatch):
     """extract_user_facts 看到的 dialogue_text 不應包含【群組接力指令】訊息。"""
     from core.memory_analyzer import MemoryAnalyzer
@@ -141,6 +171,52 @@ def test_extract_user_facts_requires_user_evidence_and_long_term_flag():
         {"role": "user", "content": "我超愛吃壽司"},
         {"role": "assistant", "content": "可可今天很乖"},
         {"role": "user", "content": "白蓮大人怎麼知道我是用電動牙刷"},
+    ]
+
+    analyzer = MemoryAnalyzer(memory_sys=MagicMock(embed_provider=None))
+    facts = analyzer.extract_user_facts(msgs, current_profile=None, router=router)
+
+    assert [f["fact_key"] for f in facts] == ["favorite_food"]
+
+
+def test_extract_user_facts_accepts_evidence_spanning_multiple_user_lines():
+    """模型把多則 user 原文合併成 evidence_quote 時仍應通過來源檢查。"""
+    from core.memory_analyzer import MemoryAnalyzer
+
+    def _record(task, messages, *args, **kwargs):
+        return {
+            "facts": [
+                {
+                    "action": "INSERT",
+                    "fact_key": "favorite_food",
+                    "fact_value": "壽司",
+                    "category": "explicit_preference",
+                    "justification": "使用者明確宣告偏好",
+                    "evidence_quote": (
+                        "我超愛吃壽司，壽司是我最愛的食物。"
+                        "鮭魚壽司是我的最愛，每週至少吃一次"
+                    ),
+                    "is_long_term_profile": True,
+                },
+                {
+                    "action": "INSERT",
+                    "fact_key": "assistant_claim",
+                    "fact_value": "經典口味",
+                    "category": "explicit_preference",
+                    "justification": "混入 assistant 內容",
+                    "evidence_quote": "我超愛吃壽司。鮭魚壽司確實是經典口味",
+                    "is_long_term_profile": True,
+                },
+            ]
+        }
+
+    router = MagicMock()
+    router.generate_json = MagicMock(side_effect=_record)
+    msgs = [
+        {"role": "user", "content": "我超愛吃壽司，壽司是我最愛的食物"},
+        {"role": "assistant", "content": "壽司真的很美味！你喜歡什麼口味的？"},
+        {"role": "user", "content": "鮭魚壽司是我的最愛，每週至少吃一次"},
+        {"role": "assistant", "content": "鮭魚壽司確實是經典口味"},
     ]
 
     analyzer = MemoryAnalyzer(memory_sys=MagicMock(embed_provider=None))

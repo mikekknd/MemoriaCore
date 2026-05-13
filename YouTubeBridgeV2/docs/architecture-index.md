@@ -315,6 +315,7 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Legacy boundary audit：`tests/youtubebridge_v2/test_legacy_boundary_audit.py` 集中掃描 V2 production source 與 `api/main.py` 的 V2 mount，確認沒有 legacy `YouTubeBridge/` runtime import、直接 SQLite、`requests`/Google YouTube transport 或直接 legacy runtime path dependency。
 - [x] Docs/API reference sync：`tests/youtubebridge_v2/test_docs_api_reference_sync.py` 比對 `YouTubeBridgeV2/server/routes.py` 的 `/v2` routes 與 `docs/api-reference-index.md`、`docs/modules/server-api-surface.md`，避免 endpoint 或 route handler 文件漂移。
 - [x] Final code review：`YouTubeBridgeV2/docs/reviews/final-code-review.md` 記錄 thread-aware review scope、發現事項、修正與驗證；目前無剩餘 Critical/Important finding，PR/merge readiness 留給下一項。
+- [x] PR/merge readiness：`YouTubeBridgeV2/docs/reviews/pr-merge-readiness.md` 記錄完整 V2 suite、完整 repo suite、diff check、branch/worktree 狀態、full-suite blocker 修正與 integration options；尚未 push、merge 或建立 PR，且 branch 相對 `origin/main` 仍含既有 legacy `YouTubeBridge/` 差異需整合決策。
 
 ## Module Design 文件
 
