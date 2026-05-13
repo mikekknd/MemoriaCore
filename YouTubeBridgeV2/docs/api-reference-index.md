@@ -546,12 +546,17 @@ Concepts:
 - `PhaseTransitionRepository`
 - `EventRepository`
 - `InteractionRepository`
+- `TTSDeliveryRepository`
 - `FinalizationRepository`
 - `StorageManagerBackedRepository`
 - `read_live_session_snapshot`
 - `append_phase_transition`
 - `append_live_event`
 - `append_interaction`
+- `append_tts_request`
+- `list_tts_deliveries`
+- `ack_delivery`
+- `timeout_delivery`
 - `StorageBackendNotConfigured`
 - `StorageRecordNotFound`
 - `StorageContractError`
@@ -574,6 +579,10 @@ Concepts:
 - `list_v2_live_events(session_id, limit=100)`
 - `append_v2_interaction(session_id, record)`
 - `append_v2_finalization(session_id, record)`
+- `append_v2_tts_request(session_id, record)`
+- `list_v2_tts_deliveries(session_id, limit=100, status=None)`
+- `ack_v2_tts_delivery(session_id, delivery_id, record)`
+- `timeout_v2_tts_delivery(session_id, delivery_id, record)`
 - `get_v2_command_result(command_id)`
 - `save_v2_command_result(command_id, result)`
 
@@ -596,6 +605,9 @@ Implementation status:
 - Wave 4C：`RuntimeStoragePort.list_recoverable_sessions(...)` 委派 durable
   `list_v2_sessions_for_recovery(...)`，供 restart recovery bootstrap 取得
   non-ended session records。
+- Wave 6D：`yb2_tts_deliveries` 保存 provider-neutral delivery queue、
+  ack 與 timeout state；ack/timeout result 一律包含
+  `phase_transition_requested: false`。
 - SQLite access for V2 durable storage is allowed only through
   `core/storage/youtube_bridge_v2.py` and `core/storage_manager.py`.
 
@@ -604,6 +616,7 @@ Source:
 - `YouTubeBridgeV2/storage/repositories.py::PhaseTransitionRepository`
 - `YouTubeBridgeV2/storage/repositories.py::EventRepository`
 - `YouTubeBridgeV2/storage/repositories.py::InteractionRepository`
+- `YouTubeBridgeV2/storage/repositories.py::TTSDeliveryRepository`
 - `YouTubeBridgeV2/storage/repositories.py::FinalizationRepository`
 - `YouTubeBridgeV2/storage/repositories.py::StorageManagerBackedRepository`
 - `YouTubeBridgeV2/storage/repositories.py::read_live_session_snapshot`
@@ -629,6 +642,10 @@ Source:
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.list_v2_live_events`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_interaction`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_finalization`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.append_v2_tts_request`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.list_v2_tts_deliveries`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.ack_v2_tts_delivery`
+- `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.timeout_v2_tts_delivery`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.get_v2_command_result`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.save_v2_command_result`
 - `core/storage_manager.py::StorageManager`
@@ -647,6 +664,7 @@ Concepts:
 - `get_session`
 - `get_phase`
 - `get_session_events`
+- `get_tts_queue`
 - `iter_operator_events`
 - `iter_display_events`
 - `normalize_display_event`
@@ -658,6 +676,7 @@ Stability:
 Source:
 - `YouTubeBridgeV2/query_service.py::V2QueryService`
 - `YouTubeBridgeV2/query_service.py::V2QueryServiceError`
+- `YouTubeBridgeV2/query_service.py::V2QueryService.get_tts_queue`
 - `YouTubeBridgeV2/display/events.py::normalize_display_event`
 - `YouTubeBridgeV2/display/events.py::sanitize_display_value`
 
@@ -679,6 +698,9 @@ Concepts:
 - `GET /v2/sessions/{session_id}/events`
 - `GET /v2/sessions/{session_id}/operator-stream`
 - `GET /v2/sessions/{session_id}/display-stream`
+- `GET /v2/sessions/{session_id}/tts-queue`
+- `POST /v2/sessions/{session_id}/tts-deliveries/{delivery_id}/ack`
+- `POST /v2/sessions/{session_id}/tts-deliveries/{delivery_id}/timeout`
 - `GET /v2/api-keys`
 - `POST /v2/api-keys`
 - `DELETE /v2/api-keys/{key_fingerprint}`
@@ -701,6 +723,9 @@ Concepts:
 - `get_session_events_endpoint`
 - `operator_stream_endpoint`
 - `display_stream_endpoint`
+- `get_tts_queue_endpoint`
+- `ack_tts_delivery_endpoint`
+- `timeout_tts_delivery_endpoint`
 - `session_not_found` error response
 
 Stability:
@@ -723,6 +748,9 @@ Source:
 - `YouTubeBridgeV2/server/routes.py::get_session_events_endpoint`
 - `YouTubeBridgeV2/server/routes.py::operator_stream_endpoint`
 - `YouTubeBridgeV2/server/routes.py::display_stream_endpoint`
+- `YouTubeBridgeV2/server/routes.py::get_tts_queue_endpoint`
+- `YouTubeBridgeV2/server/routes.py::ack_tts_delivery_endpoint`
+- `YouTubeBridgeV2/server/routes.py::timeout_tts_delivery_endpoint`
 - `YouTubeBridgeV2/server/routes.py::ApiKeyCreateRequest`
 - `YouTubeBridgeV2/server/routes.py::list_api_keys_endpoint`
 - `YouTubeBridgeV2/server/routes.py::create_api_key_endpoint`
@@ -1017,5 +1045,14 @@ Wave 6C integration behavior:
 - 當 `event.should_present` 為 true，runner 會 append live event，包含
   `event_type: "presentation_character_response"` 與
   `public_metadata.display_event.event_type: "character_response"`。
-- Presentation live event 只是 display-safe projection；它不 enqueue TTS、不
-  acknowledge delivery、不處理 timeout delivery，也不改 runtime phase。
+- Presentation live event 是 display-safe projection；它本身不改 runtime phase。
+
+Wave 6D integration behavior:
+
+- 當 session metadata 內 `tts_policy.enabled == true`，runtime 會在 append
+  presentation live event 後建立 durable pending TTS delivery。
+- `GET /v2/sessions/{session_id}/tts-queue` 回傳 sanitized delivery queue；
+  observer/operator 可讀，display key 不可讀。
+- `POST /v2/sessions/{session_id}/tts-deliveries/{delivery_id}/ack` 與
+  `/timeout` 只更新 delivery state，回傳
+  `phase_transition_requested: false`，不觸發 phase transition。

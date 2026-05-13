@@ -119,14 +119,54 @@ class FakeQueryService:
             ]
         )
 
+    def get_tts_queue(self, session_id, limit=100, status=None):
+        self.calls.append(("get_tts_queue", session_id, limit, status))
+        return [
+            {
+                "delivery_id": "tts-event-1",
+                "status": "pending",
+                "text": "Line",
+                "metadata": {"safe": "visible", "raw_payload": {"token": "must not leak"}},
+            }
+        ]
 
-def _app(runtime_service=None, query_service=None):
+
+class FakeTTSStorage:
+    def __init__(self):
+        self.acks = []
+        self.timeouts = []
+
+    def ack_v2_tts_delivery(self, session_id, delivery_id, record):
+        self.acks.append((session_id, delivery_id, dict(record)))
+        return {
+            "delivery_id": delivery_id,
+            "session_id": session_id,
+            "status": "delivered",
+            "duplicate": False,
+            "phase_transition_requested": False,
+        }
+
+    def timeout_v2_tts_delivery(self, session_id, delivery_id, record):
+        self.timeouts.append((session_id, delivery_id, dict(record)))
+        return {
+            "delivery_id": delivery_id,
+            "session_id": session_id,
+            "status": "timeout",
+            "timeout_seconds": record["timeout_seconds"],
+            "phase_transition_requested": False,
+            "metadata": record.get("metadata", {}),
+        }
+
+
+def _app(runtime_service=None, query_service=None, storage_manager=None):
     app = FastAPI()
     app.include_router(routes.router)
     if runtime_service is not None:
         app.dependency_overrides[routes.get_runtime_service] = lambda: runtime_service
     if query_service is not None:
         app.dependency_overrides[routes.get_query_service] = lambda: query_service
+    if storage_manager is not None:
+        app.dependency_overrides[routes.get_storage_manager] = lambda: storage_manager
     app.dependency_overrides[routes.get_now] = lambda: NOW
     return app
 
@@ -456,6 +496,65 @@ def test_get_session_events_uses_query_service_without_direct_storage_access():
     client.get("/v2/sessions/session-1/events")
 
     assert query.calls == [("get_session_events", "session-1", 100)]
+
+
+def test_get_tts_queue_delegates_to_query_service():
+    query = FakeQueryService()
+    client = TestClient(_app(query_service=query))
+
+    response = client.get("/v2/sessions/session-1/tts-queue?limit=10&status=pending")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": "session-1",
+        "tts_queue": [
+            {
+                "delivery_id": "tts-event-1",
+                "status": "pending",
+                "text": "Line",
+                "metadata": {"safe": "visible"},
+            }
+        ],
+    }
+    assert query.calls[-1] == ("get_tts_queue", "session-1", 10, "pending")
+    _assert_no_private_payload(response.json())
+
+
+def test_ack_tts_delivery_delegates_to_storage_manager():
+    storage = FakeTTSStorage()
+    client = TestClient(_app(storage_manager=storage))
+
+    response = client.post(
+        "/v2/sessions/session-1/tts-deliveries/tts-event-1/ack",
+        json={"command_id": "ack-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "delivered"
+    assert response.json()["phase_transition_requested"] is False
+    assert storage.acks[0][0:2] == ("session-1", "tts-event-1")
+    assert storage.acks[0][2]["acknowledged_at"] == NOW
+
+
+def test_timeout_tts_delivery_delegates_to_storage_manager_without_phase_change():
+    storage = FakeTTSStorage()
+    client = TestClient(_app(storage_manager=storage))
+
+    response = client.post(
+        "/v2/sessions/session-1/tts-deliveries/tts-event-1/timeout",
+        json={
+            "command_id": "timeout-1",
+            "timeout_seconds": 30,
+            "metadata": {"safe": "visible", "raw_payload": {"token": "must not leak"}},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "timeout"
+    assert response.json()["timeout_seconds"] == 30
+    assert response.json()["phase_transition_requested"] is False
+    assert storage.timeouts[0][2]["metadata"] == {"safe": "visible"}
+    _assert_no_private_payload(response.json())
 
 
 def test_operator_stream_emits_operator_events():

@@ -93,6 +93,7 @@ def test_v2_storage_manager_initializes_schema(tmp_path):
         "yb2_interactions",
         "yb2_finalizations",
         "yb2_command_results",
+        "yb2_tts_deliveries",
     }
 
 
@@ -376,6 +377,139 @@ def test_append_v2_finalization_rejects_unknown_session_id(tmp_path):
                 "error_summary": {},
             },
         )
+
+
+def test_append_and_list_v2_tts_deliveries_are_ordered_and_redacted(tmp_path):
+    storage = _storage(tmp_path)
+    storage.create_v2_session(_session_record())
+
+    first = storage.append_v2_tts_request(
+        "session-1",
+        {
+            "delivery_id": "tts-event-1",
+            "event_id": "event-1",
+            "character_id": "host",
+            "text": "First line",
+            "voice_id": "voice-host",
+            "provider": "local",
+            "queue_position": 1,
+            "status": "pending",
+            "metadata": {
+                "interaction_id": "interaction-1",
+                "raw_payload": {"token": "must not leak"},
+            },
+            "created_at": NOW,
+        },
+    )
+    second = storage.append_v2_tts_request(
+        "session-1",
+        {
+            "delivery_id": "tts-event-2",
+            "event_id": "event-2",
+            "character_id": "cohost",
+            "text": "Second line",
+            "voice_id": "voice-cohost",
+            "provider": "local",
+            "queue_position": 2,
+            "status": "pending",
+            "metadata": {"interaction_id": "interaction-2"},
+            "created_at": NOW,
+        },
+    )
+
+    deliveries = storage.list_v2_tts_deliveries("session-1", limit=10)
+
+    assert first["delivery_id"] == "tts-event-1"
+    assert second["delivery_id"] == "tts-event-2"
+    assert [item["delivery_id"] for item in deliveries] == ["tts-event-1", "tts-event-2"]
+    assert [item["queue_position"] for item in deliveries] == [1, 2]
+    assert all(item["status"] == "pending" for item in deliveries)
+    assert deliveries[0]["metadata"] == {"interaction_id": "interaction-1"}
+    _assert_no_private_payload(deliveries)
+
+
+def test_v2_tts_delivery_ack_and_timeout_are_idempotent(tmp_path):
+    storage = _storage(tmp_path)
+    storage.create_v2_session(_session_record())
+    storage.append_v2_tts_request(
+        "session-1",
+        {
+            "delivery_id": "tts-event-1",
+            "event_id": "event-1",
+            "character_id": "host",
+            "text": "Line",
+            "voice_id": "voice-host",
+            "provider": "local",
+            "queue_position": 1,
+            "status": "pending",
+            "metadata": {},
+            "created_at": NOW,
+        },
+    )
+
+    ack = storage.ack_v2_tts_delivery(
+        "session-1",
+        "tts-event-1",
+        {"acknowledged_at": NOW},
+    )
+    duplicate_ack = storage.ack_v2_tts_delivery(
+        "session-1",
+        "tts-event-1",
+        {"acknowledged_at": NOW},
+    )
+    ignored_timeout = storage.timeout_v2_tts_delivery(
+        "session-1",
+        "tts-event-1",
+        {"timeout_seconds": 30, "metadata": {"safe": "visible"}},
+    )
+
+    assert ack["status"] == "delivered"
+    assert ack["duplicate"] is False
+    assert duplicate_ack["status"] == "delivered"
+    assert duplicate_ack["duplicate"] is True
+    assert ignored_timeout["status"] == "delivered"
+    assert ignored_timeout["timeout_ignored"] is True
+    assert ignored_timeout["phase_transition_requested"] is False
+    assert storage.list_v2_tts_deliveries("session-1")[0]["status"] == "delivered"
+    _assert_no_private_payload((ack, duplicate_ack, ignored_timeout))
+
+
+def test_v2_tts_delivery_timeout_marks_pending_without_phase_change(tmp_path):
+    storage = _storage(tmp_path)
+    storage.create_v2_session(_session_record())
+    storage.append_v2_tts_request(
+        "session-1",
+        {
+            "delivery_id": "tts-event-timeout",
+            "event_id": "event-timeout",
+            "character_id": "host",
+            "text": "Line",
+            "voice_id": "voice-host",
+            "provider": "local",
+            "queue_position": 1,
+            "status": "pending",
+            "metadata": {},
+            "created_at": NOW,
+        },
+    )
+
+    result = storage.timeout_v2_tts_delivery(
+        "session-1",
+        "tts-event-timeout",
+        {
+            "timeout_seconds": 15,
+            "metadata": {
+                "safe": "visible",
+                "raw_memoriacore_payload": {"token": "must not leak"},
+            },
+        },
+    )
+
+    assert result["status"] == "timeout"
+    assert result["timeout_seconds"] == 15
+    assert result["phase_transition_requested"] is False
+    assert storage.list_v2_tts_deliveries("session-1")[0]["status"] == "timeout"
+    _assert_no_private_payload(result)
 
 
 def test_v2_command_result_round_trips_through_storage_manager(tmp_path):

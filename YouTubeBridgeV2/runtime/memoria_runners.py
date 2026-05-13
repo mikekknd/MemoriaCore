@@ -27,7 +27,7 @@ from YouTubeBridgeV2.live_episode_plan.runner import (
     next_planned_turn,
     record_planned_turn_result,
 )
-from YouTubeBridgeV2.presentation.tts import build_presentation_event
+from YouTubeBridgeV2.presentation.tts import build_presentation_event, enqueue_tts_request
 from YouTubeBridgeV2.runtime.aftertalk import build_aftertalk_turn_request
 from YouTubeBridgeV2.runtime.application_service import (
     AdapterDispatchResult,
@@ -450,6 +450,48 @@ def _append_presentation_display_event(
             }
         ),
     )
+    _enqueue_tts_delivery_if_enabled(
+        storage_manager,
+        session_id=session_id,
+        event=event,
+        now=now,
+    )
+
+
+def _enqueue_tts_delivery_if_enabled(
+    storage_manager: object,
+    *,
+    session_id: str,
+    event: object,
+    now: datetime,
+) -> None:
+    if not hasattr(storage_manager, "append_v2_tts_request"):
+        return
+    policy = _tts_policy(storage_manager, session_id)
+    if not policy.get("enabled", False):
+        return
+    pending_count = 0
+    if hasattr(storage_manager, "list_v2_tts_deliveries"):
+        pending_count = len(storage_manager.list_v2_tts_deliveries(session_id, 500, "pending"))
+    queue_seed: list[object] = [object()] * pending_count
+    request = enqueue_tts_request(event, policy, queue=queue_seed)
+    if request is None:
+        return
+    record = asdict(request)
+    record["created_at"] = now
+    storage_manager.append_v2_tts_request(
+        session_id,
+        _redact_public_value(record),
+    )
+
+
+def _tts_policy(storage_manager: object, session_id: str) -> dict[str, object]:
+    if not hasattr(storage_manager, "get_v2_session"):
+        return {"enabled": False}
+    session = _object_to_dict(storage_manager.get_v2_session(session_id) or {})
+    metadata = _object_to_dict(session.get("metadata", {}))
+    policy = _object_to_dict(metadata.get("tts_policy") or session.get("tts_policy") or {})
+    return _redact_public_value(policy)
 
 
 def _default_role_label(phase: LiveSessionPhase) -> str:

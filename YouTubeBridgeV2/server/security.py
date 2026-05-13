@@ -238,6 +238,7 @@ def _allowed_actions(group: PermissionGroup) -> tuple[str, ...]:
             "read_events",
             "read_operator_stream",
             "read_display_stream",
+            "read_tts_queue",
             "update_aftertalk_policy",
             "manual_close",
             "tick_session",
@@ -245,11 +246,13 @@ def _allowed_actions(group: PermissionGroup) -> tuple[str, ...]:
             "bind_plan",
             "create_session",
             "manage_api_keys",
+            "ack_tts_delivery",
+            "timeout_tts_delivery",
         )
     if group is PermissionGroup.DISPLAY:
         return ("read_display_stream", "read_display_assets")
     if group is PermissionGroup.OBSERVER:
-        return ("read_status", "read_events", "read_operator_stream")
+        return ("read_status", "read_events", "read_operator_stream", "read_tts_queue")
     return ("internal_service_call", "delegate_memoria_auth")
 
 
@@ -276,6 +279,9 @@ _ROUTE_ACTIONS = {
     "session_status": "read_status",
     "tick": "tick_session",
     "tick_session": "tick_session",
+    "tts_delivery_ack": "ack_tts_delivery",
+    "tts_delivery_timeout": "timeout_tts_delivery",
+    "tts_queue": "read_tts_queue",
     "update_aftertalk_policy": "update_aftertalk_policy",
     "youtube_event_ingest": "ingest_youtube_event",
     "youtube_events": "ingest_youtube_event",

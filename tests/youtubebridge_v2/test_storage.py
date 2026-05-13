@@ -24,6 +24,7 @@ from YouTubeBridgeV2.storage.repositories import (
     StorageManagerBackedRepository,
     StorageContractError,
     StorageRecordNotFound,
+    TTSDeliveryRepository,
     append_interaction,
     append_live_event,
     append_phase_transition,
@@ -42,6 +43,7 @@ class FakeStorageManager:
         self.events = []
         self.interactions = []
         self.finalizations = []
+        self.tts_deliveries = []
 
     def create_v2_session(self, record):
         self.sessions[record["session_id"]] = dict(record)
@@ -83,6 +85,50 @@ class FakeStorageManager:
             "ended_at": record["completed_at"],
         }
         return self.finalizations[-1]
+
+    def append_v2_tts_request(self, session_id, record):
+        stored = dict(record)
+        stored["session_id"] = session_id
+        self.tts_deliveries.append(stored)
+        return self.tts_deliveries[-1]
+
+    def list_v2_tts_deliveries(self, session_id, limit=100, status=None):
+        deliveries = [
+            item
+            for item in self.tts_deliveries
+            if item.get("session_id") == session_id
+            and (status is None or item.get("status") == status)
+        ]
+        return deliveries[-limit:]
+
+    def ack_v2_tts_delivery(self, session_id, delivery_id, record):
+        for item in self.tts_deliveries:
+            if item.get("session_id") == session_id and item.get("delivery_id") == delivery_id:
+                duplicate = item.get("status") == "delivered"
+                item["status"] = "delivered"
+                item["acknowledged_at"] = record.get("acknowledged_at")
+                return {
+                    **item,
+                    "duplicate": duplicate,
+                    "phase_transition_requested": False,
+                }
+        raise KeyError(delivery_id)
+
+    def timeout_v2_tts_delivery(self, session_id, delivery_id, record):
+        for item in self.tts_deliveries:
+            if item.get("session_id") == session_id and item.get("delivery_id") == delivery_id:
+                timeout_seconds = int(record.get("timeout_seconds", 0) or 0)
+                if item.get("status") == "delivered":
+                    return {
+                        **item,
+                        "timeout_seconds": timeout_seconds,
+                        "timeout_ignored": True,
+                        "phase_transition_requested": False,
+                    }
+                item["status"] = "timeout"
+                item["timeout_seconds"] = timeout_seconds
+                return {**item, "phase_transition_requested": False}
+        raise KeyError(delivery_id)
 
 
 def _session_record(**overrides):
@@ -354,6 +400,40 @@ def test_finalization_record_moves_session_to_ended_metadata():
         "closing_completion_status": "complete",
         "ended_at": NOW,
     }
+
+
+def test_tts_delivery_repository_delegates_to_storage_manager():
+    storage = FakeStorageManager()
+    storage.create_v2_session(_session_record())
+    repo = TTSDeliveryRepository(storage)
+
+    queued = repo.append_tts_request(
+        "session-1",
+        {
+            "delivery_id": "tts-event-1",
+            "event_id": "event-1",
+            "character_id": "host",
+            "text": "Line",
+            "voice_id": "voice-host",
+            "provider": "local",
+            "queue_position": 1,
+            "status": "pending",
+            "metadata": {"raw_payload": {"token": "secret"}, "safe": "visible"},
+            "created_at": NOW,
+        },
+    )
+    ack = repo.ack_delivery("session-1", "tts-event-1", {"acknowledged_at": NOW})
+    timeout = repo.timeout_delivery(
+        "session-1",
+        "tts-event-1",
+        {"timeout_seconds": 20, "metadata": {"safe": "ignored"}},
+    )
+
+    assert queued["delivery_id"] == "tts-event-1"
+    assert queued["metadata"] == {"safe": "visible"}
+    assert ack["status"] == "delivered"
+    assert timeout["timeout_ignored"] is True
+    _assert_no_private_payload((queued, ack, timeout))
 
 
 def test_public_metadata_redacts_raw_prompt_and_adapter_payload():

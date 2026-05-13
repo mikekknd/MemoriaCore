@@ -42,6 +42,7 @@ class StorageManagerBackedRepository:
         self.events = EventRepository(self.storage_manager)
         self.interactions = InteractionRepository(self.storage_manager)
         self.finalizations = FinalizationRepository(self.storage_manager)
+        self.tts_deliveries = TTSDeliveryRepository(self.storage_manager)
 
 
 class SessionRepository:
@@ -146,6 +147,60 @@ class FinalizationRepository:
             raise StorageContractError("StorageManager missing append_v2_finalization")
         stored = self.storage_manager.append_v2_finalization(session_id, record)
         return _redact_public_value(stored)
+
+
+class TTSDeliveryRepository:
+    """V2 presentation/TTS delivery repository."""
+
+    def __init__(self, storage_manager: object | None = None) -> None:
+        self.storage_manager = _require_storage_manager(storage_manager)
+
+    def append_tts_request(
+        self,
+        session_id: str,
+        request: dict[str, object],
+    ) -> dict[str, object]:
+        record = _tts_request_record(session_id, request)
+        if not hasattr(self.storage_manager, "append_v2_tts_request"):
+            raise StorageContractError("StorageManager missing append_v2_tts_request")
+        stored = self.storage_manager.append_v2_tts_request(session_id, record)
+        return _redact_public_value(stored)
+
+    def list_tts_deliveries(
+        self,
+        session_id: str,
+        limit: int = 100,
+        status: str | None = None,
+    ) -> list[dict[str, object]]:
+        if not hasattr(self.storage_manager, "list_v2_tts_deliveries"):
+            raise StorageContractError("StorageManager missing list_v2_tts_deliveries")
+        return _redact_public_value(
+            self.storage_manager.list_v2_tts_deliveries(session_id, limit, status)
+        )
+
+    def ack_delivery(
+        self,
+        session_id: str,
+        delivery_id: str,
+        ack: dict[str, object],
+    ) -> dict[str, object]:
+        if not hasattr(self.storage_manager, "ack_v2_tts_delivery"):
+            raise StorageContractError("StorageManager missing ack_v2_tts_delivery")
+        return _redact_public_value(
+            self.storage_manager.ack_v2_tts_delivery(session_id, delivery_id, ack)
+        )
+
+    def timeout_delivery(
+        self,
+        session_id: str,
+        delivery_id: str,
+        timeout: dict[str, object],
+    ) -> dict[str, object]:
+        if not hasattr(self.storage_manager, "timeout_v2_tts_delivery"):
+            raise StorageContractError("StorageManager missing timeout_v2_tts_delivery")
+        return _redact_public_value(
+            self.storage_manager.timeout_v2_tts_delivery(session_id, delivery_id, timeout)
+        )
 
 
 def read_live_session_snapshot(session_id: str) -> LiveSessionSnapshot:
@@ -298,6 +353,25 @@ def _finalization_record(session_id: str, finalization: object) -> dict[str, obj
     )
 
 
+def _tts_request_record(session_id: str, request: dict[str, object]) -> dict[str, object]:
+    data = _object_to_dict(request)
+    return _redact_public_value(
+        {
+            "session_id": session_id,
+            "delivery_id": str(data.get("delivery_id", "")),
+            "event_id": str(data.get("event_id", "")),
+            "character_id": str(data.get("character_id", "")),
+            "text": str(data.get("text", "")),
+            "voice_id": str(data.get("voice_id", "")),
+            "provider": str(data.get("provider", "")),
+            "queue_position": int(data.get("queue_position", 0) or 0),
+            "status": str(data.get("status", "pending")),
+            "metadata": data.get("metadata", {}),
+            "created_at": data.get("created_at"),
+        }
+    )
+
+
 def _duration_policy(raw_policy: object) -> DurationPolicy:
     data = _object_to_dict(raw_policy)
     return DurationPolicy(
@@ -416,6 +490,7 @@ __all__ = [
     "StorageContractError",
     "StorageManagerBackedRepository",
     "StorageRecordNotFound",
+    "TTSDeliveryRepository",
     "append_interaction",
     "append_live_event",
     "append_phase_transition",

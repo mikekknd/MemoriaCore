@@ -58,6 +58,22 @@ class V2QueryService:
         self._session_record(session_id)
         return [_event_body(event) for event in self._events(session_id, limit)]
 
+    def get_tts_queue(
+        self,
+        session_id: str,
+        limit: int = 100,
+        status: str | None = None,
+    ) -> list[dict[str, object]]:
+        """回傳 presentation/TTS delivery queue 的 public projection。"""
+
+        self._session_record(session_id)
+        safe_limit = max(1, min(int(limit), 500))
+        if not hasattr(self._storage_manager, "list_v2_tts_deliveries"):
+            return []
+        return _sanitize_public_payload(
+            self._storage_manager.list_v2_tts_deliveries(session_id, safe_limit, status)
+        )
+
     def iter_operator_events(self, session_id: str) -> Iterable[dict[str, object]]:
         """產生 operator-safe SSE event。"""
 

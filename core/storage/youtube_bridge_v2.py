@@ -127,6 +127,31 @@ class YouTubeBridgeV2RepositoryMixin:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS yb2_tts_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                character_id TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL DEFAULT '',
+                voice_id TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                queue_position INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                acknowledged_at TEXT DEFAULT NULL,
+                timeout_seconds INTEGER DEFAULT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES yb2_sessions(session_id)
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_yb2_tts_deliveries_session "
+            "ON yb2_tts_deliveries(session_id, queue_position, created_at)"
+        )
         conn.commit()
         return conn
 
@@ -501,6 +526,188 @@ class YouTubeBridgeV2RepositoryMixin:
             row = cursor.fetchone()
         return _finalization_from_row(row)
 
+    def append_v2_tts_request(
+        self,
+        session_id: str,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        safe_record = _sanitize_public_value(record)
+        delivery_id = str(safe_record["delivery_id"])
+        created_at = _datetime_text(safe_record.get("created_at"))
+        with closing(self._init_youtube_bridge_v2_db()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO yb2_tts_deliveries (
+                    delivery_id, session_id, event_id, character_id, text, voice_id,
+                    provider, queue_position, status, metadata_json, acknowledged_at,
+                    timeout_seconds, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    delivery_id,
+                    session_id,
+                    str(safe_record.get("event_id", "")),
+                    str(safe_record.get("character_id", "")),
+                    str(safe_record.get("text", "")),
+                    str(safe_record.get("voice_id", "")),
+                    str(safe_record.get("provider", "")),
+                    int(safe_record.get("queue_position", 0) or 0),
+                    str(safe_record.get("status", "pending")),
+                    _json_text(safe_record.get("metadata", {})),
+                    _optional_datetime_text(safe_record.get("acknowledged_at")),
+                    _optional_int(safe_record.get("timeout_seconds")),
+                    created_at,
+                    _datetime_text(safe_record.get("updated_at") or created_at),
+                ),
+            )
+            conn.commit()
+        stored = self.get_v2_tts_delivery(session_id, delivery_id)
+        if stored is None:
+            raise KeyError(delivery_id)
+        return stored
+
+    def get_v2_tts_delivery(
+        self,
+        session_id: str,
+        delivery_id: str,
+    ) -> dict[str, object] | None:
+        with closing(self._init_youtube_bridge_v2_db()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT delivery_id, session_id, event_id, character_id, text, voice_id,
+                       provider, queue_position, status, metadata_json, acknowledged_at,
+                       timeout_seconds, created_at, updated_at
+                FROM yb2_tts_deliveries
+                WHERE session_id = ? AND delivery_id = ?
+                """,
+                (session_id, delivery_id),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return _tts_delivery_from_row(row)
+
+    def list_v2_tts_deliveries(
+        self,
+        session_id: str,
+        limit: int = 100,
+        status: str | None = None,
+    ) -> list[dict[str, object]]:
+        safe_limit = max(1, min(int(limit), 500))
+        params: list[object] = [session_id]
+        status_clause = ""
+        if status:
+            status_clause = "AND status = ?"
+            params.append(str(status))
+        params.append(safe_limit)
+        with closing(self._init_youtube_bridge_v2_db()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT delivery_id, session_id, event_id, character_id, text, voice_id,
+                       provider, queue_position, status, metadata_json, acknowledged_at,
+                       timeout_seconds, created_at, updated_at
+                FROM yb2_tts_deliveries
+                WHERE session_id = ? {status_clause}
+                ORDER BY queue_position ASC, created_at ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            )
+            rows = cursor.fetchall()
+        return [_tts_delivery_from_row(row) for row in rows]
+
+    def ack_v2_tts_delivery(
+        self,
+        session_id: str,
+        delivery_id: str,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        current = self.get_v2_tts_delivery(session_id, delivery_id)
+        if current is None:
+            raise KeyError(delivery_id)
+        duplicate = current["status"] == "delivered"
+        acknowledged_at = _datetime_text(record.get("acknowledged_at"))
+        with closing(self._init_youtube_bridge_v2_db()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE yb2_tts_deliveries
+                SET status = 'delivered', acknowledged_at = ?, updated_at = ?
+                WHERE session_id = ? AND delivery_id = ?
+                """,
+                (acknowledged_at, _now_iso(), session_id, delivery_id),
+            )
+            conn.commit()
+        stored = self.get_v2_tts_delivery(session_id, delivery_id)
+        if stored is None:
+            raise KeyError(delivery_id)
+        return {
+            **stored,
+            "duplicate": duplicate,
+            "phase_transition_requested": False,
+            "public_summary": {"delivery_id": delivery_id, "status": "delivered"},
+        }
+
+    def timeout_v2_tts_delivery(
+        self,
+        session_id: str,
+        delivery_id: str,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        current = self.get_v2_tts_delivery(session_id, delivery_id)
+        if current is None:
+            raise KeyError(delivery_id)
+        timeout_seconds = int(record.get("timeout_seconds", 0) or 0)
+        metadata = _sanitize_public_value(record.get("metadata", {}))
+        if current["status"] == "delivered":
+            return {
+                **current,
+                "timeout_seconds": timeout_seconds,
+                "metadata": metadata,
+                "timeout_ignored": True,
+                "phase_transition_requested": False,
+                "public_summary": {
+                    "delivery_id": delivery_id,
+                    "status": "delivered",
+                    "timeout_seconds": timeout_seconds,
+                    "timeout_ignored": True,
+                    "reason": "already_delivered",
+                },
+            }
+        with closing(self._init_youtube_bridge_v2_db()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE yb2_tts_deliveries
+                SET status = 'timeout', timeout_seconds = ?, metadata_json = ?,
+                    updated_at = ?
+                WHERE session_id = ? AND delivery_id = ?
+                """,
+                (
+                    timeout_seconds,
+                    _json_text({**current.get("metadata", {}), **metadata}),
+                    _now_iso(),
+                    session_id,
+                    delivery_id,
+                ),
+            )
+            conn.commit()
+        stored = self.get_v2_tts_delivery(session_id, delivery_id)
+        if stored is None:
+            raise KeyError(delivery_id)
+        return {
+            **stored,
+            "phase_transition_requested": False,
+            "public_summary": {
+                "delivery_id": delivery_id,
+                "status": "timeout",
+                "timeout_seconds": timeout_seconds,
+            },
+        }
+
     def get_v2_command_result(self, command_id: str) -> dict[str, object] | None:
         with closing(self._init_youtube_bridge_v2_db()) as conn:
             cursor = conn.cursor()
@@ -616,6 +823,25 @@ def _finalization_from_row(row: tuple[object, ...]) -> dict[str, object]:
     }
 
 
+def _tts_delivery_from_row(row: tuple[object, ...]) -> dict[str, object]:
+    return {
+        "delivery_id": row[0],
+        "session_id": row[1],
+        "event_id": row[2],
+        "character_id": row[3],
+        "text": row[4],
+        "voice_id": row[5],
+        "provider": row[6],
+        "queue_position": int(row[7]),
+        "status": row[8],
+        "metadata": _json_value(row[9]),
+        "acknowledged_at": _optional_datetime_value(row[10]),
+        "timeout_seconds": row[11],
+        "created_at": _datetime_value(row[12]),
+        "updated_at": _datetime_value(row[13]),
+    }
+
+
 def _json_text(value: object) -> str:
     return json.dumps(_sanitize_public_value(_json_safe(value)), ensure_ascii=False, sort_keys=True)
 
@@ -668,6 +894,12 @@ def _optional_string(value: object) -> str | None:
     if value is None:
         return None
     return _string_value(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
 
 
 def _bool_int(value: object) -> int:

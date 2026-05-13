@@ -67,6 +67,7 @@ class RuntimeStoragePort:
             "duration_policy": _duration_policy_record(metadata.get("duration_policy")),
             "manual_close_requested": False,
             "closing_completed": False,
+            "metadata": metadata,
             "public_summary": _sanitize_public_payload(
                 {
                     "plan_id": payload.get("plan_id"),

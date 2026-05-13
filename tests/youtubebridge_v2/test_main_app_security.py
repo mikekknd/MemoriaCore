@@ -433,6 +433,10 @@ def test_main_app_v2_observer_key_can_read_status_events_and_operator_stream_onl
         "/v2/sessions/observer-session/events",
         headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
     )
+    tts_queue_response = client.get(
+        "/v2/sessions/observer-session/tts-queue",
+        headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
+    )
     with client.stream(
         "GET",
         "/v2/sessions/observer-session/operator-stream",
@@ -467,17 +471,24 @@ def test_main_app_v2_observer_key_can_read_status_events_and_operator_stream_onl
         headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
         json={"command_id": "cmd-observer-control", "paused": True},
     )
+    tts_ack_response = client.post(
+        "/v2/sessions/observer-session/tts-deliveries/tts-observer/ack",
+        headers={"x-youtubebridgev2-api-key": OBSERVER_KEY},
+        json={"command_id": "cmd-observer-tts-ack"},
+    )
 
     assert session_response.status_code == 200
     assert session_response.json()["session_id"] == "observer-session"
     assert status_response.status_code == 200
     assert events_response.status_code == 200
+    assert tts_queue_response.status_code == 200
     assert operator_status == 200
     _assert_security_error(display_response, status_code=403, code="forbidden")
     _assert_security_error(tick_response, status_code=403, code="forbidden")
     _assert_security_error(write_response, status_code=403, code="forbidden")
     _assert_security_error(ingest_response, status_code=403, code="forbidden")
     _assert_security_error(automation_response, status_code=403, code="forbidden")
+    _assert_security_error(tts_ack_response, status_code=403, code="forbidden")
     assert storage.get_v2_session("observer-write") is None
 
 
@@ -510,6 +521,10 @@ def test_main_app_v2_display_key_can_read_display_stream_only(
         "/v2/sessions/display-session/operator-stream",
         headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
     )
+    tts_queue_response = client.get(
+        "/v2/sessions/display-session/tts-queue",
+        headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
+    )
     manual_close_response = client.post(
         "/v2/sessions/display-session/manual-close",
         headers={"x-youtubebridgev2-api-key": DISPLAY_KEY},
@@ -538,10 +553,54 @@ def test_main_app_v2_display_key_can_read_display_stream_only(
     _assert_security_error(phase_response, status_code=403, code="forbidden")
     _assert_security_error(events_response, status_code=403, code="forbidden")
     _assert_security_error(operator_response, status_code=403, code="forbidden")
+    _assert_security_error(tts_queue_response, status_code=403, code="forbidden")
     _assert_security_error(manual_close_response, status_code=403, code="forbidden")
     _assert_security_error(tick_response, status_code=403, code="forbidden")
     _assert_security_error(ingest_response, status_code=403, code="forbidden")
     _assert_security_error(automation_response, status_code=403, code="forbidden")
+
+
+def test_main_app_v2_operator_key_can_ack_and_timeout_tts_delivery(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage_manager(tmp_path)
+    _save_api_keys(storage)
+    api_main = _install_test_storage(monkeypatch, storage)
+    client = _remote_client(api_main.app)
+    assert _create_remote_session(client, session_id="tts-session").status_code == 200
+    storage.append_v2_tts_request(
+        "tts-session",
+        {
+            "delivery_id": "tts-event-1",
+            "event_id": "event-1",
+            "character_id": "host",
+            "text": "Line",
+            "voice_id": "voice-host",
+            "provider": "local",
+            "queue_position": 1,
+            "status": "pending",
+            "metadata": {},
+        },
+    )
+
+    ack_response = client.post(
+        "/v2/sessions/tts-session/tts-deliveries/tts-event-1/ack",
+        headers={"x-youtubebridgev2-api-key": OPERATOR_KEY},
+        json={"command_id": "cmd-tts-ack"},
+    )
+    timeout_response = client.post(
+        "/v2/sessions/tts-session/tts-deliveries/tts-event-1/timeout",
+        headers={"x-youtubebridgev2-api-key": OPERATOR_KEY},
+        json={"command_id": "cmd-tts-timeout", "timeout_seconds": 30},
+    )
+
+    assert ack_response.status_code == 200
+    assert ack_response.json()["status"] == "delivered"
+    assert ack_response.json()["phase_transition_requested"] is False
+    assert timeout_response.status_code == 200
+    assert timeout_response.json()["timeout_ignored"] is True
+    assert timeout_response.json()["phase_transition_requested"] is False
 
 
 def test_main_app_v2_loopback_without_key_still_has_operator_access(

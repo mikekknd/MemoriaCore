@@ -295,6 +295,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 
 - [x] Presentation metadata integration：Memoria runner completed interaction 會 append display-safe `presentation_character_response` live event。Display stream 會將它正規化為 `character_response`；TTS queue、ack、timeout 與 provider delivery 仍屬 Wave 6D 範圍。
 
+## Integration Wave 6D 狀態
+
+- [x] TTS delivery queue：當 session `tts_policy.enabled` 為 true，Memoria runner 會把 display-safe presentation event 轉成 durable pending delivery；disabled 或缺漏 policy 不 enqueue。
+- [x] Ack/timeout API：新增 `/v2/sessions/{session_id}/tts-queue`、`/v2/sessions/{session_id}/tts-deliveries/{delivery_id}/ack` 與 `/timeout`，ack/timeout 只更新 delivery state，不要求 runtime phase transition。
+- [x] Scope boundary：本階段不實作真實 TTS provider、browser playback callback 或 display + TTS E2E；這些留給後續 Wave 6E / provider integration。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

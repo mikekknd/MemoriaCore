@@ -109,6 +109,11 @@ def _route_requirement(path: str, method: str) -> tuple[PermissionGroup, str]:
             return PermissionGroup.OBSERVER, "get_session"
         if len(parts) == 4:
             return _session_child_requirement(parts[3], http_method)
+        if len(parts) == 6 and parts[3] == "tts-deliveries":
+            if parts[5] == "ack" and http_method == "POST":
+                return PermissionGroup.OPERATOR, "tts_delivery_ack"
+            if parts[5] == "timeout" and http_method == "POST":
+                return PermissionGroup.OPERATOR, "tts_delivery_timeout"
 
     return PermissionGroup.OPERATOR, "unknown_v2_route"
 
@@ -130,6 +135,8 @@ def _session_child_requirement(child: str, method: str) -> tuple[PermissionGroup
         return PermissionGroup.OPERATOR, "youtube_event_ingest"
     if child == "events" and method == "GET":
         return PermissionGroup.OBSERVER, "events"
+    if child == "tts-queue" and method == "GET":
+        return PermissionGroup.OBSERVER, "tts_queue"
     if child == "operator-stream" and method == "GET":
         return PermissionGroup.OBSERVER, "operator_stream"
     if child == "display-stream" and method == "GET":

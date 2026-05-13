@@ -22,10 +22,21 @@ from YouTubeBridgeV2.runtime.automation import (
     dispatch_scheduler_cycle,
     dispatch_scheduler_recovery_cycle,
 )
+from YouTubeBridgeV2.runtime.memoria_runners import MemoriaPlannedShowRunner
 from YouTubeBridgeV2.runtime.phase import LiveSessionPhase
 
 
 STARTED_AT = datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
+
+
+class FakeMemoriaTransport:
+    def __init__(self, *responses: dict[str, object]) -> None:
+        self.responses = list(responses)
+        self.requests = []
+
+    def send(self, request):
+        self.requests.append(request)
+        return self.responses.pop(0)
 
 
 def _assert_no_private_payload(value: object) -> None:
@@ -110,6 +121,108 @@ def _bind_plan(client: TestClient, session_id: str) -> None:
         },
     )
     assert response.status_code == 200
+
+
+def test_real_storage_tts_queue_ack_and_timeout_flow(tmp_path):
+    storage = _storage_manager(tmp_path)
+    transport = FakeMemoriaTransport(
+        {
+            "session_id": "memoria-tts",
+            "message_id": "planned-tts",
+            "character_id": "host",
+            "character_name": "Luna",
+            "role_label": "Host",
+            "voice_id": "voice-luna",
+            "reply": "TTS line",
+            "presentation": {"voice_state": "speaking"},
+        }
+    )
+    composition = create_v2_composition(
+        storage_manager=storage,
+        planned_show_runner=MemoriaPlannedShowRunner(storage, transport),
+    )
+    client = TestClient(create_v2_app(composition, now_provider=lambda: STARTED_AT))
+
+    create_response = client.post(
+        "/v2/sessions",
+        json={
+            "command_id": "session-tts-create",
+            "session_id": "session-tts",
+            "aftertalk_policy": "auto",
+            "metadata": {
+                "duration_policy": {
+                    "planned_duration_seconds": 3600,
+                    "auto_finalize_on_duration": True,
+                    "aftertalk_requires_remaining_time": True,
+                },
+                "tts_policy": {
+                    "enabled": True,
+                    "provider": "local",
+                    "default_voice_id": "fallback-voice",
+                },
+            },
+        },
+    )
+    bind_response = client.post(
+        "/v2/sessions/session-tts/plan",
+        json={
+            "command_id": "session-tts-bind",
+            "plan": {
+                "plan_id": "plan-tts",
+                "title": "TTS plan",
+                "turns": [
+                    {
+                        "id": "opening",
+                        "purpose": "Open with TTS.",
+                        "topic_cue": "TTS queue.",
+                        "speaker_policy": {"type": "fixed", "speaker_ids": ["host"]},
+                        "audience_insertion": {"enabled": False, "allow_super_chats": False},
+                    }
+                ],
+            },
+        },
+    )
+    tick_response = client.post(
+        "/v2/sessions/session-tts/tick",
+        json={"command_id": "session-tts-tick"},
+    )
+    queue_response = client.get("/v2/sessions/session-tts/tts-queue")
+
+    assert create_response.status_code == 200
+    assert bind_response.status_code == 200
+    assert tick_response.status_code == 200
+    assert queue_response.status_code == 200
+    queued = queue_response.json()["tts_queue"]
+    assert len(queued) == 1
+    assert queued[0]["text"] == "TTS line"
+    assert queued[0]["status"] == "pending"
+    delivery_id = queued[0]["delivery_id"]
+
+    ack_response = client.post(
+        f"/v2/sessions/session-tts/tts-deliveries/{delivery_id}/ack",
+        json={"command_id": "ack-tts"},
+    )
+    timeout_response = client.post(
+        f"/v2/sessions/session-tts/tts-deliveries/{delivery_id}/timeout",
+        json={"command_id": "timeout-tts", "timeout_seconds": 30},
+    )
+    delivered_queue = client.get("/v2/sessions/session-tts/tts-queue?status=delivered")
+
+    assert ack_response.status_code == 200
+    assert ack_response.json()["status"] == "delivered"
+    assert ack_response.json()["phase_transition_requested"] is False
+    assert timeout_response.status_code == 200
+    assert timeout_response.json()["timeout_ignored"] is True
+    assert timeout_response.json()["phase_transition_requested"] is False
+    assert delivered_queue.json()["tts_queue"][0]["delivery_id"] == delivery_id
+    _assert_no_private_payload(
+        (
+            queue_response.json(),
+            ack_response.json(),
+            timeout_response.json(),
+            delivered_queue.json(),
+        )
+    )
 
 
 def test_real_storage_vertical_slice_reaches_ended_and_persists_events(tmp_path):

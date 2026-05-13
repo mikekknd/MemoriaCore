@@ -313,6 +313,56 @@ def test_planned_show_runner_appends_presentation_display_event():
     _assert_no_private_payload(storage.live_events)
 
 
+def test_planned_show_runner_enqueues_tts_when_policy_enabled():
+    storage = InMemoryV2StorageManager()
+    port = _create_bound_session(storage)
+    storage.update_v2_session(
+        "session-runner",
+        {
+            "metadata": {
+                **storage.get_v2_session("session-runner").get("metadata", {}),
+                "tts_policy": {
+                    "enabled": True,
+                    "provider": "local",
+                    "default_voice_id": "fallback-voice",
+                },
+            }
+        },
+    )
+    transport = FakeMemoriaTransport(
+        {
+            "session_id": "memoria-1",
+            "message_id": "msg-tts",
+            "character_id": "host",
+            "character_name": "Luna",
+            "role_label": "Host",
+            "voice_id": "voice-luna",
+            "reply": "Speak this line",
+            "presentation": {"voice_state": "speaking"},
+        }
+    )
+    runner = MemoriaPlannedShowRunner(storage, transport)
+
+    result = runner.run(
+        command=_command("cmd-planned-tts"),
+        snapshot=port.read_snapshot("session-runner"),
+        transition=_transition(LiveSessionPhase.PLANNED_SHOW, action="run_planned_show"),
+        now=NOW,
+    )
+
+    assert result.status == "ok"
+    assert len(storage.tts_deliveries) == 1
+    delivery = storage.tts_deliveries[0]
+    assert delivery["delivery_id"].startswith("tts-presentation:")
+    assert delivery["text"] == "Speak this line"
+    assert delivery["voice_id"] == "voice-luna"
+    assert delivery["provider"] == "local"
+    assert delivery["queue_position"] == 1
+    assert delivery["status"] == "pending"
+    assert delivery["metadata"]["interaction_id"].endswith(":msg-tts")
+    _assert_no_private_payload(storage.tts_deliveries)
+
+
 def test_aftertalk_runner_builds_group_chat_request_and_appends_interactions():
     storage = InMemoryV2StorageManager()
     port = _create_bound_session(storage)
@@ -398,6 +448,44 @@ def test_aftertalk_runner_appends_one_presentation_display_event_per_message():
     assert display_events[0]["public_payload"]["presentation"]["voice_state"] == "speaking"
     assert display_events[1]["public_payload"]["presentation"]["visual_state"] == "react"
     _assert_no_private_payload(storage.live_events)
+
+
+def test_aftertalk_runner_does_not_enqueue_tts_when_policy_disabled():
+    storage = InMemoryV2StorageManager()
+    port = _create_bound_session(storage)
+    storage.update_v2_session(
+        "session-runner",
+        {
+            "plan_completed": True,
+            "metadata": {
+                **storage.get_v2_session("session-runner").get("metadata", {}),
+                "tts_policy": {"enabled": False},
+            },
+        },
+    )
+    transport = FakeMemoriaTransport(
+        {
+            "session_id": "memoria-2",
+            "turns": [
+                {
+                    "message_id": "a1",
+                    "character_id": "host",
+                    "reply": "No TTS",
+                }
+            ],
+        }
+    )
+    runner = MemoriaAftertalkRunner(storage, transport)
+
+    result = runner.run(
+        command=_command("cmd-aftertalk-no-tts"),
+        snapshot=port.read_snapshot("session-runner"),
+        transition=_transition(LiveSessionPhase.AFTERTALK, action="continue_aftertalk"),
+        now=NOW,
+    )
+
+    assert result.status == "ok"
+    assert storage.tts_deliveries == []
 
 
 def test_closing_runner_builds_final_message_and_marks_closing_completed():

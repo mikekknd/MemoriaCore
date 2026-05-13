@@ -92,6 +92,16 @@ class ApiKeyCreateRequest(BaseModel):
     permission_group: Literal["operator", "display", "observer"]
 
 
+class TTSDeliveryAckRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+
+
+class TTSDeliveryTimeoutRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    timeout_seconds: int = Field(..., gt=0)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
 def get_runtime_service() -> object:
     """FastAPI dependency placeholder for Runtime Application Service."""
 
@@ -406,6 +416,78 @@ def get_session_events_endpoint(
     }
 
 
+@router.get("/sessions/{session_id}/tts-queue", response_model=None)
+def get_tts_queue_endpoint(
+    session_id: str,
+    limit: int = 100,
+    status: str | None = None,
+    query_service: object = Depends(get_query_service),
+) -> dict[str, object] | JSONResponse:
+    """Return public TTS delivery queue state."""
+
+    try:
+        queue = query_service.get_tts_queue(session_id, max(1, min(int(limit), 500)), status)
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
+    return {
+        "session_id": session_id,
+        "tts_queue": _sanitize_public_payload(list(queue)),
+    }
+
+
+@router.post("/sessions/{session_id}/tts-deliveries/{delivery_id}/ack", response_model=None)
+def ack_tts_delivery_endpoint(
+    session_id: str,
+    delivery_id: str,
+    raw_body: object = Body(...),
+    storage_manager: object = Depends(get_storage_manager),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Acknowledge one TTS delivery without changing runtime phase."""
+
+    body = _validate_body(TTSDeliveryAckRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    try:
+        return _sanitize_public_payload(
+            storage_manager.ack_v2_tts_delivery(
+                session_id,
+                delivery_id,
+                {"acknowledged_at": now, "command_id": body.command_id},
+            )
+        )
+    except KeyError:
+        return _query_not_found_response(session_id)
+
+
+@router.post("/sessions/{session_id}/tts-deliveries/{delivery_id}/timeout", response_model=None)
+def timeout_tts_delivery_endpoint(
+    session_id: str,
+    delivery_id: str,
+    raw_body: object = Body(...),
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object] | JSONResponse:
+    """Mark one TTS delivery timeout without changing runtime phase."""
+
+    body = _validate_body(TTSDeliveryTimeoutRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    try:
+        return _sanitize_public_payload(
+            storage_manager.timeout_v2_tts_delivery(
+                session_id,
+                delivery_id,
+                {
+                    "timeout_seconds": body.timeout_seconds,
+                    "metadata": _sanitize_public_payload(body.metadata),
+                    "command_id": body.command_id,
+                },
+            )
+        )
+    except KeyError:
+        return _query_not_found_response(session_id)
+
+
 @router.get("/sessions/{session_id}/operator-stream", response_model=None)
 def operator_stream_endpoint(
     session_id: str,
@@ -647,6 +729,7 @@ def _sanitize_payload(value: Any, forbidden_keys: set[str]) -> Any:
 
 __all__ = [
     "ApiKeyCreateRequest",
+    "ack_tts_delivery_endpoint",
     "bind_plan_endpoint",
     "create_session_endpoint",
     "create_api_key_endpoint",
@@ -657,6 +740,7 @@ __all__ = [
     "get_query_service",
     "get_runtime_service",
     "get_storage_manager",
+    "get_tts_queue_endpoint",
     "list_api_keys_endpoint",
     "get_session_endpoint",
     "get_session_events_endpoint",
@@ -665,6 +749,7 @@ __all__ = [
     "operator_stream_endpoint",
     "router",
     "tick_session_endpoint",
+    "timeout_tts_delivery_endpoint",
     "update_automation_control_endpoint",
     "update_aftertalk_policy_endpoint",
 ]

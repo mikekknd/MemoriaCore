@@ -16,6 +16,7 @@ class InMemoryV2StorageManager:
         self.live_events: list[dict[str, object]] = []
         self.interactions: list[dict[str, object]] = []
         self.finalizations: list[dict[str, object]] = []
+        self.tts_deliveries: list[dict[str, object]] = []
         self.command_results: dict[str, object] = {}
 
     def create_v2_session(self, record: dict[str, object]) -> dict[str, object]:
@@ -85,6 +86,77 @@ class InMemoryV2StorageManager:
         self.finalizations.append(stored)
         self.update_v2_session(session_id, {"closing_completed": True})
         return deepcopy(stored)
+
+    def append_v2_tts_request(
+        self,
+        session_id: str,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        stored = deepcopy(record)
+        stored["session_id"] = session_id
+        self.tts_deliveries.append(stored)
+        return deepcopy(stored)
+
+    def list_v2_tts_deliveries(
+        self,
+        session_id: str,
+        limit: int = 100,
+        status: str | None = None,
+    ) -> list[dict[str, object]]:
+        deliveries = [
+            item
+            for item in self.tts_deliveries
+            if item.get("session_id") == session_id
+            and (status is None or item.get("status") == status)
+        ]
+        return deepcopy(deliveries[-limit:])
+
+    def ack_v2_tts_delivery(
+        self,
+        session_id: str,
+        delivery_id: str,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        for item in self.tts_deliveries:
+            if item.get("session_id") == session_id and item.get("delivery_id") == delivery_id:
+                duplicate = item.get("status") == "delivered"
+                item["status"] = "delivered"
+                item["acknowledged_at"] = record.get("acknowledged_at")
+                return deepcopy(
+                    {
+                        **item,
+                        "duplicate": duplicate,
+                        "phase_transition_requested": False,
+                    }
+                )
+        raise KeyError(delivery_id)
+
+    def timeout_v2_tts_delivery(
+        self,
+        session_id: str,
+        delivery_id: str,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        for item in self.tts_deliveries:
+            if item.get("session_id") == session_id and item.get("delivery_id") == delivery_id:
+                timeout_seconds = int(record.get("timeout_seconds", 0) or 0)
+                if item.get("status") == "delivered":
+                    return deepcopy(
+                        {
+                            **item,
+                            "timeout_seconds": timeout_seconds,
+                            "timeout_ignored": True,
+                            "phase_transition_requested": False,
+                        }
+                    )
+                item["status"] = "timeout"
+                item["timeout_seconds"] = timeout_seconds
+                item["metadata"] = {
+                    **dict(item.get("metadata", {})),
+                    **dict(record.get("metadata", {})),
+                }
+                return deepcopy({**item, "phase_transition_requested": False})
+        raise KeyError(delivery_id)
 
     def get_v2_command_result(self, command_id: str) -> object | None:
         return self.command_results.get(command_id)
