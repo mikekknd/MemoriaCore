@@ -314,6 +314,7 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Startup/shutdown validation：`tests/youtubebridge_v2/test_main_app_lifecycle.py` 驗證主 FastAPI app lifespan 可啟動 V2 durable routes/static、shutdown 會 stop bot managers，並確保取消的 lifespan background tasks 都被 await。
 - [x] Legacy boundary audit：`tests/youtubebridge_v2/test_legacy_boundary_audit.py` 集中掃描 V2 production source 與 `api/main.py` 的 V2 mount，確認沒有 legacy `YouTubeBridge/` runtime import、直接 SQLite、`requests`/Google YouTube transport 或直接 legacy runtime path dependency。
 - [x] Docs/API reference sync：`tests/youtubebridge_v2/test_docs_api_reference_sync.py` 比對 `YouTubeBridgeV2/server/routes.py` 的 `/v2` routes 與 `docs/api-reference-index.md`、`docs/modules/server-api-surface.md`，避免 endpoint 或 route handler 文件漂移。
+- [x] Final code review：`YouTubeBridgeV2/docs/reviews/final-code-review.md` 記錄 thread-aware review scope、發現事項、修正與驗證；目前無剩餘 Critical/Important finding，PR/merge readiness 留給下一項。
 
 ## Module Design 文件
 

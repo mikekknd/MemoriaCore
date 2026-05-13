@@ -50,8 +50,8 @@ def test_api_reference_server_surface_lists_all_v2_routes_and_endpoint_names():
     api_reference = (DOCS_ROOT / "api-reference-index.md").read_text(encoding="utf-8")
     section = _section(api_reference, "### Server/API Surface", "### API Key Management Endpoints")
 
-    assert _route_endpoints() <= _documented_endpoints(section)
-    assert _route_endpoint_names() <= _documented_endpoint_names(section)
+    assert _documented_endpoints(section) == _route_endpoints()
+    assert _documented_endpoint_names(section) == _route_endpoint_names()
 
 
 def test_server_api_surface_module_lists_all_v2_routes_and_endpoint_names():
@@ -60,8 +60,8 @@ def test_server_api_surface_module_lists_all_v2_routes_and_endpoint_names():
     )
     section = _section(module_doc, "## Public Entrypoints", "## Endpoint Boundary Rules")
 
-    assert _route_endpoints() <= _documented_endpoints(section)
-    assert _route_endpoint_names() <= _documented_endpoint_names(section)
+    assert _documented_endpoints(section) == _route_endpoints()
+    assert _documented_endpoint_names(section) == _route_endpoint_names()
 
 
 def test_docs_api_reference_sync_is_documented_in_architecture_index():
