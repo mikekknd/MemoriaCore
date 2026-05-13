@@ -11,6 +11,12 @@ from YouTubeBridgeV2.adapters.memoria import (
 )
 from YouTubeBridgeV2.live_episode_plan.runner import PlannedTurnIntent
 from YouTubeBridgeV2.runtime.aftertalk import AftertalkCue, AftertalkTurnRequest
+from YouTubeBridgeV2.runtime.closing import (
+    ClosingPolicy,
+    ClosingReason,
+    ClosingStartContext,
+    build_closing_request,
+)
 
 
 def _planned_turn_intent():
@@ -53,6 +59,26 @@ def _aftertalk_request():
         cue=cue,
         stop_reason=None,
         metadata={"correlation_id": "corr-1"},
+    )
+
+
+def _closing_request():
+    return build_closing_request(
+        ClosingStartContext(
+            session_id="session-1",
+            closing_reason=ClosingReason.MANUAL_CLOSE,
+            phase_entered_at=None,
+            duration_summary={"duration_reached": False},
+            manual_close_requested=True,
+            correlation_id="corr-1",
+        ),
+        {
+            "title": "Runtime V2",
+            "public_recap": {"safe": "visible", "hidden_prompt": "must not leak"},
+            "raw_topic_pack": "must not leak",
+        },
+        [],
+        ClosingPolicy(),
     )
 
 
@@ -147,6 +173,24 @@ def test_aftertalk_request_maps_to_group_chat_request():
     assert payload.public_summary["mode"] == "group_chat"
     assert payload.public_summary["speaker_count"] == 2
     assert payload.public_summary["request_id"] == "request-1"
+    _assert_no_private_payload(payload)
+
+
+def test_closing_request_maps_to_memoria_chat_request():
+    payload = build_memoria_request(_closing_request(), _context())
+
+    assert payload.mode == "chat"
+    assert payload.endpoint == "/api/v1/chat/sync"
+    assert payload.body["character_ids"] == ["host"]
+    assert payload.body["group_name"] == "closing"
+    assert payload.body["external_context"]["summary"]["episode_plan_mode"] == "closing"
+    assert payload.body["external_context"]["closing"]["reason"] == "manual_close"
+    assert payload.body["external_context"]["closing"]["public_summary"] == {
+        "title": "Runtime V2",
+        "public_recap": {"safe": "visible"},
+    }
+    assert payload.public_summary["mode"] == "chat"
+    assert payload.public_summary["closing_reason"] == "manual_close"
     _assert_no_private_payload(payload)
 
 

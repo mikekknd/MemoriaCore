@@ -104,6 +104,12 @@ Side Effects:
 - 呼叫 MemoriaCore 或 YouTube adapter。
 - 產生 observability/event stream payload。
 
+Wave 2D status:
+- `POST /v2/sessions/{session_id}/tick` 已作為 operator-only explicit tick source。
+- `RuntimeCommandType.TICK` 由 route 建立並委派 `tick_session(...)`。
+- 未啟用 background scheduler；production 未注入 Memoria transport 時仍使用 no-op runners。
+- 注入 `MemoriaTransportProtocol` 時，planned show、aftertalk、closing 可經由 `MemoriaPlannedShowRunner`、`MemoriaAftertalkRunner`、`MemoriaClosingRunner` 推進。
+
 ### `RuntimeCommand`
 
 Source:
@@ -176,4 +182,4 @@ Required Fields:
 
 - service 是否使用單一 class 或 command handler package，留到 implementation plan 決定。
 - transition id 與 correlation id 的生成位置需與 Observability implementation plan 對齊。
-- runtime tick 來源是 scheduler、API polling 還是 background worker，需在 server/runtime implementation 階段鎖定。
+- runtime tick 第一版來源已鎖定為 operator API endpoint；scheduler/background worker 屬於後續 wave。

@@ -148,6 +148,29 @@ def test_main_app_v2_missing_session_events_and_streams_return_sanitized_404(
         }
 
 
+def test_main_app_v2_missing_session_tick_returns_sanitized_404(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage_manager(tmp_path)
+    api_main = _install_test_storage(monkeypatch, storage)
+    client = _loopback_client(api_main.app)
+
+    response = client.post(
+        "/v2/sessions/missing-session/tick",
+        json={"command_id": "cmd-missing-tick"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "session_not_found",
+            "message": "session not found",
+        },
+        "correlation_id": "query-missing-session",
+    }
+
+
 def test_main_app_v2_rejects_non_loopback_api_request(tmp_path, monkeypatch):
     storage = _storage_manager(tmp_path)
     api_main = _install_test_storage(monkeypatch, storage)

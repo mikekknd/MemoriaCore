@@ -164,6 +164,29 @@ def test_real_storage_vertical_slice_reaches_ended_and_persists_events(tmp_path)
     _assert_no_private_payload(display_text)
 
 
+def test_bind_plan_persists_sanitized_live_episode_plan_state(tmp_path):
+    storage = _storage_manager(tmp_path)
+    composition, _planned_show, _aftertalk, _closing = _composition(storage)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: STARTED_AT))
+
+    _create_session(client, "session-plan-state")
+    _bind_plan(client, "session-plan-state")
+
+    session = storage.get_v2_session("session-plan-state")
+    plan_state = session["metadata"]["live_episode_plan_state"]
+    public_summary = session["public_summary"]
+    assert plan_state["contract"]["plan_id"] == "plan-1"
+    assert plan_state["contract"]["title"] == "V2 durable episode"
+    assert plan_state["cursor"] == 0
+    assert plan_state["completed_turn_ids"] == []
+    assert plan_state["last_memoria_session_id"] is None
+    assert public_summary["plan_id"] == "plan-1"
+    assert public_summary["plan_title"] == "V2 durable episode"
+    assert public_summary["turn_count"] == 0
+    assert public_summary["status"] == "invalid"
+    _assert_no_private_payload(session)
+
+
 def test_real_storage_restart_recovery_reads_existing_snapshot(tmp_path):
     storage = _storage_manager(tmp_path)
     composition, _planned_show, _aftertalk, _closing = _composition(storage)

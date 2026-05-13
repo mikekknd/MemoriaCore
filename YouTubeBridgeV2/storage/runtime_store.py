@@ -11,6 +11,10 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from YouTubeBridgeV2.live_episode_plan.runner import (
+    LiveEpisodePlanState,
+    validate_episode_plan_contract,
+)
 from YouTubeBridgeV2.runtime.application_service import (
     AdapterDispatchResult,
     PersistedTransitionRef,
@@ -72,16 +76,23 @@ class RuntimeStoragePort:
         return self._sessions.create_session(record)
 
     def bind_plan(self, command: RuntimeCommand, _now: datetime):
-        """保存 LiveEpisodePlan public summary 並回傳 snapshot。"""
+        """保存 LiveEpisodePlan public summary 與可重啟的 cursor state。"""
 
         plan = _object_to_dict(command.payload.get("plan", {}))
+        contract = validate_episode_plan_contract(plan)
+        plan_state = LiveEpisodePlanState(contract=contract)
         patch = {
-            "plan_id": plan.get("plan_id"),
+            "plan_id": contract.plan_id,
             "plan_completed": False,
+            "live_episode_plan_state": _live_episode_plan_state_record(plan_state),
             "public_summary": _sanitize_public_payload(
                 {
-                    "plan_id": plan.get("plan_id"),
-                    "plan_title": plan.get("title"),
+                    "plan_id": contract.plan_id,
+                    "plan_title": contract.title,
+                    "title": contract.title,
+                    "turn_count": len(contract.turns),
+                    "completed_turn_count": 0,
+                    "status": contract.status.value,
                 }
             ),
         }
@@ -264,6 +275,16 @@ def _event_id(event_data: dict[str, object]) -> str:
         f"{event_data.get('correlation_id', '')}:"
         f"{event_data.get('event_type', '')}"
     )
+
+
+def _live_episode_plan_state_record(
+    state: LiveEpisodePlanState,
+    *,
+    last_memoria_session_id: str | None = None,
+) -> dict[str, object]:
+    record = _json_safe_value(state)
+    record["last_memoria_session_id"] = last_memoria_session_id
+    return _sanitize_public_payload(record)
 
 
 def _object_to_dict(value: object) -> dict[str, object]:

@@ -59,6 +59,10 @@ class ManualCloseRequest(BaseModel):
     reason: str | None = None
 
 
+class TickRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+
+
 def get_runtime_service() -> object:
     """FastAPI dependency placeholder for Runtime Application Service."""
 
@@ -202,6 +206,30 @@ def manual_close_endpoint(
     return _call_runtime(runtime_service, "request_manual_close", command, now)
 
 
+@router.post("/sessions/{session_id}/tick", response_model=None)
+def tick_session_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Advance one explicit runtime tick through runtime service."""
+
+    body = _validate_body(TickRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.TICK,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={},
+    )
+    return _call_runtime(runtime_service, "tick_session", command, now)
+
+
 @router.get("/sessions/{session_id}/events", response_model=None)
 def get_session_events_endpoint(
     session_id: str,
@@ -313,6 +341,8 @@ def _call_runtime(
     method = getattr(runtime_service, method_name)
     try:
         result = method(command, now)
+    except KeyError:
+        return _query_not_found_response(command.session_id)
     except Exception as exc:
         return _service_error_response(command, exc)
     return _service_result_body(result)
@@ -468,5 +498,6 @@ __all__ = [
     "manual_close_endpoint",
     "operator_stream_endpoint",
     "router",
+    "tick_session_endpoint",
     "update_aftertalk_policy_endpoint",
 ]

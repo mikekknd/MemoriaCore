@@ -240,6 +240,7 @@ def _allowed_actions(group: PermissionGroup) -> tuple[str, ...]:
             "read_display_stream",
             "update_aftertalk_policy",
             "manual_close",
+            "tick_session",
             "bind_plan",
             "create_session",
         )
@@ -270,6 +271,8 @@ _ROUTE_ACTIONS = {
     "read_status": "read_status",
     "session_events": "read_events",
     "session_status": "read_status",
+    "tick": "tick_session",
+    "tick_session": "tick_session",
     "update_aftertalk_policy": "update_aftertalk_policy",
 }
 

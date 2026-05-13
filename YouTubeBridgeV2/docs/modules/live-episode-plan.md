@@ -58,6 +58,12 @@ LiveEpisodePlan Runner 負責將已匯入的節目企劃轉成可執行的 plann
 - `next_planned_turn(plan_state, audience_event_summary=None)`：依 cursor 產生下一個 planned turn intent。
 - `record_planned_turn_result(plan_state, turn_result)`：記錄 turn 完成並推進 cursor / completion signal。
 
+Wave 2D persistence contract:
+- `RuntimeStoragePort.bind_plan(...)` 會呼叫 `validate_episode_plan_contract(...)`。
+- session metadata 會保存 `live_episode_plan_state`，包含 `contract`、`cursor`、`completed_turn_ids`、`last_memoria_session_id`。
+- `public_summary` 只保存 plan id/title/turn count/status，不保存 raw Topic Pack、raw FactCards 或 hidden prompt。
+- `MemoriaPlannedShowRunner` 執行 turn 後推進 cursor、追加 interaction summary，並在最後一個 turn 完成時更新 `plan_completed=true`。
+
 ## Execution Rules
 
 | Situation | Required Behavior |
@@ -93,6 +99,6 @@ LiveEpisodePlan Runner 負責將已匯入的節目企劃轉成可執行的 plann
 
 ## Open Questions
 
-- LiveEpisodePlan schema 的最終欄位名稱由後續 runtime implementation plan 鎖定。
+- LiveEpisodePlan 第一版 runtime persistence 欄位已鎖定在 `live_episode_plan_state`；後續 schema 擴充需同步更新 Storage 與 API Reference。
 - audience event summary 的精簡格式需與 YouTube Adapter 和 Storage 設計對齊。
 - planned turn result 是否需要保留 display metadata，需與 Chat Display UI 設計對齊。

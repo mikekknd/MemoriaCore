@@ -320,6 +320,10 @@ Concepts:
 - `NoopPlannedShowRunner`
 - `NoopAftertalkRunner`
 - `NoopClosingRunner`
+- `MemoriaTransportProtocol`
+- `MemoriaPlannedShowRunner`
+- `MemoriaAftertalkRunner`
+- `MemoriaClosingRunner`
 
 Stability:
 - `provisional`
@@ -336,6 +340,10 @@ Source:
 - `YouTubeBridgeV2/runtime/noop_runners.py::NoopPlannedShowRunner`
 - `YouTubeBridgeV2/runtime/noop_runners.py::NoopAftertalkRunner`
 - `YouTubeBridgeV2/runtime/noop_runners.py::NoopClosingRunner`
+- `YouTubeBridgeV2/runtime/memoria_runners.py::MemoriaTransportProtocol`
+- `YouTubeBridgeV2/runtime/memoria_runners.py::MemoriaPlannedShowRunner`
+- `YouTubeBridgeV2/runtime/memoria_runners.py::MemoriaAftertalkRunner`
+- `YouTubeBridgeV2/runtime/memoria_runners.py::MemoriaClosingRunner`
 
 ### LiveEpisodePlan Runner
 
@@ -391,10 +399,28 @@ Source:
 - `YouTubeBridgeV2/runtime/aftertalk.py::build_aftertalk_turn_request`
 - `YouTubeBridgeV2/runtime/aftertalk.py::summarize_aftertalk_result`
 
+### LiveEpisodePlan State Metadata
+
+Purpose:
+保存 runtime tick 可重啟的 LiveEpisodePlan cursor/state。此 contract 由 `RuntimeStoragePort.bind_plan(...)` 寫入 session metadata，runner 只讀取 sanitized contract，不讀 raw Topic Pack 或 hidden prompt。
+
+Fields:
+- `contract` — `validate_episode_plan_contract(...)` 產生的 sanitized contract summary。
+- `cursor` — 下一個 planned turn index。
+- `completed_turn_ids` — 已完成 turn id list。
+- `last_memoria_session_id` — 上次 MemoriaCore 回傳的 session id，未建立時為 `null`。
+
+Stability:
+- `provisional`
+
+Source:
+- `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort.bind_plan`
+- `YouTubeBridgeV2/runtime/memoria_runners.py::MemoriaPlannedShowRunner`
+
 ### MemoriaCore Adapter
 
 Purpose:
-將 V2 planned show / aftertalk intent 轉成 MemoriaCore `/api/v1/chat/sync` request envelope，並正規化回覆與錯誤。
+將 V2 planned show / aftertalk / closing intent 轉成 MemoriaCore `/api/v1/chat/sync` request envelope，並正規化回覆與錯誤。
 
 Concepts:
 - `MemoriaRequestPayload`
@@ -469,6 +495,7 @@ Concepts:
 - `StorageRecordNotFound`
 - `StorageContractError`
 - `RuntimeStoragePort`
+- `live_episode_plan_state`
 - `RuntimeStorageContractError`
 - `YouTubeBridgeV2RepositoryMixin`
 - `StorageManager(..., youtube_bridge_v2_db_path=None)`
@@ -563,6 +590,7 @@ Concepts:
 - `GET /v2/sessions/{session_id}/phase`
 - `POST /v2/sessions/{session_id}/aftertalk-policy`
 - `POST /v2/sessions/{session_id}/manual-close`
+- `POST /v2/sessions/{session_id}/tick`
 - `GET /v2/sessions/{session_id}/events`
 - `GET /v2/sessions/{session_id}/operator-stream`
 - `GET /v2/sessions/{session_id}/display-stream`
@@ -572,6 +600,8 @@ Concepts:
 - `get_phase_endpoint`
 - `update_aftertalk_policy_endpoint`
 - `manual_close_endpoint`
+- `TickRequest`
+- `tick_session_endpoint`
 - `get_session_events_endpoint`
 - `operator_stream_endpoint`
 - `display_stream_endpoint`
@@ -588,6 +618,8 @@ Source:
 - `YouTubeBridgeV2/server/routes.py::get_phase_endpoint`
 - `YouTubeBridgeV2/server/routes.py::update_aftertalk_policy_endpoint`
 - `YouTubeBridgeV2/server/routes.py::manual_close_endpoint`
+- `YouTubeBridgeV2/server/routes.py::TickRequest`
+- `YouTubeBridgeV2/server/routes.py::tick_session_endpoint`
 - `YouTubeBridgeV2/server/routes.py::get_session_events_endpoint`
 - `YouTubeBridgeV2/server/routes.py::operator_stream_endpoint`
 - `YouTubeBridgeV2/server/routes.py::display_stream_endpoint`

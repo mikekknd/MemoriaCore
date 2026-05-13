@@ -130,7 +130,7 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 
 ## Integration Wave 2B 狀態
 
-- [x] Production composition helper：已建立 `create_production_v2_composition(storage_manager)`，以主專案 `StorageManager` singleton 建立 V2 composition。
+- [x] Production composition helper：已建立 `create_production_v2_composition(storage_manager, *, memoria_transport=None)`，以主專案 `StorageManager` singleton 建立 V2 composition；未顯式注入 Memoria transport 時預設使用 no-op runners。
 - [x] Explicit no-op runners：已建立 planned show、aftertalk、closing 的 production-safe no-op runners，不呼叫 YouTube、MemoriaCore 或 TTS。
 - [x] Main app `/v2` wiring：`api/main.py` 已用 lazy cached composition 覆寫 V2 runtime/query dependencies。
 - [x] Loopback-only boundary：主 app `/v2` API/SSE 已限制 loopback；`/v2/static` 保持可服務前端資產。
@@ -146,6 +146,15 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Fail-closed 行為：未設定有效 key、空 key 或無效 permission group 時，非 loopback request 不會進入 runtime dispatch。
 - [x] Sanitized security errors：auth failure 回 stable `401/403` body，不暴露 API key、header 或 fingerprint。
 - [ ] API key 管理 UI：prefs 寫入與輪替 UI 保留給後續 wave。
+
+## Integration Wave 2D 狀態
+
+- [x] Operator tick endpoint：已新增 `POST /v2/sessions/{session_id}/tick`，由 Server/API Surface 建立 `RuntimeCommandType.TICK` 並委派 `RuntimeApplicationService.tick_session(...)`。
+- [x] Tick permission boundary：主 app security matrix 已將 tick 固定為 `operator` only；loopback 仍以 operator 通過，observer/display key 不可推進 runtime。
+- [x] LiveEpisodePlan state persistence：`RuntimeStoragePort.bind_plan(...)` 會驗證 plan contract，並保存 sanitized `live_episode_plan_state`，包含 `contract`、`cursor`、`completed_turn_ids`、`last_memoria_session_id`。
+- [x] Memoria runner vertical slice：已建立 injectable planned-show、aftertalk、closing runners，使用 `MemoriaTransportProtocol.send(...)`；未注入 transport 時 production composition 繼續使用 no-op runners。
+- [x] Fake-transport E2E：已驗證 API create/bind/tick/manual-close/tick 可跑完 `planned_show -> aftertalk -> closing -> ended`，且 durable StorageManager rebuild 後可 replay command result。
+- [ ] 真外部 transport：MemoriaCore HTTP transport、YouTube polling、TTS delivery 與 background scheduler 仍保留給後續 wave。
 
 ## Module Design 文件
 

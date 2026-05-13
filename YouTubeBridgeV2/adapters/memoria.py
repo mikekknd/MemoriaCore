@@ -7,11 +7,12 @@ retry loop、storage write、phase transition 與 UI event 不在此處理。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from YouTubeBridgeV2.live_episode_plan.runner import PlannedTurnIntent
 from YouTubeBridgeV2.runtime.aftertalk import AftertalkTurnRequest
+from YouTubeBridgeV2.runtime.closing import ClosingRequest
 
 
 MEMORIA_CHAT_SYNC_ENDPOINT = "/api/v1/chat/sync"
@@ -63,7 +64,7 @@ class MemoriaAdapterError:
 
 
 def build_memoria_request(
-    intent: PlannedTurnIntent | AftertalkTurnRequest,
+    intent: PlannedTurnIntent | AftertalkTurnRequest | ClosingRequest,
     context: dict[str, object],
 ) -> MemoriaRequestPayload:
     """將 planned show 或 aftertalk intent 映射成 MemoriaCore request envelope."""
@@ -73,6 +74,8 @@ def build_memoria_request(
         return _planned_turn_request(intent, context, correlation)
     if isinstance(intent, AftertalkTurnRequest):
         return _aftertalk_request(intent, context, correlation)
+    if isinstance(intent, ClosingRequest):
+        return _closing_request(intent, context, correlation)
     raise TypeError("unsupported MemoriaCore intent")
 
 
@@ -222,6 +225,42 @@ def _aftertalk_request(
         public_summary={
             "mode": "group_chat",
             "speaker_count": len(speaker_ids),
+            **_correlation_public_summary(correlation),
+        },
+    )
+
+
+def _closing_request(
+    intent: ClosingRequest,
+    context: dict[str, object],
+    correlation: MemoriaCorrelationMetadata,
+) -> MemoriaRequestPayload:
+    if not intent.should_dispatch:
+        raise ValueError("closing request is not dispatchable")
+    speaker_ids = _clean_speaker_ids(tuple(context.get("closing_speaker_ids", ("host",))))
+    if not speaker_ids:
+        speaker_ids = ["host"]
+
+    body = {
+        **_live_chat_scope(context, correlation),
+        "content": "Close the live session.",
+        "display_content": context.get("display_content"),
+        "session_id": correlation.memoria_session_id,
+        "character_ids": speaker_ids,
+        "group_name": "closing",
+        "external_context": _closing_external_context(intent, context, correlation),
+        "include_speech": False,
+        "memory_write_policy": "transient",
+    }
+    return MemoriaRequestPayload(
+        mode="chat",
+        endpoint=MEMORIA_CHAT_SYNC_ENDPOINT,
+        body=_redact_public_value(body),
+        correlation=correlation,
+        public_summary={
+            "mode": "chat",
+            "closing_reason": intent.closing_reason.value,
+            "speaker_ids": speaker_ids,
             **_correlation_public_summary(correlation),
         },
     )
@@ -386,6 +425,40 @@ def _aftertalk_external_context(
                     "metadata": intent.cue.metadata,
                 },
             },
+        }
+    )
+
+
+def _closing_external_context(
+    intent: ClosingRequest,
+    context: dict[str, object],
+    correlation: MemoriaCorrelationMetadata,
+) -> dict[str, object]:
+    return _redact_public_value(
+        {
+            "source": YOUTUBE_LIVE_SOURCE,
+            "source_session_id": correlation.v2_session_id,
+            "context_text": f"Closing context: {_redact_public_value(intent.summary)}",
+            "visible_events": [],
+            "event_ids": [],
+            "group_turn_limit": 1,
+            "summary": {
+                "source": YOUTUBE_LIVE_SOURCE,
+                "source_session_id": correlation.v2_session_id,
+                "episode_plan_mode": "closing",
+                "closing_reason": intent.closing_reason.value,
+                "correlation_id": correlation.correlation_id,
+            },
+            "closing": {
+                "reason": intent.closing_reason.value,
+                "visibility": intent.visibility,
+                "public_summary": intent.summary,
+                "super_chat_actions": [
+                    asdict(action) for action in intent.super_chat_actions
+                ],
+                "metadata": intent.metadata,
+            },
+            "public_metadata": context.get("public_metadata", {}),
         }
     )
 

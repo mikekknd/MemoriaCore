@@ -68,6 +68,7 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 - `StorageRecordNotFound`：找不到 V2 session/record 時的 not found error。
 - `StorageContractError`：StorageManager 回傳資料不符合 V2 contract 時的 contract error。
 - `RuntimeStoragePort`：`RuntimeApplicationService` 使用的 service-facing storage adapter，負責 command-to-storage mapping、event persistence 與 command idempotency round-trip。
+- `live_episode_plan_state`：session metadata 內的 sanitized plan execution state，包含 `contract`、`cursor`、`completed_turn_ids`、`last_memoria_session_id`。
 - `YouTubeBridgeV2RepositoryMixin`：主專案 `StorageManager` 的 durable V2 repository mixin，負責 `yb2_*` schema 初始化、CRUD/append methods 與 public redaction。
 - `StorageManager(..., youtube_bridge_v2_db_path=None)`：提供 V2 durable DB path 注入；預設使用 `runtime/youtubebridge_v2.db`。
 - `create_v2_session(record)` / `get_v2_session(session_id)` / `update_v2_session(session_id, patch)`：session durable contract。
@@ -86,6 +87,7 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 | phase transition | Append-only and idempotent by explicit transition id. |
 | normalized event | Store display-safe summary separately from private adapter metadata. |
 | interaction | Store speaker, phase, public content summary, and correlation id. |
+| LiveEpisodePlan state | Store sanitized contract/cursor/completed turn ids in session metadata; raw Topic Pack, raw FactCards, hidden prompt and raw Memoria payload stay out of public storage. |
 | adapter metadata | Store redacted summary by default; raw payload requires explicit private storage policy. |
 | finalization result | Must include closing completion status and ended metadata. |
 | crash/restart | Snapshot must be sufficient for Runtime Application Service recovery. |
@@ -118,5 +120,5 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 ## Open Questions
 
 - 後續若需要 schema migration CLI 或 versioned migration，仍必須放在 `core/storage/` 或 `core/storage_manager.py` 邊界內，不可放進 `YouTubeBridgeV2/`。
-- Wave 2B 需要決定 `api/main.py` 如何 wiring 真 V2 composition；StorageManager durable backend 已可用，但 production runtime 尚未切換。
+- Wave 2B 已將 `api/main.py` wiring 到真 V2 durable composition；Wave 2D 已讓 tick + Memoria fake transport vertical slice 可使用 durable storage。
 - 更細的 private adapter metadata 是否需要獨立 private table，需等真 YouTube/MemoriaCore adapter wave 決定；目前 public tables 一律保存 redacted summary。

@@ -115,6 +115,12 @@ Purpose:
 Purpose:
 將 adapter/system result 映射成 `ClosingFinalizationResult` 與 `closing_completion_status`，不直接推進 Runtime Phase。
 
+Wave 2D runtime integration:
+- `MemoriaClosingRunner` 會建立 `ClosingStartContext` 與 `ClosingRequest`。
+- final message request 透過 `build_memoria_request(...)` 轉為 MemoriaCore chat payload。
+- runner 只透過 StorageManager-like `append_v2_interaction(...)` 與 `append_v2_finalization(...)` 保存 public summary。
+- `append_v2_finalization(...)` 完成後會讓 session `closing_completed=true`，下一個 runtime tick 可進入 `ended`。
+
 ## Closing Flow
 
 | Step | Responsibility | Output |

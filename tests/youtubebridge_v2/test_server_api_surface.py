@@ -38,6 +38,10 @@ class FakeRuntimeService:
         self.calls.append(("request_manual_close", command, now))
         return _result(command, phase=LiveSessionPhase.CLOSING)
 
+    def tick_session(self, command, now):
+        self.calls.append(("tick_session", command, now))
+        return _result(command, phase=LiveSessionPhase.AFTERTALK)
+
 
 class FailingRuntimeService:
     def create_session(self, command, now):
@@ -302,6 +306,24 @@ def test_manual_close_delegates_without_direct_phase_change():
     assert service.calls[0][0] == "request_manual_close"
     assert service.calls[0][1].command_type == RuntimeCommandType.MANUAL_CLOSE
     assert not hasattr(service.calls[0][1], "next_phase")
+
+
+def test_tick_session_delegates_to_runtime_service():
+    service = FakeRuntimeService()
+    client = TestClient(_app(runtime_service=service))
+
+    response = client.post(
+        "/v2/sessions/session-1/tick",
+        json={"command_id": "cmd-tick"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["phase"] == "aftertalk"
+    assert service.calls[0][0] == "tick_session"
+    command = service.calls[0][1]
+    assert command.command_type == RuntimeCommandType.TICK
+    assert command.command_id == "cmd-tick"
+    assert command.payload == {}
 
 
 def test_get_session_events_returns_event_history():

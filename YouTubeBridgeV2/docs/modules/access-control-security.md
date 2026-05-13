@@ -63,9 +63,9 @@ Wave 2C 已將主 app `/v2` API/SSE 升級為 `V2MainSecurityMiddleware`。此 m
 
 | Permission Group | Allowed Surface | Forbidden Surface |
 | --- | --- | --- |
-| `operator` | session control, aftertalk toggle, manual close, diagnostics | raw secrets, raw hidden prompt |
-| `display` | display stream, display-safe assets/metadata | manual close, aftertalk toggle, operator diagnostics |
-| `observer` | read-only status and redacted diagnostics | control endpoints, secret-bearing adapter config |
+| `operator` | session control, runtime tick, aftertalk toggle, manual close, diagnostics | raw secrets, raw hidden prompt |
+| `display` | display stream, display-safe assets/metadata | runtime tick, manual close, aftertalk toggle, operator diagnostics |
+| `observer` | read-only status and redacted diagnostics | runtime tick, control endpoints, secret-bearing adapter config |
 | `internal` | service-to-service calls with secret boundary references | public response rendering |
 
 All denied requests must fail before Runtime Application Service command dispatch.
