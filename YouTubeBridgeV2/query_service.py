@@ -6,6 +6,8 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any, Iterable
 
+from YouTubeBridgeV2.display.events import normalize_display_event
+
 
 class V2QueryServiceError(RuntimeError):
     """V2 query service 無法讀取指定資料時的錯誤."""
@@ -74,8 +76,9 @@ class V2QueryService:
     def iter_display_events(self, session_id: str) -> Iterable[dict[str, object]]:
         """產生 display-safe SSE event。"""
 
-        for event in self.get_session_events(session_id, 100):
-            yield _sanitize_display_payload(event)
+        self._session_record(session_id)
+        for event in self._events(session_id, 100):
+            yield normalize_display_event(event)
 
     def _session_record(self, session_id: str) -> dict[str, object]:
         if not hasattr(self._storage_manager, "get_v2_session"):
@@ -169,18 +172,8 @@ _PUBLIC_FORBIDDEN_KEYS = {
 }
 
 
-_DISPLAY_FORBIDDEN_KEYS = _PUBLIC_FORBIDDEN_KEYS | {
-    "diagnostics",
-    "operator_controls",
-}
-
-
 def _sanitize_public_payload(value: Any) -> Any:
     return _sanitize_payload(value, _PUBLIC_FORBIDDEN_KEYS)
-
-
-def _sanitize_display_payload(value: Any) -> Any:
-    return _sanitize_payload(value, _DISPLAY_FORBIDDEN_KEYS)
 
 
 def _sanitize_payload(value: Any, forbidden_keys: set[str]) -> Any:

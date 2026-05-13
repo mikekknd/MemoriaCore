@@ -104,19 +104,16 @@ class FakeQueryService:
         return iter(
             [
                 {
-                    "event_type": "display_message",
-                    "session_id": session_id,
-                    "diagnostics": {"retryable": False},
+                    "display_contract_version": "v1",
+                    "event_id": "display-1",
+                    "event_type": "audience_message",
+                    "source_event_type": "youtube_text_message",
                     "public_payload": {
-                        "text": "nested visible",
+                        "author_display_name": "Mika",
+                        "message_text": "visible",
+                        "display_flags": {"moderator": True},
                         "diagnostics": {"operator_only": True},
-                    },
-                    "payload": {
-                        "text": "visible",
-                        "diagnostics": {"retryable": False},
                         "operator_controls": {"manual_close": True},
-                        "nested": {"operator_controls": {"manual_close": True}},
-                        "raw_memoriacore_payload": {"token": "must not leak"},
                     },
                 }
             ]
@@ -487,10 +484,12 @@ def test_display_stream_emits_display_safe_events():
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert "display_message" in text
+    assert "audience_message" in text
+    assert "youtube_text_message" in text
     assert "visible" in text
-    assert "nested visible" in text
+    assert "moderator" in text
     assert "diagnostics" not in text
+    assert "operator_controls" not in text
     assert query.calls == [("iter_display_events", "session-1")]
     _assert_no_private_payload(text)
 

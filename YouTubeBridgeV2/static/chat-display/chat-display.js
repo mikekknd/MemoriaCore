@@ -120,6 +120,7 @@ export class DisplaySuperChatEvent {
     this.amountDisplayString = cleanText(values.amountDisplayString || values.amount_display_string || values.amount || "");
     this.currency = cleanText(values.currency || "");
     this.acknowledgementStatus = cleanText(values.acknowledgementStatus || values.acknowledgement_status || "");
+    this.flags = sanitizePublicValue(values.flags || values.display_flags || {});
   }
 
   static fromEvent(event = {}) {
@@ -134,6 +135,7 @@ export class DisplaySuperChatEvent {
           <strong>${escapeHtml(this.authorDisplayName)}</strong>
           <span class="amount">${escapeHtml(this.amountDisplayString || this.currency)}</span>
           ${this.acknowledgementStatus ? `<span class="ack">${escapeHtml(this.acknowledgementStatus)}</span>` : ""}
+          ${renderDisplayFlags(this.flags)}
         </div>
         <p>${escapeHtml(this.messageText)}</p>
       </article>

@@ -147,6 +147,36 @@ console.log(JSON.stringify({event, html: event.render()}));
     assert "Great show" in result["html"]
 
 
+def test_chat_display_renders_normalized_display_contract_super_chat():
+    result = _run_node_json(
+        """
+const html = ui.renderDisplayEvent({
+  display_contract_version: "v1",
+  event_type: "super_chat",
+  source_event_type: "youtube_super_chat",
+  public_payload: {
+    author_display_name: "Rin",
+    message_text: "Great stream",
+    amount_display_string: "NT$150",
+    currency: "TWD",
+    acknowledgement_status: "pending",
+    display_flags: {member: true},
+    raw_payload: {authorization: "Bearer secret-value"}
+  }
+});
+console.log(JSON.stringify({html}));
+"""
+    )
+
+    assert 'data-testid="super-chat"' in result["html"]
+    assert "Rin" in result["html"]
+    assert "NT$150" in result["html"]
+    assert "pending" in result["html"]
+    assert "Member" in result["html"]
+    assert "raw_payload" not in result["html"]
+    assert "secret-value" not in result["html"]
+
+
 def test_chat_display_renders_aftertalk_status_banner():
     result = _run_node_json(
         """

@@ -86,6 +86,12 @@ planned_show -> aftertalk -> closing -> ended
 
 負責直播畫面使用的 chat 顯示介面。它呈現觀眾留言、角色發言、Super Chat、系統狀態提示、Aftertalk/closing 狀態，以及 presentation/TTS 可用的顯示 metadata。Chat Display UI 不負責操作者設定，也不直接呼叫 runtime 控制 API。
 
+Wave 6A 將 display event contract 收斂到 `YouTubeBridgeV2/display/events.py`：
+`V2QueryService.iter_display_events(...)` 會把 storage/query event 轉成
+`display_contract_version: "v1"` 的 renderable projection，並保留
+`source_event_type` 供診斷。Event history 仍是 public audit projection，不等同
+display stream。
+
 ### Observability
 
 負責 trace、phase transition log、adapter request summary、MemoriaCore correlation id 與錯誤診斷入口。Observability 應記錄足夠狀態讓 agent 查問題，不暴露 raw hidden prompt。
@@ -270,6 +276,13 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Browser regression harness：新增 opt-in pytest smoke，預設 skip，不讓一般 V2 suite 依賴本機瀏覽器。
 - [x] UI coverage：harness 驗證 Operator Console desktop/mobile、operator controls、API key create/delete、no raw key DOM、console/network health。
 - [x] Scope boundary：本階段只驗證 Operator Console，不進入 Wave 6 Chat Display / Presentation / TTS。
+
+## Integration Wave 6A 狀態
+
+- [x] Display contract normalizer：新增 `YouTubeBridgeV2/display/events.py`，將 raw public event projection 轉成 `audience_message`、`super_chat`、`character_response`、`system_state` 或 `closing_status` display events。
+- [x] Display stream projection：`V2QueryService.iter_display_events(...)` 現在輸出 renderable display contract，而不是直接轉送 event history shape。
+- [x] Privacy boundary：display contract 與 route final pass 會移除 nested raw payload、operator controls、token/secret key patterns 與 auth-like text。
+- [x] Scope boundary：本階段不處理 Chat Display visual redesign、presentation metadata wiring 或 TTS queue/ack/timeout E2E。
 
 ## Module Design 文件
 

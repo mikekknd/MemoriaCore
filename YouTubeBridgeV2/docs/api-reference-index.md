@@ -637,6 +637,9 @@ Source:
 
 Purpose:
 提供 Server/API Surface 使用的 public read model 與 SSE event source，讓 route 不直接讀 storage internals。
+Wave 6A：`iter_display_events` 會輸出正規化的
+`display_contract_version: "v1"` display events；`get_session_events` 維持
+public audit/event-history projection。
 
 Concepts:
 - `V2QueryService`
@@ -646,6 +649,8 @@ Concepts:
 - `get_session_events`
 - `iter_operator_events`
 - `iter_display_events`
+- `normalize_display_event`
+- `sanitize_display_value`
 
 Stability:
 - `provisional`
@@ -653,6 +658,8 @@ Stability:
 Source:
 - `YouTubeBridgeV2/query_service.py::V2QueryService`
 - `YouTubeBridgeV2/query_service.py::V2QueryServiceError`
+- `YouTubeBridgeV2/display/events.py::normalize_display_event`
+- `YouTubeBridgeV2/display/events.py::sanitize_display_value`
 
 ### Server/API Surface
 
@@ -900,9 +907,16 @@ Source:
 
 Purpose:
 定義直播畫面 chat display 可呈現的 display-safe event contract。
+Wave 6A display stream envelope 包含 `display_contract_version: "v1"`、
+`event_id`、`event_type`、`source_event_type`、可選的 `created_at` 與
+`public_payload`。可渲染 event types 為 `audience_message`、
+`character_response`、`super_chat`、`system_state` 與 `closing_status`。
 
 Concepts:
 - `GET /v2/static/chat-display/index.html`
+- `display_contract_version: "v1"`
+- `normalize_display_event`
+- `sanitize_display_value`
 - `DisplayMessageEvent`
 - `DisplaySystemStateEvent`
 - `DisplaySuperChatEvent`
@@ -919,6 +933,8 @@ Stability:
 
 Source:
 - `api/main.py::/v2/static`
+- `YouTubeBridgeV2/display/events.py::normalize_display_event`
+- `YouTubeBridgeV2/display/events.py::sanitize_display_value`
 - `YouTubeBridgeV2/static/chat-display/index.html`
 - `YouTubeBridgeV2/static/chat-display/chat-display.css`
 - `YouTubeBridgeV2/static/chat-display/chat-display.js::DisplayMessageEvent`

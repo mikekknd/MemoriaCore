@@ -126,6 +126,10 @@ def test_fake_backed_youtube_super_chat_ingestion_is_public_safe_across_reads():
     assert public_payload["author_display_name"] == "Rin"
     assert public_payload["super_chat"]["amount_display_string"] == "NT$150"
     assert public_payload["super_chat"]["acknowledgement_status"] == "pending"
+    assert '"event_type": "super_chat"' in display_text
+    assert '"source_event_type": "youtube_super_chat"' in display_text
+    assert "NT$150" in display_text
+    assert "pending" in display_text
     assert len(planned_show.calls) == 1
     _assert_no_private_payload(response.json())
     _assert_no_private_payload(events_response.json())

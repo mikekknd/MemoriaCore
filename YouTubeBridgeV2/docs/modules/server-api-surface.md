@@ -92,6 +92,10 @@ Wave 2B 已將主 FastAPI app 的 `/v2` routes 接到真 `StorageManager` durabl
 | errors | Return sanitized stable error code and correlation id. |
 | missing session | Return `404` with `session_not_found` and `query-<session_id>` correlation id. |
 
+Wave 6A display stream events 會先通過 display contract normalizer，再進入 SSE
+encoding。Event history 保持 public audit projection；display stream 則是 Chat
+Display UI 使用的可渲染 projection。
+
 ## Main App Auth Requirements
 
 | Endpoint Group | Required Permission |

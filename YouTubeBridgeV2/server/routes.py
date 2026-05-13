@@ -18,6 +18,7 @@ from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from YouTubeBridgeV2.display.events import sanitize_display_value
 from YouTubeBridgeV2.server.auth_config import (
     delete_v2_api_key_entry,
     list_v2_api_key_entries,
@@ -584,7 +585,7 @@ def _sse_stream(
 
 
 def _display_safe_payload(event: object) -> object:
-    return _sanitize_payload(event, _DISPLAY_FORBIDDEN_KEYS)
+    return sanitize_display_value(event)
 
 
 def _object_to_dict(value: object) -> dict[str, object]:
@@ -627,12 +628,6 @@ _PUBLIC_FORBIDDEN_KEYS = {
     "authorization",
     "secret",
     "token",
-}
-
-
-_DISPLAY_FORBIDDEN_KEYS = _PUBLIC_FORBIDDEN_KEYS | {
-    "diagnostics",
-    "operator_controls",
 }
 
 
