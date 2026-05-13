@@ -521,6 +521,9 @@ Concepts:
 - `StorageContractError`
 - `RuntimeStoragePort`
 - `live_episode_plan_state`
+- `youtube_polling_cursor`
+- `RuntimeStoragePort.save_youtube_polling_cursor(session_id, cursor, now)`
+- `RuntimeStoragePort.load_youtube_polling_cursor(session_id)`
 - `RuntimeStorageContractError`
 - `YouTubeBridgeV2RepositoryMixin`
 - `StorageManager(..., youtube_bridge_v2_db_path=None)`
@@ -549,6 +552,9 @@ Implementation status:
 - `RuntimeStoragePort` is the application-service storage port. It maps runtime
   commands to the injected StorageManager-like backend, handles command result
   JSON-safe persistence/rehydration, and still does not import or own SQLite.
+- Wave 3B：YouTube polling cursor 以 `youtube_polling_cursor` 存在 session
+  metadata，讓 restart 後可恢復 `next_page_token`、polling interval 與
+  seen event ids。
 - SQLite access for V2 durable storage is allowed only through
   `core/storage/youtube_bridge_v2.py` and `core/storage_manager.py`.
 
@@ -567,6 +573,8 @@ Source:
 - `YouTubeBridgeV2/storage/repositories.py::StorageRecordNotFound`
 - `YouTubeBridgeV2/storage/repositories.py::StorageContractError`
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort`
+- `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort.save_youtube_polling_cursor`
+- `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStoragePort.load_youtube_polling_cursor`
 - `YouTubeBridgeV2/storage/runtime_store.py::RuntimeStorageContractError`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin`
 - `core/storage/youtube_bridge_v2.py::YouTubeBridgeV2RepositoryMixin.create_v2_session`

@@ -69,6 +69,8 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 - `StorageContractError`：StorageManager 回傳資料不符合 V2 contract 時的 contract error。
 - `RuntimeStoragePort`：`RuntimeApplicationService` 使用的 service-facing storage adapter，負責 command-to-storage mapping、event persistence 與 command idempotency round-trip。
 - `live_episode_plan_state`：session metadata 內的 sanitized plan execution state，包含 `contract`、`cursor`、`completed_turn_ids`、`last_memoria_session_id`。
+- `youtube_polling_cursor`：session metadata 內的 sanitized YouTube polling cursor，包含 `live_chat_id`、`next_page_token`、`polling_interval_millis`、`seen_event_ids` 與 `updated_at`。
+- `RuntimeStoragePort.save_youtube_polling_cursor(session_id, cursor, now)` / `load_youtube_polling_cursor(session_id)`：runtime-facing cursor persistence/recovery boundary。
 - `YouTubeBridgeV2RepositoryMixin`：主專案 `StorageManager` 的 durable V2 repository mixin，負責 `yb2_*` schema 初始化、CRUD/append methods 與 public redaction。
 - `StorageManager(..., youtube_bridge_v2_db_path=None)`：提供 V2 durable DB path 注入；預設使用 `runtime/youtubebridge_v2.db`。
 - `create_v2_session(record)` / `get_v2_session(session_id)` / `update_v2_session(session_id, patch)`：session durable contract。
@@ -88,6 +90,7 @@ Storage 負責定義 V2 session、phase state、events、interactions、adapter 
 | normalized event | Store display-safe summary separately from private adapter metadata. |
 | interaction | Store speaker, phase, public content summary, and correlation id. |
 | LiveEpisodePlan state | Store sanitized contract/cursor/completed turn ids in session metadata; raw Topic Pack, raw FactCards, hidden prompt and raw Memoria payload stay out of public storage. |
+| YouTube polling cursor | Store sanitized cursor in session metadata so restart can continue duplicate detection and pagination state. |
 | adapter metadata | Store redacted summary by default; raw payload requires explicit private storage policy. |
 | finalization result | Must include closing completion status and ended metadata. |
 | crash/restart | Snapshot must be sufficient for Runtime Application Service recovery. |

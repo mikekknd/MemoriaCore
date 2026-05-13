@@ -11,6 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from YouTubeBridgeV2.adapters.youtube import YouTubePollingCursor
 from YouTubeBridgeV2.live_episode_plan.runner import (
     LiveEpisodePlanState,
     validate_episode_plan_contract,
@@ -219,6 +220,42 @@ class RuntimeStoragePort:
             },
         )
 
+    def save_youtube_polling_cursor(
+        self,
+        session_id: str,
+        cursor: YouTubePollingCursor | dict[str, object],
+        now: datetime,
+    ) -> None:
+        """保存 YouTube polling cursor 到 session metadata。"""
+
+        polling_cursor = _youtube_polling_cursor(cursor)
+        self._update_session(
+            session_id,
+            {
+                "youtube_polling_cursor": {
+                    "live_chat_id": polling_cursor.live_chat_id,
+                    "next_page_token": polling_cursor.next_page_token,
+                    "polling_interval_millis": polling_cursor.polling_interval_millis,
+                    "seen_event_ids": list(polling_cursor.seen_event_ids),
+                    "updated_at": now.isoformat(),
+                }
+            },
+        )
+
+    def load_youtube_polling_cursor(self, session_id: str) -> YouTubePollingCursor | None:
+        """從 session metadata 讀回 YouTube polling cursor。"""
+
+        if not hasattr(self._storage_manager, "get_v2_session"):
+            raise RuntimeStorageContractError("storage manager missing get_v2_session")
+        record = self._storage_manager.get_v2_session(session_id)
+        if record is None:
+            raise KeyError(session_id)
+        metadata = _object_to_dict(record.get("metadata", {}))
+        raw_cursor = metadata.get("youtube_polling_cursor")
+        if raw_cursor is None:
+            return None
+        return _youtube_polling_cursor(raw_cursor)
+
     def persist_error_summary(
         self,
         session_id: str,
@@ -294,6 +331,18 @@ def _live_episode_plan_state_record(
     record = _json_safe_value(state)
     record["last_memoria_session_id"] = last_memoria_session_id
     return _sanitize_public_payload(record)
+
+
+def _youtube_polling_cursor(value: YouTubePollingCursor | dict[str, object]) -> YouTubePollingCursor:
+    if isinstance(value, YouTubePollingCursor):
+        return value
+    data = _object_to_dict(value)
+    return YouTubePollingCursor(
+        live_chat_id=str(data.get("live_chat_id", "")),
+        next_page_token=data.get("next_page_token"),
+        polling_interval_millis=data.get("polling_interval_millis"),
+        seen_event_ids=_list_value(data.get("seen_event_ids")),
+    )
 
 
 def _object_to_dict(value: object) -> dict[str, object]:

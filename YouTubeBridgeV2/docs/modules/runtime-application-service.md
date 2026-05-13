@@ -115,6 +115,10 @@ Wave 3A status:
 - command idempotency 會在保存 YouTube event 前檢查，避免同一 `command_id` 重送時重複寫 event。
 - 本階段不處理 polling cursor、YouTube API transport、scheduler 或 Super Chat closing handoff。
 
+Wave 3B status:
+- `HANDLE_YOUTUBE_EVENT` 會優先使用 command payload 的 `polling_cursor`，否則從 storage 讀取 `youtube_polling_cursor`。
+- cursor 會在 event persistence 後 advance 並寫回 session metadata；duplicate event id 只保存 ignored event summary，不 dispatch runner。
+
 ### `RuntimeCommand`
 
 Source:

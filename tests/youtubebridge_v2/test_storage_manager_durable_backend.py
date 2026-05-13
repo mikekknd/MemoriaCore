@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from core.storage_manager import StorageManager
+from YouTubeBridgeV2.adapters.youtube import YouTubePollingCursor
 from YouTubeBridgeV2.runtime.application_service import (
     RuntimeServiceEvent,
     RuntimeServiceResult,
@@ -15,6 +16,7 @@ from YouTubeBridgeV2.runtime.phase import (
     DurationPolicy,
     LiveSessionPhase,
 )
+from YouTubeBridgeV2.storage.runtime_store import RuntimeStoragePort
 
 
 STARTED_AT = datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
@@ -385,3 +387,33 @@ def test_v2_storage_schema_init_is_idempotent_across_manager_instances(tmp_path)
 
     assert loaded["session_id"] == "session-1"
     assert second.get_v2_session("session-1")["current_phase"] == "aftertalk"
+
+
+def test_youtube_polling_cursor_survives_storage_manager_restart(tmp_path):
+    storage = _storage(tmp_path)
+    storage.create_v2_session(_session_record())
+    RuntimeStoragePort(storage).save_youtube_polling_cursor(
+        "session-1",
+        YouTubePollingCursor(
+            live_chat_id="live-chat-1",
+            next_page_token="page-2",
+            polling_interval_millis=2500,
+            seen_event_ids=("yt-evt-1", "yt-evt-2"),
+        ),
+        NOW,
+    )
+
+    restarted = _storage(tmp_path)
+    loaded = RuntimeStoragePort(restarted).load_youtube_polling_cursor("session-1")
+
+    assert loaded == YouTubePollingCursor(
+        live_chat_id="live-chat-1",
+        next_page_token="page-2",
+        polling_interval_millis=2500,
+        seen_event_ids=("yt-evt-1", "yt-evt-2"),
+    )
+    text = repr(restarted.get_v2_session("session-1")).lower()
+    assert "access_token" not in text
+    assert "authorization" not in text
+    assert "secret" not in text
+    assert "must not leak" not in text

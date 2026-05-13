@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from YouTubeBridgeV2.adapters.youtube import YouTubePollingCursor
 from YouTubeBridgeV2.runtime.application_service import (
     AdapterDispatchResult,
     RecoveryDecision,
@@ -117,6 +118,7 @@ class FakeStorage:
         self.events = []
         self.error_summaries = []
         self.youtube_events = []
+        self.youtube_polling_cursor = None
         self.fail_persist_transition = False
 
     def get_command_result(self, command_id):
@@ -179,6 +181,14 @@ class FakeStorage:
                 "created_at": now,
             }
         )
+
+    def load_youtube_polling_cursor(self, session_id):
+        self.calls.append(("load_youtube_polling_cursor", session_id))
+        return self.youtube_polling_cursor
+
+    def save_youtube_polling_cursor(self, session_id, cursor, now):
+        self.calls.append(("save_youtube_polling_cursor", session_id, now))
+        self.youtube_polling_cursor = cursor
 
 
 class FakePhaseAdvancer:
@@ -339,6 +349,80 @@ def test_handle_youtube_event_duplicate_command_does_not_persist_twice():
     assert second == first
     assert len(storage.youtube_events) == 1
     assert len(runner.calls) == 1
+
+
+def test_handle_youtube_event_advances_and_persists_polling_cursor_from_payload():
+    storage = FakeStorage(snapshot=_snapshot())
+    runner = FakeRunner()
+    service = _service(
+        storage=storage,
+        phase_advancer=FakePhaseAdvancer(_transition("run_planned_show")),
+        planned_show_runner=runner,
+    )
+    command = _command(
+        RuntimeCommandType.HANDLE_YOUTUBE_EVENT,
+        command_id="cmd-youtube-cursor",
+        payload={
+            "youtube_event": _raw_youtube_text_event(id="yt-evt-2"),
+            "polling_cursor": {
+                "live_chat_id": "live-chat-1",
+                "next_page_token": "page-1",
+                "polling_interval_millis": 1500,
+                "seen_event_ids": ["yt-evt-1"],
+            },
+            "page_info": {
+                "next_page_token": "page-2",
+                "polling_interval_millis": 2500,
+            },
+        },
+    )
+
+    result = service.handle_youtube_event(command, BASE_NOW)
+
+    assert result.status == "ok"
+    assert len(runner.calls) == 1
+    assert isinstance(storage.youtube_polling_cursor, YouTubePollingCursor)
+    assert storage.youtube_polling_cursor.live_chat_id == "live-chat-1"
+    assert storage.youtube_polling_cursor.next_page_token == "page-2"
+    assert storage.youtube_polling_cursor.polling_interval_millis == 2500
+    assert storage.youtube_polling_cursor.seen_event_ids == ("yt-evt-1", "yt-evt-2")
+
+
+def test_handle_youtube_event_uses_stored_cursor_to_skip_duplicate_after_restart():
+    storage = FakeStorage(snapshot=_snapshot())
+    storage.youtube_polling_cursor = YouTubePollingCursor(
+        live_chat_id="live-chat-1",
+        next_page_token="page-2",
+        polling_interval_millis=2500,
+        seen_event_ids=("yt-evt-1",),
+    )
+    runner = FakeRunner()
+    service = _service(
+        storage=storage,
+        phase_advancer=FakePhaseAdvancer(_transition("run_planned_show")),
+        planned_show_runner=runner,
+    )
+    command = _command(
+        RuntimeCommandType.HANDLE_YOUTUBE_EVENT,
+        command_id="cmd-youtube-duplicate",
+        payload={"youtube_event": _raw_youtube_text_event()},
+    )
+
+    result = service.handle_youtube_event(command, BASE_NOW)
+
+    assert result.status == "ok"
+    assert not runner.calls
+    assert len(storage.youtube_events) == 1
+    stored_payload = storage.youtube_events[0]["payload"]
+    assert stored_payload["duplicate"] is True
+    assert stored_payload["should_dispatch"] is False
+    assert result.events[0].event_type == "youtube_event_ignored"
+    assert result.adapter_result.summary == {
+        "youtube_event": "duplicate",
+        "event_id": "yt-evt-1",
+    }
+    assert storage.youtube_polling_cursor.next_page_token == "page-2"
+    assert storage.youtube_polling_cursor.polling_interval_millis == 2500
 
 
 def test_phase_next_action_dispatches_planned_show_runner():

@@ -64,6 +64,10 @@ Wave 3A runtime handoff:
 - Runtime 只呼叫 `normalize_youtube_event(...)` 取得 display-safe payload，不直接接收 raw YouTube payload 到 public event。
 - `HANDLE_YOUTUBE_EVENT` 只處理單一 live chat event normalization + runtime input handoff；polling cursor / duplicate event recovery / scheduler ingestion 保留給 3B/3D。
 
+Wave 3B cursor handoff:
+- Runtime 可把 storage/payload cursor 傳入 `normalize_youtube_event(..., cursor=cursor)`，讓 duplicate event id 變成 `duplicate=True`、`should_dispatch=False`。
+- Adapter 仍不保存 cursor；cursor persistence 屬於 Storage/Runtime boundary。
+
 ## Polling Rules
 
 | Situation | Required Behavior |

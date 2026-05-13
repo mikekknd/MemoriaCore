@@ -187,6 +187,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Runtime input persistence：`RuntimeStoragePort.persist_youtube_event(...)` 保存 normalized event id/type/public payload/display event，不保存 raw YouTube payload。
 - [x] Scope boundary：polling cursor、YouTube API transport、scheduler ingestion 與 Super Chat closing handoff 保留給後續 3B/3C/3D。
 
+## Integration Wave 3B 狀態
+
+- [x] Polling cursor persistence：`RuntimeStoragePort` 可保存/讀回 session metadata 的 `youtube_polling_cursor`。
+- [x] Restart recovery：重建 `StorageManager` 後可讀回 `YouTubePollingCursor`，seen event ids 不遺失。
+- [x] Duplicate skip：runtime 用 cursor 判定 duplicate event id 時，只保存 ignored event summary，不重複 dispatch runner。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

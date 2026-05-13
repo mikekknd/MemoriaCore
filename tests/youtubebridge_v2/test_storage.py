@@ -4,6 +4,7 @@ import ast
 
 import pytest
 
+from YouTubeBridgeV2.adapters.youtube import YouTubePollingCursor
 from YouTubeBridgeV2.runtime.phase import (
     AftertalkPolicy,
     DurationPolicy,
@@ -48,6 +49,17 @@ class FakeStorageManager:
 
     def get_v2_session(self, session_id):
         return self.sessions.get(session_id)
+
+    def update_v2_session(self, session_id, patch):
+        current = self.sessions[session_id]
+        metadata = dict(current.get("metadata", {}))
+        for key, value in dict(patch).items():
+            if key in current:
+                current[key] = value
+            else:
+                metadata[key] = value
+        current["metadata"] = metadata
+        return current
 
     def get_v2_phase_transition(self, transition_id):
         return self.transitions.get(transition_id)
@@ -257,6 +269,40 @@ def test_runtime_storage_port_persists_normalized_youtube_event_shape():
     }
     assert stored["created_at"] == NOW
     _assert_no_private_payload(stored)
+
+
+def test_runtime_storage_port_saves_and_loads_youtube_polling_cursor():
+    storage = FakeStorageManager()
+    storage.create_v2_session(_session_record())
+    port = RuntimeStoragePort(storage)
+
+    port.save_youtube_polling_cursor(
+        "session-1",
+        YouTubePollingCursor(
+            live_chat_id="live-chat-1",
+            next_page_token="page-2",
+            polling_interval_millis=2500,
+            seen_event_ids=("yt-evt-1", "yt-evt-2"),
+        ),
+        NOW,
+    )
+
+    loaded = port.load_youtube_polling_cursor("session-1")
+
+    assert loaded == YouTubePollingCursor(
+        live_chat_id="live-chat-1",
+        next_page_token="page-2",
+        polling_interval_millis=2500,
+        seen_event_ids=("yt-evt-1", "yt-evt-2"),
+    )
+    stored = storage.sessions["session-1"]["metadata"]["youtube_polling_cursor"]
+    assert stored["seen_event_ids"] == ["yt-evt-1", "yt-evt-2"]
+    assert stored["updated_at"] == NOW.isoformat()
+    text = repr(stored).lower()
+    assert "access_token" not in text
+    assert "authorization" not in text
+    assert "secret" not in text
+    assert "must not leak" not in text
 
 
 def test_append_interaction_persists_response_summary():

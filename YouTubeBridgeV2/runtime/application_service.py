@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 
 from YouTubeBridgeV2.adapters.youtube import (
     NormalizedYouTubeEvent,
+    YouTubePollingCursor,
     normalize_youtube_event,
 )
 from .phase import (
@@ -196,8 +197,12 @@ class RuntimeApplicationService:
         if existing is not None:
             return existing
 
+        cursor = _youtube_cursor_for_command(command, self._storage)
         try:
-            youtube_payload = _youtube_runtime_event_payload(command.payload)
+            youtube_payload, advanced_cursor = _youtube_runtime_event_payload(
+                command.payload,
+                cursor=cursor,
+            )
         except ValueError as exc:
             result = _youtube_contract_error(command, str(exc))
             self._save_result(command, result)
@@ -205,8 +210,42 @@ class RuntimeApplicationService:
 
         if hasattr(self._storage, "persist_youtube_event"):
             self._storage.persist_youtube_event(command.session_id, youtube_payload, now)
+        if advanced_cursor is not None and hasattr(self._storage, "save_youtube_polling_cursor"):
+            self._storage.save_youtube_polling_cursor(command.session_id, advanced_cursor, now)
+        if youtube_payload.get("should_dispatch") is False:
+            snapshot = self._storage.read_snapshot(command.session_id)
+            return self._youtube_duplicate_result(command, snapshot, youtube_payload)
         snapshot = self._storage.read_snapshot(command.session_id)
         return self._advance_and_dispatch(command, now, snapshot)
+
+    def _youtube_duplicate_result(
+        self,
+        command: RuntimeCommand,
+        snapshot: LiveSessionSnapshot,
+        youtube_payload: dict[str, object],
+    ) -> RuntimeServiceResult:
+        summary = {
+            "youtube_event": "duplicate",
+            "event_id": str(youtube_payload.get("event_id", "")),
+        }
+        event = self._event(
+            event_type="youtube_event_ignored",
+            command=command,
+            phase=snapshot.current_phase,
+            payload=summary,
+        )
+        self._persist_event(event)
+        result = RuntimeServiceResult(
+            status="ok",
+            session_id=command.session_id,
+            phase=snapshot.current_phase,
+            events=[event],
+            errors=[],
+            correlation_id=_correlation_id(command),
+            adapter_result=AdapterDispatchResult(status="ok", summary=summary),
+        )
+        self._save_result(command, result)
+        return result
 
     def update_aftertalk_policy(
         self,
@@ -491,24 +530,87 @@ def _errors_for_adapter_result(adapter_result: AdapterDispatchResult) -> list[di
     ]
 
 
-def _youtube_runtime_event_payload(payload: dict[str, object]) -> dict[str, object]:
+def _youtube_runtime_event_payload(
+    payload: dict[str, object],
+    *,
+    cursor: YouTubePollingCursor | None = None,
+) -> tuple[dict[str, object], YouTubePollingCursor | None]:
     raw_event = payload.get("youtube_event", payload.get("raw_event", payload))
     if isinstance(raw_event, NormalizedYouTubeEvent):
         normalized = raw_event
     elif isinstance(raw_event, Mapping):
-        normalized = normalize_youtube_event(raw_event)
+        normalized = normalize_youtube_event(raw_event, cursor=cursor)
     else:
         raise ValueError("youtube_event must be a mapping")
 
-    return _sanitize_public_payload(
+    advanced_cursor = _advance_youtube_cursor(cursor, payload, normalized.event_id)
+    runtime_payload = _sanitize_public_payload(
         {
             "event_id": normalized.event_id,
             "event_type": f"youtube_{normalized.event_type}",
             "public_payload": normalized.public_payload,
             "display_event": normalized.display_event,
+            "duplicate": normalized.duplicate,
             "should_dispatch": normalized.should_dispatch,
         }
     )
+    return runtime_payload, advanced_cursor
+
+
+def _youtube_cursor_for_command(
+    command: RuntimeCommand,
+    storage: object,
+) -> YouTubePollingCursor | None:
+    payload_cursor = command.payload.get("polling_cursor")
+    if payload_cursor is not None:
+        return _youtube_polling_cursor(payload_cursor)
+    if hasattr(storage, "load_youtube_polling_cursor"):
+        return storage.load_youtube_polling_cursor(command.session_id)
+    return None
+
+
+def _advance_youtube_cursor(
+    cursor: YouTubePollingCursor | None,
+    payload: dict[str, object],
+    event_id: str,
+) -> YouTubePollingCursor | None:
+    if cursor is None:
+        return None
+    page_info = _mapping(payload.get("page_info"))
+    advance_kwargs: dict[str, object] = {"seen_event_ids": (event_id,)}
+    if "next_page_token" in page_info:
+        advance_kwargs["next_page_token"] = page_info["next_page_token"]
+    elif "next_page_token" in payload:
+        advance_kwargs["next_page_token"] = payload["next_page_token"]
+    if "polling_interval_millis" in page_info:
+        advance_kwargs["polling_interval_millis"] = page_info["polling_interval_millis"]
+    elif "polling_interval_millis" in payload:
+        advance_kwargs["polling_interval_millis"] = payload["polling_interval_millis"]
+    return cursor.advance(**advance_kwargs)
+
+
+def _youtube_polling_cursor(value: object) -> YouTubePollingCursor:
+    if isinstance(value, YouTubePollingCursor):
+        return value
+    data = _mapping(value)
+    return YouTubePollingCursor(
+        live_chat_id=str(data.get("live_chat_id", "")),
+        next_page_token=data.get("next_page_token"),
+        polling_interval_millis=data.get("polling_interval_millis"),
+        seen_event_ids=_list_value(data.get("seen_event_ids")),
+    )
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _list_value(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
 
 
 def _youtube_contract_error(command: RuntimeCommand, message: str) -> RuntimeServiceResult:
