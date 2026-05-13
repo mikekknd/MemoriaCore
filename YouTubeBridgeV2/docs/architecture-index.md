@@ -252,6 +252,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Permission-aware status：main-app status/phase reads 會帶 request `permission_group`，讓 UI 只對 operator 顯示 controls。
 - [x] Scope boundary：本階段不新增 API key management UI，也不擴張 aftertalk policy contract。
 
+## Integration Wave 5C 狀態
+
+- [x] Durable aftertalk control：Aftertalk toggle 送出 `POST /v2/sessions/{session_id}/aftertalk-policy` 後會重新讀 durable session status。
+- [x] Permission boundary：aftertalk control 只在 operator context 顯示，display-only 仍隱藏 controls。
+- [x] Scope boundary：本階段不改 aftertalk runtime policy contract，不新增 API key management UI。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

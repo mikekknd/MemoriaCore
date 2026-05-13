@@ -215,6 +215,75 @@ console.log(JSON.stringify({calls, response}));
     ]
 
 
+def test_aftertalk_toggle_reloads_durable_status_after_update():
+    result = _run_node_json(
+        """
+const calls = [];
+let changeHandler = null;
+const elements = {
+  aftertalk: {
+    checked: false,
+    addEventListener: (_event, handler) => { changeHandler = handler; }
+  },
+  tick: null,
+  bindPlan: null,
+  close: null
+};
+const root = {
+  innerHTML: "",
+  querySelector: (selector) => {
+    if (selector === "[data-testid='aftertalk-toggle']") return elements.aftertalk;
+    if (selector === "[data-testid='tick-button']") return elements.tick;
+    if (selector === "[data-testid='bind-plan-button']") return elements.bindPlan;
+    if (selector === "[data-testid='manual-close-button']") return elements.close;
+    return null;
+  }
+};
+const fetchImpl = async (url, options = {}) => {
+  calls.push({url, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null});
+  if (options.method === "POST") {
+    return {ok: true, json: async () => ({status: "ok"})};
+  }
+  return {
+    ok: true,
+    json: async () => ({
+      session_id: "session-1",
+      phase: "planned_show",
+      permission_group: "operator",
+      aftertalk_policy: "disabled",
+      public_summary: {title: "Reloaded Policy"}
+    })
+  };
+};
+ui.mountOperatorConsole({
+  root,
+  sessionId: "session-1",
+  fetchImpl,
+  eventSourceFactory: () => null,
+  initialStatus: {
+    session_id: "session-1",
+    phase: "planned_show",
+    permission_group: "operator",
+    aftertalk_policy: "auto"
+  }
+});
+await changeHandler();
+console.log(JSON.stringify({calls, html: root.innerHTML}));
+"""
+    )
+
+    assert result["calls"][0]["url"] == "/v2/sessions/session-1/aftertalk-policy"
+    assert result["calls"][0]["method"] == "POST"
+    assert result["calls"][0]["body"]["aftertalk_policy"] == "disabled"
+    assert result["calls"][1] == {
+        "url": "/v2/sessions/session-1",
+        "method": "GET",
+        "body": None,
+    }
+    assert "Reloaded Policy" in result["html"]
+    assert "disabled" in result["html"]
+
+
 def test_create_session_command_sends_create_request():
     result = _run_node_json(
         """
@@ -668,6 +737,16 @@ def test_operator_console_api_dependencies_are_served_by_main_app(tmp_path, monk
         "reason": "",
     }
     assert "v2_runtime_not_configured" not in repr(status)
+
+    policy_response = client.post(
+        "/v2/sessions/session-1/aftertalk-policy",
+        json={"command_id": "cmd-policy", "aftertalk_policy": "disabled"},
+    )
+    assert policy_response.status_code == 200
+
+    policy_status = client.get("/v2/sessions/session-1").json()
+    assert policy_status["aftertalk_policy"] == "disabled"
+    assert policy_status["permission_group"] == "operator"
 
     bind_response = client.post(
         "/v2/sessions/session-1/plan",

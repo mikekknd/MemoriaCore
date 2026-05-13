@@ -73,10 +73,12 @@ Operator Console UI 負責後台操作者介面，讓操作者檢視 V2 session 
 | API action in flight | Disable the triggering control and keep status visible. |
 | SSE stale/disconnected | Show stale indicator and retry status. |
 | display-only permission | Hide operator controls entirely. |
+| Aftertalk policy update | 成功後重新讀 `GET /v2/sessions/{session_id}`，以 durable status 作為畫面真相來源。 |
 
 ## Failure Modes
 
 - API failure 時保持既有狀態並顯示 error banner。
+- Aftertalk policy update 成功後必須重新讀 `GET /v2/sessions/{session_id}`，不靠 optimistic local patch 作為最終狀態。
 - manual close in-flight 時控制項 disabled，避免重複提交。
 - display-only permission 不顯示 operator controls。
 - unknown phase 顯示 recoverable diagnostic，不自行改 phase。

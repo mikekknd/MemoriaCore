@@ -39,7 +39,7 @@ export class OperatorSessionStatusView {
     const closingState = String(status.closing_completion_status || "not_started");
     const inFlightAction = options.inFlightAction || "";
     const controlsDisabled = Boolean(inFlightAction) || phase === "closing" || phase === "ended";
-    const aftertalkPolicy = String(status.aftertalk_policy || "disabled");
+    const aftertalkPolicy = String(status.aftertalkPolicy || status.aftertalk_policy || "disabled");
     const streamState = String(status.stream_state || options.streamState || "connected");
     const diagnostics = sanitizePublicValue(status.diagnostics || {});
     const sessionId = String(options.sessionId || status.session_id || "");
@@ -411,7 +411,8 @@ function bindOperatorControls(root, {sessionId, fetchImpl, render, status}) {
       const policy = aftertalk.checked ? "auto" : "disabled";
       try {
         await AftertalkPolicyControl.send({sessionId, policy, fetchImpl});
-        render({...status, aftertalk_policy: policy});
+        const nextStatus = await loadOperatorStatus({sessionId, fetchImpl});
+        render(nextStatus);
       } catch (error) {
         render({...status, error});
       }

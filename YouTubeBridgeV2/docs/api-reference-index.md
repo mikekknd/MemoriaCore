@@ -803,6 +803,7 @@ Purpose:
 定義後台控制 UI 消費的 session status、control action 與 diagnostic contract。
 Wave 5A：初始 status dashboard 以 `GET /v2/sessions/{session_id}` 作為 durable source，phase-only endpoint 不再是初始載入來源。
 Wave 5B：main-app status/phase response 會包含 request `permission_group`，operator controls 只在 operator context 顯示。
+Wave 5C：Aftertalk policy control 更新成功後重新讀 `GET /v2/sessions/{session_id}`，不靠 optimistic local patch 作為最終狀態。
 
 Concepts:
 - `GET /v2/static/operator-console/index.html`
