@@ -291,6 +291,7 @@ Concepts:
 - `V2RuntimeComposition`
 - `V2CompositionConfigurationError`
 - `create_production_v2_composition`
+- `load_production_memoria_transport`
 
 Stability:
 - `provisional`
@@ -302,6 +303,7 @@ Source:
 - `YouTubeBridgeV2/composition.py::V2RuntimeComposition`
 - `YouTubeBridgeV2/composition.py::V2CompositionConfigurationError`
 - `YouTubeBridgeV2/production.py::create_production_v2_composition`
+- `YouTubeBridgeV2/production.py::load_production_memoria_transport`
 
 ### Runtime Application Service
 
@@ -422,7 +424,8 @@ Source:
 Purpose:
 將 V2 planned show / aftertalk / closing intent 轉成 MemoriaCore `/api/v1/chat/sync` request envelope，並正規化回覆與錯誤。
 HTTP transport config/client 條目定義真同步 transport 邊界，但 production
-`/v2` 在 Wave 2E-D 加入 opt-in toggle 前，仍需要明確注入 transport 才會外呼。
+`/v2` 只有在 prefs 明確啟用且 config valid 時才會建立真 transport；未設定、
+未啟用或設定錯誤時維持 no-op，不意外外呼。
 
 Concepts:
 - `MemoriaRequestPayload`

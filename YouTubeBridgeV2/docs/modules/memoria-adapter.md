@@ -63,6 +63,7 @@ MemoriaCore Adapter 負責把 V2 的 planned show intent、aftertalk request 與
 - `SyncJsonHttpClientProtocol`：可替換的同步 JSON client protocol，供單元測試注入 fake client。
 - `UrllibSyncJsonHttpClient`：stdlib `urllib.request` backed sync JSON client。
 - `MemoriaSyncHttpTransport`：符合 `MemoriaTransportProtocol.send(...)` 的真 HTTP transport implementation。
+- `load_production_memoria_transport(storage_manager)`：production-only opt-in loader；回傳真 transport 或 `None` 讓 composition 維持 no-op。
 
 ## Mapping Rules
 
@@ -91,6 +92,7 @@ Public summaries must include correlation metadata but not hidden prompts, raw r
 - HTTP invalid JSON 或 non-object JSON response 為 terminal `invalid_response`，不得把 raw body 寫進 public summary。
 - HTTP transport public summary 只能顯示 `base_url`、`timeout_seconds`、`max_attempts` 與 `has_api_key`，不得顯示 token/header/raw payload。
 - real integration harness 缺少 opt-in env 或必要 base URL / character id 時必須 skip，不得嘗試外呼。
+- production wiring 只有在 `youtubebridge_v2_memoria_transport.enabled` 明確啟用且 config valid 時建立真 Memoria HTTP transport；未設定、未啟用或設定錯誤時維持 no-op，不嘗試外呼。
 
 ## Test Strategy
 

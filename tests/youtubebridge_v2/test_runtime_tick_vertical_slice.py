@@ -8,11 +8,15 @@ from core.storage_manager import StorageManager
 from tests.youtubebridge_v2.fakes import InMemoryV2StorageManager
 from YouTubeBridgeV2.app import create_v2_app
 from YouTubeBridgeV2.adapters.memoria_http import (
+    MEMORIA_TRANSPORT_PREFS_KEY,
     MemoriaHttpTransportConfig,
     MemoriaSyncHttpTransport,
 )
 from YouTubeBridgeV2.composition import create_v2_composition
-from YouTubeBridgeV2.production import create_production_v2_composition
+from YouTubeBridgeV2.production import (
+    create_production_v2_composition,
+    load_production_memoria_transport,
+)
 from YouTubeBridgeV2.runtime.memoria_runners import (
     MemoriaAftertalkRunner,
     MemoriaClosingRunner,
@@ -266,6 +270,149 @@ def test_production_composition_without_memoria_transport_keeps_noop_runner(tmp_
         "external_adapter": "not_configured",
         "next_action": "run_planned_show",
     }
+
+
+def test_production_memoria_transport_requires_enabled_pref(tmp_path):
+    storage = _storage_manager(tmp_path)
+    storage.save_prefs(
+        {
+            MEMORIA_TRANSPORT_PREFS_KEY: {
+                "base_url": "http://127.0.0.1:8088",
+            }
+        }
+    )
+
+    assert load_production_memoria_transport(storage) is None
+
+    storage.save_prefs(
+        {
+            MEMORIA_TRANSPORT_PREFS_KEY: {
+                "enabled": False,
+                "base_url": "http://127.0.0.1:8088",
+            }
+        }
+    )
+
+    assert load_production_memoria_transport(storage) is None
+
+
+def test_production_memoria_transport_invalid_enabled_config_falls_back_noop(tmp_path):
+    storage = _storage_manager(tmp_path)
+    storage.save_prefs(
+        {
+            MEMORIA_TRANSPORT_PREFS_KEY: {
+                "enabled": True,
+                "base_url": "file:///tmp/memoria",
+            }
+        }
+    )
+
+    assert load_production_memoria_transport(storage) is None
+    composition = create_production_v2_composition(storage)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: NOW))
+    _create_and_bind(client, "session-invalid-transport")
+
+    response = client.post(
+        "/v2/sessions/session-invalid-transport/tick",
+        json={"command_id": "cmd-invalid-transport"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["events"][0]["payload"]["adapter_summary"] == {
+        "mode": "noop",
+        "runner": "planned_show",
+        "external_adapter": "not_configured",
+        "next_action": "run_planned_show",
+    }
+
+
+def test_production_composition_loads_enabled_memoria_transport_from_prefs(
+    tmp_path,
+    monkeypatch,
+):
+    import YouTubeBridgeV2.production as production
+
+    storage = _storage_manager(tmp_path)
+    storage.save_prefs(
+        {
+            MEMORIA_TRANSPORT_PREFS_KEY: {
+                "enabled": True,
+                "base_url": "http://127.0.0.1:8088",
+                "api_key": "secret-token",
+                "timeout_seconds": 4,
+                "max_attempts": 1,
+            }
+        }
+    )
+    created = {}
+
+    class CapturingTransport:
+        def __init__(self, config):
+            self.config = config
+            self.requests = []
+            created["transport"] = self
+            created["summary"] = config.public_summary()
+
+        def send(self, request):
+            self.requests.append(request)
+            return {
+                "session_id": "memoria-enabled-production",
+                "message_id": "enabled-1",
+                "character_id": "host",
+                "reply": "enabled production response",
+            }
+
+    monkeypatch.setattr(production, "MemoriaSyncHttpTransport", CapturingTransport)
+    composition = create_production_v2_composition(storage)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: NOW))
+    _create_and_bind(client, "session-enabled-transport")
+
+    response = client.post(
+        "/v2/sessions/session-enabled-transport/tick",
+        json={"command_id": "cmd-enabled-transport"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert created["summary"] == {
+        "base_url": "http://127.0.0.1:8088",
+        "timeout_seconds": 4.0,
+        "max_attempts": 1,
+        "has_api_key": True,
+    }
+    assert len(created["transport"].requests) == 1
+    assert (
+        storage.get_v2_session("session-enabled-transport")["metadata"][
+            "live_episode_plan_state"
+        ]["last_memoria_session_id"]
+        == "memoria-enabled-production"
+    )
+    assert "secret-token" not in repr(response.json())
+
+
+def test_production_composition_explicit_transport_overrides_disabled_prefs(tmp_path):
+    storage = _storage_manager(tmp_path)
+    storage.save_prefs(
+        {
+            MEMORIA_TRANSPORT_PREFS_KEY: {
+                "enabled": False,
+                "base_url": "http://127.0.0.1:8088",
+            }
+        }
+    )
+    transport = _transport()
+    composition = create_production_v2_composition(storage, memoria_transport=transport)
+    client = TestClient(create_v2_app(composition, now_provider=lambda: NOW))
+    _create_and_bind(client, "session-explicit-transport")
+
+    response = client.post(
+        "/v2/sessions/session-explicit-transport/tick",
+        json={"command_id": "cmd-explicit-transport"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert len(transport.requests) == 1
 
 
 def test_real_storage_tick_flow_survives_storage_and_composition_rebuild(tmp_path):

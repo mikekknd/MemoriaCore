@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from core.storage_manager import StorageManager
+from YouTubeBridgeV2.adapters.memoria_http import MEMORIA_TRANSPORT_PREFS_KEY
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +36,42 @@ def _loopback_client(app):
 
 def _remote_client(app):
     return TestClient(app, client=("203.0.113.10", 50000))
+
+
+def _bind_minimal_plan(client, session_id: str) -> None:
+    client.post(
+        "/v2/sessions",
+        json={
+            "command_id": f"{session_id}-create",
+            "session_id": session_id,
+            "aftertalk_policy": "auto",
+        },
+    )
+    client.post(
+        f"/v2/sessions/{session_id}/plan",
+        json={
+            "command_id": f"{session_id}-bind",
+            "plan": {
+                "plan_id": f"{session_id}-plan",
+                "title": "Main app invalid transport",
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "purpose": "Confirm no-op when transport prefs are invalid.",
+                        "topic_cue": "No accidental MemoriaCore external call.",
+                        "speaker_policy": {
+                            "type": "fixed",
+                            "speaker_ids": ["host"],
+                        },
+                        "audience_insertion": {
+                            "enabled": False,
+                            "allow_super_chats": False,
+                        },
+                    }
+                ],
+            },
+        },
+    )
 
 
 def test_main_app_v2_routes_use_real_storage_composition(tmp_path, monkeypatch):
@@ -168,6 +205,37 @@ def test_main_app_v2_missing_session_tick_returns_sanitized_404(
             "message": "session not found",
         },
         "correlation_id": "query-missing-session",
+    }
+
+
+def test_main_app_v2_invalid_memoria_transport_prefs_keep_tick_noop(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage_manager(tmp_path)
+    storage.save_prefs(
+        {
+            MEMORIA_TRANSPORT_PREFS_KEY: {
+                "enabled": True,
+                "base_url": "file:///tmp/memoria",
+            }
+        }
+    )
+    api_main = _install_test_storage(monkeypatch, storage)
+    client = _loopback_client(api_main.app)
+    _bind_minimal_plan(client, "session-main-invalid-transport")
+
+    response = client.post(
+        "/v2/sessions/session-main-invalid-transport/tick",
+        json={"command_id": "cmd-main-invalid-transport"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["events"][0]["payload"]["adapter_summary"] == {
+        "mode": "noop",
+        "runner": "planned_show",
+        "external_adapter": "not_configured",
+        "next_action": "run_planned_show",
     }
 
 

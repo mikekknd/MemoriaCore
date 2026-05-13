@@ -161,7 +161,7 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] MemoriaCore transport config：已建立 `youtubebridge_v2_memoria_transport` prefs 設定解析，空設定代表未啟用，不硬寫 secret。
 - [x] Sync HTTP client boundary：已建立可注入 `SyncJsonHttpClientProtocol` 與 stdlib `UrllibSyncJsonHttpClient`。
 - [x] Memoria transport implementation：已建立 `MemoriaSyncHttpTransport`，符合 runner 使用的 `send(request) -> dict[str, object]`。
-- [ ] Production wiring toggle：仍保留給 Wave 2E-D；主 app 未設定時繼續 no-op，不意外外呼。
+- [x] Production wiring toggle：已由 Wave 2E-D 完成；主 app 未設定、未啟用或設定錯誤時繼續 no-op，不意外外呼。
 
 ## Integration Wave 2E-B 狀態
 
@@ -169,13 +169,17 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] Auth terminal mapping：HTTP 401/403 會轉成 terminal `auth_failure`，不重試。
 - [x] Invalid response mapping：invalid JSON / non-object JSON response 會轉成 terminal `invalid_response`。
 - [x] Sanitized error summary：URL、headers、token、authorization 與 raw payload 不進入 transport public summary 或 runner adapter summary。
-- [ ] Production wiring toggle：仍保留給 Wave 2E-D。
 
 ## Integration Wave 2E-C 狀態
 
 - [x] Real MemoriaCore integration harness：已建立 opt-in pytest harness，可在本機 MemoriaCore 8088 與明確 character id 設定下跑 real `/api/v1/chat/sync` round-trip。
 - [x] Default pytest independence：未設定 `YB2_MEMORIA_INTEGRATION=1` 時，real external test skip，不依賴 MemoriaCore service、API key 或本機角色資料。
-- [ ] Production wiring toggle：仍保留給 Wave 2E-D。
+
+## Integration Wave 2E-D 狀態
+
+- [x] Production wiring toggle：`create_production_v2_composition(...)` 未明確注入 transport 時，只在 prefs `youtubebridge_v2_memoria_transport.enabled` 明確啟用且 config valid 時建立 `MemoriaSyncHttpTransport`。
+- [x] No-op fallback：未設定、未啟用或 invalid config 都維持 no-op runner，`/v2` tick 不意外外呼。
+- [x] Explicit injection precedence：測試或手動 composition 傳入 `memoria_transport=` 時仍優先使用注入物件。
 
 ## Module Design 文件
 
