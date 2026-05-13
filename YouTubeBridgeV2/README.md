@@ -10,8 +10,9 @@ Agent session 接手時先讀 `CLAUDE.md`。一般文件讀取順序如下：
 
 1. `README.md`：確認 V2 目標、邊界與文件入口。
 2. `docs/architecture-index.md`：理解高層級架構、phase lifecycle、模組責任、module design 流程與設計清單。
-3. `docs/api-reference-index.md`：查 public entrypoint 文件格式與索引規則。
-4. `docs/documentation-guidelines.md`：確認後續文件分層、命名、紅綠測試與更新規範。
+3. `docs/roadmap.md`：確認 `/goal` 長期進度、下一個未完成 wave、required skills 與驗證命令。
+4. `docs/api-reference-index.md`：查 public entrypoint 文件格式與索引規則。
+5. `docs/documentation-guidelines.md`：確認後續文件分層、命名、紅綠測試與更新規範。
 
 ## 文件位置
 
@@ -23,6 +24,7 @@ Agent session 接手時先讀 `CLAUDE.md`。一般文件讀取順序如下：
 長期設計文件集中在 `docs/`：
 
 - `docs/architecture-index.md`
+- `docs/roadmap.md`
 - `docs/api-reference-index.md`
 - `docs/documentation-guidelines.md`
 - `docs/modules/<module-name>.md`
