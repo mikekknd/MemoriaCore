@@ -10,8 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
+from YouTubeBridgeV2.adapters.youtube import (
+    NormalizedYouTubeEvent,
+    normalize_youtube_event,
+)
 from .phase import (
     AftertalkPolicy,
     LiveSessionPhase,
@@ -188,9 +192,21 @@ class RuntimeApplicationService:
         command: RuntimeCommand,
         now: datetime,
     ) -> RuntimeServiceResult:
+        existing = self._existing_result(command)
+        if existing is not None:
+            return existing
+
+        try:
+            youtube_payload = _youtube_runtime_event_payload(command.payload)
+        except ValueError as exc:
+            result = _youtube_contract_error(command, str(exc))
+            self._save_result(command, result)
+            return result
+
         if hasattr(self._storage, "persist_youtube_event"):
-            self._storage.persist_youtube_event(command.session_id, command.payload, now)
-        return self.tick_session(command, now)
+            self._storage.persist_youtube_event(command.session_id, youtube_payload, now)
+        snapshot = self._storage.read_snapshot(command.session_id)
+        return self._advance_and_dispatch(command, now, snapshot)
 
     def update_aftertalk_policy(
         self,
@@ -473,6 +489,42 @@ def _errors_for_adapter_result(adapter_result: AdapterDispatchResult) -> list[di
             "summary": _sanitize_public_payload(adapter_result.summary),
         }
     ]
+
+
+def _youtube_runtime_event_payload(payload: dict[str, object]) -> dict[str, object]:
+    raw_event = payload.get("youtube_event", payload.get("raw_event", payload))
+    if isinstance(raw_event, NormalizedYouTubeEvent):
+        normalized = raw_event
+    elif isinstance(raw_event, Mapping):
+        normalized = normalize_youtube_event(raw_event)
+    else:
+        raise ValueError("youtube_event must be a mapping")
+
+    return _sanitize_public_payload(
+        {
+            "event_id": normalized.event_id,
+            "event_type": f"youtube_{normalized.event_type}",
+            "public_payload": normalized.public_payload,
+            "display_event": normalized.display_event,
+            "should_dispatch": normalized.should_dispatch,
+        }
+    )
+
+
+def _youtube_contract_error(command: RuntimeCommand, message: str) -> RuntimeServiceResult:
+    return RuntimeServiceResult(
+        status="contract_error",
+        session_id=command.session_id,
+        phase=None,
+        events=[],
+        errors=[
+            {
+                "code": "invalid_youtube_event_payload",
+                "message": message,
+            }
+        ],
+        correlation_id=_correlation_id(command),
+    )
 
 
 def _event_type(adapter_result: AdapterDispatchResult) -> str:

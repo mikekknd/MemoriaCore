@@ -309,11 +309,13 @@ Source:
 
 Purpose:
 協調 V2 session command workflow，負責 snapshot read、phase decision dispatch、storage write、adapter call、event publish、idempotency 與 recovery。
+Wave 3A：`HANDLE_YOUTUBE_EVENT` command payload 會先經 YouTube adapter normalization，保存 normalized public/display event 後再交回 tick dispatch。
 
 Concepts:
 - `RuntimeApplicationService`
 - `RuntimeCommand`
 - `RuntimeCommandType`
+- `RuntimeCommandType.HANDLE_YOUTUBE_EVENT`
 - `RuntimeServiceResult`
 - `RuntimeServiceEvent`
 - `PersistedTransitionRef`

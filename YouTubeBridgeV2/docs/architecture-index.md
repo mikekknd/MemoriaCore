@@ -181,6 +181,12 @@ YouTube 真實 polling、完整後台控制台、直播 Chat 顯示、presentati
 - [x] No-op fallback：未設定、未啟用或 invalid config 都維持 no-op runner，`/v2` tick 不意外外呼。
 - [x] Explicit injection precedence：測試或手動 composition 傳入 `memoria_transport=` 時仍優先使用注入物件。
 
+## Integration Wave 3A 狀態
+
+- [x] Live chat event normalization handoff：`RuntimeApplicationService.handle_youtube_event(...)` 會把 raw YouTube live chat event 經 `normalize_youtube_event(...)` 轉成 storage-safe payload。
+- [x] Runtime input persistence：`RuntimeStoragePort.persist_youtube_event(...)` 保存 normalized event id/type/public payload/display event，不保存 raw YouTube payload。
+- [x] Scope boundary：polling cursor、YouTube API transport、scheduler ingestion 與 Super Chat closing handoff 保留給後續 3B/3C/3D。
+
 ## Module Design 文件
 
 後續設計應逐份建立在 `YouTubeBridgeV2/docs/modules/`：

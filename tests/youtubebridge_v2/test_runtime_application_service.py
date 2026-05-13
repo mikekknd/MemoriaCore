@@ -68,6 +68,30 @@ def _command(
     )
 
 
+def _raw_youtube_text_event(**overrides):
+    event = {
+        "id": "yt-evt-1",
+        "snippet": {
+            "type": "textMessageEvent",
+            "publishedAt": "2026-05-12T08:10:00Z",
+            "displayMessage": "Hello runtime",
+            "textMessageDetails": {"messageText": "Hello runtime"},
+            "authorChannelId": "channel-1",
+            "rawTopicPack": {"hidden_prompt": "must not leak"},
+        },
+        "authorDetails": {
+            "displayName": "Mika",
+            "channelId": "channel-1",
+            "isChatOwner": False,
+            "isChatModerator": True,
+            "isChatSponsor": False,
+        },
+        "raw_payload": {"access_token": "secret-value"},
+    }
+    event.update(overrides)
+    return event
+
+
 def _transition(next_action, *, next_phase=None, current_phase=LiveSessionPhase.PLANNED_SHOW):
     next_phase = next_phase or current_phase
     return PhaseTransition(
@@ -92,6 +116,7 @@ class FakeStorage:
         self.transitions = []
         self.events = []
         self.error_summaries = []
+        self.youtube_events = []
         self.fail_persist_transition = False
 
     def get_command_result(self, command_id):
@@ -142,6 +167,16 @@ class FakeStorage:
                 "command_id": command_id,
                 "summary": summary,
                 "retryable": retryable,
+            }
+        )
+
+    def persist_youtube_event(self, session_id, payload, now):
+        self.calls.append(("persist_youtube_event", session_id, now))
+        self.youtube_events.append(
+            {
+                "session_id": session_id,
+                "payload": payload,
+                "created_at": now,
             }
         )
 
@@ -202,10 +237,16 @@ def _assert_no_forbidden_payload(value):
         "hidden_prompt",
         "raw_payload",
         "topic_pack",
+        "rawtopicpack",
         "factcard",
         "fact_card",
         "memoriacore_raw",
         "youtube_raw",
+        "raw_youtube_payload",
+        "access_token",
+        "authorization",
+        "secret-value",
+        "must not leak",
     ):
         assert forbidden not in text
 
@@ -235,6 +276,69 @@ def test_tick_reads_snapshot_before_advancing_phase():
     assert phase.calls == [(storage.snapshot, BASE_NOW)]
     assert storage.transitions
     assert result.status == "ok"
+
+
+def test_handle_youtube_event_normalizes_raw_event_before_storage_and_tick():
+    storage = FakeStorage(snapshot=_snapshot())
+    phase = FakePhaseAdvancer(_transition("run_planned_show"))
+    runner = FakeRunner()
+    service = _service(
+        storage=storage,
+        phase_advancer=phase,
+        planned_show_runner=runner,
+    )
+    command = _command(
+        RuntimeCommandType.HANDLE_YOUTUBE_EVENT,
+        command_id="cmd-youtube-1",
+        payload={"youtube_event": _raw_youtube_text_event()},
+    )
+
+    result = service.handle_youtube_event(command, BASE_NOW)
+
+    assert result.status == "ok"
+    assert len(storage.youtube_events) == 1
+    stored_payload = storage.youtube_events[0]["payload"]
+    assert stored_payload["event_id"] == "yt-evt-1"
+    assert stored_payload["event_type"] == "youtube_text_message"
+    assert stored_payload["public_payload"]["message_text"] == "Hello runtime"
+    assert stored_payload["public_payload"]["author_badges"] == ["moderator"]
+    assert stored_payload["display_event"] == {
+        "event_id": "yt-evt-1",
+        "event_type": "audience_message",
+        "author_display_name": "Mika",
+        "message_text": "Hello runtime",
+        "published_at": "2026-05-12T08:10:00Z",
+        "author_badges": ["moderator"],
+        "duplicate": False,
+        "should_dispatch": True,
+    }
+    assert stored_payload["should_dispatch"] is True
+    assert len(runner.calls) == 1
+    _assert_no_forbidden_payload(stored_payload)
+    _assert_no_forbidden_payload(result.events)
+
+
+def test_handle_youtube_event_duplicate_command_does_not_persist_twice():
+    storage = FakeStorage(snapshot=_snapshot())
+    phase = FakePhaseAdvancer(_transition("run_planned_show"))
+    runner = FakeRunner()
+    service = _service(
+        storage=storage,
+        phase_advancer=phase,
+        planned_show_runner=runner,
+    )
+    command = _command(
+        RuntimeCommandType.HANDLE_YOUTUBE_EVENT,
+        command_id="cmd-youtube-idempotent",
+        payload={"youtube_event": _raw_youtube_text_event()},
+    )
+
+    first = service.handle_youtube_event(command, BASE_NOW)
+    second = service.handle_youtube_event(command, BASE_NOW)
+
+    assert second == first
+    assert len(storage.youtube_events) == 1
+    assert len(runner.calls) == 1
 
 
 def test_phase_next_action_dispatches_planned_show_runner():

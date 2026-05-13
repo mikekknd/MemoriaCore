@@ -200,12 +200,21 @@ class RuntimeStoragePort:
     ) -> None:
         """保存 normalized YouTube event public summary。"""
 
+        safe_payload = _sanitize_public_payload(_object_to_dict(payload))
+        public_metadata = {
+            "public_payload": safe_payload.get("public_payload", {}),
+            "display_event": safe_payload.get("display_event", {}),
+            "should_dispatch": bool(safe_payload.get("should_dispatch", True)),
+        }
         self._events.append_live_event(
             session_id,
             {
-                "event_id": f"{session_id}:youtube:{now.isoformat()}",
-                "event_type": "youtube_event",
-                "public_metadata": _sanitize_public_payload(payload),
+                "event_id": str(
+                    safe_payload.get("event_id")
+                    or f"{session_id}:youtube:{now.isoformat()}"
+                ),
+                "event_type": str(safe_payload.get("event_type") or "youtube_event"),
+                "public_metadata": _sanitize_public_payload(public_metadata),
                 "created_at": now,
             },
         )

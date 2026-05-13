@@ -58,6 +58,12 @@ YouTube Adapter 負責 YouTube live chat polling、event normalization、Super C
 - `extract_super_chat_metadata(raw_event)`
 - `classify_youtube_error(error)`
 
+## Runtime Handoff
+
+Wave 3A runtime handoff:
+- Runtime 只呼叫 `normalize_youtube_event(...)` 取得 display-safe payload，不直接接收 raw YouTube payload 到 public event。
+- `HANDLE_YOUTUBE_EVENT` 只處理單一 live chat event normalization + runtime input handoff；polling cursor / duplicate event recovery / scheduler ingestion 保留給 3B/3D。
+
 ## Polling Rules
 
 | Situation | Required Behavior |

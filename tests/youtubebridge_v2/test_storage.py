@@ -12,6 +12,7 @@ from YouTubeBridgeV2.runtime.phase import (
     PhaseTransition,
     PhaseTransitionReason,
 )
+from YouTubeBridgeV2.storage.runtime_store import RuntimeStoragePort
 from YouTubeBridgeV2.storage.repositories import (
     EventRepository,
     FinalizationRepository,
@@ -212,6 +213,50 @@ def test_append_live_event_persists_normalized_event():
     assert event["event_type"] == "youtube_chat"
     assert event["public_metadata"] == {"author": "Alice"}
     _assert_no_private_payload(event)
+
+
+def test_runtime_storage_port_persists_normalized_youtube_event_shape():
+    storage = FakeStorageManager()
+    port = RuntimeStoragePort(storage)
+
+    port.persist_youtube_event(
+        "session-1",
+        {
+            "event_id": "yt-evt-1",
+            "event_type": "youtube_text_message",
+            "public_payload": {
+                "event_id": "yt-evt-1",
+                "message_text": "Hello runtime",
+                "raw_payload": {"youtube_raw": "must not leak"},
+            },
+            "display_event": {
+                "event_id": "yt-evt-1",
+                "event_type": "audience_message",
+                "message_text": "Hello runtime",
+            },
+            "should_dispatch": True,
+            "raw_youtube_payload": {"access_token": "secret-value"},
+        },
+        NOW,
+    )
+
+    stored = storage.events[0]
+    assert stored["event_id"] == "yt-evt-1"
+    assert stored["event_type"] == "youtube_text_message"
+    assert stored["public_metadata"] == {
+        "public_payload": {
+            "event_id": "yt-evt-1",
+            "message_text": "Hello runtime",
+        },
+        "display_event": {
+            "event_id": "yt-evt-1",
+            "event_type": "audience_message",
+            "message_text": "Hello runtime",
+        },
+        "should_dispatch": True,
+    }
+    assert stored["created_at"] == NOW
+    _assert_no_private_payload(stored)
 
 
 def test_append_interaction_persists_response_summary():

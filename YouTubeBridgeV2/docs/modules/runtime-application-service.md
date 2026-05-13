@@ -110,6 +110,11 @@ Wave 2D status:
 - 未啟用 background scheduler；production 未注入 Memoria transport 時仍使用 no-op runners。
 - 注入 `MemoriaTransportProtocol` 時，planned show、aftertalk、closing 可經由 `MemoriaPlannedShowRunner`、`MemoriaAftertalkRunner`、`MemoriaClosingRunner` 推進。
 
+Wave 3A status:
+- `RuntimeCommandType.HANDLE_YOUTUBE_EVENT` 接受 raw YouTube event payload，會先經 `normalize_youtube_event(...)` 轉為 normalized public/runtime input，再保存事件並交回 tick dispatch。
+- command idempotency 會在保存 YouTube event 前檢查，避免同一 `command_id` 重送時重複寫 event。
+- 本階段不處理 polling cursor、YouTube API transport、scheduler 或 Super Chat closing handoff。
+
 ### `RuntimeCommand`
 
 Source:
