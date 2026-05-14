@@ -31,3 +31,10 @@ class LiveRuntime:
     closing_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cancel_events: dict[str, threading.Event] = field(default_factory=dict)
     audience_research_tasks: dict[str, threading.Thread] = field(default_factory=dict)
+    presentation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    presentation_sequence_condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    presentation_next_sequence: int = 0
+    presentation_present_sequence: int = 0
+    presentation_skipped_sequences: set[int] = field(default_factory=set)
+    presentation_ack_events: dict[str, asyncio.Event] = field(default_factory=dict)
+    director_prefetch_in_flight: int = 0

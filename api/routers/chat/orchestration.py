@@ -226,6 +226,7 @@ def _run_chat_orchestration(
             user_prefs=user_prefs,
             session_ctx=ctx,
             force_group=force_group,
+            turn_instruction=user_prompt,
         )
 
     # 組裝 debug 用的完整 prompt 預覽（sys_prompt + 近期對話紀錄）

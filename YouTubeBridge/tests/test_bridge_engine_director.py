@@ -35,6 +35,7 @@ from bridge_engine_test_support import (
 )
 from live_episode_plan_contract import initial_planned_state
 from test_live_episode_plan_contract import sample_plan
+from tts_gpt_sovits import TTSResult
 
 
 def _episode_plan_characters() -> list[dict]:
@@ -43,6 +44,25 @@ def _episode_plan_characters() -> list[dict]:
         {"character_id": "analyst-b", "name": "分析B"},
         {"character_id": "skeptic-c", "name": "質疑C"},
     ]
+
+
+async def _next_queue_event(queue: asyncio.Queue, event_type: str, *, timeout: float = 1.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = max(0.01, deadline - time.monotonic())
+        event = await asyncio.wait_for(queue.get(), timeout=remaining)
+        if event.get("type") == event_type:
+            return event
+    raise AssertionError(f"{event_type} was not received before timeout")
+
+
+async def _wait_until(condition, *, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")
 
 
 def test_director_opening_decision_builds_short_kickoff_prompt():
@@ -454,6 +474,475 @@ async def test_planned_turn_uses_dialogue_policy_group_turn_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_presentation_mode_allows_one_speculative_director_reply(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "director_group_turn_limit": 7,
+            "presentation_enabled": True,
+            "presentation_ack_timeout_seconds": 3,
+        })
+        captured = {}
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "單句回覆完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        await manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            {
+                "action": "continue_topic",
+                "prompt": "請自然延續。",
+                "current_topic": "四月新番",
+            },
+        )
+
+        external_context = captured["external_context"]
+        assert external_context["group_turn_limit"] == 2
+        assert external_context["summary"]["group_turn_limit"] == 2
+        assert external_context["summary"]["presentation_enabled"] is True
+        assert external_context["max_chars"] <= 1200
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_presentation_director_prefetches_next_role_before_current_ack(monkeypatch):
+    tmp_dir = _tmp_dir()
+    task = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "director_group_turn_limit": 7,
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+        })
+        for character_id in ["host-a", "analyst-b"]:
+            storage.upsert_tts_profile({
+                "character_id": character_id,
+                "ref_audio_path": f"{character_id}.wav",
+                "prompt_text": "參考語音文字。",
+            })
+
+        generated_markers = []
+        captured = {}
+
+        class FakeTTSProvider:
+            def __init__(self):
+                self.calls = []
+
+            def synthesize(self, text, profile):
+                self.calls.append({"text": text, "profile": dict(profile)})
+                return TTSResult(ok=True, audio_bytes=f"audio:{text}".encode("utf-8"), audio_format="wav")
+
+            def call_texts(self):
+                return [call["text"] for call in self.calls]
+
+        provider = FakeTTSProvider()
+
+        class CaptureStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                kwargs["on_result"]({
+                    "message_id": "msg-host",
+                    "reply": "目前角色。",
+                    "character_id": "host-a",
+                    "character_name": "主持A",
+                })
+                generated_markers.append("first-returned")
+                kwargs["on_result"]({
+                    "message_id": "msg-analyst",
+                    "reply": "下一角色。",
+                    "character_id": "analyst-b",
+                    "character_name": "分析B",
+                })
+                generated_markers.append("second-returned")
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "回合完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            tts_provider_factory=lambda: provider,
+        )
+        queue = await manager.subscribe("live-a")
+
+        task = asyncio.create_task(manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            {
+                "action": "continue_topic",
+                "prompt": "請自然延續。",
+                "current_topic": "四月新番",
+            },
+        ))
+
+        first = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert first["item"]["text"] == "目前角色。"
+        assert generated_markers == ["first-returned", "second-returned"]
+        await _wait_until(lambda: provider.call_texts() == ["目前角色。", "下一角色。"])
+        await _wait_until(
+            lambda: (
+                len(storage.list_presentation_items("live-a")) == 2
+                and storage.list_presentation_items("live-a")[1]["status"] == "ready"
+            )
+        )
+        items = storage.list_presentation_items("live-a")
+        assert [item["text"] for item in items] == ["目前角色。", "下一角色。"]
+        assert items[1]["status"] == "ready"
+        assert items[1]["audio_path"]
+
+        await manager.ack_presentation_item("live-a", first["item"]["item_id"])
+        first_chat = await _next_queue_event(queue, "chat_message", timeout=1)
+        assert first_chat["message"]["content"] == "目前角色。"
+        second = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert second["item"]["text"] == "下一角色。"
+
+        await manager.ack_presentation_item("live-a", second["item"]["item_id"])
+        await asyncio.wait_for(task, timeout=1)
+
+        external_context = captured["external_context"]
+        assert external_context["group_turn_limit"] == 2
+        assert external_context["summary"]["group_turn_limit"] == 2
+    finally:
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_presentation_episode_plan_prefetches_next_planned_turn_before_current_ack(monkeypatch):
+    tmp_dir = _tmp_dir()
+    task = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+        })
+        for character_id in ["host-a", "analyst-b"]:
+            storage.upsert_tts_profile({
+                "character_id": character_id,
+                "ref_audio_path": f"{character_id}.wav",
+                "prompt_text": "參考語音文字。",
+            })
+        plan = sample_plan()
+        turns = plan["segments"][0]["planned_turn_contracts"]
+        turns[0]["turn_type"] = "opening"
+        turns[0]["dialogue_policy"] = {"min_replies": 1, "max_replies": 1, "autonomy": "strict"}
+        turns[0]["speaker_policy"]["selection_mode"] = "fixed"
+        turns[0]["speaker_policy"]["allowed_participant_ids"] = ["host-a"]
+        turns[1]["turn_type"] = "cohost_intro"
+        turns[1]["dialogue_policy"] = {"min_replies": 1, "max_replies": 1, "autonomy": "strict"}
+        turns[1]["speaker_policy"]["selection_mode"] = "fixed"
+        turns[1]["speaker_policy"]["allowed_participant_ids"] = ["analyst-b"]
+        plan["segments"][0]["completion_conditions"]["required_turn_types"] = ["opening", "cohost_intro"]
+        plan["segments"][0]["completion_conditions"]["optional_turn_types"] = []
+        storage.upsert_live_episode_plan(plan)
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+
+        class FakeTTSProvider:
+            def __init__(self):
+                self.calls = []
+
+            def synthesize(self, text, profile):
+                self.calls.append({"text": text, "profile": dict(profile)})
+                return TTSResult(ok=True, audio_bytes=f"audio:{text}".encode("utf-8"), audio_format="wav")
+
+            def call_texts(self):
+                return [call["text"] for call in self.calls]
+
+        provider = FakeTTSProvider()
+        memoria_turns = []
+        memoria_calls = []
+
+        class CaptureStreamClient:
+            def list_characters(self):
+                return _episode_plan_characters()
+
+            def chat_stream_sync(self, **kwargs):
+                turn_id = kwargs["external_context"]["live_episode_plan"]["turn_id"]
+                memoria_turns.append(turn_id)
+                memoria_calls.append({
+                    "turn_id": turn_id,
+                    "session_id": kwargs.get("session_id"),
+                })
+                if turn_id == "seg_01_turn_01":
+                    kwargs["on_result"]({
+                        "message_id": "msg-opening",
+                        "reply": "第一企劃句。",
+                        "character_id": "host-a",
+                        "character_name": "主持A",
+                    })
+                else:
+                    kwargs["on_result"]({
+                        "message_id": "msg-cohost",
+                        "reply": "第二企劃句。",
+                        "character_id": "analyst-b",
+                        "character_name": "分析B",
+                    })
+                return {
+                    "session_id": "mem-opening" if turn_id == "seg_01_turn_01" else "mem-cohost",
+                    "message_id": len(memoria_turns),
+                    "reply": f"{turn_id} complete",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            tts_provider_factory=lambda: provider,
+        )
+        queue = await manager.subscribe("live-a")
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        task = asyncio.create_task(manager._director_kickoff(runtime))
+        first = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert first["item"]["text"] == "第一企劃句。"
+
+        await _wait_until(lambda: memoria_turns == ["seg_01_turn_01", "seg_01_turn_02"])
+        assert memoria_calls == [
+            {"turn_id": "seg_01_turn_01", "session_id": "mem-a"},
+            {"turn_id": "seg_01_turn_02", "session_id": "mem-opening"},
+        ]
+        await _wait_until(lambda: provider.call_texts() == ["第一企劃句。", "第二企劃句。"])
+        await _wait_until(
+            lambda: (
+                len(storage.list_presentation_items("live-a")) == 2
+                and storage.list_presentation_items("live-a")[1]["status"] == "ready"
+            )
+        )
+        items = storage.list_presentation_items("live-a")
+        assert [item["text"] for item in items] == ["第一企劃句。", "第二企劃句。"]
+        assert items[1]["status"] == "ready"
+        assert items[1]["audio_path"]
+
+        await manager.ack_presentation_item("live-a", first["item"]["item_id"])
+        first_chat = await _next_queue_event(queue, "chat_message", timeout=1)
+        assert first_chat["message"]["content"] == "第一企劃句。"
+        second = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert second["item"]["text"] == "第二企劃句。"
+
+        await manager.ack_presentation_item("live-a", second["item"]["item_id"])
+        await asyncio.wait_for(task, timeout=1)
+        planned_state = storage.get_director_state("live-a")["metadata"]["planned_state"]
+        assert planned_state["last_planned_turn_contract_id"] == "seg_01_turn_02"
+    finally:
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_presentation_prefetch_chain_continues_while_prefetched_turn_is_playing(monkeypatch):
+    tmp_dir = _tmp_dir()
+    task = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+        })
+        for character_id in ["host-a", "analyst-b"]:
+            storage.upsert_tts_profile({
+                "character_id": character_id,
+                "ref_audio_path": f"{character_id}.wav",
+                "prompt_text": "參考語音文字。",
+            })
+        plan = sample_plan()
+        first_segment = plan["segments"][0]
+        first_segment["segment_id"] = "seg_01"
+        first_segment["completion_conditions"] = {
+            "min_planned_turns": 2,
+            "max_planned_turns": 2,
+            "required_turn_types": ["opening", "bridge"],
+            "optional_turn_types": [],
+        }
+        first_turn = first_segment["planned_turn_contracts"][0]
+        first_turn["turn_id"] = "seg_01_turn_01"
+        first_turn["turn_type"] = "opening"
+        first_turn["dialogue_policy"] = {"min_replies": 1, "max_replies": 1, "autonomy": "strict"}
+        first_turn["speaker_policy"]["selection_mode"] = "fixed"
+        first_turn["speaker_policy"]["allowed_participant_ids"] = ["host-a"]
+        second_turn = first_segment["planned_turn_contracts"][1]
+        second_turn["turn_id"] = "seg_01_turn_02"
+        second_turn["turn_type"] = "bridge"
+        second_turn["dialogue_policy"] = {"min_replies": 1, "max_replies": 1, "autonomy": "strict"}
+        second_turn["speaker_policy"]["selection_mode"] = "fixed"
+        second_turn["speaker_policy"]["allowed_participant_ids"] = ["analyst-b"]
+
+        second_segment = json.loads(json.dumps(first_segment))
+        second_segment["segment_id"] = "seg_02"
+        second_segment["title"] = "第二大區塊"
+        second_segment["planned_turn_contracts"] = [second_segment["planned_turn_contracts"][0]]
+        third_turn = second_segment["planned_turn_contracts"][0]
+        third_turn["turn_id"] = "seg_02_turn_01"
+        third_turn["turn_type"] = "next_segment_hook"
+        third_turn["intent"] = "跨到下一個大區塊"
+        third_turn["dialogue_policy"] = {"min_replies": 1, "max_replies": 1, "autonomy": "strict"}
+        third_turn["speaker_policy"]["selection_mode"] = "fixed"
+        third_turn["speaker_policy"]["allowed_participant_ids"] = ["host-a"]
+        second_segment["completion_conditions"] = {
+            "min_planned_turns": 1,
+            "max_planned_turns": 1,
+            "required_turn_types": ["next_segment_hook"],
+            "optional_turn_types": [],
+        }
+        plan["segments"] = [first_segment, second_segment]
+        storage.upsert_live_episode_plan(plan)
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+
+        class FakeTTSProvider:
+            def __init__(self):
+                self.calls = []
+
+            def synthesize(self, text, profile):
+                self.calls.append({"text": text, "profile": dict(profile)})
+                return TTSResult(ok=True, audio_bytes=f"audio:{text}".encode("utf-8"), audio_format="wav")
+
+            def call_texts(self):
+                return [call["text"] for call in self.calls]
+
+        provider = FakeTTSProvider()
+        memoria_turns = []
+        replies_by_turn = {
+            "seg_01_turn_01": ("第一區塊第一句。", "host-a", "主持A"),
+            "seg_01_turn_02": ("第一區塊收束句。", "analyst-b", "分析B"),
+            "seg_02_turn_01": ("第二區塊開場句。", "host-a", "主持A"),
+        }
+
+        class CaptureStreamClient:
+            def list_characters(self):
+                return _episode_plan_characters()
+
+            def chat_stream_sync(self, **kwargs):
+                turn_id = kwargs["external_context"]["live_episode_plan"]["turn_id"]
+                memoria_turns.append(turn_id)
+                reply, character_id, character_name = replies_by_turn[turn_id]
+                kwargs["on_result"]({
+                    "message_id": f"msg-{turn_id}",
+                    "reply": reply,
+                    "character_id": character_id,
+                    "character_name": character_name,
+                })
+                return {
+                    "session_id": "mem-a",
+                    "message_id": len(memoria_turns),
+                    "reply": f"{turn_id} complete",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", CaptureStreamClient)
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            tts_provider_factory=lambda: provider,
+        )
+        queue = await manager.subscribe("live-a")
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        task = asyncio.create_task(manager._director_kickoff(runtime))
+        first = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert first["item"]["text"] == "第一區塊第一句。"
+
+        await _wait_until(lambda: memoria_turns == ["seg_01_turn_01", "seg_01_turn_02"])
+        await manager.ack_presentation_item("live-a", first["item"]["item_id"])
+        await _next_queue_event(queue, "chat_message", timeout=1)
+        second = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert second["item"]["text"] == "第一區塊收束句。"
+
+        await _wait_until(
+            lambda: memoria_turns == ["seg_01_turn_01", "seg_01_turn_02", "seg_02_turn_01"]
+        )
+        await _wait_until(
+            lambda: provider.call_texts() == ["第一區塊第一句。", "第一區塊收束句。", "第二區塊開場句。"]
+        )
+        items = storage.list_presentation_items("live-a")
+        assert [item["text"] for item in items] == ["第一區塊第一句。", "第一區塊收束句。", "第二區塊開場句。"]
+        assert items[2]["status"] == "ready"
+        assert items[2]["audio_path"]
+
+        await manager.ack_presentation_item("live-a", second["item"]["item_id"])
+        await _next_queue_event(queue, "chat_message", timeout=1)
+        third = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert third["item"]["text"] == "第二區塊開場句。"
+
+        await manager.ack_presentation_item("live-a", third["item"]["item_id"])
+        await asyncio.wait_for(task, timeout=1)
+        planned_state = storage.get_director_state("live-a")["metadata"]["planned_state"]
+        assert planned_state["last_planned_turn_contract_id"] == "seg_02_turn_01"
+        assert planned_state["plan_status"] == "completed"
+    finally:
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_dialogue_expansion_disabled_forces_single_planned_reply(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
@@ -817,6 +1306,57 @@ async def test_director_loop_uses_episode_plan_decision_when_plan_bound(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_director_loop_waits_for_in_flight_prefetch_before_next_plan_turn(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            idle_seconds=10,
+            status="running",
+            last_director_action_at=(datetime.now() - timedelta(seconds=30)).isoformat(),
+        )
+        calls = []
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        runtime.director_prefetch_in_flight = 1
+
+        async def fake_send(self, session, state, decision):
+            calls.append(decision["episode_plan"]["turn_contract"]["turn_id"])
+            runtime.running = False
+            return {"interaction": {"job_id": "fake-job"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        task = asyncio.create_task(manager._director_loop(runtime))
+        await asyncio.sleep(0.25)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert calls == []
+        assert storage.get_director_state("live-a")["status"] == "waiting_prefetch"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_loop_does_not_idle_gate_next_episode_plan_turn(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
@@ -879,7 +1419,7 @@ async def test_director_loop_does_not_idle_gate_next_episode_plan_turn(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_director_loop_uses_episode_plan_gap_after_audience_turn(monkeypatch):
+async def test_director_loop_does_not_wait_for_episode_plan_gap_after_audience_turn(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
@@ -894,8 +1434,6 @@ async def test_director_loop_uses_episode_plan_gap_after_audience_turn(monkeypat
             "display_name": "Plan Live",
             "target_memoria_session_id": "mem-a",
             "character_ids": ["host-a", "analyst-b", "skeptic-c"],
-            "episode_plan_handoff_gap_seconds": 2,
-            "episode_plan_turn_gap_seconds": 5,
         })
         plan = sample_plan()
         first_turn = plan["segments"][0]["planned_turn_contracts"][0]
@@ -914,7 +1452,7 @@ async def test_director_loop_uses_episode_plan_gap_after_audience_turn(monkeypat
             director_enabled=True,
             idle_seconds=10,
             status="running",
-            last_director_action_at=(datetime.now() - timedelta(seconds=5.2)).isoformat(),
+            last_director_action_at=datetime.now().isoformat(),
             metadata={
                 "planned_state": planned_state,
                 "last_decision": {
@@ -946,7 +1484,6 @@ async def test_director_loop_uses_episode_plan_gap_after_audience_turn(monkeypat
             await task
 
         assert calls == ["seg_01_turn_02"]
-        assert session["episode_plan_turn_gap_seconds"] == 5
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1767,6 +2304,54 @@ async def test_director_kickoff_sends_topic_anchor_after_opening_when_pack_bound
 
 
 @pytest.mark.asyncio
+async def test_presentation_kickoff_waits_for_scheduler_after_opening(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["koko", "byakuren"],
+            "director_guidance": "本場只聊動畫新番。",
+            "presentation_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "動畫新番資料包"})
+        storage.create_topic_pack_entry(pack["id"], {
+            "title": "第一話高光",
+            "body": "第一話以長鏡頭建立角色關係，可作為開場後第一個話題。",
+            "source_type": "factcards_folder",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        sent_actions = []
+
+        async def fake_send(self, session_arg, state_arg, decision_arg):
+            sent_actions.append(decision_arg["action"])
+            return {"interaction": {"job_id": f"job-{len(sent_actions)}"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        await manager._director_kickoff(runtime)
+
+        assert sent_actions == ["opening"]
+        state = storage.get_director_state("live-a")
+        assert state["metadata"]["opening_decision"]["action"] == "opening"
+        assert state["metadata"]["post_opening_decision"] is None
+        assert state["metadata"]["last_decision"]["action"] == "opening"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_post_opening_topic_turn_includes_fact_cards(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
@@ -2130,6 +2715,78 @@ async def test_director_idle_ignores_pending_safety_events(monkeypatch):
         assert storage.get_director_state("live-a")["status"] != "pending_chat_seen"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+@pytest.mark.asyncio
+async def test_episode_director_prioritizes_planned_turn_when_comment_backlog_already_used_batch(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "max_pending_events": 5,
+            "director_max_audience_batches_per_planned_turn": 1,
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        plan_state = initial_planned_state(sample_plan())
+        for index in range(100):
+            event = storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"backlog-{index}",
+                "message_text": f"大量普通留言 {index}：這段可以多講嗎？",
+                "author_display_name": f"viewer-{index}",
+                "author_channel_id": f"viewer-{index}",
+                "message_type": "textMessageEvent",
+            })
+            _mark_event_clean(storage, event)
+        state = storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            idle_seconds=1,
+            status="running",
+            last_director_action_at=(datetime.now() - timedelta(seconds=30)).isoformat(),
+            metadata={
+                "planned_state": plan_state,
+                "audience_batches_since_planned_turn": 1,
+            },
+        )
+        calls = []
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        async def fake_send(self, session_arg, state_arg, decision_arg, **_kwargs):
+            calls.append(decision_arg)
+            runtime.running = False
+            return {"interaction": {"job_id": "planned-job"}}
+
+        monkeypatch.setattr(YouTubeBridgeManager, "_send_director_turn", fake_send)
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+
+        task = asyncio.create_task(manager._director_loop(runtime))
+        for _ in range(20):
+            if calls:
+                break
+            await asyncio.sleep(0.05)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert calls
+        assert calls[0]["episode_plan"]["mode"] == "planned_turn"
+        assert storage.get_director_state("live-a")["status"] != "pending_chat_seen"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @pytest.mark.asyncio
 async def test_director_loop_blocks_closing_thanks_before_duration_finalize(monkeypatch):
     tmp_dir = _tmp_dir()

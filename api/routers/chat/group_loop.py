@@ -72,12 +72,8 @@ async def run_group_chat_loop(
     turn_delay_seconds = _group_turn_delay_seconds(user_prefs)
     working_messages = list(session.messages)
     transient_user_content = str(transient_user_content or "").strip()
-    if transient_user_content:
-        working_messages.append({
-            "role": "user",
-            "content": transient_user_content,
-            "debug_info": {"transient_external_context_anchor": True},
-        })
+    turn_instruction = transient_user_content or user_prompt
+    current_turn_start_index = len(working_messages)
     turns: list[dict[str, Any]] = []
     last_entities = list(session.last_entities)
     participant_ids = _participant_ids(participants)
@@ -107,6 +103,8 @@ async def run_group_chat_loop(
             discussion_mode=discussion_mode,
             live_hosting=live_hosting,
             live_episode_plan=live_episode_plan,
+            current_turn_instruction=turn_instruction,
+            current_turn_start_index=current_turn_start_index,
         )
         if not route.should_respond or not route.target_character_id:
             if turn_index == 0:
@@ -154,7 +152,7 @@ async def run_group_chat_loop(
             followup_instruction = {
                 "last_character_name": last_character_name,
                 "last_reply": last_reply,
-                "user_prompt_original": user_prompt,
+                "user_prompt_original": turn_instruction,
                 "conversation_intent": route.conversation_intent,
                 "routing_action": route.action,
             }
@@ -188,7 +186,7 @@ async def run_group_chat_loop(
             orchestration_fn,
             generation_messages,
             last_entities,
-            user_prompt,
+            turn_instruction,
             user_prefs,
             on_event=on_event,
             session_ctx=session_ctx,

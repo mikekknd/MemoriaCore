@@ -94,8 +94,8 @@ class SessionRepositoryMixin:
                 "director_anchor_every_turns": int(config.get("director_anchor_every_turns", 2) or 2),
                 "director_dialogue_expansion_enabled": 1 if config.get("director_dialogue_expansion_enabled", True) else 0,
                 "director_group_turn_limit": int(config.get("director_group_turn_limit", 3) or 3),
-                "episode_plan_handoff_gap_seconds": max(1, min(int(config.get("episode_plan_handoff_gap_seconds", 2) or 2), 5)),
-                "episode_plan_turn_gap_seconds": max(1, min(int(config.get("episode_plan_turn_gap_seconds", 8) or 8), 30)),
+                "director_audience_interrupt_cooldown_seconds": max(0, min(self._int_or_default(config.get("director_audience_interrupt_cooldown_seconds", 30), 30), 3600)),
+                "director_max_audience_batches_per_planned_turn": max(0, min(self._int_or_default(config.get("director_max_audience_batches_per_planned_turn", 1), 1), 20)),
                 "director_max_chat_batches_before_anchor": int(config.get("director_max_chat_batches_before_anchor", 2) or 2),
                 "director_offtopic_policy": str(config.get("director_offtopic_policy", "defer") or "defer"),
                 "director_sc_burst_policy": str(config.get("director_sc_burst_policy", "summarize_batch") or "summarize_batch"),
@@ -103,6 +103,10 @@ class SessionRepositoryMixin:
                 "research_cooldown_seconds": int(config.get("research_cooldown_seconds", 300) or 300),
                 "research_max_per_session": int(config.get("research_max_per_session", 12) or 12),
                 "auto_sc_thanks_on_finalize": 1 if config.get("auto_sc_thanks_on_finalize", True) else 0,
+                "presentation_enabled": 1 if config.get("presentation_enabled", existing.get("presentation_enabled", False) if existing else False) else 0,
+                "tts_enabled": 1 if config.get("tts_enabled", existing.get("tts_enabled", False) if existing else False) else 0,
+                "tts_provider": str(config.get("tts_provider", existing.get("tts_provider", "gpt_sovits") if existing else "gpt_sovits") or "gpt_sovits"),
+                "presentation_ack_timeout_seconds": max(1, min(int(config.get("presentation_ack_timeout_seconds", existing.get("presentation_ack_timeout_seconds", 120) if existing else 120) or 120), 600)),
                 "started_at": started_at,
                 "finalized_at": finalized_at,
                 "summary_status": summary_status,
@@ -186,6 +190,7 @@ class SessionRepositoryMixin:
             if delete_runtime_data:
                 conn.execute("DELETE FROM live_events WHERE bridge_session_id = ?", (session_id,))
                 conn.execute("DELETE FROM live_interactions WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM live_presentation_items WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM live_director_state WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM live_session_topic_packs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM topic_pack_entry_usages WHERE session_id = ?", (session_id,))

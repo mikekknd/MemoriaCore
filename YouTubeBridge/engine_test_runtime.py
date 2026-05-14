@@ -64,6 +64,9 @@ class TestRuntimeManagerMixin:
                 session = self.storage.get_session(runtime.session_id)
                 if not session or not session.get("auto_test_events_enabled") or session.get("status") != "running":
                     continue
+                if bool(session.get("test_event_use_llm", True)) and self.storage.get_active_interaction(runtime.session_id):
+                    await asyncio.sleep(1.0)
+                    continue
                 result = await self.generate_test_events(
                     runtime.session_id,
                     count=int(session.get("test_event_count_per_tick", 3) or 3),
@@ -235,6 +238,20 @@ class TestRuntimeManagerMixin:
                 if public_event:
                     await self._broadcast(session_id, {"type": "youtube_live_event", "event": public_event})
                     await self._broadcast(session_id, {"type": "super_chat_received", "event": public_event})
+        saved_event_ids = [int(event["id"]) for event in saved_events if event.get("id")]
+        runtime = self._runtimes.get(session_id)
+        if saved_event_ids and runtime and runtime.running:
+            self._schedule_pending_event_classification(runtime, limit=len(saved_event_ids))
+        elif saved_event_ids and runtime and runtime.subscribers:
+            try:
+                await self.classify_event_ids_serialized(session_id, saved_event_ids)
+            except Exception as exc:
+                logger.warning("test event safety classification failed session_id=%s error=%s", session_id, exc)
+        current_events = (
+            self.storage.get_events_by_ids(session_id, saved_event_ids, limit=len(saved_event_ids))
+            if saved_event_ids
+            else []
+        )
         await self._broadcast(session_id, {
             "type": "test_events_generated",
             "session_id": session_id,
@@ -247,7 +264,7 @@ class TestRuntimeManagerMixin:
             "super_chat_generated": len([event for event in saved_events if event.get("priority_class") == "super_chat"]),
             "events": [
                 public_event
-                for event in saved_events
+                for event in current_events
                 if (public_event := self._public_live_event(event))
             ],
         }

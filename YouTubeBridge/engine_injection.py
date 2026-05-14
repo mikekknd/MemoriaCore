@@ -99,18 +99,24 @@ class InjectionManagerMixin:
                         max_sc_per_batch=max_sc_per_batch,
                     )
                     selected_sc = [event for event in selected if event.get("priority_class") == "super_chat"]
-                    active_interaction = bool(self.storage.get_active_interaction(runtime.session_id))
+                    active = self.storage.get_active_interaction(runtime.session_id)
+                    active_interaction = bool(active)
                     sleep_seconds = self._auto_inject_delay(
                         session,
                         len(active_pending),
                         active_interaction=active_interaction,
                     )
+                    if active and active.get("status") == "presenting":
+                        await asyncio.sleep(sleep_seconds)
+                        continue
                     if (selected_sc or len(active_pending) >= min_pending) and selected:
                         sc_interrupt_allowed = bool(selected_sc and self._sc_interrupt_allowed(runtime, session))
-                        if active_interaction and not sc_interrupt_allowed and len(active_pending) < max_pending:
+                        if active_interaction and not selected_sc:
                             await asyncio.sleep(sleep_seconds)
                             continue
-                        forced_by_backlog = active_interaction and len(active_pending) >= max_pending
+                        if active_interaction and selected_sc and not sc_interrupt_allowed:
+                            await asyncio.sleep(sleep_seconds)
+                            continue
                         if selected_sc:
                             max_tier = max(int(event.get("sc_tier", 0) or 0) for event in selected_sc)
                             priority = 320 if max_tier >= 3 else 260
@@ -118,7 +124,7 @@ class InjectionManagerMixin:
                             if active_interaction and sc_interrupt_allowed:
                                 runtime.last_sc_interrupt_at = datetime.now().isoformat()
                         else:
-                            priority = 180 if forced_by_backlog else 100
+                            priority = 100
                             source = "auto_inject"
                         result = await self.inject_recent(
                             runtime.session_id,
@@ -245,7 +251,10 @@ class InjectionManagerMixin:
                 raise ValueError("live session 不存在")
             if session.get("status") in {"closing", "ended"} and source != "director":
                 raise ValueError("live session closing/ended，不再接受一般注入")
-            await self.classify_pending_events_serialized(session_id)
+            if event_ids:
+                await self.classify_event_ids_serialized(session_id, event_ids)
+            else:
+                await self.classify_pending_events_serialized(session_id)
             external_context, summary = self.build_external_context(
                 session_id,
                 event_ids=event_ids,
@@ -290,7 +299,13 @@ class InjectionManagerMixin:
                 return cancel_event.is_set() or bool(current and current.get("status") == "interrupt_requested")
 
             def on_stream_result(event: dict[str, Any]) -> None:
-                self._broadcast_stream_chat_message(loop, session_id, event, source=source)
+                self._dispatch_stream_chat_result(
+                    loop,
+                    session_id,
+                    event,
+                    source=source,
+                    interaction_job_id=job_id,
+                )
 
             try:
                 result = await asyncio.to_thread(

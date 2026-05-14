@@ -33,6 +33,139 @@ from bridge_engine_test_support import (
     bridge_engine,
     normalize_message,
 )
+from test_live_episode_plan_contract import sample_plan
+from tts_gpt_sovits import TTSResult
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_classifies_only_selected_event_ids(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        event_ids = []
+        for index in range(25):
+            event = storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"pending-{index}",
+                "message_text": f"待安全分類留言 {index}",
+                "author_display_name": f"viewer-{index}",
+                "author_channel_id": f"viewer-{index}",
+                "message_type": "textMessageEvent",
+            })
+            event_ids.append(event["id"])
+
+        class CaptureClient:
+            def chat_stream_sync(self, **kwargs):
+                return {"session_id": "mem-a", "message_id": 1, "reply": "已回應。"}
+
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=CaptureClient)
+        classified_batches = []
+
+        async def classify_selected(session_id, selected_ids):
+            classified_batches.append(list(selected_ids))
+            for event in storage.get_events_by_ids(session_id, selected_ids, limit=len(selected_ids)):
+                storage.update_event_safety(
+                    int(event["id"]),
+                    status="completed",
+                    label="clean",
+                    safe_message_text=str(event.get("message_text") or ""),
+                )
+            return {"classified_count": len(selected_ids), "failed_count": 0, "events": []}
+
+        async def fail_global_classification(*_args, **_kwargs):
+            raise AssertionError("inject_recent 不應分類整個 pending backlog")
+
+        monkeypatch.setattr(manager, "classify_event_ids_serialized", classify_selected)
+        monkeypatch.setattr(manager, "classify_pending_events_serialized", fail_global_classification)
+
+        await manager.inject_recent(
+            "live-a",
+            event_ids=event_ids[:2],
+            content="請回應指定留言。",
+        )
+
+        assert classified_batches == [event_ids[:2]]
+        assert storage.get_events_by_ids("live-a", event_ids[:2], limit=2)[0]["injected_at"]
+        assert storage.get_events_by_ids("live-a", event_ids[2:3], limit=1)[0]["safety_status"] == "pending"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_build_external_context_falls_back_when_audience_research_is_running(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "research_enabled": True,
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "question-a",
+            "message_text": "可以查一下現在巴哈熱門排行前三名嗎？",
+            "author_display_name": "viewer",
+            "author_channel_id": "viewer",
+            "message_type": "textMessageEvent",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "可以查一下現在巴哈熱門排行前三名嗎？",
+        })
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        monkeypatch.setattr(
+            manager,
+            "_audience_query_intent_from_events",
+            lambda _events: {
+                "is_factual_question": True,
+                "needs_external_search": True,
+                "safe_search_allowed": True,
+                "sanitized_query": "巴哈姆特 動畫 熱門排行 前三名",
+                "topic_scope": "anime_new_release",
+                "risk_label": "clean",
+                "reason": "fact question",
+            },
+        )
+        monkeypatch.setattr(
+            manager,
+            "_topic_pack_entries_for_query",
+            lambda *_args, **_kwargs: ([], {"top_similarity": None}),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_ensure_audience_research_worker",
+            lambda *_args, **_kwargs: {"status": "running"},
+        )
+
+        context, summary = manager.build_external_context("live-a", event_ids=[event["id"]])
+
+        assert "可以查一下現在巴哈熱門排行前三名嗎" in context["context_text"]
+        assert summary["query_resolution"]["research_status"] == "running"
+        assert summary["query_resolution"]["fallback_reason"] == "research_incomplete"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
@@ -155,6 +288,285 @@ async def test_inject_recent_streams_each_assistant_turn_to_live_chat():
         assert all(message["role"] == "assistant" for message in chat_messages)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_uses_presentation_queue_when_enabled():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 3,
+        })
+        storage.upsert_tts_profile({
+            "character_id": "char-a",
+            "ref_audio_path": "voice.wav",
+            "text_lang": "zh",
+            "prompt_lang": "zh",
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "請回應直播留言",
+            "author_display_name": "viewer",
+            "author_channel_id": "viewer-a",
+            "message_type": "textMessageEvent",
+        })
+        _mark_event_clean(storage, event)
+
+        class OneResultClient:
+            def chat_stream_sync(self, **kwargs):
+                external_context = kwargs["external_context"]
+                assert external_context["group_turn_limit"] == 1
+                assert external_context["max_chars"] <= 1200
+                assert external_context["summary"]["presentation_enabled"] is True
+                kwargs["on_result"]({
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "第一句。",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                })
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "第一句。",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                }
+
+        class FakeTTSProvider:
+            def synthesize(self, text, profile):
+                return TTSResult(ok=True, audio_bytes=b"wav", audio_format="wav")
+
+        manager = YouTubeBridgeManager(
+            storage,
+            memoria_client_factory=OneResultClient,
+            tts_provider_factory=FakeTTSProvider,
+        )
+        queue = await manager.subscribe("live-a")
+        task = asyncio.create_task(manager.inject_recent("live-a", content="請回應。"))
+
+        first = await asyncio.wait_for(queue.get(), timeout=1)
+        assert first["type"] == "interaction_started"
+        second = await asyncio.wait_for(queue.get(), timeout=1)
+        assert second["type"] == "presentation_item_ready"
+        assert second["item"]["text"] == "第一句。"
+        assert queue.empty()
+
+        active = storage.get_active_interaction("live-a")
+        assert active["status"] == "presenting"
+
+        await manager.ack_presentation_item("live-a", second["item"]["item_id"])
+        chat = await asyncio.wait_for(queue.get(), timeout=1)
+        assert chat["type"] == "chat_message"
+        assert chat["message"]["content"] == "第一句。"
+        await asyncio.wait_for(task, timeout=1)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_auto_inject_waits_while_presentation_is_active(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 1,
+            "inject_interval_seconds": 1,
+            "presentation_enabled": True,
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "下一個留言要等目前句子播完",
+            "author_display_name": "viewer",
+            "author_channel_id": "viewer-a",
+            "message_type": "textMessageEvent",
+        })
+        _mark_event_clean(storage, event)
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "presenting",
+        })
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        monkeypatch.setattr(manager, "classify_pending_events_serialized", lambda *_args, **_kwargs: asyncio.sleep(0))
+
+        async def forbidden_inject(*_args, **_kwargs):
+            raise AssertionError("auto inject must wait while a presentation item is active")
+
+        monkeypatch.setattr(manager, "inject_recent", forbidden_inject)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        task = asyncio.create_task(manager._auto_inject_loop(runtime))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_auto_inject_batches_pending_events_into_one_interaction(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 5,
+            "inject_interval_seconds": 5,
+        })
+        event_ids = []
+        for index in range(3):
+            event = storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"msg-{index}",
+                "message_text": f"請合併處理留言 {index}",
+                "author_display_name": f"viewer-{index}",
+                "author_channel_id": f"viewer-{index}",
+                "message_type": "textMessageEvent",
+            })
+            _mark_event_clean(storage, event)
+            event_ids.append(event["id"])
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        captured: list[list[int]] = []
+        seen = asyncio.Event()
+
+        async def capture_inject(_session_id, **kwargs):
+            captured.append(list(kwargs.get("event_ids") or []))
+            seen.set()
+            return {"injected_at": "now"}
+
+        monkeypatch.setattr(manager, "inject_recent", capture_inject)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        task = asyncio.create_task(manager._auto_inject_loop(runtime))
+        await asyncio.wait_for(seen.wait(), timeout=1)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert captured == [event_ids]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_injected_episode_plan_comments_resume_next_planned_turn():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        first_turn = plan["segments"][0]["planned_turn_contracts"][0]
+        planned_state = manager._planned_state_after_episode_turn(
+            plan,
+            manager._episode_plan_and_state(session, storage.get_director_state("live-a"))[1],
+            first_turn,
+        )
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            status="running",
+            metadata={"planned_state": planned_state},
+        )
+        event_ids = []
+        for index in range(2):
+            event = storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"msg-plan-{index}",
+                "message_text": f"想補充剛才那一段 {index}",
+                "author_display_name": f"viewer-{index}",
+                "author_channel_id": f"viewer-{index}",
+                "message_type": "textMessageEvent",
+            })
+            _mark_event_clean(storage, event)
+            event_ids.append(event["id"])
+
+        class CommentReplyClient:
+            def chat_stream_sync(self, **kwargs):
+                return {
+                    "session_id": kwargs.get("session_id") or "mem-a",
+                    "message_id": 501,
+                    "reply": "已合併回應聊天室補充。",
+                }
+
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient(), memoria_client_factory=CommentReplyClient)
+
+        await manager.inject_recent(
+            "live-a",
+            event_ids=event_ids,
+            content="請合併回應直播留言。",
+            source="auto_inject",
+        )
+        director_state = storage.get_director_state("live-a")
+        next_decision = manager._episode_plan_next_decision(
+            storage.get_session("live-a"),
+            director_state,
+        )
+
+        assert storage.list_events("live-a")[0]["injected_at"]
+        assert storage.list_events("live-a")[1]["injected_at"]
+        assert next_decision["episode_plan"]["mode"] == "planned_turn"
+        assert next_decision["episode_plan"]["turn_contract"]["turn_id"] == "seg_01_turn_02"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 def test_dynamic_auto_inject_delay_accelerates_with_pending_count():
     base_session = {

@@ -116,6 +116,17 @@ def test_ui_assets_bypass_key_only_for_loopback(monkeypatch):
     assert exc.value.status_code == 403
 
 
+def test_presentation_audio_bypasses_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/sessions/live-a/presentation/item-a/audio"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/sessions/live-a/presentation/item-a/audio"))
+
+    assert exc.value.status_code == 403
+
+
 def test_live_page_static_files_are_registered():
     static_root = Path(server_module.STATIC_ROOT)
 
@@ -233,7 +244,7 @@ def test_live_page_propagates_requested_session_id_to_live_chat_frame():
 def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     live_chat_html = _live_chat_source()
 
-    assert 'live-chat.js?v=live-chat-order-v1' in live_chat_html
+    assert 'live-chat.js?v=presentation-queue-v1' in live_chat_html
     assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
     assert '"chat_message"' in live_chat_html
     assert '"youtube_live_event"' in live_chat_html
@@ -242,13 +253,47 @@ def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     assert "appendChatMessage(payload.message)" in live_chat_html
     assert "function ensureSubscription()" in live_chat_html
     assert "state.subscribedSessionId === state.sessionId" in live_chat_html
+    assert "presentationEnabled" in live_chat_html
+    assert "state.presentationEnabled = !!selected.presentation_enabled" in live_chat_html
+    assert "if (state.presentationEnabled) return;" in live_chat_html
     assert live_chat_html.index("ensureSubscription();") < live_chat_html.index(
         'api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`)'
     )
-    assert "state.displayMessages, state.liveEventMessages, data.messages || []" in live_chat_html
+    assert "const liveEventMessages = state.presentationEnabled ? [] : state.liveEventMessages" in live_chat_html
+    assert "state.displayMessages, liveEventMessages, data.messages || []" in live_chat_html
     assert '${message.role || "message"}:${messageId}' in live_chat_html
     assert "scheduleRefresh(0)" in live_chat_html
-    assert "setInterval(() => refreshChat({ silent: true }), 8000)" not in live_chat_html
+
+
+def test_live_chat_renders_youtube_events_as_live_events_not_user_messages():
+    live_chat_html = _live_chat_source()
+
+    assert 'if (message.role === "system_event" && message.source === "youtube_live_event") return "直播留言";' in live_chat_html
+    event_mapper = live_chat_html[
+        live_chat_html.index("function liveEventToMessage"):
+        live_chat_html.index("function assignMessageOrder")
+    ]
+    assert 'role: "system_event",' in event_mapper
+    assert 'role: "user",' not in event_mapper
+
+
+def test_live_chat_handles_presentation_queue_events():
+    live_chat_html = _live_chat_source()
+
+    assert '"presentation_item_ready"' in live_chat_html
+    assert "playPresentationItem" in live_chat_html
+    assert "ackPresentationItem" in live_chat_html
+    assert "presentation/current/skip" in live_chat_html
+    assert "audio.addEventListener(\"ended\"" in live_chat_html
+
+
+def test_session_routes_expose_presentation_endpoints():
+    source = (BRIDGE_ROOT / "server_routes" / "sessions.py").read_text(encoding="utf-8")
+
+    assert '@router.post("/sessions/{session_id}/presentation/{item_id}/ack")' in source
+    assert '@router.get("/sessions/{session_id}/presentation/{item_id}/audio")' in source
+    assert '@router.post("/sessions/{session_id}/presentation/current/skip")' in source
+    assert "list_presented_messages" in source
 
 
 def test_live_chat_missing_timestamp_uses_stable_fallback_order(tmp_path):
@@ -341,8 +386,8 @@ def test_control_ui_honors_requested_session_id_on_initial_load():
 def test_control_ui_loads_external_css_and_module_script():
     index_html = (Path(server_module.STATIC_ROOT) / "index.html").read_text(encoding="utf-8")
 
-    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=plan-debug-v1">' in index_html
-    assert '<script type="module" src="/ui-assets/app.js?v=global-suffix-v1"></script>' in index_html
+    assert '<link rel="stylesheet" href="/ui-assets/index.css?v=events-feedback-v3">' in index_html
+    assert '<script type="module" src="/ui-assets/app.js?v=events-feedback-v3"></script>' in index_html
     assert "<style>" not in index_html
     assert "<script>\n" not in index_html
 
@@ -579,6 +624,53 @@ def test_control_ui_exposes_live_persona_overlay_editor():
     assert "/persona-overlays" in source
 
 
+def test_control_ui_exposes_live_tts_profile_editor():
+    source = _control_ui_source()
+
+    assert "GPT-SoVITS 聲音設定" in source
+    assert 'id="liveTtsSourcePreset"' in source
+    assert "快速選擇聲音" in source
+    assert "/tts-sources" in source
+    assert "applyLiveTtsSourcePreset" in source
+    assert 'id="liveTtsEnabled"' in source
+    assert 'id="liveTtsRefAudioPath"' in source
+    assert 'id="liveTtsPromptText"' in source
+    assert 'id="liveTtsTextLang"' in source
+    assert 'id="liveTtsPromptLang"' in source
+    assert 'id="liveTtsSpeedFactor"' in source
+    assert 'id="liveTtsMediaType"' in source
+    assert "liveTtsProfileFor" in source
+    assert "liveTtsProfilePayload" in source
+    assert "`/persona-overlays/${encodeURIComponent(characterId)}/tts-profile`" in source
+
+
+def test_control_ui_exposes_live_presentation_tts_session_controls():
+    source = _control_ui_source()
+
+    assert 'id="presentationEnabled"' in source
+    assert 'id="ttsEnabled"' in source
+    assert 'id="presentationAckTimeout"' in source
+    assert "presentation_enabled: $(\"presentationEnabled\").checked" in source
+    assert "tts_enabled: $(\"ttsEnabled\").checked" in source
+    assert "presentation_ack_timeout_seconds: Number($(\"presentationAckTimeout\").value || 120)" in source
+    assert '$(\"presentationEnabled\").checked = !!session.presentation_enabled;' in source
+    assert '$(\"ttsEnabled\").checked = !!session.tts_enabled;' in source
+
+
+def test_live_session_config_accepts_presentation_tts_settings():
+    config = server_module.LiveSessionConfig(
+        connector_id="youtube-main",
+        presentation_enabled=True,
+        tts_enabled=True,
+        presentation_ack_timeout_seconds=9,
+    )
+
+    assert config.presentation_enabled is True
+    assert config.tts_enabled is True
+    assert config.tts_provider == "gpt_sovits"
+    assert config.presentation_ack_timeout_seconds == 9
+
+
 def test_control_ui_exposes_youtube_live_global_suffix_editor():
     source = _control_ui_source()
 
@@ -621,6 +713,12 @@ def test_events_pane_is_grouped_as_test_comment_tool():
     assert 'id="injectPending"' not in manual_block
     assert "自動測試" in auto_block
     assert 'id="toggleAutoTestEvents"' in auto_block
+    assert 'id="saveTestEventSettings"' in auto_block
+    assert "儲存測試參數" in auto_block
+    assert "saveTestEventSettings" in index_html
+    assert '$("saveTestEventSettings").onclick' in index_html
+    assert "await saveSession(false)" in index_html
+    assert '/recent?limit=100&include_pending=true' in index_html
     assert 'id="injectSelected"' not in auto_block
     assert "待處理留言" in pending_block
     assert 'id="eventsList"' in pending_block
@@ -628,12 +726,89 @@ def test_events_pane_is_grouped_as_test_comment_tool():
     assert 'id="injectPending"' in pending_block
     assert 'id="injectContent"' in pending_block
     assert "<summary>進階注入提示</summary>" in pending_block
+    assert 'id="eventActionOverlay"' in index_html
+    assert 'id="eventActionTitle"' in index_html
+    assert 'id="eventActionMessage"' in index_html
+    assert 'role="status" aria-live="polite"' in pending_block
+    assert "withEventActionBusy" in index_html
+    assert "startEventsAutoRefresh" in index_html
+    assert "SSE 中斷，改用輪詢更新中" in index_html
+
+
+def test_events_pane_actions_use_busy_feedback_and_polling_fallback():
+    index_html = _control_ui_source()
+
+    assert "EVENTS_AUTO_REFRESH_MS = 5000" in index_html
+    assert "function setEventState" in index_html
+    assert "function setEventActionOverlay" in index_html
+    assert "async function withEventActionBusy" in index_html
+    assert "button.setAttribute(\"aria-busy\", \"true\")" in index_html
+    assert "eventActionOverlayTimer" in index_html
+    assert "updateLiveSessionControls();" in index_html
+
+    expected_actions = {
+        "refreshEvents": "更新中",
+        "generateTestEvents": "生成中",
+        "saveTestEventSettings": "儲存中",
+        "toggleAutoTestEvents": "啟動中",
+        "injectEvents": "注入中",
+        "replySuperChats": "SC 回應中",
+        "interruptNow": "中斷中",
+    }
+    for action, busy_label in expected_actions.items():
+        action_block = index_html[
+            index_html.index(f"export async function {action}"):
+            index_html.index("\n}", index_html.index(f"export async function {action}")) + 2
+        ]
+        assert "withEventActionBusy" in action_block, action
+        assert busy_label in action_block, action
+
+    assert "startEventsAutoRefresh" in index_html
+    assert "stopEventsAutoRefresh" in index_html
+    assert "eventsPane.classList.contains(\"active\")" in index_html
+    assert "document.visibilityState === \"hidden\"" in index_html
+
+
+def test_events_pane_prevents_empty_selected_injection_client_side():
+    index_html = _control_ui_source()
+    inject_block = index_html[
+        index_html.index("export async function injectEvents"):
+        index_html.index("export async function generateTestEvents")
+    ]
+
+    assert "if (!usePending && eventIds.length === 0)" in inject_block
+    assert "請先勾選留言" in inject_block
+    assert "reply-recent" in inject_block
+    assert inject_block.index("請先勾選留言") < inject_block.index("reply-recent")
+
+
+def test_events_sse_refreshes_relevant_message_types_and_falls_back_to_polling():
+    index_html = _control_ui_source()
+    subscribe_block = index_html[
+        index_html.index("export function subscribeEvents"):
+        index_html.index("state.eventSource.onerror")
+    ]
+
+    assert "state.eventSource.onopen" in index_html
+    assert "mergeEventIntoState(payload.event)" in subscribe_block
+    for event_type in (
+        "test_events_generated",
+        "test_events_auto_generated",
+        "super_chat_batch_injected",
+        "super_chat_received",
+        "safety_classified",
+        "test_event_auto_error",
+        "closing_super_chat_thanks_completed",
+    ):
+        assert event_type in subscribe_block
+    assert "startEventsAutoRefresh" in index_html
+    assert "SSE 中斷，改用輪詢更新中" in index_html
 
 
 def test_control_ui_checkbox_inputs_keep_native_compact_size():
     index_html = _control_ui_source()
 
-    assert 'href="/ui-assets/index.css?v=plan-debug-v1"' in index_html
+    assert 'href="/ui-assets/index.css?v=events-feedback-v3"' in index_html
     assert '\ninput[type="checkbox"] {' in index_html
     checkbox_block = index_html[
         index_html.index('\ninput[type="checkbox"] {'):
@@ -1046,8 +1221,8 @@ def test_control_ui_exposes_episode_plan_import_and_binding_controls():
     assert 'id="bindEpisodePlan"' in live_session_block
     assert 'id="unbindEpisodePlan"' in live_session_block
     assert 'id="episodePlanStatus"' in live_session_block
-    assert 'id="episodePlanHandoffGapSeconds"' in live_session_block
-    assert 'id="episodePlanTurnGapSeconds"' in live_session_block
+    assert 'id="episodePlanHandoffGapSeconds"' not in live_session_block
+    assert 'id="episodePlanTurnGapSeconds"' not in live_session_block
     assert 'id="episodePlanDebugWait"' in live_session_block
     assert 'id="episodePlanDebugList"' in live_session_block
     assert "節目清單 Debug" in live_session_block
@@ -1092,13 +1267,11 @@ def test_live_session_moves_legacy_director_knobs_into_legacy_block():
         assert f'id="{field_id}"' in legacy_block
         assert f'id="{field_id}"' not in primary_director_grid
 
-    for field_id in (
-        "episodePlanHandoffGapSeconds",
-        "episodePlanTurnGapSeconds",
-        "directorDialogueExpansionEnabled",
-    ):
+    for field_id in ("directorDialogueExpansionEnabled",):
         assert f'id="{field_id}"' in primary_director_grid
         assert f'id="{field_id}"' not in legacy_block
+    assert 'id="episodePlanHandoffGapSeconds"' not in live_session_block
+    assert 'id="episodePlanTurnGapSeconds"' not in live_session_block
     assert 'id="directorMaxChatBatches"' in live_session_block
     assert 'id="directorMaxChatBatches"' not in legacy_block
 
@@ -1216,7 +1389,7 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "injectInterval": "自動注入的正常等待秒數；pending 留言少或正在有角色回應時，會以這個值作為主要節奏。",
         "injectMinIntervalSeconds": "pending 留言接近強制注入上限時，動態注入最多只會縮短到這個秒數。",
         "minPending": "pending 留言達到這個數量後，自動注入才會把留言送進角色回應流程；Super Chat 可優先觸發。",
-        "maxPending": "單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。",
+        "maxPending": "單次自動注入最多帶入的 pending 留言數；超出者保留或延後，不會阻止 EpisodePlan 主線。",
         "plannedDuration": "未使用 EpisodePlan 時代表預計直播長度；使用 EpisodePlan 時只是保護上限，企劃完成會優先結束。",
         "scInterruptCooldown": "Super Chat 打斷正在進行的回應後，下一次允許再次打斷前必須等待的秒數。",
         "maxScPerBatch": "每次注入最多帶入幾則 Super Chat；系統會優先選較高 tier，再依留言順序處理。",
@@ -1224,10 +1397,10 @@ def test_live_session_core_fields_have_detailed_tooltips():
         "directorDialogueExpansionEnabled": "開啟時，導播推話題後可讓角色互相接話直到導播回合上限；關閉時，每次導播指令只讓被指定的一位角色回應。",
         "directorGroupTurnLimit": "導播每次推話題時允許角色連續互相接話的回合上限，避免一次導播指令延伸過久。",
         "directorMaxChatBatches": "連續處理幾批聊天室留言後，導播會強制把話題拉回本場主軸，避免直播被留言帶偏。",
+        "directorAudienceInterruptCooldown": "一次 audience interrupt 後，下一批普通觀眾留言至少等待的秒數；Super Chat 仍另外受 SC 冷卻限制。",
+        "directorMaxAudienceBatchesPerPlannedTurn": "每個 planned turn 之間最多允許幾批聊天室插入；超出者延後，不會阻止下一個企劃 turn。",
         "directorIdle": "角色與互動停止超過這個秒數後，導播會嘗試推進下一段話題或讓角色續話。",
         "directorAnchorEveryTurns": "同一個導播話題最多連續推進幾輪 AI 對話；達到後會釋放回合限制，讓下一次導播決策可以切換或重新錨定話題。",
-        "episodePlanHandoffGapSeconds": "EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。",
-        "episodePlanTurnGapSeconds": "EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。",
         "directorGuidance": "本場直播的高層方向，只提供給導播與角色作為內部參考，不會直接顯示在 live chat。",
         "hostInteractionRules": "本場直播主持節奏與角色分工，只給導播與角色看；可貼入雙主持互動規則，不會寫入角色 persona。",
         "programSegmentTurns": "同一段落建議維持幾輪導播推進後再切到下一段；不影響單次導播回合上限。",
@@ -1247,10 +1420,10 @@ def test_live_session_core_fields_have_detailed_tooltips():
         ("話題資料包", "sessionTopicPackSelect"),
         ("單一話題持續回合數", "directorAnchorEveryTurns"),
         ("角色接話延伸", "directorDialogueExpansionEnabled"),
-        ("企劃交接等待秒數", "episodePlanHandoffGapSeconds"),
-        ("企劃一般等待秒數", "episodePlanTurnGapSeconds"),
         ("導播回合上限", "directorGroupTurnLimit"),
         ("幾批留言後回主軸", "directorMaxChatBatches"),
+        ("觀眾插入冷卻秒數", "directorAudienceInterruptCooldown"),
+        ("每個企劃 turn 觀眾批次上限", "directorMaxAudienceBatchesPerPlannedTurn"),
         ("角色停頓後續話秒數", "directorIdle"),
         ("本場直播方向", "directorGuidance"),
         ("主持互動規則", "hostInteractionRules"),
@@ -1262,6 +1435,10 @@ def test_live_session_core_fields_have_detailed_tooltips():
         )
         assert re.search(pattern, live_session_block, flags=re.DOTALL), field_id
 
+    assert "episodePlanHandoffGapSeconds" not in live_session_block
+    assert "episodePlanTurnGapSeconds" not in live_session_block
+    assert "企劃交接等待秒數" not in live_session_block
+    assert "企劃一般等待秒數" not in live_session_block
     assert 'id="programSegmentRows"' in live_session_block
     assert 'id="addProgramSegmentRow"' in live_session_block
     assert 'id="programSegmentPlan" type="hidden"' in live_session_block
@@ -1452,6 +1629,7 @@ def test_control_ui_disables_test_event_controls_for_real_youtube_sessions():
     assert 'manualGroup.classList.toggle("is-disabled", blocked);' in index_html
     assert 'autoGroup.classList.toggle("is-disabled", blocked);' in index_html
     assert '$("generateTestEvents").disabled = blocked || !hasSession;' in index_html
+    assert '$("saveTestEventSettings").disabled = blocked || !hasSession;' in index_html
     assert '$("toggleAutoTestEvents").disabled = blocked || !hasSession;' in index_html
     assert '$("autoTestEvents").checked = false;' in index_html
     assert '$("autoTestEvents").disabled = blocked;' in index_html
@@ -1536,6 +1714,42 @@ async def test_delete_session_endpoint_returns_deleted_session_id(monkeypatch, t
     assert result == {"deleted": True, "session_id": "live-a"}
     assert stopped == ["live-a"]
     assert storage.get_session("live-a") is None
+
+
+@pytest.mark.asyncio
+async def test_recent_events_can_include_pending_for_control_queue(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+    })
+    storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "yt-main",
+        "youtube_message_id": "pending-a",
+        "message_type": "textMessageEvent",
+        "author_display_name": "測試觀眾",
+        "message_text": "安全檢查前的待處理留言",
+        "status": "active",
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module, "manager", server_module.YouTubeBridgeManager(storage))
+
+    hidden = await server_module.recent_events("live-a", limit=10)
+    visible = await server_module.recent_events("live-a", limit=10, include_pending=True)
+
+    assert hidden["events"] == []
+    assert len(visible["events"]) == 1
+    event = visible["events"][0]
+    assert event["author_display_name"] == "測試觀眾"
+    assert event["safety_status"] == "pending"
+    assert event["message_text"] == "安全檢查未完成，暫不顯示原始留言。"
 
 
 @pytest.mark.asyncio
@@ -2336,9 +2550,9 @@ async def test_director_state_includes_episode_plan_debug_outline(monkeypatch, t
         "max_replies": 3,
         "autonomy": "guided",
     }
-    assert debug["next_wait"]["delay_seconds"] == 4
-    assert debug["next_wait"]["reason"] == "handoff_gap"
-    assert debug["next_wait"]["label"] == "交接等待"
+    assert debug["next_wait"]["delay_seconds"] == 0
+    assert debug["next_wait"]["reason"] == "planned_turn_ready"
+    assert debug["next_wait"]["label"] == "企劃立即推進"
 
 
 @pytest.mark.asyncio

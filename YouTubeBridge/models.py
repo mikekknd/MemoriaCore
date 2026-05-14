@@ -60,8 +60,8 @@ class LiveSessionConfig(BaseModel):
     director_anchor_every_turns: int = Field(2, ge=1, le=10)
     director_dialogue_expansion_enabled: bool = True
     director_group_turn_limit: int = Field(3, ge=1, le=12)
-    episode_plan_handoff_gap_seconds: int = Field(2, ge=1, le=5)
-    episode_plan_turn_gap_seconds: int = Field(8, ge=1, le=30)
+    director_audience_interrupt_cooldown_seconds: int = Field(30, ge=0, le=3600)
+    director_max_audience_batches_per_planned_turn: int = Field(1, ge=0, le=20)
     director_max_chat_batches_before_anchor: int = Field(2, ge=1, le=10)
     director_offtopic_policy: str = Field("defer", max_length=40)
     director_sc_burst_policy: str = Field("summarize_batch", max_length=40)
@@ -69,6 +69,10 @@ class LiveSessionConfig(BaseModel):
     research_cooldown_seconds: int = Field(300, ge=0, le=3600)
     research_max_per_session: int = Field(12, ge=0, le=100)
     auto_sc_thanks_on_finalize: bool = True
+    presentation_enabled: bool = False
+    tts_enabled: bool = False
+    tts_provider: str = Field("gpt_sovits", max_length=40)
+    presentation_ack_timeout_seconds: int = Field(120, ge=1, le=600)
 
     @field_validator("session_id")
     @classmethod
@@ -216,3 +220,47 @@ class LivePersonaOverlayRequest(BaseModel):
         if value not in {"replace", "append"}:
             raise ValueError("mode 必須是 replace 或 append")
         return value
+
+
+class LiveTTSProfileRequest(BaseModel):
+    enabled: bool = False
+    ref_audio_path: str = Field("", max_length=1000)
+    prompt_text: str = Field("", max_length=2000)
+    text_lang: str = Field("zh", max_length=20)
+    prompt_lang: str = Field("zh", max_length=20)
+    speed_factor: float = Field(1.0, ge=0.25, le=4.0)
+    media_type: str = Field("wav", max_length=20)
+
+    @field_validator("text_lang", "prompt_lang", "media_type")
+    @classmethod
+    def normalize_short_code(cls, value: str) -> str:
+        return str(value or "").strip().lower()
+
+    @field_validator("prompt_text")
+    @classmethod
+    def validate_prompt_text(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("ref_audio_path")
+    @classmethod
+    def validate_ref_audio_path(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("media_type")
+    @classmethod
+    def validate_media_type(cls, value: str) -> str:
+        value = str(value or "wav").strip().lower()
+        if value not in {"wav", "mp3"}:
+            raise ValueError("media_type 必須是 wav 或 mp3")
+        return value
+
+    @field_validator("enabled")
+    @classmethod
+    def validate_enabled(cls, value: bool) -> bool:
+        return bool(value)
+
+    def model_post_init(self, __context) -> None:
+        if self.enabled and not self.ref_audio_path:
+            raise ValueError("啟用 TTS 時必須填入範例語音路徑")
+        if self.enabled and not self.prompt_text:
+            raise ValueError("啟用 TTS 時必須填入範例語音 transcript")

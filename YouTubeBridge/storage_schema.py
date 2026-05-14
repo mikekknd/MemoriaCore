@@ -80,8 +80,8 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             director_anchor_every_turns INTEGER NOT NULL DEFAULT 2,
             director_dialogue_expansion_enabled INTEGER NOT NULL DEFAULT 1,
             director_group_turn_limit INTEGER NOT NULL DEFAULT 3,
-            episode_plan_handoff_gap_seconds INTEGER NOT NULL DEFAULT 2,
-            episode_plan_turn_gap_seconds INTEGER NOT NULL DEFAULT 8,
+            director_audience_interrupt_cooldown_seconds INTEGER NOT NULL DEFAULT 30,
+            director_max_audience_batches_per_planned_turn INTEGER NOT NULL DEFAULT 1,
             director_max_chat_batches_before_anchor INTEGER NOT NULL DEFAULT 2,
             director_offtopic_policy TEXT DEFAULT 'defer',
             director_sc_burst_policy TEXT DEFAULT 'summarize_batch',
@@ -89,6 +89,10 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             research_cooldown_seconds INTEGER NOT NULL DEFAULT 300,
             research_max_per_session INTEGER NOT NULL DEFAULT 12,
             auto_sc_thanks_on_finalize INTEGER NOT NULL DEFAULT 1,
+            presentation_enabled INTEGER NOT NULL DEFAULT 0,
+            tts_enabled INTEGER NOT NULL DEFAULT 0,
+            tts_provider TEXT DEFAULT 'gpt_sovits',
+            presentation_ack_timeout_seconds INTEGER NOT NULL DEFAULT 120,
             started_at TEXT DEFAULT '',
             finalized_at TEXT DEFAULT '',
             summary_status TEXT NOT NULL DEFAULT 'pending',
@@ -290,6 +294,41 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             metadata_json TEXT DEFAULT '{}'
         );
 
+        CREATE TABLE IF NOT EXISTS live_presentation_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id TEXT UNIQUE NOT NULL,
+            session_id TEXT NOT NULL,
+            interaction_job_id TEXT DEFAULT '',
+            message_id TEXT DEFAULT '',
+            character_id TEXT DEFAULT '',
+            character_name TEXT DEFAULT '',
+            sequence_index INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'queued',
+            text TEXT DEFAULT '',
+            audio_path TEXT DEFAULT '',
+            audio_format TEXT DEFAULT 'wav',
+            error TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            presented_at TEXT DEFAULT '',
+            acked_at TEXT DEFAULT '',
+            metadata_json TEXT DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS live_tts_profiles (
+            character_id TEXT PRIMARY KEY,
+            ref_audio_path TEXT NOT NULL DEFAULT '',
+            prompt_text TEXT DEFAULT '',
+            text_lang TEXT NOT NULL DEFAULT 'zh',
+            prompt_lang TEXT NOT NULL DEFAULT 'zh',
+            speed_factor REAL NOT NULL DEFAULT 1.0,
+            media_type TEXT NOT NULL DEFAULT 'wav',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            metadata_json TEXT DEFAULT '{}'
+        );
+
         CREATE TABLE IF NOT EXISTS live_director_state (
             session_id TEXT PRIMARY KEY,
             director_enabled INTEGER NOT NULL DEFAULT 0,
@@ -319,6 +358,10 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             ON live_interactions(session_id, id);
         CREATE INDEX IF NOT EXISTS idx_live_interactions_status
             ON live_interactions(session_id, status, priority, id);
+        CREATE INDEX IF NOT EXISTS idx_live_presentation_items_session
+            ON live_presentation_items(session_id, id);
+        CREATE INDEX IF NOT EXISTS idx_live_presentation_items_status
+            ON live_presentation_items(session_id, status, id);
         CREATE INDEX IF NOT EXISTS idx_topic_pack_entries_pack
             ON topic_pack_entries(pack_id, id);
         CREATE INDEX IF NOT EXISTS idx_topic_pack_embeddings_pack
@@ -382,8 +425,8 @@ def ensure_live_session_columns(conn: sqlite3.Connection) -> None:
         "director_anchor_every_turns": "director_anchor_every_turns INTEGER NOT NULL DEFAULT 2",
         "director_dialogue_expansion_enabled": "director_dialogue_expansion_enabled INTEGER NOT NULL DEFAULT 1",
         "director_group_turn_limit": "director_group_turn_limit INTEGER NOT NULL DEFAULT 3",
-        "episode_plan_handoff_gap_seconds": "episode_plan_handoff_gap_seconds INTEGER NOT NULL DEFAULT 2",
-        "episode_plan_turn_gap_seconds": "episode_plan_turn_gap_seconds INTEGER NOT NULL DEFAULT 8",
+        "director_audience_interrupt_cooldown_seconds": "director_audience_interrupt_cooldown_seconds INTEGER NOT NULL DEFAULT 30",
+        "director_max_audience_batches_per_planned_turn": "director_max_audience_batches_per_planned_turn INTEGER NOT NULL DEFAULT 1",
         "director_max_chat_batches_before_anchor": "director_max_chat_batches_before_anchor INTEGER NOT NULL DEFAULT 2",
         "director_offtopic_policy": "director_offtopic_policy TEXT DEFAULT 'defer'",
         "director_sc_burst_policy": "director_sc_burst_policy TEXT DEFAULT 'summarize_batch'",
@@ -391,6 +434,10 @@ def ensure_live_session_columns(conn: sqlite3.Connection) -> None:
         "research_cooldown_seconds": "research_cooldown_seconds INTEGER NOT NULL DEFAULT 300",
         "research_max_per_session": "research_max_per_session INTEGER NOT NULL DEFAULT 12",
         "auto_sc_thanks_on_finalize": "auto_sc_thanks_on_finalize INTEGER NOT NULL DEFAULT 1",
+        "presentation_enabled": "presentation_enabled INTEGER NOT NULL DEFAULT 0",
+        "tts_enabled": "tts_enabled INTEGER NOT NULL DEFAULT 0",
+        "tts_provider": "tts_provider TEXT DEFAULT 'gpt_sovits'",
+        "presentation_ack_timeout_seconds": "presentation_ack_timeout_seconds INTEGER NOT NULL DEFAULT 120",
         "started_at": "started_at TEXT DEFAULT ''",
         "finalized_at": "finalized_at TEXT DEFAULT ''",
         "summary_status": "summary_status TEXT NOT NULL DEFAULT 'pending'",

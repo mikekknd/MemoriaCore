@@ -81,7 +81,7 @@ async def test_group_loop_passes_target_character_id(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_group_loop_uses_transient_user_anchor_without_persisting_it(monkeypatch):
+async def test_group_loop_uses_transient_turn_instruction_without_user_message(monkeypatch):
     from api.routers.chat import group_loop
 
     session = SessionState(
@@ -111,19 +111,25 @@ async def test_group_loop_uses_transient_user_anchor_without_persisting_it(monke
             }
 
     captured_router_messages = []
+    captured_router_turn_instructions = []
+    captured_router_turn_start_indexes = []
     captured_orchestration_messages = []
+    captured_orchestration_prompts = []
 
     route_results = [
         GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
         GroupRouterResult(False, None, "done"),
     ]
 
-    def fake_group_router(messages, *_args, **_kwargs):
+    def fake_group_router(messages, *_args, **kwargs):
         captured_router_messages.append(list(messages))
+        captured_router_turn_instructions.append(kwargs.get("current_turn_instruction"))
+        captured_router_turn_start_indexes.append(kwargs.get("current_turn_start_index"))
         return route_results.pop(0)
 
-    def fake_orchestration(messages, *_args, **kwargs):
+    def fake_orchestration(messages, _last_entities, user_prompt, _user_prefs, **kwargs):
         captured_orchestration_messages.append(list(messages))
+        captured_orchestration_prompts.append(user_prompt)
         return (
             "回覆 transient anchor",
             [],
@@ -154,12 +160,11 @@ async def test_group_loop_uses_transient_user_anchor_without_persisting_it(monke
     finally:
         session_manager._sessions.clear()
 
-    assert captured_router_messages[0][-1] == {
-        "role": "user",
-        "content": "請根據已帶入的 YouTube 直播留言上下文回應。",
-        "debug_info": {"transient_external_context_anchor": True},
-    }
-    assert captured_orchestration_messages[0][-1]["role"] == "user"
+    assert all(m.get("role") != "user" for m in captured_router_messages[0])
+    assert captured_router_turn_instructions[0] == "請根據已帶入的 YouTube 直播留言上下文回應。"
+    assert captured_router_turn_start_indexes[0] == 1
+    assert all(m.get("role") != "user" for m in captured_orchestration_messages[0])
+    assert captured_orchestration_prompts == ["請根據已帶入的 YouTube 直播留言上下文回應。"]
     assert session.messages[0]["role"] == "system_event"
     assert all(m.get("content") != "請根據已帶入的 YouTube 直播留言上下文回應。" for m in session.messages)
 

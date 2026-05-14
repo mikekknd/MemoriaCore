@@ -8,10 +8,12 @@ from api.routers.chat_rest import (
     _external_context_group_turn_limit,
     _live_session_scope_for_external_context,
     _memory_write_policy_for_request,
+    _messages_for_orchestration,
     _resolve_chat_display_content,
     _resolve_external_context_payload,
     _transient_user_content_for_external_context,
 )
+from core.chat_orchestrator.generation_context import build_final_chat_context
 from core.chat_orchestrator.dialogue_format import format_history_for_llm
 from core.chat_orchestrator.dataclasses import PipelineContext
 from core.chat_orchestrator.group_followup import (
@@ -136,6 +138,106 @@ def test_external_context_display_content_uses_only_visible_chat_lines():
     assert "topic_pack_fact_cards" not in display
     assert "UCFakeChannelId" not in display
     assert "textMessageEvent" not in display
+
+
+def test_external_context_orchestration_messages_do_not_add_user_anchor():
+    body = ChatSyncRequest(
+        content="請根據已帶入的 YouTube 直播留言上下文回應。",
+        external_context={
+            "source": "youtube_live",
+            "context_text": "觀眾A: 這段怎麼看？",
+        },
+    )
+    context, _summary = _resolve_external_context_payload(body)
+
+    messages = _messages_for_orchestration(
+        [
+            {
+                "role": "system_event",
+                "content": "YouTube Live 留言注入：1 則\n觀眾A: 這段怎麼看？",
+                "debug_info": {"event_type": "youtube_live_chat_batch", "llm_visible": False},
+            }
+        ],
+        body,
+        context,
+    )
+
+    assert all(message.get("role") != "user" for message in messages)
+    assert all("請根據已帶入" not in message.get("content", "") for message in messages)
+
+
+def test_youtube_live_external_context_uses_user_control_when_no_user_message():
+    api_messages, clean_history, _sys_prompt = build_final_chat_context(
+        char_sys_prompt="直播角色 prompt",
+        group_participants_block="",
+        mem_ctx="",
+        reply_rules="請用繁體中文。",
+        session_messages=[
+            {
+                "role": "system_event",
+                "content": "YouTube Live 留言注入：1 則\n觀眾A: 這段怎麼看？",
+                "debug_info": {"event_type": "youtube_live_chat_batch", "llm_visible": False},
+            }
+        ],
+        context_window=10,
+        user_prefs={},
+        session_ctx={
+            "channel": "youtube_live",
+            "session_mode": "group",
+            "active_character_ids": ["char-a", "char-b"],
+            "external_chat_context": {
+                "source": "youtube_live",
+                "context_text": "觀眾A: 這段怎麼看？",
+            },
+        },
+        force_group=True,
+        turn_instruction="請根據已帶入的 YouTube 直播留言上下文回應。",
+    )
+
+    assert clean_history == []
+    assert api_messages[-1]["role"] == "user"
+    assert "<external_chat_context" in api_messages[-1]["content"]
+    assert 'source="youtube_live"' in api_messages[-1]["content"]
+    assert "觀眾A: 這段怎麼看？" in api_messages[-1]["content"]
+    assert "請根據已帶入的 YouTube 直播留言上下文回應。" in api_messages[-1]["content"]
+    assert [message["role"] for message in api_messages] == ["system", "user"]
+
+
+def test_youtube_live_director_control_ends_with_user_after_assistant_history():
+    api_messages, clean_history, _sys_prompt = build_final_chat_context(
+        char_sys_prompt="直播角色 prompt",
+        group_participants_block="",
+        mem_ctx="",
+        reply_rules="請用繁體中文。",
+        session_messages=[
+            {
+                "role": "assistant",
+                "content": "[可可|char-a]: 開場交給你接。",
+                "character_id": "char-a",
+            }
+        ],
+        context_window=10,
+        user_prefs={},
+        session_ctx={
+            "channel": "youtube_live",
+            "session_mode": "group",
+            "active_character_ids": ["char-a", "char-b"],
+            "external_chat_context": {
+                "source": "youtube_live_director",
+                "context_text": "直播流程 action=continue_topic\n本輪目標：接住開場並說明來源邊界。",
+            },
+        },
+        force_group=True,
+        turn_instruction="請根據已提供的直播流程提示回應。",
+    )
+
+    assert clean_history == [{"role": "assistant", "content": "[char-a]: [可可|char-a]: 開場交給你接。"}]
+    assert [message["role"] for message in api_messages] == ["system", "assistant", "user"]
+    assert "<director_context" in api_messages[-1]["content"]
+    assert 'source="youtube_live_director"' in api_messages[-1]["content"]
+    assert "本輪目標：接住開場並說明來源邊界。" in api_messages[-1]["content"]
+    assert "<external_turn_instruction" in api_messages[-1]["content"]
+    assert "請根據已提供的直播流程提示回應。" in api_messages[-1]["content"]
 
 
 def test_external_context_visible_event_only_previews_three_chat_lines():

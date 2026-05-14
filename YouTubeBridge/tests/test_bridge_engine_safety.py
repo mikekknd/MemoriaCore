@@ -181,6 +181,113 @@ async def test_generate_test_events_without_llm_saves_events():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @pytest.mark.asyncio
+async def test_generate_test_events_classifies_when_ui_is_subscribed():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "director_guidance": "測試留言注入。",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        queue = await manager.subscribe("live-a")
+
+        result = await manager.generate_test_events("live-a", count=2, use_llm=False)
+
+        assert result["generated"] == 2
+        assert len(result["events"]) == 2
+        events = storage.list_events("live-a")
+        assert {event["safety_status"] for event in events} == {"completed"}
+        assert {event["safety_label"] for event in events} == {"clean"}
+        payloads = []
+        while not queue.empty():
+            payloads.append(await queue.get())
+        assert [payload.get("type") for payload in payloads].count("youtube_live_event") == 2
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@pytest.mark.asyncio
+async def test_generate_test_events_classifies_new_events_even_with_pending_backlog():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "director_guidance": "測試留言注入。",
+        })
+        for index in range(3):
+            storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"old-{index}",
+                "message_type": "testMessageEvent",
+                "author_display_name": "舊留言",
+                "message_text": f"舊 pending 留言 {index}",
+                "status": "active",
+            })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        await manager.subscribe("live-a")
+
+        result = await manager.generate_test_events("live-a", count=2, use_llm=False)
+
+        assert result["generated"] == 2
+        assert len(result["events"]) == 2
+        assert {event["metadata"]["topic_hint"] for event in result["events"]} == {"[hidden]"}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@pytest.mark.asyncio
+async def test_generate_test_events_schedules_background_safety_when_runtime_running(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "director_guidance": "測試留言注入。",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        scheduled = []
+
+        def fake_schedule(scheduled_runtime, *, limit=50):
+            scheduled.append((scheduled_runtime.session_id, limit))
+
+        monkeypatch.setattr(manager, "_schedule_pending_event_classification", fake_schedule)
+
+        result = await manager.generate_test_events("live-a", count=3, super_chat_count=2, use_llm=False)
+
+        assert result["generated"] == 5
+        assert scheduled == [("live-a", 5)]
+        assert {event["safety_status"] for event in storage.list_events("live-a")} == {"pending"}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@pytest.mark.asyncio
 async def test_generate_test_events_can_create_super_chats_and_malicious_samples(monkeypatch):
     rolls = iter([0.1, 0.9])
     monkeypatch.setattr("bridge_engine.random.random", lambda: next(rolls))

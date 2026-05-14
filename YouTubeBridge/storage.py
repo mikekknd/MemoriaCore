@@ -16,6 +16,7 @@ from storage_repositories import (
     EventRepositoryMixin,
     InteractionRepositoryMixin,
     LivePersonaRepositoryMixin,
+    PresentationRepositoryMixin,
     SessionRepositoryMixin,
     SummaryRepositoryMixin,
     TopicPackRepositoryMixin,
@@ -39,6 +40,7 @@ class BridgeStorage(
     EventRepositoryMixin,
     TopicPackRepositoryMixin,
     LivePersonaRepositoryMixin,
+    PresentationRepositoryMixin,
     InteractionRepositoryMixin,
     DirectorStateRepositoryMixin,
     SummaryRepositoryMixin,
@@ -137,3 +139,11 @@ class BridgeStorage(
     @classmethod
     def _row_to_director_state(cls, row: sqlite3.Row | None, session_id: str) -> dict:
         return mappers.row_to_director_state(row, session_id)
+
+    @classmethod
+    def _row_to_presentation_item(cls, row: sqlite3.Row | None) -> dict | None:
+        return mappers.row_to_presentation_item(row)
+
+    @classmethod
+    def _row_to_tts_profile(cls, row: sqlite3.Row | None) -> dict | None:
+        return mappers.row_to_tts_profile(row)

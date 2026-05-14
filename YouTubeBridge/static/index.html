@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YouTubeBridge</title>
-  <link rel="stylesheet" href="/ui-assets/index.css?v=plan-debug-v1">
+  <link rel="stylesheet" href="/ui-assets/index.css?v=events-feedback-v3">
 </head>
 <body>
   <header>
@@ -23,6 +23,16 @@
       <h3 id="factCardImportTitle">正在匯入 FactCards</h3>
       <p id="factCardImportMessage" class="muted" aria-live="polite">正在讀取 FactCards 資料夾、建立資料卡並重建向量，請稍候。</p>
       <div class="progress-track" role="progressbar" aria-label="FactCards 匯入進度">
+        <span></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="eventActionOverlay" class="blocking-overlay event-action-overlay is-hidden" aria-hidden="true">
+    <div class="blocking-dialog" role="dialog" aria-modal="true" aria-labelledby="eventActionTitle">
+      <h3 id="eventActionTitle">留言操作處理中</h3>
+      <p id="eventActionMessage" class="muted">正在處理留言測試操作，請稍候。</p>
+      <div class="progress-track" role="progressbar" aria-label="留言操作處理進度">
         <span></span>
       </div>
     </div>
@@ -106,18 +116,6 @@
                   </div>
                 </div>
                 <div class="grid">
-                  <label>
-                    <span class="field-label">企劃交接等待秒數
-                      <span class="help-tip" tabindex="0" aria-label="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。" data-tooltip="EpisodePlan turn 標記交接角色時，下一個企劃話題前等待的秒數。">?</span>
-                    </span>
-                    <input id="episodePlanHandoffGapSeconds" type="number" min="1" max="5" value="2">
-                  </label>
-                  <label>
-                    <span class="field-label">企劃一般等待秒數
-                      <span class="help-tip" tabindex="0" aria-label="EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。" data-tooltip="EpisodePlan 一般企劃話題之間等待的秒數；問觀眾的 turn 後也使用這個秒數，聊天室實際打斷仍會立即插入。">?</span>
-                    </span>
-                    <input id="episodePlanTurnGapSeconds" type="number" min="1" max="30" value="8">
-                  </label>
                   <label>
                     <span class="field-label">角色接話延伸
                       <span class="help-tip" tabindex="0" aria-label="開啟時，導播推話題後可讓角色互相接話直到導播回合上限；關閉時，每次導播指令只讓被指定的一位角色回應。" data-tooltip="開啟時，導播推話題後可讓角色互相接話直到導播回合上限；關閉時，每次導播指令只讓被指定的一位角色回應。">?</span>
@@ -219,7 +217,7 @@
                 </label>
                 <label>
                   <span class="field-label">pending 強制注入上限
-                    <span class="help-tip" tabindex="0" aria-label="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。" data-tooltip="單次自動注入最多帶入的 pending 留言數；正在回應中但 backlog 達到此值時，會允許強制排入下一輪。">?</span>
+                    <span class="help-tip" tabindex="0" aria-label="單次自動注入最多帶入的 pending 留言數；超出者保留或延後，不會阻止 EpisodePlan 主線。" data-tooltip="單次自動注入最多帶入的 pending 留言數；超出者保留或延後，不會阻止 EpisodePlan 主線。">?</span>
                   </span>
                   <input id="maxPending" type="number" min="1" max="200" value="12">
                 </label>
@@ -253,6 +251,18 @@
                   </span>
                   <input id="directorMaxChatBatches" type="number" min="1" max="10" value="2">
                 </label>
+                <label>
+                  <span class="field-label">觀眾插入冷卻秒數
+                    <span class="help-tip" tabindex="0" aria-label="一次 audience interrupt 後，下一批普通觀眾留言至少等待的秒數；Super Chat 仍另外受 SC 冷卻限制。" data-tooltip="一次 audience interrupt 後，下一批普通觀眾留言至少等待的秒數；Super Chat 仍另外受 SC 冷卻限制。">?</span>
+                  </span>
+                  <input id="directorAudienceInterruptCooldown" type="number" min="0" max="600" value="30">
+                </label>
+                <label>
+                  <span class="field-label">每個企劃 turn 觀眾批次上限
+                    <span class="help-tip" tabindex="0" aria-label="每個 planned turn 之間最多允許幾批聊天室插入；超出者延後，不會阻止下一個企劃 turn。" data-tooltip="每個 planned turn 之間最多允許幾批聊天室插入；超出者延後，不會阻止下一個企劃 turn。">?</span>
+                  </span>
+                  <input id="directorMaxAudienceBatchesPerPlannedTurn" type="number" min="0" max="10" value="1">
+                </label>
               </div>
               <div class="session-subsection live-automation-options">
                 <div>
@@ -284,6 +294,22 @@
                     <input id="researchEnabled" type="checkbox">
                     <span class="option-label">觀眾提問啟用安全搜尋補充</span>
                     <span class="help-tip" tabindex="0" aria-label="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文" data-tooltip="觀眾提出資料型問題且資料包不足時，經安全判定後補充搜尋上下文">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="presentationEnabled" type="checkbox">
+                    <span class="option-label">Live Presentation Queue</span>
+                    <span class="help-tip" tabindex="0" aria-label="啟用後，Live Chat 只在收到 presentation item 時逐句顯示，並等待前端播放完成 ACK 後才允許下一句或下一輪。" data-tooltip="啟用後，Live Chat 只在收到 presentation item 時逐句顯示，並等待前端播放完成 ACK 後才允許下一句或下一輪。">?</span>
+                  </label>
+                  <label class="wide checkbox-row option-row">
+                    <input id="ttsEnabled" type="checkbox">
+                    <span class="option-label">GPT-SoVITS TTS</span>
+                    <span class="help-tip" tabindex="0" aria-label="搭配 Live Presentation Queue 使用；每句會先呼叫 GPT-SoVITS 合成音訊，再交給 Live Chat 播放。" data-tooltip="搭配 Live Presentation Queue 使用；每句會先呼叫 GPT-SoVITS 合成音訊，再交給 Live Chat 播放。">?</span>
+                  </label>
+                  <label class="wide">
+                    <span class="field-label">播放 ACK timeout 秒數
+                      <span class="help-tip" tabindex="0" aria-label="前端沒有回報播放完成時，後端最多等待幾秒後跳過該句，避免直播卡死。" data-tooltip="前端沒有回報播放完成時，後端最多等待幾秒後跳過該句，避免直播卡死。">?</span>
+                    </span>
+                    <input id="presentationAckTimeout" type="number" min="1" max="600" value="120">
                   </label>
                 </div>
               </div>
@@ -335,7 +361,10 @@
                 <h3>自動測試</h3>
                 <p class="muted">直播期間週期性注入測試留言，適合 10 分鐘 E2E 長跑。</p>
               </div>
-              <button id="toggleAutoTestEvents">啟動自動測試</button>
+              <div class="toolbar">
+                <button id="saveTestEventSettings" type="button">儲存測試參數</button>
+                <button id="toggleAutoTestEvents" type="button">啟動自動測試</button>
+              </div>
             </div>
             <div class="grid compact-grid">
               <label>間隔最短秒數
@@ -365,7 +394,7 @@
               </div>
               <div class="toolbar">
                 <button id="refreshEvents">更新留言</button>
-                <span id="eventState" class="status">尚未選擇 session</span>
+                <span id="eventState" class="status" role="status" aria-live="polite">尚未選擇 session</span>
               </div>
             </div>
             <div class="toolbar event-action-row">
@@ -570,6 +599,39 @@
                 <label class="wide">直播回覆規則
                   <textarea id="livePersonaReplyRules" placeholder="例：不要把問題丟回觀眾；接住上一位角色的觀點並補充細節。"></textarea>
                 </label>
+                <div class="wide live-persona-tts-editor">
+                  <div class="field-label">GPT-SoVITS 聲音設定</div>
+                  <label class="wide">快速選擇聲音
+                    <select id="liveTtsSourcePreset">
+                      <option value="">手動輸入範例語音</option>
+                    </select>
+                  </label>
+                  <label class="checkbox-row">
+                    <input id="liveTtsEnabled" type="checkbox">
+                    <span>啟用此角色 TTS 聲線</span>
+                  </label>
+                  <label>範例語音路徑
+                    <input id="liveTtsRefAudioPath" placeholder="例：G:\AITools\voices\coco.wav">
+                  </label>
+                  <label>輸出文字語言
+                    <input id="liveTtsTextLang" placeholder="zh / ja / en" value="zh">
+                  </label>
+                  <label>範例語音語言
+                    <input id="liveTtsPromptLang" placeholder="zh / ja / en" value="zh">
+                  </label>
+                  <label>速度
+                    <input id="liveTtsSpeedFactor" type="number" min="0.25" max="4" step="0.05" value="1">
+                  </label>
+                  <label>音訊格式
+                    <select id="liveTtsMediaType">
+                      <option value="wav">wav</option>
+                      <option value="mp3">mp3</option>
+                    </select>
+                  </label>
+                  <label class="wide">範例語音 transcript
+                    <textarea id="liveTtsPromptText" placeholder="請填入範例語音逐字稿，需與 ref_audio_path 的音訊內容一致。"></textarea>
+                  </label>
+                </div>
               </div>
               <div class="toolbar" style="margin-top:10px">
                 <button id="saveLivePersonaOverlay" class="primary">儲存直播角色設定</button>
@@ -604,6 +666,6 @@
     </div>
   </main>
 
-  <script type="module" src="/ui-assets/app.js?v=global-suffix-v1"></script>
+  <script type="module" src="/ui-assets/app.js?v=events-feedback-v3"></script>
 </body>
 </html>

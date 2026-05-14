@@ -80,6 +80,7 @@ button.active {
   background: var(--accent);
   color: #fff;
 }
+.hidden { display: none !important; }
 .list {
   overflow: auto;
   padding: 14px 18px 18px;

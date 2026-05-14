@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import datetime
 from typing import Any
 
 from bridge_contracts import AUDIENCE_EVENT_CLASSIFIER_SCHEMA
@@ -460,6 +461,9 @@ class EpisodePlanManagerMixin:
         plan: dict[str, Any],
         planned_state: dict[str, Any],
         event: dict[str, Any],
+        *,
+        batch_events: list[dict[str, Any]] | None = None,
+        backlog_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         classified = self._classify_episode_audience_event(plan, event)
         action = classified["action"]
@@ -480,11 +484,31 @@ class EpisodePlanManagerMixin:
             event_type,
             action,
         )
+        selected_events = [item for item in batch_events or [event] if isinstance(item, dict)]
+        source_event_ids = [
+            int(item.get("id") or 0)
+            for item in selected_events
+            if int(item.get("id") or 0)
+        ]
+        if source_event_ids:
+            interrupt_state["source_event_ids"] = source_event_ids
+        prompt_lines = []
+        for item in selected_events:
+            author = str(item.get("author_display_name") or "匿名觀眾").strip() or "匿名觀眾"
+            text = str(item.get("safe_message_text") or "").strip()
+            if not text:
+                continue
+            if str(item.get("priority_class") or "") == "super_chat":
+                amount = str(item.get("amount_display_string") or "").strip()
+                prefix = f"[SC {amount}] " if amount else "[SC] "
+                prompt_lines.append(f"{prefix}{author}: {text}")
+            else:
+                prompt_lines.append(f"{author}: {text}")
         director_action = "reply_super_chat_batch" if event_type == "super_chat" else "reply_chat_batch"
         return {
             "action": director_action,
             "reason": f"episode audience event: {event_type}",
-            "prompt": str(event.get("safe_message_text") or "")[:500],
+            "prompt": "\n".join(prompt_lines)[:2000] or str(event.get("safe_message_text") or "")[:500],
             "current_topic": "",
             "episode_plan": {
                 "mode": "audience_interrupt",
@@ -492,6 +516,7 @@ class EpisodePlanManagerMixin:
                 "event_action": action,
                 "interrupt_state": interrupt_state,
                 "classification_reason": classified["reason"],
+                "backlog_snapshot": backlog_snapshot or {},
             },
         }
 
@@ -1061,10 +1086,114 @@ class EpisodePlanManagerMixin:
             event
             for event in recent_events
             if int(event.get("id") or 0) not in handled_event_ids
+            and not str(event.get("injected_at") or "").strip()
             and str(event.get("safety_status") or "") == "completed"
             and str(event.get("status") or "active") == "active"
             and str(event.get("safe_message_text") or "").strip()
+            and self._is_public_live_event_displayable(event)
         ]
+
+    @staticmethod
+    def _episode_backpressure_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(parsed, maximum))
+
+    def _episode_audience_backlog_snapshot(
+        self,
+        events: list[dict[str, Any]],
+        selected_events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        displayable = [event for event in events if self._is_public_live_event_displayable(event)]
+        selected_ids = {
+            int(event.get("id") or 0)
+            for event in selected_events or []
+            if int(event.get("id") or 0)
+        }
+        super_chat_count = sum(1 for event in displayable if str(event.get("priority_class") or "") == "super_chat")
+        normal_count = len(displayable) - super_chat_count
+        latest_event_id = max((int(event.get("id") or 0) for event in displayable), default=0)
+        return {
+            "total_count": len(displayable),
+            "normal_count": normal_count,
+            "super_chat_count": super_chat_count,
+            "selected_count": len(selected_ids),
+            "deferred_event_count": max(0, len(displayable) - len(selected_ids)),
+            "latest_event_id": latest_event_id,
+        }
+
+    def _episode_select_audience_event_batch(
+        self,
+        session: dict[str, Any],
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        displayable = [event for event in events if self._is_public_live_event_displayable(event)]
+        super_chats = [event for event in displayable if str(event.get("priority_class") or "") == "super_chat"]
+        if super_chats:
+            max_sc = self._episode_backpressure_int(
+                session.get("max_sc_per_batch", 5),
+                5,
+                minimum=1,
+                maximum=30,
+            )
+            super_chats.sort(key=lambda item: (-int(item.get("sc_tier", 0) or 0), int(item.get("id", 0) or 0)))
+            return super_chats[:max_sc]
+        max_events = self._episode_backpressure_int(
+            session.get("max_pending_events", 12),
+            12,
+            minimum=1,
+            maximum=200,
+        )
+        normal = [event for event in displayable if str(event.get("priority_class") or "") != "super_chat"]
+        normal.sort(key=lambda item: int(item.get("id", 0) or 0))
+        return normal[:max_events]
+
+    def _episode_audience_interrupt_block_reason(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        selected_events: list[dict[str, Any]],
+    ) -> str:
+        if not selected_events:
+            return "no_selected_events"
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        max_batches = self._episode_backpressure_int(
+            session.get("director_max_audience_batches_per_planned_turn", 1),
+            1,
+            minimum=0,
+            maximum=20,
+        )
+        used_batches = self._episode_backpressure_int(
+            metadata.get("audience_batches_since_planned_turn", 0),
+            0,
+            minimum=0,
+            maximum=100,
+        )
+        if used_batches >= max_batches:
+            return "planned_turn_batch_limit"
+        has_sc = any(str(event.get("priority_class") or "") == "super_chat" for event in selected_events)
+        if has_sc:
+            cooldown = self._episode_backpressure_int(
+                session.get("sc_interrupt_cooldown_seconds", 30),
+                30,
+                minimum=0,
+                maximum=3600,
+            )
+            last_key = "last_sc_interrupt_at"
+        else:
+            cooldown = self._episode_backpressure_int(
+                session.get("director_audience_interrupt_cooldown_seconds", 30),
+                30,
+                minimum=0,
+                maximum=3600,
+            )
+            last_key = "last_audience_interrupt_at"
+        last_at = self._parse_iso_datetime(metadata.get(last_key))
+        if last_at and cooldown > 0 and (datetime.now() - last_at).total_seconds() < cooldown:
+            return "interrupt_cooldown"
+        return ""
 
     def _episode_project_turn_for_audience_availability(
         self,
@@ -1271,28 +1400,31 @@ class EpisodePlanManagerMixin:
         ):
             return self._episode_planned_turn_decision(session, state)
 
-        handled_event_ids = {
-            int(event_id)
-            for event_id in (
-                (planned_state.get("segment_memory") or {}).get("audience_reactions")
-                or []
+        completed_events = self._episode_completed_audience_events(
+            session["session_id"],
+            planned_state,
+            limit=500,
+        )
+        selected_events = self._episode_select_audience_event_batch(session, completed_events)
+        snapshot = self._episode_audience_backlog_snapshot(completed_events, selected_events)
+        block_reason = self._episode_audience_interrupt_block_reason(session, state, selected_events)
+        if selected_events and not block_reason:
+            decision = self._episode_interrupt_decision_for_event(
+                plan,
+                planned_state,
+                selected_events[0],
+                batch_events=selected_events,
+                backlog_snapshot=snapshot,
             )
-            if str(event_id).isdigit()
-        }
-        recent_events = self.storage.list_events(session["session_id"], limit=20)
-        completed_events = [
-            event
-            for event in recent_events
-            if int(event.get("id") or 0) not in handled_event_ids
-            and str(event.get("safety_status") or "") == "completed"
-            and str(event.get("status") or "active") == "active"
-            and str(event.get("safe_message_text") or "").strip()
-        ]
-        for event in reversed(completed_events):
-            decision = self._episode_interrupt_decision_for_event(plan, planned_state, event)
             if decision:
                 return decision
-        return self._episode_planned_turn_decision(session, state)
+        planned = self._episode_planned_turn_decision(session, state)
+        if isinstance(planned, dict) and planned.get("episode_plan"):
+            planned.setdefault("episode_plan", {})["backlog_snapshot"] = {
+                **snapshot,
+                "defer_reason": block_reason or "no_interrupt_decision",
+            }
+        return planned
 
     @staticmethod
     def _episode_plan_director_delay_info(
@@ -1315,48 +1447,10 @@ class EpisodePlanManagerMixin:
                 "reason": "director_idle",
                 "label": "導播 idle",
             }
-
-        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
-        last_decision = metadata.get("last_decision") if isinstance(metadata.get("last_decision"), dict) else {}
-        last_payload = (
-            last_decision.get("episode_plan")
-            if isinstance(last_decision.get("episode_plan"), dict)
-            else {}
-        )
-        last_turn = (
-            last_payload.get("turn_contract")
-            if isinstance(last_payload.get("turn_contract"), dict)
-            else {}
-        )
-        last_output = (
-            last_turn.get("output_requirements")
-            if isinstance(last_turn.get("output_requirements"), dict)
-            else {}
-        )
-        try:
-            configured_gap = int(session.get("episode_plan_turn_gap_seconds", 8) or 8)
-        except (TypeError, ValueError):
-            configured_gap = 8
-        if bool(last_output.get("allow_audience_question")) or bool(last_output.get("must_end_with_question")):
-            return {
-                "delay_seconds": max(1, min(configured_gap, int(idle_seconds or 60), 30)),
-                "reason": "audience_turn_gap",
-                "label": "觀眾題後等待",
-            }
-        if bool(last_output.get("should_handoff")) and str(last_output.get("handoff_target_function") or "").strip():
-            try:
-                handoff_gap = int(session.get("episode_plan_handoff_gap_seconds", 2) or 2)
-            except (TypeError, ValueError):
-                handoff_gap = 2
-            return {
-                "delay_seconds": max(1, min(handoff_gap, int(idle_seconds or 60), 5)),
-                "reason": "handoff_gap",
-                "label": "交接等待",
-            }
         return {
-            "delay_seconds": max(1, min(configured_gap, int(idle_seconds or 60), 30)),
-            "reason": "turn_gap",
-            "label": "一般等待",
+            "delay_seconds": 0,
+            "reason": "planned_turn_ready",
+            "label": "企劃立即推進",
         }
 
     @staticmethod
@@ -1387,10 +1481,24 @@ class EpisodePlanManagerMixin:
         if not plan:
             return {}
         mode = str(payload.get("mode") or "")
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        preserved_interrupt_times = {
+            key: metadata.get(key)
+            for key in ("last_audience_interrupt_at", "last_sc_interrupt_at")
+            if metadata.get(key)
+        }
         if mode == "planned_turn" and str(planned_state.get("plan_status") or "") == "completed":
+            snapshot = self._episode_audience_backlog_snapshot(
+                self._episode_completed_audience_events(session["session_id"], planned_state, limit=500),
+                [],
+            )
             return {
                 "planned_state": planned_state,
                 "interrupt_state": {"status": "idle"},
+                "audience_batches_since_planned_turn": 0,
+                "deferred_event_count": int(snapshot.get("total_count") or 0),
+                "latest_backlog_snapshot": snapshot,
+                **preserved_interrupt_times,
             }
         if mode == "audience_interrupt":
             interrupt_state = (
@@ -1410,10 +1518,32 @@ class EpisodePlanManagerMixin:
                 interrupt_state.get("source_event_ids") or []
             )
             planned_state["segment_memory"] = memory
-            return {
+            used_batches = self._episode_backpressure_int(
+                metadata.get("audience_batches_since_planned_turn", 0),
+                0,
+                minimum=0,
+                maximum=100,
+            )
+            now = datetime.now().isoformat()
+            snapshot = (
+                payload.get("backlog_snapshot")
+                if isinstance(payload.get("backlog_snapshot"), dict)
+                else {}
+            )
+            interrupt_type = str(interrupt_state.get("interrupt_type") or "")
+            update = {
                 "planned_state": planned_state,
                 "interrupt_state": interrupt_state,
+                "audience_batches_since_planned_turn": used_batches + 1,
+                "last_audience_interrupt_at": now,
+                "deferred_event_count": int(snapshot.get("deferred_event_count") or 0),
+                "latest_backlog_snapshot": snapshot,
             }
+            if interrupt_type == "super_chat":
+                update["last_sc_interrupt_at"] = now
+            elif metadata.get("last_sc_interrupt_at"):
+                update["last_sc_interrupt_at"] = metadata.get("last_sc_interrupt_at")
+            return update
 
         turn = (
             payload.get("turn_contract")
@@ -1421,12 +1551,28 @@ class EpisodePlanManagerMixin:
             else self._episode_current_turn_contract(plan, planned_state)
         )
         if not turn:
+            snapshot = self._episode_audience_backlog_snapshot(
+                self._episode_completed_audience_events(session["session_id"], planned_state, limit=500),
+                [],
+            )
             return {
                 "planned_state": planned_state,
                 "interrupt_state": {"status": "idle"},
+                "audience_batches_since_planned_turn": 0,
+                "deferred_event_count": int(snapshot.get("total_count") or 0),
+                "latest_backlog_snapshot": snapshot,
+                **preserved_interrupt_times,
             }
         next_state = self._planned_state_after_episode_turn(plan, planned_state, turn)
+        snapshot = self._episode_audience_backlog_snapshot(
+            self._episode_completed_audience_events(session["session_id"], next_state, limit=500),
+            [],
+        )
         return {
             "planned_state": next_state,
             "interrupt_state": {"status": "idle"},
+            "audience_batches_since_planned_turn": 0,
+            "deferred_event_count": int(snapshot.get("total_count") or 0),
+            "latest_backlog_snapshot": snapshot,
+            **preserved_interrupt_times,
         }

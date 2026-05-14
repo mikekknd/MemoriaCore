@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 
 BRIDGE_ROOT = Path(__file__).resolve().parents[1]
 if str(BRIDGE_ROOT) not in sys.path:
@@ -8,6 +10,8 @@ if str(BRIDGE_ROOT) not in sys.path:
 
 from bridge_engine import YouTubeBridgeManager
 from memoria_client import MemoriaClient
+from models import LiveTTSProfileRequest
+from server_routes import persona_overlays
 from storage import BridgeStorage
 
 
@@ -50,6 +54,82 @@ def test_live_persona_overlay_storage_roundtrip(tmp_path):
     assert saved["addressing"] == {"bailian": "白蓮大人"}
     assert storage.get_live_persona_overlay("coco")["system_prompt"] == "直播可可 prompt"
     assert storage.list_live_persona_overlays()[0]["self_address"] == "本小姐"
+
+
+@pytest.mark.asyncio
+async def test_live_persona_routes_manage_per_character_tts_profiles(tmp_path):
+    storage = BridgeStorage(tmp_path / "bridge.db")
+    persona_overlays.configure(SimpleNamespace(storage=storage))
+
+    saved = await persona_overlays.update_tts_profile(
+        "coco",
+        LiveTTSProfileRequest(
+            enabled=True,
+            ref_audio_path="G:/Voices/coco.wav",
+            prompt_text="本小姐是今天的主持可可。",
+            text_lang="zh",
+            prompt_lang="zh",
+            speed_factor=1.15,
+            media_type="wav",
+        ),
+    )
+
+    assert saved["character_id"] == "coco"
+    assert saved["enabled"] is True
+    assert saved["ref_audio_path"] == "G:/Voices/coco.wav"
+    assert saved["prompt_text"] == "本小姐是今天的主持可可。"
+    assert saved["speed_factor"] == 1.15
+
+    listed = await persona_overlays.list_persona_overlays()
+    assert listed["tts_profiles"][0]["character_id"] == "coco"
+    assert listed["tts_profiles"][0]["prompt_text"] == "本小姐是今天的主持可可。"
+
+    default = await persona_overlays.get_tts_profile("bailian")
+    assert default["character_id"] == "bailian"
+    assert default["enabled"] is False
+    assert default["ref_audio_path"] == ""
+    assert default["prompt_text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_live_tts_sources_list_matching_audio_and_transcript(monkeypatch, tmp_path):
+    source_root = tmp_path / "TTSSource"
+    source_root.mkdir()
+    (source_root / "coco.wav").write_bytes(b"wav")
+    (source_root / "coco.txt").write_text("本小姐是今天的主持可可。", encoding="utf-8")
+    (source_root / "bailian.mp3").write_bytes(b"mp3")
+    (source_root / "missing-transcript.wav").write_bytes(b"wav")
+    (source_root / "missing-audio.txt").write_text("沒有音檔。", encoding="utf-8")
+    nested = source_root / "team"
+    nested.mkdir()
+    (nested / "analyst.flac").write_bytes(b"flac")
+    (nested / "analyst.txt").write_text("分析角色參考音。", encoding="utf-8")
+    monkeypatch.setattr(persona_overlays, "TTS_SOURCE_ROOT", source_root)
+
+    sources = await persona_overlays.list_tts_sources()
+
+    assert sources["root"] == str(source_root)
+    assert sources["sources"] == [
+        {
+            "name": "coco",
+            "audio_path": str(source_root / "coco.wav"),
+            "transcript_path": str(source_root / "coco.txt"),
+            "prompt_text": "本小姐是今天的主持可可。",
+        },
+        {
+            "name": "team/analyst",
+            "audio_path": str(nested / "analyst.flac"),
+            "transcript_path": str(nested / "analyst.txt"),
+            "prompt_text": "分析角色參考音。",
+        },
+    ]
+
+
+def test_live_tts_profile_requires_reference_audio_and_transcript_when_enabled():
+    with pytest.raises(ValueError):
+        LiveTTSProfileRequest(enabled=True, ref_audio_path="", prompt_text="參考文字")
+    with pytest.raises(ValueError):
+        LiveTTSProfileRequest(enabled=True, ref_audio_path="voice.wav", prompt_text="")
 
 
 def test_manager_attaches_enabled_live_persona_overrides(tmp_path):

@@ -171,6 +171,22 @@ button.blue,
 a.button-link.blue { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
 button.danger,
 a.button-link.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+button[aria-busy="true"] {
+  gap: 8px;
+}
+button[aria-busy="true"]::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: button-busy-spin 0.75s linear infinite;
+}
+@keyframes button-busy-spin {
+  to { transform: rotate(360deg); }
+}
 button:disabled,
 a.button-link.disabled,
 a.button-link[aria-disabled="true"] { opacity: 0.52; cursor: default; pointer-events: none; }

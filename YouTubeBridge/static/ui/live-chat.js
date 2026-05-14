@@ -7,11 +7,16 @@ const state = {
   fallbackRefreshTimer: null,
   historyRefreshTimer: null,
   historyRefreshInFlight: false,
+  presentationQueue: [],
+  presentationPlaying: false,
+  currentPresentationItem: null,
+  currentAudio: null,
   durationRefreshTimer: null,
   sessionTiming: null,
   startupRetryTimers: [],
   liveEventMessages: [],
   displayMessages: [],
+  presentationEnabled: false,
   characterColorMap: {},
   nextColorIndex: 0,
   nextMessageOrder: 0,
@@ -69,8 +74,18 @@ async function api(path) {
   if (!response.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : text || response.statusText);
   return data;
 }
+async function apiPost(path) {
+  const headers = _bridgeKey ? { "X-Bridge-Key": _bridgeKey } : {};
+  const response = await fetch(path, { method: "POST", headers });
+  const text = await response.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!response.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : text || response.statusText);
+  return data;
+}
 function roleLabel(message) {
   if (message.role === "assistant") return message.character_name || "AI";
+  if (message.role === "system_event" && message.source === "youtube_live_event") return "直播留言";
   if (message.role === "system_event") return "直播事件";
   if (message.role === "user") return "使用者";
   return message.role || "訊息";
@@ -162,7 +177,7 @@ function liveEventToMessage(event) {
     : "";
   return {
     message_id: eventMessageId(event),
-    role: "user",
+    role: "system_event",
     content: `${prefix}${author}: ${event.message_text || ""}`.trim(),
     created_at: event.published_at || event.received_at || event.created_at || "",
     timestamp: event.published_at || event.received_at || event.created_at || "",
@@ -275,6 +290,7 @@ function scheduleStartupRetries() {
   });
 }
 function cacheLiveEvents(events) {
+  if (state.presentationEnabled) return;
   const messages = (events || []).map(liveEventToMessage).filter((message) => message.content);
   state.liveEventMessages = mergeMessages(state.liveEventMessages, messages).slice(-120);
 }
@@ -318,6 +334,10 @@ async function ensureSession() {
     setCharacterColorMap(selected.character_ids || []);
     scheduleStartupRetries();
   }
+  state.presentationEnabled = !!selected.presentation_enabled;
+  if (state.presentationEnabled) {
+    state.liveEventMessages = [];
+  }
   state.sessionTiming = {
     startedAt: selected.started_at || selected.created_at || "",
     finalizedAt: selected.finalized_at || "",
@@ -347,7 +367,8 @@ async function refreshChat({ silent = false } = {}) {
       api(`/sessions/${encodeURIComponent(state.sessionId)}/recent?limit=120`),
     ]);
     cacheLiveEvents(recent.events || []);
-    const messages = visibleMessages(mergeMessages(state.displayMessages, state.liveEventMessages, data.messages || []));
+    const liveEventMessages = state.presentationEnabled ? [] : state.liveEventMessages;
+    const messages = visibleMessages(mergeMessages(state.displayMessages, liveEventMessages, data.messages || []));
     state.displayMessages = messages;
     render(messages);
     $("countBadge").textContent = `${messages.length}/${data.message_count || 0} 則`;
@@ -373,6 +394,7 @@ function scheduleRefresh(delay = 0) {
   }, Math.max(0, Number(delay) || 0));
 }
 function appendLiveEvent(event) {
+  if (state.presentationEnabled) return;
   if (!event) return;
   cacheLiveEvents([event]);
   const messages = visibleMessages(mergeMessages(state.displayMessages, state.liveEventMessages));
@@ -388,6 +410,70 @@ function appendChatMessage(message) {
   render(messages);
   $("countBadge").textContent = `${messages.length}+ 則`;
   $("updatedBadge").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+}
+function presentationItemToMessage(item) {
+  return {
+    message_id: item.message_id || item.item_id,
+    role: "assistant",
+    content: item.text || "",
+    created_at: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
+    character_id: item.character_id || "",
+    character_name: item.character_name || "AI",
+    source: "presentation",
+  };
+}
+async function ackPresentationItem(item) {
+  if (!item?.item_id || !state.sessionId) return;
+  await apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`);
+}
+function finishPresentationItem(item) {
+  ackPresentationItem(item).catch(() => {});
+  state.presentationPlaying = false;
+  state.currentPresentationItem = null;
+  state.currentAudio = null;
+  playPresentationItem();
+}
+function playPresentationItem() {
+  if (state.presentationPlaying) return;
+  const item = state.presentationQueue.shift();
+  if (!item) return;
+  state.presentationPlaying = true;
+  state.currentPresentationItem = item;
+  appendChatMessage(presentationItemToMessage(item));
+  const audioUrl = item.audio_url || "";
+  if (!audioUrl) {
+    finishPresentationItem(item);
+    return;
+  }
+  const audio = new Audio(audioUrl);
+  state.currentAudio = audio;
+  audio.addEventListener("ended", () => finishPresentationItem(item), { once: true });
+  audio.addEventListener("error", () => finishPresentationItem(item), { once: true });
+  audio.play().catch(() => {
+    $("enableAudio").classList.remove("hidden");
+    state.presentationQueue.unshift(item);
+    state.presentationPlaying = false;
+    state.currentAudio = null;
+  });
+}
+function enqueuePresentationItem(item) {
+  if (!item?.item_id) return;
+  state.presentationQueue.push(item);
+  playPresentationItem();
+}
+async function skipCurrentPresentation() {
+  if (state.currentAudio) {
+    state.currentAudio.pause();
+    state.currentAudio.src = "";
+  }
+  if (state.sessionId) {
+    await apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`).catch(() => {});
+  }
+  state.presentationPlaying = false;
+  state.currentPresentationItem = null;
+  state.currentAudio = null;
+  playPresentationItem();
 }
 function startFallbackRefresh() {
   if (state.fallbackRefreshTimer) return;
@@ -432,6 +518,10 @@ function subscribe(sessionId) {
         scheduleRefresh(1000);
         return;
       }
+      if (payload.type === "presentation_item_ready" && payload.item) {
+        enqueuePresentationItem(payload.item);
+        return;
+      }
       if (payload.type === "chat_message" && payload.message) {
         appendChatMessage(payload.message);
         scheduleRefresh(1000);
@@ -453,4 +543,11 @@ function subscribe(sessionId) {
 $("orderBottom").onclick = () => setOrder(true);
 $("orderTop").onclick = () => setOrder(false);
 $("refresh").onclick = () => refreshChat();
+$("enableAudio").onclick = () => {
+  $("enableAudio").classList.add("hidden");
+  playPresentationItem();
+};
+$("skipPresentation").onclick = () => {
+  skipCurrentPresentation().catch(() => {});
+};
 initBridgeKey().then(() => refreshChat());

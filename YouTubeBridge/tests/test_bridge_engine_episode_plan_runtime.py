@@ -1,4 +1,5 @@
 import shutil
+from datetime import datetime, timedelta
 
 from bridge_engine_test_support import (
     BridgeStorage,
@@ -188,6 +189,137 @@ def test_audience_event_classifier_maps_super_chat_to_bounded_interrupt():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_episode_audience_interrupt_batches_normal_backlog_and_records_deferred_count():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        storage.update_session_fields(
+            "live-a",
+            max_pending_events=5,
+            director_max_audience_batches_per_planned_turn=1,
+        )
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        for index in range(100):
+            event = storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"normal-{index}",
+                "message_text": f"普通留言 {index}：這段可以多補一點嗎？",
+                "author_display_name": f"viewer-{index}",
+                "author_channel_id": f"viewer-{index}",
+                "message_type": "textMessageEvent",
+                "safety_status": "completed",
+                "safety_label": "clean",
+                "safe_message_text": f"普通留言 {index}：這段可以多補一點嗎？",
+            })
+            assert event
+
+        decision = manager._episode_plan_next_decision(session, state)
+        metadata = manager._episode_metadata_after_turn(session, state, decision)
+        interrupt_state = decision["episode_plan"]["interrupt_state"]
+
+        assert decision["action"] == "reply_chat_batch"
+        assert len(interrupt_state["source_event_ids"]) == 5
+        assert metadata["audience_batches_since_planned_turn"] == 1
+        assert metadata["deferred_event_count"] == 95
+        assert metadata["latest_backlog_snapshot"]["normal_count"] == 100
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_episode_plan_returns_to_planned_turn_after_one_audience_batch_even_with_backlog():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        storage.update_session_fields(
+            "live-a",
+            max_pending_events=5,
+            director_max_audience_batches_per_planned_turn=1,
+        )
+        session = storage.get_session("live-a")
+        state = storage.update_director_state(
+            "live-a",
+            metadata={
+                "audience_batches_since_planned_turn": 1,
+                "last_audience_interrupt_at": (
+                    datetime.now() - timedelta(seconds=120)
+                ).isoformat(),
+            },
+        )
+        for index in range(25):
+            storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"after-batch-{index}",
+                "message_text": f"還有普通留言 {index} 想問後續。",
+                "author_display_name": f"viewer-{index}",
+                "author_channel_id": f"viewer-{index}",
+                "message_type": "textMessageEvent",
+                "safety_status": "completed",
+                "safety_label": "clean",
+                "safe_message_text": f"還有普通留言 {index} 想問後續。",
+            })
+
+        decision = manager._episode_plan_next_decision(session, state)
+        metadata = manager._episode_metadata_after_turn(session, state, decision)
+
+        assert decision["episode_plan"]["mode"] == "planned_turn"
+        assert decision["episode_plan"]["turn_contract"]["turn_id"] == "seg_01_turn_01"
+        assert metadata["audience_batches_since_planned_turn"] == 0
+        assert metadata["deferred_event_count"] == 25
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_episode_super_chat_burst_is_bounded_and_cooldown_defers_next_interrupt():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        storage.update_session_fields(
+            "live-a",
+            max_sc_per_batch=3,
+            sc_interrupt_cooldown_seconds=60,
+            director_max_audience_batches_per_planned_turn=1,
+        )
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        for index in range(20):
+            storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"sc-{index}",
+                "message_text": f"SC 留言 {index}：這題想聽回答。",
+                "author_display_name": f"sc-viewer-{index}",
+                "author_channel_id": f"sc-viewer-{index}",
+                "message_type": "superChatEvent",
+                "amount_display_string": "NT$150",
+                "amount_micros": 150_000_000,
+                "safety_status": "completed",
+                "safety_label": "clean",
+                "safe_message_text": f"SC 留言 {index}：這題想聽回答。",
+            })
+
+        decision = manager._episode_plan_next_decision(session, state)
+        metadata = manager._episode_metadata_after_turn(session, state, decision)
+        interrupt_state = decision["episode_plan"]["interrupt_state"]
+
+        assert decision["action"] == "reply_super_chat_batch"
+        assert len(interrupt_state["source_event_ids"]) == 3
+        assert metadata["last_sc_interrupt_at"]
+        assert metadata["deferred_event_count"] == 17
+
+        cooldown_state = storage.update_director_state(
+            "live-a",
+            metadata={
+                "audience_batches_since_planned_turn": 0,
+                "last_sc_interrupt_at": datetime.now().isoformat(),
+            },
+        )
+        cooldown_decision = manager._episode_plan_next_decision(session, cooldown_state)
+
+        assert cooldown_decision["episode_plan"]["mode"] == "planned_turn"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_audience_event_classifier_deescalates_hostile_without_mainline_change():
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
@@ -266,6 +398,43 @@ def test_chat_event_does_not_change_segment_order():
         assert plan["flow_policy"]["audience_can_change_segment_order"] is False
         assert metadata["planned_state"]["current_segment_index"] == 0
         assert metadata["planned_state"]["completed_segment_ids"] == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_injected_audience_event_does_not_interrupt_episode_plan_again():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        plan, planned_state = manager._episode_plan_and_state(session, state)
+        first_turn = plan["segments"][0]["planned_turn_contracts"][0]
+        after_first = manager._planned_state_after_episode_turn(plan, planned_state, first_turn)
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-injected",
+            "message_text": "這一段可以補充一下嗎？",
+            "author_display_name": "觀眾A",
+            "author_channel_id": "viewer-a",
+            "message_type": "textMessageEvent",
+            "status": "active",
+        })
+        storage.update_event_safety(
+            event["id"],
+            status="completed",
+            label="clean",
+            safe_message_text="這一段可以補充一下嗎？",
+        )
+        storage.mark_events_injected("live-a", [event["id"]])
+
+        decision = manager._episode_plan_next_decision(
+            session,
+            {"metadata": {"planned_state": after_first}},
+        )
+
+        assert decision["episode_plan"]["mode"] == "planned_turn"
+        assert decision["episode_plan"]["turn_contract"]["turn_id"] == "seg_01_turn_02"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -791,7 +960,7 @@ def test_episode_plan_projection_contains_style_independence_rule():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_episode_plan_handoff_turn_uses_short_director_delay():
+def test_episode_plan_handoff_turn_does_not_delay_director():
     last_decision = {
         "episode_plan": {
             "mode": "planned_turn",
@@ -813,10 +982,10 @@ def test_episode_plan_handoff_turn_uses_short_director_delay():
         60,
     )
 
-    assert delay == 2
+    assert delay == 0
 
 
-def test_episode_plan_delay_info_uses_configured_gaps_and_reason():
+def test_episode_plan_delay_info_ignores_configured_gaps():
     handoff_decision = {
         "episode_plan": {
             "mode": "planned_turn",
@@ -880,15 +1049,18 @@ def test_episode_plan_delay_info_uses_configured_gaps_and_reason():
         60,
     )
 
-    assert handoff["delay_seconds"] == 4
-    assert handoff["reason"] == "handoff_gap"
-    assert regular["delay_seconds"] == 11
-    assert regular["reason"] == "turn_gap"
-    assert audience["delay_seconds"] == 11
-    assert audience["reason"] == "audience_turn_gap"
+    assert handoff["delay_seconds"] == 0
+    assert handoff["reason"] == "planned_turn_ready"
+    assert handoff["label"] == "企劃立即推進"
+    assert regular["delay_seconds"] == 0
+    assert regular["reason"] == "planned_turn_ready"
+    assert regular["label"] == "企劃立即推進"
+    assert audience["delay_seconds"] == 0
+    assert audience["reason"] == "planned_turn_ready"
+    assert audience["label"] == "企劃立即推進"
 
 
-def test_episode_plan_audience_question_uses_episode_turn_gap_not_director_idle():
+def test_episode_plan_audience_question_does_not_delay_director():
     last_decision = {
         "episode_plan": {
             "mode": "planned_turn",
@@ -910,4 +1082,4 @@ def test_episode_plan_audience_question_uses_episode_turn_gap_not_director_idle(
         60,
     )
 
-    assert delay == 5
+    assert delay == 0

@@ -1,8 +1,17 @@
 import { $, SINGLE_CONNECTOR_ID, state, api, clearLog, escapeHtml, log, summarizeSsePayload } from "./core.js";
 import { defaultLiveSession, isSelectedSessionRunning, selectedSessionId, selectedSessionInfo } from "./selectors.js";
 import { bindSessionTopicPack, refreshTopicPacks, scheduleTopicGraphTraceRefresh, updateEpisodePlanEvidenceImportButton } from "./topic-packs.js?v=episode-evidence-v1";
-import { scheduleChatPreviewRefresh, selectedCharacterIds, syncCharacterSelectionLimit, validateSelectedCharacters } from "./memoria-control.js?v=hosting-segments-v1";
-import { refreshEvents, renderEvents, testEventControlsDisabled, updateTestEventControls } from "./events-control.js?v=hosting-segments-v1";
+import { scheduleChatPreviewRefresh, selectedCharacterIds, syncCharacterSelectionLimit, validateSelectedCharacters } from "./memoria-control.js?v=events-feedback-v3";
+import {
+  mergeEventIntoState,
+  refreshEvents,
+  renderEvents,
+  setEventState,
+  startEventsAutoRefresh,
+  stopEventsAutoRefresh,
+  testEventControlsDisabled,
+  updateTestEventControls,
+} from "./events-control.js?v=events-feedback-v3";
 import { refreshDirector, refreshQueue, refreshSummary, renderNoSummary, renderSummary, setDirector, updateDirectorControls } from "./summary-director-control.js?v=plan-debug-v1";
 function sessionIsFinalized(session = selectedSessionInfo()) {
   return !!(
@@ -248,6 +257,7 @@ export async function loadSessions(preferredId = "", options = {}) {
   }
   else newSessionDraft();
   subscribeEvents();
+  startEventsAutoRefresh({ immediate: true });
 }
 
 export function fillSessionForm(session) {
@@ -261,15 +271,18 @@ export function fillSessionForm(session) {
   $("scInterruptCooldown").value = session.sc_interrupt_cooldown_seconds || 30;
   $("maxScPerBatch").value = session.max_sc_per_batch || 5;
   $("directorAnchorEveryTurns").value = session.director_anchor_every_turns || 2;
-  $("episodePlanHandoffGapSeconds").value = session.episode_plan_handoff_gap_seconds || 2;
-  $("episodePlanTurnGapSeconds").value = session.episode_plan_turn_gap_seconds || 8;
   $("directorDialogueExpansionEnabled").checked = session.director_dialogue_expansion_enabled !== false;
   $("directorGroupTurnLimit").value = session.director_group_turn_limit || 3;
   $("directorMaxChatBatches").value = session.director_max_chat_batches_before_anchor || 2;
+  $("directorAudienceInterruptCooldown").value = session.director_audience_interrupt_cooldown_seconds ?? 30;
+  $("directorMaxAudienceBatchesPerPlannedTurn").value = session.director_max_audience_batches_per_planned_turn ?? 1;
   $("autoInject").checked = !!session.auto_inject;
   $("autoFinalize").checked = !!session.auto_finalize_on_duration;
   $("autoScThanksOnFinalize").checked = session.auto_sc_thanks_on_finalize !== false;
   $("autoDeleteProcessed").checked = !!session.auto_delete_after_processed;
+  $("presentationEnabled").checked = !!session.presentation_enabled;
+  $("ttsEnabled").checked = !!session.tts_enabled;
+  $("presentationAckTimeout").value = session.presentation_ack_timeout_seconds || 120;
   $("directorGuidance").value = session.director_guidance || "";
   $("hostInteractionRules").value = session.host_interaction_rules || "";
   if ($("episodePlanSelect")) $("episodePlanSelect").value = session.episode_plan_id || "";
@@ -304,15 +317,18 @@ export function newSessionDraft() {
   $("scInterruptCooldown").value = 30;
   $("maxScPerBatch").value = 5;
   $("directorAnchorEveryTurns").value = 2;
-  $("episodePlanHandoffGapSeconds").value = 2;
-  $("episodePlanTurnGapSeconds").value = 8;
   $("directorDialogueExpansionEnabled").checked = true;
   $("directorGroupTurnLimit").value = 3;
   $("directorMaxChatBatches").value = 2;
+  $("directorAudienceInterruptCooldown").value = 30;
+  $("directorMaxAudienceBatchesPerPlannedTurn").value = 1;
   $("autoInject").checked = true;
   $("autoFinalize").checked = true;
   $("autoScThanksOnFinalize").checked = true;
   $("autoDeleteProcessed").checked = true;
+  $("presentationEnabled").checked = false;
+  $("ttsEnabled").checked = false;
+  $("presentationAckTimeout").value = 120;
   $("directorGuidance").value = "";
   $("hostInteractionRules").value = "";
   if ($("episodePlanSelect")) $("episodePlanSelect").value = "";
@@ -398,14 +414,18 @@ export function liveSessionPayload({ createNew = false } = {}) {
     sc_interrupt_cooldown_seconds: Number($("scInterruptCooldown").value || 30),
     max_sc_per_batch: Number($("maxScPerBatch").value || 5),
     director_anchor_every_turns: Number($("directorAnchorEveryTurns").value || 2),
-    episode_plan_handoff_gap_seconds: Number($("episodePlanHandoffGapSeconds").value || 2),
-    episode_plan_turn_gap_seconds: Number($("episodePlanTurnGapSeconds").value || 8),
     director_dialogue_expansion_enabled: $("directorDialogueExpansionEnabled").checked,
     director_group_turn_limit: Number($("directorGroupTurnLimit").value || 3),
     director_max_chat_batches_before_anchor: Number($("directorMaxChatBatches").value || 2),
+    director_audience_interrupt_cooldown_seconds: Number($("directorAudienceInterruptCooldown").value || 30),
+    director_max_audience_batches_per_planned_turn: Number($("directorMaxAudienceBatchesPerPlannedTurn").value || 1),
     auto_finalize_on_duration: $("autoFinalize").checked,
     auto_sc_thanks_on_finalize: $("autoScThanksOnFinalize").checked,
     auto_delete_after_processed: $("autoDeleteProcessed").checked,
+    presentation_enabled: $("presentationEnabled").checked,
+    tts_enabled: $("ttsEnabled").checked,
+    tts_provider: "gpt_sovits",
+    presentation_ack_timeout_seconds: Number($("presentationAckTimeout").value || 120),
     director_guidance: $("directorGuidance").value.trim(),
     host_interaction_rules: $("hostInteractionRules").value.trim(),
     program_segment_plan: $("programSegmentPlan").value.trim(),
@@ -503,8 +523,15 @@ export async function toggleSession() {
 export function subscribeEvents() {
   if (state.eventSource) state.eventSource.close();
   const id = selectedSessionId();
-  if (!id) return;
+  if (!id) {
+    stopEventsAutoRefresh();
+    return;
+  }
   state.eventSource = new EventSource(`/sessions/${encodeURIComponent(id)}/events`);
+  state.eventSource.onopen = () => {
+    setEventState("自動更新已連線", "good");
+    startEventsAutoRefresh();
+  };
   state.eventSource.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
     if (payload.type === "status") {
@@ -513,15 +540,24 @@ export function subscribeEvents() {
       updateLiveSessionControls();
     }
     if (payload.type === "youtube_live_event") {
-      state.events.push(payload.event);
+      mergeEventIntoState(payload.event);
       renderEvents();
     }
-    if (["test_events_generated", "test_events_auto_generated", "super_chat_batch_injected", "safety_classified"].includes(payload.type)) {
-      await refreshEvents();
+    if ([
+      "test_events_generated",
+      "test_events_auto_generated",
+      "super_chat_batch_injected",
+      "super_chat_received",
+      "safety_classified",
+      "test_event_auto_error",
+      "closing_super_chat_thanks_completed",
+    ].includes(payload.type)) {
+      await refreshEvents({ silent: true });
     }
     if (["test_event_auto_started", "test_event_auto_stopped"].includes(payload.type)) {
       await loadSessions(id);
       updateLiveSessionControls();
+      await refreshEvents({ silent: true });
     }
     if (["memoria_injected", "interaction_started", "interaction_completed", "interaction_interrupted", "director_injected", "interrupt_requested"].includes(payload.type)) {
       await refreshQueue();
@@ -541,7 +577,7 @@ export function subscribeEvents() {
     log(`SSE: ${payload.type}`, summarizeSsePayload(payload));
   };
   state.eventSource.onerror = () => {
-    $("eventState").textContent = "SSE 連線中斷";
-    $("eventState").className = "status warn";
+    setEventState("SSE 中斷，改用輪詢更新中", "warn");
+    startEventsAutoRefresh({ immediate: true });
   };
 }

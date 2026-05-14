@@ -119,6 +119,20 @@
   display: grid;
   gap: 8px;
 }
+.live-persona-tts-editor {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+.live-persona-tts-editor .field-label,
+.live-persona-tts-editor .checkbox-row,
+.live-persona-tts-editor .wide {
+  grid-column: 1 / -1;
+}
 .live-persona-addressing-rows {
   display: grid;
   gap: 8px;

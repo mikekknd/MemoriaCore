@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from episode_plan_character_binding import (
     EpisodePlanCharacterBindingError,
@@ -376,6 +377,7 @@ async def recent_events(
     limit: int = 100,
     after_id: int | None = None,
     uninjected_only: bool = False,
+    include_pending: bool = False,
 ):
     if not storage.get_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
@@ -390,7 +392,13 @@ async def recent_events(
         "events": [
             public_event
             for event in events
-            if (public_event := manager._public_live_event(event))
+            if (
+                public_event := (
+                    manager._public_event(event)
+                    if include_pending
+                    else manager._public_live_event(event)
+                )
+            )
         ],
     }
 
@@ -437,6 +445,23 @@ async def get_chat_preview(session_id: str, limit: int = 80):
     if not session:
         raise HTTPException(status_code=404, detail="session not found")
     target_session_id = str(session.get("target_memoria_session_id") or "")
+    if session.get("presentation_enabled"):
+        limit = max(1, min(int(limit or 80), 200))
+        messages = [
+            sanitize_chat_preview_message(message)
+            for message in storage.list_presented_messages(session_id, limit=limit)
+            if sanitize_chat_preview_message(message)
+        ]
+        return {
+            "bridge_session_id": session_id,
+            "memoria_session_id": target_session_id,
+            "session": None,
+            "messages": messages,
+            "message_count": len(messages),
+            "stale": False,
+            "last_success_at": datetime.now().isoformat(),
+            "error": "",
+        }
     if not target_session_id:
         return {
             "bridge_session_id": session_id,
@@ -492,6 +517,46 @@ async def get_chat_preview(session_id: str, limit: int = 80):
     }
     chat_preview_cache[session_id] = payload
     return payload
+
+
+@router.post("/sessions/{session_id}/presentation/{item_id}/ack")
+async def ack_presentation_item(session_id: str, item_id: str):
+    if not storage.get_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    item = await manager.ack_presentation_item(session_id, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="presentation item not found")
+    return {"ok": True, "item": item}
+
+
+@router.get("/sessions/{session_id}/presentation/{item_id}/audio")
+async def get_presentation_audio(session_id: str, item_id: str):
+    if not storage.get_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    item = storage.get_presentation_item(item_id)
+    if not item or item.get("session_id") != session_id:
+        raise HTTPException(status_code=404, detail="presentation item not found")
+    audio_path = Path(str(item.get("audio_path") or ""))
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status_code=404, detail="audio not found")
+    try:
+        resolved_audio = audio_path.resolve()
+        resolved_root = manager._presentation_audio_root().resolve()
+        resolved_audio.relative_to(resolved_root)
+    except Exception:
+        raise HTTPException(status_code=404, detail="audio not found")
+    media_type = f"audio/{item.get('audio_format') or 'wav'}"
+    return FileResponse(audio_path, media_type=media_type)
+
+
+@router.post("/sessions/{session_id}/presentation/current/skip")
+async def skip_current_presentation_item(session_id: str):
+    if not storage.get_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    item = await manager.skip_current_presentation_item(session_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="presentation item not found")
+    return {"ok": True, "item": item}
 
 
 @router.post("/sessions/{session_id}/interrupt")

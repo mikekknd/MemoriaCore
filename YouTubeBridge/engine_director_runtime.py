@@ -135,7 +135,23 @@ class DirectorRuntimeManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": episode_state})
-                result = await self._send_director_turn(session, state, episode_decision)
+                prefetch_callback = None
+                if self._presentation_enabled(session):
+                    async def prefetch_callback(memoria_result=None):
+                        prefetch_session = self._session_with_memoria_result(session, memoria_result)
+                        return await self._prefetch_next_episode_planned_turn(
+                            runtime,
+                            prefetch_session,
+                            state,
+                            episode_decision,
+                        )
+                send_kwargs = {"after_memoria_callback": prefetch_callback} if prefetch_callback else {}
+                result = await self._send_director_turn(
+                    session,
+                    state,
+                    episode_decision,
+                    **send_kwargs,
+                )
                 episode_mode = str((episode_decision.get("episode_plan") or {}).get("mode") or "")
                 next_state = self.storage.update_director_state(
                     runtime.session_id,
@@ -158,6 +174,15 @@ class DirectorRuntimeManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                prefetch_task = result.get("after_memoria_task")
+                if prefetch_task:
+                    await self._consume_prefetched_episode_chain(
+                        runtime,
+                        session,
+                        prefetch_task,
+                        next_state,
+                        reset_opening_metadata=True,
+                    )
                 return
             decision = self._director_opening_decision(session, state)
             opening_state = self.storage.update_director_state(
@@ -167,6 +192,29 @@ class DirectorRuntimeManagerMixin:
             )
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": opening_state})
             result = await self._send_director_turn(session, state, decision)
+            if self._presentation_enabled(session):
+                next_state = self.storage.update_director_state(
+                    runtime.session_id,
+                    status="running",
+                    last_director_action_at=datetime.now().isoformat(),
+                    consecutive_ai_turns=int(state.get("consecutive_ai_turns", 0) or 0) + 1,
+                    current_topic=str(decision.get("current_topic") or state.get("current_topic") or ""),
+                    metadata={
+                        "last_decision": decision,
+                        "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
+                        "opening_decision": decision,
+                        "post_opening_decision": None,
+                        "chat_batches_since_anchor": 0,
+                        "segment_state": self._segment_state_after_turn(
+                            session,
+                            state,
+                            decision,
+                            self._segment_topic_entry_for_session(session),
+                        ),
+                    },
+                )
+                await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                return
             final_decision = decision
             final_result = result
             sent_turns = 1
@@ -247,22 +295,15 @@ class DirectorRuntimeManagerMixin:
                     _director_timing_log("loop_duration_reached", session_id=runtime.session_id)
                     await self._finalize_for_duration(runtime, session)
                     return
-                pending = [
-                    event for event in self.storage.list_events(runtime.session_id, limit=5, uninjected_only=True)
-                    if self._should_block_director_for_pending_inject(event)
-                ]
-                if pending:
-                    latest = max(int(event["id"]) for event in pending)
+                if runtime.director_prefetch_in_flight > 0:
                     _director_timing_log(
-                        "loop_blocked_pending_events",
+                        "loop_blocked_prefetch_in_flight",
                         session_id=runtime.session_id,
-                        pending_count=len(pending),
-                        latest_event_id=latest,
+                        prefetch_in_flight=runtime.director_prefetch_in_flight,
                     )
                     next_state = self.storage.update_director_state(
                         runtime.session_id,
-                        last_seen_event_id=latest,
-                        status="pending_chat_seen",
+                        status="waiting_prefetch",
                     )
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     await asyncio.sleep(1.0)
@@ -285,6 +326,26 @@ class DirectorRuntimeManagerMixin:
                     continue
                 episode_decision = self._episode_plan_next_decision(session, state)
                 has_episode_decision = isinstance(episode_decision, dict) and bool(episode_decision)
+                pending = [
+                    event for event in self.storage.list_events(runtime.session_id, limit=5, uninjected_only=True)
+                    if self._should_block_director_for_pending_inject(event)
+                ]
+                if pending and not has_episode_decision:
+                    latest = max(int(event["id"]) for event in pending)
+                    _director_timing_log(
+                        "loop_blocked_pending_events",
+                        session_id=runtime.session_id,
+                        pending_count=len(pending),
+                        latest_event_id=latest,
+                    )
+                    next_state = self.storage.update_director_state(
+                        runtime.session_id,
+                        last_seen_event_id=latest,
+                        status="pending_chat_seen",
+                    )
+                    await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                    await asyncio.sleep(1.0)
+                    continue
                 if has_episode_decision:
                     episode_payload = (
                         episode_decision.get("episode_plan")
@@ -303,6 +364,58 @@ class DirectorRuntimeManagerMixin:
                         action=episode_decision.get("action"),
                         turn_id=turn_contract.get("turn_id"),
                     )
+                    backlog_snapshot = (
+                        episode_payload.get("backlog_snapshot")
+                        if isinstance(episode_payload.get("backlog_snapshot"), dict)
+                        else {}
+                    )
+                    if backlog_snapshot:
+                        _director_timing_log(
+                            "audience_backpressure_snapshot",
+                            session_id=runtime.session_id,
+                            mode=episode_payload.get("mode"),
+                            total_count=backlog_snapshot.get("total_count"),
+                            normal_count=backlog_snapshot.get("normal_count"),
+                            super_chat_count=backlog_snapshot.get("super_chat_count"),
+                            selected_count=backlog_snapshot.get("selected_count"),
+                            deferred_event_count=backlog_snapshot.get("deferred_event_count"),
+                            defer_reason=backlog_snapshot.get("defer_reason"),
+                        )
+                        if episode_payload.get("mode") == "audience_interrupt":
+                            _director_timing_log(
+                                "audience_batch_selected",
+                                session_id=runtime.session_id,
+                                event_type=episode_payload.get("event_type"),
+                                selected_count=backlog_snapshot.get("selected_count"),
+                                deferred_event_count=backlog_snapshot.get("deferred_event_count"),
+                            )
+                            if (
+                                episode_payload.get("event_type") == "super_chat"
+                                and int(backlog_snapshot.get("deferred_event_count") or 0) > 0
+                            ):
+                                _director_timing_log(
+                                    "sc_burst_coalesced",
+                                    session_id=runtime.session_id,
+                                    selected_count=backlog_snapshot.get("selected_count"),
+                                    deferred_event_count=backlog_snapshot.get("deferred_event_count"),
+                                )
+                        elif int(backlog_snapshot.get("deferred_event_count") or 0) > 0:
+                            _director_timing_log(
+                                "audience_batch_deferred",
+                                session_id=runtime.session_id,
+                                deferred_event_count=backlog_snapshot.get("deferred_event_count"),
+                                defer_reason=backlog_snapshot.get("defer_reason"),
+                            )
+                    if pending:
+                        _director_timing_log(
+                            "director_prioritized_planned_turn",
+                            session_id=runtime.session_id,
+                            mode=episode_payload.get("mode"),
+                            pending_count=len(pending),
+                            latest_event_id=max(int(event["id"]) for event in pending),
+                            deferred_event_count=backlog_snapshot.get("deferred_event_count"),
+                            defer_reason=backlog_snapshot.get("defer_reason"),
+                        )
                 if episode_decision is not None and not has_episode_decision:
                     _, planned_state = self._episode_plan_and_state(session, state)
                     completed = str(planned_state.get("plan_status") or "") == "completed"
@@ -460,7 +573,23 @@ class DirectorRuntimeManagerMixin:
                     episode_mode=episode_payload.get("mode"),
                     turn_id=turn_contract.get("turn_id"),
                 )
-                result = await self._send_director_turn(session, state, decision)
+                prefetch_callback = None
+                if self._presentation_enabled(session):
+                    async def prefetch_callback(memoria_result=None):
+                        prefetch_session = self._session_with_memoria_result(session, memoria_result)
+                        return await self._prefetch_next_episode_planned_turn(
+                            runtime,
+                            prefetch_session,
+                            state,
+                            decision,
+                        )
+                send_kwargs = {"after_memoria_callback": prefetch_callback} if prefetch_callback else {}
+                result = await self._send_director_turn(
+                    session,
+                    state,
+                    decision,
+                    **send_kwargs,
+                )
                 _director_timing_log(
                     "loop_send_done",
                     session_id=runtime.session_id,
@@ -494,6 +623,14 @@ class DirectorRuntimeManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                prefetch_task = result.get("after_memoria_task")
+                if prefetch_task:
+                    next_state = await self._consume_prefetched_episode_chain(
+                        runtime,
+                        session,
+                        prefetch_task,
+                        next_state,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -503,11 +640,249 @@ class DirectorRuntimeManagerMixin:
                 await self._broadcast(runtime.session_id, {"type": "director_error", "message": str(exc)})
                 await asyncio.sleep(15)
 
+    def _pending_director_blocking_events(self, session_id: str) -> list[dict[str, Any]]:
+        return [
+            event for event in self.storage.list_events(session_id, limit=5, uninjected_only=True)
+            if self._should_block_director_for_pending_inject(event)
+        ]
+
+    def _project_state_after_episode_decision(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        projected = dict(state)
+        metadata = dict(state.get("metadata") if isinstance(state.get("metadata"), dict) else {})
+        metadata.update(self._episode_metadata_after_turn(session, state, decision))
+        metadata["last_decision"] = decision
+        projected["metadata"] = metadata
+        projected["current_topic"] = str(decision.get("current_topic") or state.get("current_topic") or "")
+        return projected
+
+    @staticmethod
+    def _session_with_memoria_result(
+        session: dict[str, Any],
+        memoria_result: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        updated = dict(session)
+        if isinstance(memoria_result, dict):
+            result_session_id = str(memoria_result.get("session_id") or "")
+            if result_session_id:
+                updated["target_memoria_session_id"] = result_session_id
+        return updated
+
+    async def _prefetch_next_episode_planned_turn(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
+        if str(payload.get("mode") or "") != "planned_turn":
+            return None
+        if self._pending_director_blocking_events(runtime.session_id):
+            return None
+        projected_state = self._project_state_after_episode_decision(session, state, decision)
+        next_decision = self._episode_plan_next_decision(session, projected_state)
+        if not isinstance(next_decision, dict) or not next_decision:
+            return None
+        next_payload = next_decision.get("episode_plan") if isinstance(next_decision.get("episode_plan"), dict) else {}
+        if str(next_payload.get("mode") or "") != "planned_turn":
+            return None
+        return await self._send_director_turn(
+            session,
+            projected_state,
+            next_decision,
+            prefetch_only=True,
+        )
+
+    async def _consume_prefetched_episode_chain(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        prefetch_task,
+        current_state: dict[str, Any],
+        *,
+        reset_opening_metadata: bool = False,
+    ) -> dict[str, Any]:
+        next_state = current_state
+        consumed_count = 0
+        while prefetch_task:
+            prefetched = await prefetch_task
+            consumed = await self._consume_prefetched_episode_turn(runtime, session, prefetched)
+            if not consumed or consumed.get("discarded"):
+                return next_state
+            consumed_decision = (
+                consumed.get("decision")
+                if isinstance(consumed.get("decision"), dict)
+                else {}
+            )
+            consumed_base_state = (
+                consumed.get("base_state")
+                if isinstance(consumed.get("base_state"), dict)
+                else next_state
+            )
+            consumed_episode_mode = str((consumed_decision.get("episode_plan") or {}).get("mode") or "")
+            metadata = {
+                "last_decision": consumed_decision,
+                "last_result_job_id": consumed.get("interaction", {}).get("job_id", ""),
+                "chat_batches_since_anchor": 0,
+                **self._episode_metadata_after_turn(session, consumed_base_state, consumed_decision),
+            }
+            if reset_opening_metadata and consumed_count == 0:
+                metadata.update({
+                    "opening_decision": None,
+                    "post_opening_decision": None,
+                    "segment_state": {},
+                })
+            else:
+                metadata["segment_state"] = self._segment_state_after_turn(
+                    session,
+                    consumed_base_state,
+                    consumed_decision,
+                    self._segment_topic_entry_for_session(session),
+                )
+            next_state = self.storage.update_director_state(
+                runtime.session_id,
+                status="running",
+                last_director_action_at=datetime.now().isoformat(),
+                consecutive_ai_turns=(
+                    0
+                    if consumed_episode_mode == "planned_turn"
+                    else int(next_state.get("consecutive_ai_turns", 0) or 0) + 1
+                ),
+                current_topic=str(consumed_decision.get("current_topic") or next_state.get("current_topic") or ""),
+                metadata=metadata,
+            )
+            await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+            consumed_count += 1
+            prefetch_task = consumed.get("after_memoria_task")
+        return next_state
+
+    async def _consume_prefetched_episode_turn(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        prefetch: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(prefetch, dict):
+            return None
+        interaction = prefetch.get("interaction") if isinstance(prefetch.get("interaction"), dict) else {}
+        job_id = str(interaction.get("job_id") or "")
+        prepared_results = [
+            prepared for prepared in prefetch.get("prepared_results") or []
+            if isinstance(prepared, dict)
+        ]
+        if not job_id or not prepared_results:
+            return None
+        if self._pending_director_blocking_events(runtime.session_id):
+            _director_timing_log(
+                "prefetch_discarded_pending_chat",
+                session_id=runtime.session_id,
+                job_id=job_id,
+            )
+            updated = self.storage.update_interaction(
+                job_id,
+                status="discarded",
+                reason="prefetch_discarded_pending_chat",
+                completed_at=datetime.now().isoformat(),
+                metadata={"discarded_before_presentation": True},
+            )
+            for prepared in prepared_results:
+                for item in prepared.get("items") or []:
+                    if isinstance(item, dict) and item.get("item_id"):
+                        self.storage.update_presentation_item(
+                            item["item_id"],
+                            status="skipped",
+                            error="prefetch discarded because chat is pending",
+                        )
+            return {"interaction": updated or interaction, "discarded": True}
+        _director_timing_log(
+            "prefetch_consume_start",
+            session_id=runtime.session_id,
+            job_id=job_id,
+            prepared_result_count=len(prepared_results),
+        )
+        started = self.storage.update_interaction(job_id, status="presenting") or interaction
+        result = prefetch.get("memoria_result") if isinstance(prefetch.get("memoria_result"), dict) else {}
+        result_session_id = str(result.get("session_id") or "")
+        next_prefetch_task = None
+        decision = prefetch.get("decision") if isinstance(prefetch.get("decision"), dict) else {}
+        base_state = prefetch.get("base_state") if isinstance(prefetch.get("base_state"), dict) else {}
+        if decision and base_state:
+            chained_session = dict(session)
+            if result_session_id:
+                chained_session["target_memoria_session_id"] = result_session_id
+            _director_timing_log(
+                "prefetch_chain_scheduled",
+                session_id=runtime.session_id,
+                job_id=job_id,
+            )
+            runtime.director_prefetch_in_flight += 1
+
+            async def run_next_prefetch():
+                try:
+                    return await self._prefetch_next_episode_planned_turn(
+                        runtime,
+                        chained_session,
+                        base_state,
+                        decision,
+                    )
+                finally:
+                    runtime.director_prefetch_in_flight = max(
+                        0,
+                        runtime.director_prefetch_in_flight - 1,
+                    )
+
+            next_prefetch_task = asyncio.create_task(run_next_prefetch())
+        await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
+        await self.present_prepared_stream_results(
+            runtime.session_id,
+            prepared_results,
+            source="director",
+            interaction_job_id=job_id,
+        )
+        updated = self.storage.update_interaction(
+            job_id,
+            status="completed",
+            reply_text=str(result.get("reply") or ""),
+            memoria_session_id=str(result.get("session_id") or session.get("target_memoria_session_id") or ""),
+            completed_at=datetime.now().isoformat(),
+            metadata={"prefetch_consumed": True},
+        ) or started
+        _director_timing_log(
+            "prefetch_consume_done",
+            session_id=runtime.session_id,
+            job_id=job_id,
+        )
+        if result_session_id and result_session_id != str(session.get("target_memoria_session_id") or ""):
+            self.storage.update_session_fields(runtime.session_id, target_memoria_session_id=result_session_id)
+        await self._broadcast(runtime.session_id, {
+            "type": "interaction_completed",
+            "interaction": updated,
+            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
+            "source": "director",
+        })
+        await self._broadcast(runtime.session_id, {
+            "type": "director_injected",
+            "interaction": updated,
+            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
+        })
+        response = {**prefetch, "interaction": updated, "discarded": False}
+        if next_prefetch_task is not None:
+            response["after_memoria_task"] = next_prefetch_task
+        return response
+
     async def _send_director_turn(
         self,
         session: dict[str, Any],
         state: dict[str, Any],
         decision: dict[str, Any],
+        *,
+        prefetch_only: bool = False,
+        after_memoria_callback=None,
     ) -> dict[str, Any]:
         session_id = session["session_id"]
         send_started = time.perf_counter()
@@ -614,8 +989,15 @@ class DirectorRuntimeManagerMixin:
                     part for part in context_parts
                     if not str(part).startswith("處理提示：")
                 ]
+        presentation_mode = self._presentation_enabled(session)
         if not dialogue_expansion_enabled:
             group_turn_limit = 1
+        elif presentation_mode:
+            group_turn_limit = (
+                1
+                if action == "opening" or planned_turn_type in {"opening", "cohost_intro"}
+                else 2
+            )
         if action == "opening" and not has_episode_plan:
             opening_intro_context = self._opening_intro_context_for_session(session)
             if opening_intro_context:
@@ -662,7 +1044,11 @@ class DirectorRuntimeManagerMixin:
             "context_text": "\n".join(context_parts),
             "event_ids": [],
             "visible_events": [],
-            "max_chars": 4000 if action == "closing_super_chat_thanks" else 2500,
+            "max_chars": (
+                1200
+                if presentation_mode
+                else 4000 if action == "closing_super_chat_thanks" else 2500
+            ),
             "summary": {
                 "source": "youtube_live_director",
                 "source_session_id": session_id,
@@ -672,6 +1058,13 @@ class DirectorRuntimeManagerMixin:
                 "group_turn_limit": group_turn_limit,
             },
         }
+        if presentation_mode:
+            external_context["summary"]["presentation_enabled"] = True
+            external_context["context_text"] = "\n".join([
+                external_context["context_text"],
+                "直播輸出模式：請產生短 spoken beat；最多輸出目前角色與下一位角色各一個短句。"
+                "下一位角色只是預先準備，內容仍需保持可被聊天室打斷。",
+            ])
         if live_hosting:
             external_context["live_hosting"] = live_hosting
         if episode_patch:
@@ -704,14 +1097,14 @@ class DirectorRuntimeManagerMixin:
         interaction = self.storage.create_interaction(
             {
                 "session_id": session_id,
-                "source": "director",
-                "priority": 50,
-                "status": "queued",
+                "source": "director_prefetch" if prefetch_only else "director",
+                "priority": 40 if prefetch_only else 50,
+                "status": "prefetching" if prefetch_only else "queued",
                 "event_ids": [],
                 "memoria_session_id": target_session_id,
                 "character_ids": target_character_ids,
                 "content": public_prompt,
-                "metadata": {"decision": decision},
+                "metadata": {"decision": decision, "prefetch_only": prefetch_only},
             }
         )
         _director_timing_log(
@@ -721,28 +1114,54 @@ class DirectorRuntimeManagerMixin:
             elapsed_ms=round((time.perf_counter() - send_started) * 1000, 1),
         )
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
-        claim_started = time.perf_counter()
-        claimed = await self._claim_interaction_for_execution(runtime, interaction)
-        _director_timing_log(
-            "send_interaction_claimed",
-            session_id=session_id,
-            job_id=(claimed or interaction).get("job_id"),
-            status=(claimed or interaction).get("status"),
-            duration_ms=round((time.perf_counter() - claim_started) * 1000, 1),
-        )
-        if not claimed or claimed.get("status") != "running":
-            return {"interaction": claimed or interaction, "memoria_result": {}}
-        interaction = claimed
+        if not prefetch_only:
+            claim_started = time.perf_counter()
+            claimed = await self._claim_interaction_for_execution(runtime, interaction)
+            _director_timing_log(
+                "send_interaction_claimed",
+                session_id=session_id,
+                job_id=(claimed or interaction).get("job_id"),
+                status=(claimed or interaction).get("status"),
+                duration_ms=round((time.perf_counter() - claim_started) * 1000, 1),
+            )
+            if not claimed or claimed.get("status") != "running":
+                return {"interaction": claimed or interaction, "memoria_result": {}}
+            interaction = claimed
         cancel_event = threading.Event()
-        runtime.cancel_events[interaction["job_id"]] = cancel_event
+        if not prefetch_only:
+            runtime.cancel_events[interaction["job_id"]] = cancel_event
         loop = asyncio.get_running_loop()
 
         def should_cancel() -> bool:
             current = self.storage.get_interaction(interaction["job_id"])
             return cancel_event.is_set() or bool(current and current.get("status") == "interrupt_requested")
 
+        presentation_futures = []
+        after_memoria_task = None
+
         def on_stream_result(event: dict[str, Any]) -> None:
-            self._broadcast_stream_chat_message(loop, session_id, event, source="director")
+            if prefetch_only:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.prepare_stream_result(
+                        session_id,
+                        event,
+                        source="director",
+                        interaction_job_id=interaction["job_id"],
+                    ),
+                    loop,
+                )
+                presentation_futures.append(future)
+                return
+            future = self._dispatch_stream_chat_result(
+                loop,
+                session_id,
+                event,
+                source="director",
+                interaction_job_id=interaction["job_id"],
+                wait_for_completion=not presentation_mode,
+            )
+            if presentation_mode and future is not None:
+                presentation_futures.append(future)
 
         try:
             memoria_started = time.perf_counter()
@@ -772,6 +1191,25 @@ class DirectorRuntimeManagerMixin:
                 result_session_id=result.get("session_id"),
                 result_message_id=result.get("message_id"),
             )
+            result_session_id = str(result.get("session_id") or "")
+            if not prefetch_only and result_session_id and result_session_id != target_session_id:
+                self.storage.update_session_fields(session_id, target_memoria_session_id=result_session_id)
+            if after_memoria_callback and not prefetch_only:
+                maybe_callback_result = after_memoria_callback(result)
+                if asyncio.iscoroutine(maybe_callback_result):
+                    after_memoria_task = asyncio.create_task(maybe_callback_result)
+            if presentation_futures:
+                presentation_started = time.perf_counter()
+                prepared_results = await asyncio.gather(*(asyncio.wrap_future(future) for future in presentation_futures))
+                _director_timing_log(
+                    "send_presentation_done",
+                    session_id=session_id,
+                    job_id=interaction.get("job_id"),
+                    presentation_event_count=len(presentation_futures),
+                    duration_ms=round((time.perf_counter() - presentation_started) * 1000, 1),
+                )
+            else:
+                prepared_results = []
         except GenerationInterrupted:
             _director_timing_log(
                 "send_memoria_call_interrupted",
@@ -826,6 +1264,31 @@ class DirectorRuntimeManagerMixin:
         finally:
             runtime.cancel_events.pop(interaction["job_id"], None)
 
+        if prefetch_only:
+            prepared_clean = [
+                prepared for prepared in prepared_results
+                if isinstance(prepared, dict) and prepared.get("message")
+            ]
+            updated = self.storage.update_interaction(
+                interaction["job_id"],
+                status="prefetched",
+                reply_text=str(result.get("reply") or ""),
+                memoria_session_id=str(result.get("session_id") or target_session_id),
+                completed_at=datetime.now().isoformat(),
+                metadata={
+                    "result_message_id": result.get("message_id"),
+                    "prefetch_ready": True,
+                    "prepared_result_count": len(prepared_clean),
+                },
+            )
+            return {
+                "interaction": updated or interaction,
+                "memoria_result": result,
+                "prepared_results": prepared_clean,
+                "decision": decision,
+                "base_state": state,
+            }
+
         current_after = self.storage.get_interaction(interaction["job_id"])
         interrupted_after_provider = bool(
             current_after and current_after.get("status") in {"interrupt_requested", "interrupted", "discarded"}
@@ -850,9 +1313,6 @@ class DirectorRuntimeManagerMixin:
                 "discarded_after_provider_return": interrupted_after_provider,
             },
         )
-        result_session_id = str(result.get("session_id") or "")
-        if result_session_id and result_session_id != target_session_id:
-            self.storage.update_session_fields(session_id, target_memoria_session_id=result_session_id)
         await self._broadcast(session_id, {
             "type": "interaction_completed",
             "interaction": updated,
@@ -871,4 +1331,7 @@ class DirectorRuntimeManagerMixin:
             status=interaction_status,
             total_duration_ms=round((time.perf_counter() - send_started) * 1000, 1),
         )
-        return {"interaction": updated, "memoria_result": result}
+        response = {"interaction": updated, "memoria_result": result}
+        if after_memoria_task is not None:
+            response["after_memoria_task"] = after_memoria_task
+        return response

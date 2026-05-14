@@ -91,6 +91,42 @@ export function livePersonaOverlayFor(characterId) {
   };
 }
 
+export function liveTtsProfileFor(characterId) {
+  return (state.liveTtsProfiles || []).find((profile) => profile.character_id === characterId) || {
+    character_id: characterId,
+    enabled: false,
+    ref_audio_path: "",
+    prompt_text: "",
+    text_lang: "zh",
+    prompt_lang: "zh",
+    speed_factor: 1,
+    media_type: "wav",
+  };
+}
+
+function renderLiveTtsSourceOptions(selectedAudioPath = "") {
+  const select = $("liveTtsSourcePreset");
+  if (!select) return;
+  const sources = state.liveTtsSources || [];
+  select.innerHTML = [
+    '<option value="">手動輸入範例語音</option>',
+    ...sources.map((source) => {
+      const audioPath = source.audio_path || "";
+      const selected = audioPath && audioPath === selectedAudioPath ? " selected" : "";
+      return `<option value="${escapeHtml(audioPath)}"${selected}>${escapeHtml(source.name || audioPath)}</option>`;
+    }),
+  ].join("");
+}
+
+export function applyLiveTtsSourcePreset() {
+  const select = $("liveTtsSourcePreset");
+  if (!select || !select.value) return;
+  const source = (state.liveTtsSources || []).find((item) => item.audio_path === select.value);
+  if (!source) return;
+  $("liveTtsRefAudioPath").value = source.audio_path || "";
+  $("liveTtsPromptText").value = source.prompt_text || "";
+}
+
 export function fillLivePersonaOverlayForm(overlay) {
   if (!$("livePersonaCharacterSelect")) return;
   $("livePersonaEnabled").checked = !!overlay.enabled;
@@ -100,6 +136,19 @@ export function fillLivePersonaOverlayForm(overlay) {
   $("livePersonaOpeningIntro").value = overlay.opening_intro || "";
   renderLivePersonaAddressingRows(overlay.addressing || {});
   $("livePersonaReplyRules").value = overlay.reply_rules || "";
+  fillLiveTtsProfileForm(liveTtsProfileFor(overlay.character_id || $("livePersonaCharacterSelect").value));
+}
+
+export function fillLiveTtsProfileForm(profile) {
+  if (!$("liveTtsEnabled")) return;
+  $("liveTtsEnabled").checked = !!profile.enabled;
+  $("liveTtsRefAudioPath").value = profile.ref_audio_path || "";
+  $("liveTtsPromptText").value = profile.prompt_text || "";
+  $("liveTtsTextLang").value = profile.text_lang || "zh";
+  $("liveTtsPromptLang").value = profile.prompt_lang || "zh";
+  $("liveTtsSpeedFactor").value = Number(profile.speed_factor || 1);
+  $("liveTtsMediaType").value = profile.media_type || "wav";
+  renderLiveTtsSourceOptions(profile.ref_audio_path || "");
 }
 
 export async function loadLivePersonaOverlays() {
@@ -107,7 +156,15 @@ export async function loadLivePersonaOverlays() {
   if (!stateLabel || !$("livePersonaCharacterSelect")) return;
   try {
     const data = await api("/persona-overlays");
+    try {
+      const sourceData = await api("/tts-sources");
+      state.liveTtsSources = sourceData.sources || [];
+    } catch (error) {
+      state.liveTtsSources = [];
+      log("TTS 聲音來源讀取失敗", String(error));
+    }
     state.livePersonaOverlays = data.overlays || [];
+    state.liveTtsProfiles = data.tts_profiles || [];
     const selectedId = $("livePersonaCharacterSelect").value || state.characters[0]?.character_id || "";
     if (selectedId) $("livePersonaCharacterSelect").value = selectedId;
     fillLivePersonaOverlayForm(livePersonaOverlayFor(selectedId));
@@ -133,6 +190,23 @@ export function livePersonaOverlayPayload() {
   };
 }
 
+export function liveTtsProfilePayload() {
+  const enabled = $("liveTtsEnabled")?.checked || false;
+  const refAudioPath = $("liveTtsRefAudioPath")?.value.trim() || "";
+  const promptText = $("liveTtsPromptText")?.value.trim() || "";
+  if (enabled && !refAudioPath) throw new Error("啟用 TTS 時必須填入範例語音路徑");
+  if (enabled && !promptText) throw new Error("啟用 TTS 時必須填入範例語音 transcript");
+  return {
+    enabled,
+    ref_audio_path: refAudioPath,
+    prompt_text: promptText,
+    text_lang: $("liveTtsTextLang")?.value.trim() || "zh",
+    prompt_lang: $("liveTtsPromptLang")?.value.trim() || "zh",
+    speed_factor: Number($("liveTtsSpeedFactor")?.value || 1),
+    media_type: $("liveTtsMediaType")?.value || "wav",
+  };
+}
+
 export async function saveLivePersonaOverlay() {
   const characterId = $("livePersonaCharacterSelect").value;
   if (!characterId) throw new Error("請先選擇角色");
@@ -146,12 +220,23 @@ export async function saveLivePersonaOverlay() {
       method: "POST",
       body: JSON.stringify(livePersonaOverlayPayload()),
     });
+    const ttsProfile = await api(`/persona-overlays/${encodeURIComponent(characterId)}/tts-profile`, {
+      method: "POST",
+      body: JSON.stringify(liveTtsProfilePayload()),
+    });
     const others = (state.livePersonaOverlays || []).filter((overlay) => overlay.character_id !== characterId);
     state.livePersonaOverlays = [data, ...others];
+    const otherProfiles = (state.liveTtsProfiles || []).filter((profile) => profile.character_id !== characterId);
+    state.liveTtsProfiles = [ttsProfile, ...otherProfiles];
     fillLivePersonaOverlayForm(data);
-    stateLabel.textContent = data.enabled ? "已儲存並啟用" : "已儲存但未啟用";
-    stateLabel.className = data.enabled ? "status good" : "status warn";
-    log("直播角色設定已儲存", { character_id: data.character_id, enabled: data.enabled, mode: data.mode });
+    stateLabel.textContent = data.enabled || ttsProfile.enabled ? "已儲存並啟用" : "已儲存但未啟用";
+    stateLabel.className = data.enabled || ttsProfile.enabled ? "status good" : "status warn";
+    log("直播角色設定已儲存", {
+      character_id: data.character_id,
+      enabled: data.enabled,
+      mode: data.mode,
+      tts_enabled: ttsProfile.enabled,
+    });
   } catch (error) {
     stateLabel.textContent = `儲存失敗：${String(error?.message || error).slice(0, 80)}`;
     stateLabel.className = "status bad";
