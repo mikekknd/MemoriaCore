@@ -926,8 +926,17 @@ def test_studio_presentation_tts_events_and_lifecycle_are_wired():
     subscribe_body = studio_js[subscribe_index:studio_js.index("function sessionIsRunning", subscribe_index)]
     assert 'if (payload.type === "presentation_item_ready" && payload.item) {' in subscribe_body
     assert "enqueuePresentationItem(payload.item);" in subscribe_body
+    presentation_branch = subscribe_body[
+        subscribe_body.index('if (payload.type === "presentation_item_ready" && payload.item) {'):
+        subscribe_body.index('if (payload.type === "interrupt_requested") {')
+    ]
+    assert "enqueuePresentationItem(payload.item);" in presentation_branch
+    assert "return;" in presentation_branch
+    assert presentation_branch.index("enqueuePresentationItem(payload.item);") < presentation_branch.index("return;")
     assert 'if (payload.type === "interrupt_requested") {' in subscribe_body
     assert "handlePresentationInterrupt(payload)" in subscribe_body
+    assert 'if (payload.type === "interaction_interrupted") {' in subscribe_body
+    assert 'scheduleConversationRefresh("直播打斷");' in subscribe_body
     assert '["interaction_completed", "presentation_item_ready", "super_chat_batch_injected"]' not in subscribe_body
     assert '["interaction_completed", "super_chat_batch_injected"]' in subscribe_body
 
@@ -939,11 +948,27 @@ def test_studio_presentation_tts_events_and_lifecycle_are_wired():
     session_body = studio_js[session_index:studio_js.index("function studioLiveSessionPayload", session_index)]
     assert "const wasLive = state.live;" in session_body
     assert 'resetPresentationPlayer({ statusText: "已停止" });' in session_body
+    stop_condition_index = session_body.index("if (wasLive && !state.live) {")
+    stop_reset_index = session_body.index('resetPresentationPlayer({ statusText: "已停止" });')
+    assert stop_condition_index < stop_reset_index
+    stop_reset_branch = session_body[
+        stop_condition_index:stop_reset_index + len('resetPresentationPlayer({ statusText: "已停止" });')
+    ]
+    assert 'resetPresentationPlayer({ statusText: "已停止" });' in stop_reset_branch
 
     binding_index = studio_js.index('"clearConversation"')
     binding_body = studio_js[binding_index:studio_js.index('"regenerateSummary"', binding_index)]
     assert '$("enablePresentationAudio").addEventListener("click", () => {' in binding_body
     assert '$("skipPresentation").addEventListener("click", () => {' in binding_body
+    enable_audio_handler = binding_body[
+        binding_body.index('$("enablePresentationAudio").addEventListener("click", () => {'):
+        binding_body.index('$("skipPresentation").addEventListener("click", () => {')
+    ]
+    skip_handler = binding_body[
+        binding_body.index('$("skipPresentation").addEventListener("click", () => {'):
+    ]
+    assert "retryCurrentPresentationAudio()" in enable_audio_handler
+    assert "skipCurrentPresentation()" in skip_handler
 
 
 def test_studio_route_is_loopback_only():
