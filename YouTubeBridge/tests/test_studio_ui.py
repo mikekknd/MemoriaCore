@@ -919,6 +919,33 @@ def test_studio_refresh_only_subscribes_running_session_events():
     assert "unsubscribeSessionEvents();" in refresh_body
 
 
+def test_studio_presentation_tts_events_and_lifecycle_are_wired():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    subscribe_index = studio_js.index("function subscribeSessionEvents(sessionId)")
+    subscribe_body = studio_js[subscribe_index:studio_js.index("function sessionIsRunning", subscribe_index)]
+    assert 'if (payload.type === "presentation_item_ready" && payload.item) {' in subscribe_body
+    assert "enqueuePresentationItem(payload.item);" in subscribe_body
+    assert 'if (payload.type === "interrupt_requested") {' in subscribe_body
+    assert "handlePresentationInterrupt(payload)" in subscribe_body
+    assert '["interaction_completed", "presentation_item_ready", "super_chat_batch_injected"]' not in subscribe_body
+    assert '["interaction_completed", "super_chat_batch_injected"]' in subscribe_body
+
+    reset_index = studio_js.index("function resetConversationForNewSession()")
+    reset_body = studio_js[reset_index:studio_js.index("function chatPreviewKind", reset_index)]
+    assert 'resetPresentationPlayer({ statusText: "建立新場次" });' in reset_body
+
+    session_index = studio_js.index("function applySessionSnapshot(session)")
+    session_body = studio_js[session_index:studio_js.index("function studioLiveSessionPayload", session_index)]
+    assert "const wasLive = state.live;" in session_body
+    assert 'resetPresentationPlayer({ statusText: "已停止" });' in session_body
+
+    binding_index = studio_js.index('"clearConversation"')
+    binding_body = studio_js[binding_index:studio_js.index('"regenerateSummary"', binding_index)]
+    assert '$("enablePresentationAudio").addEventListener("click", () => {' in binding_body
+    assert '$("skipPresentation").addEventListener("click", () => {' in binding_body
+
+
 def test_studio_route_is_loopback_only():
     from server_security import LOOPBACK_ONLY_PATHS
 

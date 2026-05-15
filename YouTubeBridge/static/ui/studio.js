@@ -1556,6 +1556,7 @@ function unsubscribeSessionEvents() {
 
 function resetConversationForNewSession() {
   unsubscribeSessionEvents();
+  resetPresentationPlayer({ statusText: "建立新場次" });
   if (state.chatRefreshTimer) {
     clearTimeout(state.chatRefreshTimer);
     state.chatRefreshTimer = null;
@@ -1755,7 +1756,21 @@ function subscribeSessionEvents(sessionId) {
         refreshStudioSession();
         return;
       }
-      if (["interaction_completed", "presentation_item_ready", "super_chat_batch_injected"].includes(payload.type)) {
+      if (payload.type === "presentation_item_ready" && payload.item) {
+        enqueuePresentationItem(payload.item);
+        return;
+      }
+      if (payload.type === "interrupt_requested") {
+        handlePresentationInterrupt(payload).catch((error) => {
+          appendLog("WARN", `直播打斷處理失敗：${error.message || error}`);
+        });
+        return;
+      }
+      if (payload.type === "interaction_interrupted") {
+        scheduleConversationRefresh("直播打斷");
+        return;
+      }
+      if (["interaction_completed", "super_chat_batch_injected"].includes(payload.type)) {
         refreshConversation();
       }
     } catch (error) {
@@ -1814,6 +1829,7 @@ function phaseSummaryText(session) {
 }
 
 function applySessionSnapshot(session) {
+  const wasLive = state.live;
   state.currentSession = session || null;
   state.sessionId = session?.session_id || "";
   state.detectedVideoId = session?.video_id || "";
@@ -1850,6 +1866,9 @@ function applySessionSnapshot(session) {
   updateSourceDetectionState();
   updateSummaryControls();
   applyStartButtonState();
+  if (wasLive && !state.live) {
+    resetPresentationPlayer({ statusText: "已停止" });
+  }
 }
 
 function studioLiveSessionPayload() {
@@ -2731,6 +2750,16 @@ function bindEvents() {
     testResult.textContent = "等待測試留言。";
     updateTestCount();
     applyTestAutoSaveState("留言測試");
+  });
+  $("enablePresentationAudio").addEventListener("click", () => {
+    retryCurrentPresentationAudio().catch((error) => {
+      appendLog("WARN", `啟用 TTS 聲音失敗：${error.message || error}`);
+    });
+  });
+  $("skipPresentation").addEventListener("click", () => {
+    skipCurrentPresentation().catch((error) => {
+      appendLog("WARN", `跳過 TTS 句子失敗：${error.message || error}`);
+    });
   });
   $("regenerateSummary").addEventListener("click", regenerateSummary);
   $("testMemoriaAuthButton").addEventListener("click", testMemoriaAuthSettings);
