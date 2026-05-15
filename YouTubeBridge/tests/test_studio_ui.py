@@ -41,8 +41,8 @@ def test_studio_route_is_registered_as_parallel_ui_surface():
 def test_studio_html_uses_external_assets_without_inline_code():
     studio_html = _studio_source()
 
-    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v25">' in studio_html
-    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v25"></script>' in studio_html
+    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v26">' in studio_html
+    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v26"></script>' in studio_html
     assert "<style>" not in studio_html
     assert "<script>\n" not in studio_html
 
@@ -181,6 +181,9 @@ def test_studio_summary_test_uses_backend_summary_api_not_mock_text():
 def test_studio_presentation_tts_controls_are_exposed():
     studio_html = _studio_source()
     studio_css = (Path(server_module.UI_ASSETS_ROOT) / "studio.css").read_text(encoding="utf-8")
+    toolbar_start = studio_html.index('<div class="conversation-tools">')
+    toolbar_end = studio_html.index("</div>", toolbar_start)
+    toolbar_html = studio_html[toolbar_start:toolbar_end]
 
     assert 'id="presentationAudioStatus"' in studio_html
     assert 'id="enablePresentationAudio"' in studio_html
@@ -190,6 +193,24 @@ def test_studio_presentation_tts_controls_are_exposed():
     assert "跳過目前句子" in studio_html
     assert ".conversation-tools .hidden" in studio_css
     assert ".conversation-tools button.small" in studio_css
+    expected_order = [
+        'id="durationBadge"',
+        'id="presentationAudioStatus"',
+        'id="enablePresentationAudio"',
+        'id="skipPresentation"',
+        'id="clearConversation"',
+    ]
+    positions = [toolbar_html.index(item) for item in expected_order]
+    assert positions == sorted(positions)
+    assert '<span id="presentationAudioStatus" class="state-badge neutral">語音待機</span>' in toolbar_html
+    assert (
+        '<button id="enablePresentationAudio" class="secondary small hidden" type="button">'
+        "啟用聲音</button>"
+    ) in toolbar_html
+    assert (
+        '<button id="skipPresentation" class="secondary small" type="button" disabled>'
+        "跳過目前句子</button>"
+    ) in toolbar_html
 
 
 def test_studio_displays_phase_summary_status():
