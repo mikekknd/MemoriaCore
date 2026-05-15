@@ -78,6 +78,8 @@ UI_ASSETS_ROOT = Path(STATIC_ROOT) / "ui"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 E2E_CHECKPOINT_PATH = PROJECT_ROOT / "runtime" / "youtube_bridge_e2e_checkpoint.json"
 STUDIO_AVATAR_ROOT = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "StudioAvatars"
+FREE_TALK_TOPIC_ROOT = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "freeTalkTopics"
+EPISODE_PLAN_ROOT = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "EpisodePlans"
 logger = logging.getLogger("youtube_bridge")
 
 
@@ -104,6 +106,8 @@ app_state = BridgeAppState(
     static_root=Path(STATIC_ROOT),
     ui_assets_root=UI_ASSETS_ROOT,
     studio_avatar_root=STUDIO_AVATAR_ROOT,
+    free_talk_topic_root=FREE_TALK_TOPIC_ROOT,
+    episode_plan_root=EPISODE_PLAN_ROOT,
     e2e_checkpoint_path=E2E_CHECKPOINT_PATH,
     apply_memoria_config=_apply_memoria_config,
 )
@@ -246,6 +250,8 @@ def _sync_route_state() -> None:
     app_state.summary_manager = summary_manager
     app_state.chat_preview_cache = chat_preview_cache
     app_state.studio_avatar_root = STUDIO_AVATAR_ROOT
+    app_state.free_talk_topic_root = FREE_TALK_TOPIC_ROOT
+    app_state.episode_plan_root = EPISODE_PLAN_ROOT
     for route_module in _ROUTE_MODULES_FOR_SYNC:
         route_module.configure(app_state)
     _install_auto_finalize_callback()

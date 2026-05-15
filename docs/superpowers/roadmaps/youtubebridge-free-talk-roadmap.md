@@ -45,7 +45,7 @@ Do not use the single-agent `superpowers:executing-plans` fallback for this road
 
 ## Current Status
 
-- [ ] Stage 1: Topic Library And Manual Free Talk Runtime
+- [x] Stage 1: Topic Library And Manual Free Talk Runtime
 - [ ] Stage 2: Main Finish Pipeline And Phase Transition
 - [ ] Stage 3: Two Independent Summaries And Cleanup Wait
 - [ ] Stage 4: Low-Signal Filter And Large-Batch Free-Talk Closing

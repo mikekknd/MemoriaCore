@@ -6,10 +6,12 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from bridge_runtime import LiveRuntime
+from free_talk_topics import load_free_talk_topic_library
 from memoria_client import GenerationInterrupted
 
 
@@ -30,6 +32,8 @@ def _director_timing_log(event: str, **fields: Any) -> None:
 
 
 class DirectorRuntimeManagerMixin:
+    _POST_PLAN_FREE_TALK_ACTIONS = {"post_plan_free_talk_topic", "post_plan_free_talk_natural"}
+
     async def start_director(
         self,
         session_id: str,
@@ -64,6 +68,178 @@ class DirectorRuntimeManagerMixin:
             runtime.director_kickoff_task = asyncio.create_task(self._director_kickoff(runtime))
         await self._broadcast(session_id, {"type": "director_state", "director": state})
         return state
+
+    async def start_post_plan_free_talk_test(
+        self,
+        session_id: str,
+        *,
+        topic_root: Path,
+        transition_reason: str = "operator_debug_start_free_talk",
+    ) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            raise ValueError("live session 不存在")
+        if str(session.get("status") or "") != "running":
+            raise ValueError("live session 尚未開始")
+
+        now = datetime.now()
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id, mode="test"))
+        runtime.running = True
+        runtime.status = "running"
+        if str(runtime.mode or "") != "youtube":
+            runtime.mode = "test"
+        if str(session.get("status") or "") != "running" or not session.get("started_at"):
+            update_fields: dict[str, Any] = {"status": "running"}
+            if not session.get("started_at"):
+                update_fields["started_at"] = now.isoformat()
+            session = self.storage.update_session_fields(session_id, **update_fields) or session
+
+        library = load_free_talk_topic_library(Path(topic_root))
+        raw_selected_ids = session.get("post_plan_free_talk_topic_pack_ids")
+        use_explicit_selection = isinstance(raw_selected_ids, list)
+        selected_ids = [
+            str(pack_id or "").strip()
+            for pack_id in (raw_selected_ids if use_explicit_selection else [])
+            if str(pack_id or "").strip()
+        ]
+        if use_explicit_selection:
+            packs = [
+                pack for pack in library.get("packs", [])
+                if isinstance(pack, dict) and str(pack.get("pack_id") or "") in selected_ids
+            ]
+        else:
+            packs = [pack for pack in library.get("packs", []) if isinstance(pack, dict)]
+        topic_queue: list[dict[str, str]] = []
+        for pack in packs:
+            pack_id = str(pack.get("pack_id") or "").strip()
+            for topic in pack.get("topics") or []:
+                if not isinstance(topic, dict):
+                    continue
+                title = str(topic.get("title") or "").strip()
+                prompt = str(topic.get("prompt") or "").strip()
+                if title and prompt:
+                    topic_queue.append({
+                        "pack_id": pack_id,
+                        "title": title[:120],
+                        "prompt": prompt[:1000],
+                    })
+        runtime.post_plan_free_talk_topic_queue = topic_queue
+
+        deadline = now + timedelta(minutes=max(0, int(session.get("post_plan_free_talk_minutes", 20) or 20)))
+        free_talk_state = {
+            "topic_count": len(topic_queue),
+            "topic_cursor": 0,
+            "selected_pack_ids": selected_ids,
+            "selected_available_pack_ids": [str(pack.get("pack_id") or "") for pack in packs],
+            "started_at": now.isoformat(),
+            "deadline_at": deadline.isoformat(),
+            "transition_reason": str(transition_reason or "")[:200],
+            "last_tick_action": "",
+            "last_tick_at": "",
+            "last_topic_title": "",
+        }
+        director_state = self.storage.update_director_state(
+            session_id,
+            director_enabled=True,
+            status="running",
+            metadata={
+                "phase": "post_plan_free_talk",
+                "post_plan_free_talk": free_talk_state,
+                "transition_reason": str(transition_reason or "")[:200],
+            },
+        )
+        await self._broadcast(session_id, {"type": "director_state", "director": director_state})
+        return await self._run_post_plan_free_talk_tick(runtime, session, director_state)
+
+    async def _run_post_plan_free_talk_tick(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        director_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        session_id = session["session_id"]
+        if self.storage.get_active_interaction(session_id):
+            next_state = self.storage.update_director_state(session_id, status="waiting_active_interaction")
+            await self._broadcast(session_id, {"type": "director_state", "director": next_state})
+            return {"phase": "post_plan_free_talk", "status": "wait", "director": next_state}
+
+        metadata = dict(director_state.get("metadata") or {})
+        free_talk_state = dict(metadata.get("post_plan_free_talk") or {})
+        topic_queue = [
+            topic for topic in getattr(runtime, "post_plan_free_talk_topic_queue", [])
+            if isinstance(topic, dict)
+        ]
+        try:
+            cursor = int(free_talk_state.get("topic_cursor", 0) or 0)
+        except (TypeError, ValueError):
+            cursor = 0
+        active_topic = topic_queue[cursor] if 0 <= cursor < len(topic_queue) else None
+        now = datetime.now().isoformat()
+        if active_topic:
+            title = str(active_topic.get("title") or "").strip()[:120]
+            topic_prompt = str(active_topic.get("prompt") or "").strip()[:1000]
+            public_prompt = "\n".join([
+                f"雜談話題：{title}",
+                topic_prompt,
+                "請自然延伸這個雜談話題，讓角色彼此接話、補充或提出不同角度；不要提到幕後流程。",
+            ])
+            decision = {
+                "action": "post_plan_free_talk_topic",
+                "reason": "post plan free talk topic tick",
+                "prompt": public_prompt,
+                "current_topic": title,
+                "group_turn_limit": self._post_plan_free_talk_group_turn_limit(session, "idle"),
+            }
+            status = "topic_chat"
+            cursor += 1
+            free_talk_state["last_topic_title"] = title
+        else:
+            public_prompt = (
+                "自然雜談：請延續直播餘韻，讓角色彼此聊一段輕鬆近況或現場感想；"
+                "不要提到幕後流程，也不要把問題丟回聊天室。"
+            )
+            decision = {
+                "action": "post_plan_free_talk_natural",
+                "reason": "post plan free talk natural fallback",
+                "prompt": public_prompt,
+                "current_topic": "自然雜談",
+                "group_turn_limit": self._post_plan_free_talk_group_turn_limit(session, "idle"),
+            }
+            status = "natural_chat"
+
+        free_talk_state["topic_cursor"] = cursor
+        free_talk_state["last_tick_action"] = status
+        free_talk_state["last_tick_at"] = now
+        updated_state = self.storage.update_director_state(
+            session_id,
+            status="post_plan_free_talk",
+            last_director_action_at=now,
+            current_topic=str(decision.get("current_topic") or ""),
+            metadata={
+                **metadata,
+                "phase": "post_plan_free_talk",
+                "post_plan_free_talk": free_talk_state,
+                "last_tick_action": status,
+                "last_decision": self._public_decision(decision),
+            },
+        )
+        await self._broadcast(session_id, {"type": "director_state", "director": updated_state})
+        result = await self._send_director_turn(session, updated_state, decision)
+        final_state = self.storage.update_director_state(
+            session_id,
+            status="running",
+            metadata={
+                **(updated_state.get("metadata") or {}),
+                "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
+            },
+        )
+        await self._broadcast(session_id, {"type": "director_state", "director": final_state})
+        return {
+            "phase": "post_plan_free_talk",
+            "status": status,
+            "director": final_state,
+            "interaction": result.get("interaction"),
+        }
 
     async def stop_director(self, session_id: str) -> dict[str, Any]:
         runtime = self._runtimes.get(session_id)
@@ -889,18 +1065,21 @@ class DirectorRuntimeManagerMixin:
         target_session_id = session.get("target_memoria_session_id", "")
         target_character_ids = session.get("character_ids", [])
         action = str(decision.get("action") or "continue_topic")
+        is_free_talk_action = action in self._POST_PLAN_FREE_TALK_ACTIONS
         prompt = str(decision.get("prompt") or "").strip()
-        has_episode_plan = self._episode_plan_for_session(session) is not None
+        has_episode_plan = self._episode_plan_for_session(session) is not None and not is_free_talk_action
         public_prompt = self._public_director_prompt(action, session, state)
         if action == "opening":
             public_prompt = self._public_director_opening_prompt(session, state)
+        if is_free_talk_action and prompt:
+            public_prompt = prompt
         public_topic = self._public_director_topic(session, state)
         elapsed_minutes, elapsed_percent, remaining_minutes = self._session_elapsed(session)
         if not prompt:
             prompt = f"目前適合執行 {action}，請自然延續直播對話，不要提到幕後流程。"
         dialogue_expansion_enabled = self._director_dialogue_expansion_enabled(session)
         topic_context = ""
-        if not has_episode_plan:
+        if not has_episode_plan and not is_free_talk_action:
             if action == "opening":
                 topic_context = self._topic_pack_sequence_preview_context_for_session(session_id)
             else:
@@ -913,7 +1092,8 @@ class DirectorRuntimeManagerMixin:
                     ]),
                     usage_source="director",
                 )
-        context_parts = [f"直播流程 action={action}"]
+        public_action_label = "free_talk" if is_free_talk_action else action
+        context_parts = [f"直播流程 action={public_action_label}"]
         if not has_episode_plan:
             context_parts.append(f"直播進度：{elapsed_percent}%（已 {elapsed_minutes} 分鐘，剩餘約 {remaining_minutes} 分鐘）")
         context_parts.append(f"處理提示：{public_prompt}")
@@ -1073,6 +1253,14 @@ class DirectorRuntimeManagerMixin:
             external_context["summary"]["episode_plan_id"] = live_episode_plan.get("plan_id", "")
             external_context["summary"]["episode_plan_turn_id"] = live_episode_plan.get("turn_id", "")
             external_context["summary"]["episode_plan_mode"] = live_episode_plan.get("mode", "")
+        if "group_turn_limit" in decision:
+            try:
+                group_turn_limit = int(decision.get("group_turn_limit") or group_turn_limit)
+            except (TypeError, ValueError):
+                pass
+            group_turn_limit = max(1, min(group_turn_limit, 12))
+            external_context["group_turn_limit"] = group_turn_limit
+            external_context["summary"]["group_turn_limit"] = group_turn_limit
         external_context = self._attach_live_persona_overrides(session, external_context)
         display_content = self._director_display_content(action)
         if isinstance(live_episode_plan, dict) and str(live_episode_plan.get("mode") or "") == "planned_turn":

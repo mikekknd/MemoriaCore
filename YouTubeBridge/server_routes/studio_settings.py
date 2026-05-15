@@ -10,6 +10,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from free_talk_topics import load_free_talk_sidecar, load_free_talk_topic_library
 from memoria_client import MemoriaClient
 from models import (
     StudioAvatarUploadRequest,
@@ -66,6 +67,32 @@ def _avatar_root() -> Path:
     return root.resolve()
 
 
+def _free_talk_topic_root() -> Path:
+    state = _require_state()
+    configured = getattr(state, "free_talk_topic_root", None)
+    root = Path(configured) if configured and Path(configured) != Path() else Path("runtime") / "YouTubeBridge" / "freeTalkTopics"
+    return root.resolve()
+
+
+def _free_talk_sidecar_path(episode_plan_id: str) -> Path | None:
+    state = _require_state()
+    plan_id = str(episode_plan_id or "").strip()
+    if not plan_id:
+        return None
+    get_plan = getattr(storage, "get_live_episode_plan", None) or getattr(storage, "get_episode_plan", None)
+    if not get_plan:
+        return None
+    plan = get_plan(plan_id)
+    source_path = plan.get("source_path") if isinstance(plan, dict) else None
+    if not source_path:
+        return None
+    plan_path = Path(source_path)
+    if not plan_path.is_absolute():
+        episode_plan_root = Path(getattr(state, "episode_plan_root", None) or Path("runtime") / "YouTubeBridge" / "EpisodePlans")
+        plan_path = episode_plan_root / plan_path
+    return plan_path.parent / "free-talk-topics.json"
+
+
 def _avatar_response(path: Path) -> dict:
     stat = path.stat()
     return {
@@ -102,12 +129,18 @@ def _decode_avatar_data_url(data_url: str) -> tuple[str, bytes]:
 async def _studio_settings_response() -> dict:
     settings = storage.get_all_studio_settings()
     connector = storage.ensure_single_connector()
+    live_defaults_payload = settings.get("live_defaults")
+    live_defaults = _settings_with_defaults(StudioLiveDefaults, live_defaults_payload)
+    live_defaults["post_plan_free_talk_topic_pack_ids_configured"] = (
+        isinstance(live_defaults_payload, dict)
+        and "post_plan_free_talk_topic_pack_ids" in live_defaults_payload
+    )
     return {
         "connector": public_connector(connector),
         "memoria_auth": storage.get_public_memoria_config(),
         "test_settings": _settings_with_defaults(StudioTestSettings, settings.get("test_settings")),
         "display_settings": _settings_with_defaults(StudioDisplaySettings, settings.get("display_settings")),
-        "live_defaults": _settings_with_defaults(StudioLiveDefaults, settings.get("live_defaults")),
+        "live_defaults": live_defaults,
         "persona_overlays": storage.list_live_persona_overlays(),
         "tts_profiles": storage.list_tts_profiles(),
         "tts_sources": await list_tts_sources(),
@@ -139,8 +172,27 @@ async def update_studio_settings(body: StudioSettingsPatch):
     if "display_settings" in requested and body.display_settings is not None:
         storage.upsert_studio_settings("display_settings", body.display_settings.model_dump())
     if "live_defaults" in requested and body.live_defaults is not None:
-        storage.upsert_studio_settings("live_defaults", body.live_defaults.model_dump())
+        existing_live_defaults = storage.get_studio_settings("live_defaults")
+        storage.upsert_studio_settings(
+            "live_defaults",
+            {
+                **existing_live_defaults,
+                **body.live_defaults.model_dump(exclude_unset=True),
+            },
+        )
     return await _studio_settings_response()
+
+
+@router.get("/studio/free-talk-topics")
+async def list_studio_free_talk_topics(episode_plan_id: str = ""):
+    _require_state()
+    library = load_free_talk_topic_library(_free_talk_topic_root())
+    sidecar = load_free_talk_sidecar(_free_talk_sidecar_path(episode_plan_id))
+    return {
+        **library,
+        "sidecar": sidecar,
+        "total_topic_count": int(library.get("total_topic_count", 0)) + int(sidecar.get("topic_count", 0)),
+    }
 
 
 @router.get("/studio/avatar-assets")

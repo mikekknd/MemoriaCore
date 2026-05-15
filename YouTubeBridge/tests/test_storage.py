@@ -128,6 +128,79 @@ def test_connector_and_session_roundtrip():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_session_persists_post_plan_free_talk_fields(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Free Talk Test",
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_minutes": 25,
+        "post_plan_free_talk_tick_interval_seconds": 30,
+        "post_plan_free_talk_idle_turns_min": 6,
+        "post_plan_free_talk_idle_turns_max": 6,
+        "post_plan_free_talk_audience_turns_min": 3,
+        "post_plan_free_talk_audience_turns_max": 3,
+        "post_plan_free_talk_topic_pack_ids": ["anime-casual", "creator-life"],
+    })
+
+    assert saved["post_plan_free_talk_enabled"] is True
+    assert saved["post_plan_free_talk_minutes"] == 25
+    assert saved["post_plan_free_talk_tick_interval_seconds"] == 30
+    assert saved["post_plan_free_talk_idle_turns_min"] == 6
+    assert saved["post_plan_free_talk_idle_turns_max"] == 6
+    assert saved["post_plan_free_talk_audience_turns_min"] == 3
+    assert saved["post_plan_free_talk_audience_turns_max"] == 3
+    assert saved["post_plan_free_talk_topic_pack_ids"] == ["anime-casual", "creator-life"]
+
+
+def test_session_partial_update_preserves_post_plan_free_talk_fields(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Free Talk Test",
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_minutes": 25,
+        "post_plan_free_talk_tick_interval_seconds": 30,
+        "post_plan_free_talk_idle_turns_min": 6,
+        "post_plan_free_talk_idle_turns_max": 6,
+        "post_plan_free_talk_audience_turns_min": 3,
+        "post_plan_free_talk_audience_turns_max": 3,
+        "post_plan_free_talk_topic_pack_ids": ["anime-casual"],
+    })
+
+    updated = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Renamed Free Talk Test",
+    })
+    readback = storage.get_session("live-a")
+
+    assert updated["display_name"] == "Renamed Free Talk Test"
+    assert readback["post_plan_free_talk_enabled"] is True
+    assert readback["post_plan_free_talk_minutes"] == 25
+    assert readback["post_plan_free_talk_tick_interval_seconds"] == 30
+    assert readback["post_plan_free_talk_idle_turns_min"] == 6
+    assert readback["post_plan_free_talk_idle_turns_max"] == 6
+    assert readback["post_plan_free_talk_audience_turns_min"] == 3
+    assert readback["post_plan_free_talk_audience_turns_max"] == 3
+    assert readback["post_plan_free_talk_topic_pack_ids"] == ["anime-casual"]
+
+
 def test_presentation_session_fields_roundtrip():
     tmp_dir = _tmp_dir()
     try:

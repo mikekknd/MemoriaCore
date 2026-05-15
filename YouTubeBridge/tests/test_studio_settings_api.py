@@ -28,6 +28,16 @@ class FakeManager:
         self.reset_count += 1
 
 
+class FakeStorage:
+    def __init__(self, plan_dir: Path):
+        self.plan_dir = plan_dir
+
+    def get_episode_plan(self, plan_id: str):
+        if plan_id != "ep1":
+            return None
+        return {"plan_id": plan_id, "source_path": str(self.plan_dir / "episode-plan.json")}
+
+
 def _install_temp_state(monkeypatch, tmp_path):
     storage = BridgeStorage(tmp_path / "bridge.db")
     manager = FakeManager()
@@ -36,6 +46,143 @@ def _install_temp_state(monkeypatch, tmp_path):
     monkeypatch.setattr(server_module, "manager", manager)
     monkeypatch.setattr(server_module, "summary_manager", summary_manager)
     return storage, manager, summary_manager
+
+
+@pytest.mark.asyncio
+async def test_studio_free_talk_topics_lists_global_packs_and_episode_sidecar(tmp_path):
+    topic_root = tmp_path / "freeTalkTopics"
+    topic_root.mkdir()
+    (topic_root / "anime.json").write_text(
+        '{"name":"Anime","topics":[{"title":"新番近況","prompt":"聊本季新番。"}]}',
+        encoding="utf-8",
+    )
+    plan_dir = tmp_path / "plans" / "ep1"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "free-talk-topics.json").write_text(
+        '{"name":"EP1 Sidecar","topics":[{"title":"幕後延伸","prompt":"延伸企劃後續。"}]}',
+        encoding="utf-8",
+    )
+    fake_state = SimpleNamespace(
+        storage=FakeStorage(plan_dir),
+        manager=FakeManager(),
+        summary_manager=SimpleNamespace(),
+        free_talk_topic_root=topic_root,
+    )
+    server_module._studio_settings_routes.configure(fake_state)
+
+    data = await server_module._studio_settings_routes.list_studio_free_talk_topics("ep1")
+
+    assert data["packs"][0]["pack_id"] == "anime"
+    assert data["sidecar"]["found"] is True
+    assert data["sidecar"]["topic_count"] == 1
+    assert data["total_topic_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_studio_free_talk_topics_uses_bridge_storage_episode_plan_source(tmp_path):
+    storage = BridgeStorage(tmp_path / "bridge.db")
+    topic_root = tmp_path / "freeTalkTopics"
+    topic_root.mkdir()
+    (topic_root / "anime.json").write_text(
+        '{"name":"Anime","topics":[{"title":"新番近況","prompt":"聊本季新番。"}]}',
+        encoding="utf-8",
+    )
+    plan_dir = tmp_path / "plans" / "ep1"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "free-talk-topics.json").write_text(
+        '{"name":"EP1 Sidecar","topics":[{"title":"幕後延伸","prompt":"延伸企劃後續。"}]}',
+        encoding="utf-8",
+    )
+    plan = sample_plan()
+    plan_id = str(plan["plan_id"])
+    storage.upsert_live_episode_plan(plan, source_path=str(plan_dir / "episode-plan.json"))
+    fake_state = SimpleNamespace(
+        storage=storage,
+        manager=FakeManager(),
+        summary_manager=SimpleNamespace(),
+        free_talk_topic_root=topic_root,
+    )
+    server_module._studio_settings_routes.configure(fake_state)
+
+    data = await server_module._studio_settings_routes.list_studio_free_talk_topics(plan_id)
+
+    assert data["packs"][0]["pack_id"] == "anime"
+    assert data["sidecar"]["found"] is True
+    assert data["sidecar"]["topic_count"] == 1
+    assert data["total_topic_count"] == 2
+
+
+def test_studio_free_talk_topic_root_is_project_runtime_path():
+    assert server_module.app_state.free_talk_topic_root == (
+        server_module.PROJECT_ROOT / "runtime" / "YouTubeBridge" / "freeTalkTopics"
+    )
+
+
+@pytest.mark.asyncio
+async def test_studio_free_talk_topics_resolves_relative_episode_plan_source_path(tmp_path):
+    storage = BridgeStorage(tmp_path / "bridge.db")
+    topic_root = tmp_path / "freeTalkTopics"
+    topic_root.mkdir()
+    (topic_root / "anime.json").write_text(
+        '{"name":"Anime","topics":[{"title":"新番近況","prompt":"聊本季新番。"}]}',
+        encoding="utf-8",
+    )
+    episode_plan_root = tmp_path / "runtime" / "YouTubeBridge" / "EpisodePlans"
+    plan_dir = episode_plan_root / "SomePlan"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "free-talk-topics.json").write_text(
+        '{"name":"Relative Sidecar","topics":[{"title":"相對路徑延伸","prompt":"從 EpisodePlans root 找 sidecar。"}]}',
+        encoding="utf-8",
+    )
+    plan = sample_plan()
+    plan_id = str(plan["plan_id"])
+    storage.upsert_live_episode_plan(plan, source_path="SomePlan/episode-plan.json")
+    fake_state = SimpleNamespace(
+        storage=storage,
+        manager=FakeManager(),
+        summary_manager=SimpleNamespace(),
+        free_talk_topic_root=topic_root,
+        episode_plan_root=episode_plan_root,
+    )
+    server_module._studio_settings_routes.configure(fake_state)
+
+    data = await server_module._studio_settings_routes.list_studio_free_talk_topics(plan_id)
+
+    assert data["sidecar"]["found"] is True
+    assert data["sidecar"]["topic_count"] == 1
+    assert data["total_topic_count"] == 2
+
+
+def test_studio_episode_plan_root_is_project_runtime_path():
+    assert server_module.app_state.episode_plan_root == (
+        server_module.PROJECT_ROOT / "runtime" / "YouTubeBridge" / "EpisodePlans"
+    )
+
+
+@pytest.mark.asyncio
+async def test_studio_settings_reports_free_talk_topic_pack_ids_presence(monkeypatch, tmp_path):
+    storage, _manager, _summary_manager = _install_temp_state(monkeypatch, tmp_path)
+
+    data = await server_module.get_studio_settings()
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids"] == []
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids_configured"] is False
+
+    storage.upsert_studio_settings("live_defaults", {
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_minutes": 20,
+    })
+    data = await server_module.get_studio_settings()
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids"] == []
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids_configured"] is False
+
+    storage.upsert_studio_settings("live_defaults", {
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_minutes": 20,
+        "post_plan_free_talk_topic_pack_ids": [],
+    })
+    data = await server_module.get_studio_settings()
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids"] == []
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids_configured"] is True
 
 
 @pytest.mark.asyncio
@@ -128,6 +275,37 @@ async def test_studio_settings_patch_preserves_omitted_sections(monkeypatch, tmp
     assert data["test_settings"]["normal_comment_count"] == 12
     assert data["display_settings"]["show_live_events_enabled"] is True
     assert data["live_defaults"]["planned_duration_minutes"] == 52
+
+
+@pytest.mark.asyncio
+async def test_studio_settings_patch_preserves_unset_free_talk_topic_selection(monkeypatch, tmp_path):
+    storage, _manager, _summary_manager = _install_temp_state(monkeypatch, tmp_path)
+    storage.upsert_studio_settings("live_defaults", {
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_minutes": 20,
+        "post_plan_free_talk_topic_pack_ids": ["casual"],
+    })
+
+    data = await server_module.update_studio_settings(server_module.StudioSettingsPatch(
+        live_defaults=server_module.StudioLiveDefaults(post_plan_free_talk_minutes=30),
+    ))
+
+    assert data["live_defaults"]["post_plan_free_talk_minutes"] == 30
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids"] == ["casual"]
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids_configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_studio_settings_patch_does_not_create_topic_selection_when_unset(monkeypatch, tmp_path):
+    _storage, _manager, _summary_manager = _install_temp_state(monkeypatch, tmp_path)
+
+    data = await server_module.update_studio_settings(server_module.StudioSettingsPatch(
+        live_defaults=server_module.StudioLiveDefaults(post_plan_free_talk_minutes=30),
+    ))
+
+    assert data["live_defaults"]["post_plan_free_talk_minutes"] == 30
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids"] == []
+    assert data["live_defaults"]["post_plan_free_talk_topic_pack_ids_configured"] is False
 
 
 @pytest.mark.asyncio

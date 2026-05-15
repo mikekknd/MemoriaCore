@@ -38,3 +38,4 @@ class LiveRuntime:
     presentation_skipped_sequences: set[int] = field(default_factory=set)
     presentation_ack_events: dict[str, asyncio.Event] = field(default_factory=dict)
     director_prefetch_in_flight: int = 0
+    post_plan_free_talk_topic_queue: list[dict[str, str]] = field(default_factory=list)

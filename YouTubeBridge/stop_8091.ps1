@@ -44,6 +44,16 @@ function Has-Text {
 }
 
 $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+$selfAndAncestors = @{}
+$selfProcess = $allProcesses | Where-Object { [int]$_.ProcessId -eq [int]$PID } | Select-Object -First 1
+while ($selfProcess) {
+    $selfAndAncestors[[int]$selfProcess.ProcessId] = $true
+    $parentPid = [int]$selfProcess.ParentProcessId
+    if ($parentPid -le 0 -or $selfAndAncestors.Contains($parentPid)) {
+        break
+    }
+    $selfProcess = $allProcesses | Where-Object { [int]$_.ProcessId -eq $parentPid } | Select-Object -First 1
+}
 foreach ($listener in $listeners) {
     Add-Target -ProcessId ([int]$listener.OwningProcess) -Reason "listener $($listener.LocalAddress):$($listener.LocalPort)"
 }
@@ -98,6 +108,10 @@ if ($targets.Count -eq 0) {
     Write-Host "[OK] No YouTubeBridge process tree or port $Port listener found."
 } else {
     foreach ($targetPid in @($targets.Keys | Sort-Object -Descending)) {
+        if ($selfAndAncestors.Contains([int]$targetPid)) {
+            Write-Host "[SKIP] PID=$targetPid is the current cleanup process or its launcher."
+            continue
+        }
         $process = $allProcesses | Where-Object { [int]$_.ProcessId -eq [int]$targetPid } | Select-Object -First 1
         $reasonText = (($reasons[$targetPid] | Select-Object -Unique) -join "; ")
         if ($process) {

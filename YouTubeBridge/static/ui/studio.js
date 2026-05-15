@@ -27,6 +27,11 @@ const state = {
   personaOverlays: [],
   ttsProfiles: [],
   avatarAssets: [],
+  freeTalkTopicPacks: [],
+  freeTalkSidecar: { found: false, topic_count: 0, warnings: [] },
+  selectedFreeTalkTopicPackIds: [],
+  savedFreeTalkTopicPackIds: null,
+  freeTalkTopicSelectionInitialized: false,
   summaryLoading: false,
 };
 
@@ -113,6 +118,12 @@ const livePersonaSaveState = $("livePersonaSaveState");
 const livePersonaAvatarSelect = $("livePersonaAvatarSelect");
 const livePersonaAvatarFile = $("livePersonaAvatarFile");
 const uploadAvatarButton = $("uploadAvatarButton");
+const reloadFreeTalkTopicsButton = $("reloadFreeTalkTopicsButton");
+const freeTalkTopicStats = $("freeTalkTopicStats");
+const freeTalkSidecarState = $("freeTalkSidecarState");
+const freeTalkTopicChecklist = $("freeTalkTopicChecklist");
+const startFreeTalkTestButton = $("startFreeTalkTestButton");
+const freeTalkTestState = $("freeTalkTestState");
 
 const liveSettingControls = [
   "injectIntervalSeconds",
@@ -260,11 +271,13 @@ async function loadEpisodePlans() {
     state.episodePlans = Array.isArray(plans) ? plans : [];
     renderEpisodePlanOptions(state.episodePlans);
     await loadEpisodePlanCharacters(planSelect.value);
+    await loadFreeTalkTopics({ quiet: true });
     appendLog("INFO", `LiveEpisodePlan 已載入：${state.episodePlans.length} 筆`);
   } catch (error) {
     state.episodePlans = [];
     renderEpisodePlanOptions([]);
     await loadEpisodePlanCharacters("");
+    await loadFreeTalkTopics({ quiet: true });
     appendLog("WARN", `LiveEpisodePlan 載入失敗：${error.message || error}`);
   } finally {
     state.loadingEpisodePlans = false;
@@ -319,6 +332,105 @@ function updatePlanState() {
     ? `已選擇 ${plan?.plan_id || planSelect.value} · ${turnCount} 個 planned turns`
     : "請先建立或同步 LiveEpisodePlan";
   updatePreflightChecklist();
+}
+
+function selectedFreeTalkTopicPackIds() {
+  const available = new Set(state.freeTalkTopicPacks.map((pack) => pack.pack_id).filter(Boolean));
+  return state.selectedFreeTalkTopicPackIds.filter((packId) => available.has(packId));
+}
+
+function setSelectedFreeTalkTopicPackIds(packIds) {
+  const available = new Set(state.freeTalkTopicPacks.map((pack) => pack.pack_id).filter(Boolean));
+  state.selectedFreeTalkTopicPackIds = Array.from(new Set(packIds.filter((packId) => available.has(packId))));
+}
+
+function updateFreeTalkAllCheckbox(allCheckbox) {
+  const selectedCount = selectedFreeTalkTopicPackIds().length;
+  allCheckbox.checked = state.freeTalkTopicPacks.length > 0 && selectedCount === state.freeTalkTopicPacks.length;
+  allCheckbox.indeterminate = selectedCount > 0 && selectedCount < state.freeTalkTopicPacks.length;
+}
+
+function freeTalkSidecarLabel(sidecar = state.freeTalkSidecar) {
+  if (sidecar?.found) {
+    return `目前企劃 sidecar：已找到 ${sidecar.topic_count || 0} 則話題`;
+  }
+  return "目前企劃 sidecar：未找到 free-talk-topics.json";
+}
+
+function renderFreeTalkTopicChecklist(result = {}) {
+  state.freeTalkTopicPacks = Array.isArray(result.packs) ? result.packs : [];
+  state.freeTalkSidecar = result.sidecar || { found: false, topic_count: 0, warnings: [] };
+  const allPackIds = state.freeTalkTopicPacks.map((pack) => pack.pack_id).filter(Boolean);
+  if (state.savedFreeTalkTopicPackIds !== null) {
+    setSelectedFreeTalkTopicPackIds(state.savedFreeTalkTopicPackIds);
+    state.freeTalkTopicSelectionInitialized = true;
+  } else if (!state.freeTalkTopicSelectionInitialized) {
+    state.selectedFreeTalkTopicPackIds = [...allPackIds];
+    state.freeTalkTopicSelectionInitialized = true;
+  } else {
+    setSelectedFreeTalkTopicPackIds(state.selectedFreeTalkTopicPackIds);
+  }
+
+  freeTalkTopicStats.textContent = `全域話題庫 ${state.freeTalkTopicPacks.length} 組，總話題 ${result.total_topic_count || 0} 則`;
+  freeTalkSidecarState.textContent = freeTalkSidecarLabel(state.freeTalkSidecar);
+  freeTalkTopicChecklist.replaceChildren();
+
+  const allRow = document.createElement("label");
+  allRow.className = "check-row setting-check";
+  const allCheckbox = document.createElement("input");
+  allCheckbox.id = "freeTalkTopicAll";
+  allCheckbox.type = "checkbox";
+  const allText = document.createElement("span");
+  allText.textContent = "全部話題庫";
+  allRow.append(allCheckbox, allText);
+  freeTalkTopicChecklist.append(allRow);
+
+  allCheckbox.addEventListener("change", () => {
+    state.selectedFreeTalkTopicPackIds = allCheckbox.checked ? [...allPackIds] : [];
+    state.savedFreeTalkTopicPackIds = [...state.selectedFreeTalkTopicPackIds];
+    renderFreeTalkTopicChecklist({ ...result, packs: state.freeTalkTopicPacks, sidecar: state.freeTalkSidecar });
+    applySystemAutoSaveState("雜談話題庫");
+  });
+
+  state.freeTalkTopicPacks.forEach((pack) => {
+    const row = document.createElement("label");
+    row.className = "check-row setting-check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = pack.pack_id || "";
+    input.checked = selectedFreeTalkTopicPackIds().includes(pack.pack_id);
+    const text = document.createElement("span");
+    text.textContent = `${pack.display_name || pack.pack_id}（${pack.topic_count || 0}）`;
+    input.addEventListener("change", () => {
+      const selected = new Set(selectedFreeTalkTopicPackIds());
+      if (input.checked) selected.add(pack.pack_id);
+      else selected.delete(pack.pack_id);
+      setSelectedFreeTalkTopicPackIds(Array.from(selected));
+      state.savedFreeTalkTopicPackIds = selectedFreeTalkTopicPackIds();
+      updateFreeTalkAllCheckbox(allCheckbox);
+      applySystemAutoSaveState("雜談話題庫");
+    });
+    row.append(input, text);
+    freeTalkTopicChecklist.append(row);
+  });
+
+  updateFreeTalkAllCheckbox(allCheckbox);
+}
+
+async function loadFreeTalkTopics({ quiet = false } = {}) {
+  try {
+    const result = await api(`/studio/free-talk-topics?episode_plan_id=${encodeURIComponent(planSelect.value || "")}`);
+    renderFreeTalkTopicChecklist(result);
+    if (!quiet) {
+      appendLog("INFO", `雜談話題庫已載入：${state.freeTalkTopicPacks.length} 組`);
+    }
+  } catch (error) {
+    freeTalkTopicStats.textContent = "話題庫載入失敗";
+    freeTalkSidecarState.textContent = "目前企劃 sidecar：檢查失敗";
+    if (!quiet) {
+      appendLog("WARN", `雜談話題庫載入失敗：${error.message || error}`);
+    }
+  }
 }
 
 function roleName(character) {
@@ -1422,7 +1534,7 @@ function applySessionSnapshot(session) {
 
 function studioLiveSessionPayload() {
   const liveDefaults = collectLiveDefaults();
-  return {
+  const payload = {
     session_id: "",
     display_name: "YouTube Live",
     video_id: parseManualVideoId(),
@@ -1447,6 +1559,10 @@ function studioLiveSessionPayload() {
     tts_enabled: false,
     tts_provider: "gpt_sovits",
   };
+  if (state.freeTalkTopicSelectionInitialized) {
+    payload.post_plan_free_talk_topic_pack_ids = selectedFreeTalkTopicPackIds();
+  }
+  return payload;
 }
 
 async function startStudioDirector(sessionId) {
@@ -1661,6 +1777,38 @@ async function sendTestMessage() {
   updateTestCount();
 }
 
+async function startFreeTalkTest() {
+  if (!(state.sessionId && state.live)) {
+    freeTalkTestState.textContent = "請先開始直播。";
+    appendLog("WARN", "雜談測試啟動失敗：尚未開始直播");
+    return;
+  }
+  startFreeTalkTestButton.disabled = true;
+  freeTalkTestState.textContent = "正在啟動雜談測試。";
+  try {
+    const result = await api(`/sessions/${encodeURIComponent(state.sessionId)}/phase/free-talk-test/start`, {
+      method: "POST",
+      body: {},
+    });
+    const phase = result?.phase || "";
+    if (result?.status === "wait") {
+      freeTalkTestState.textContent = "目前有互動執行中，請稍後再試。";
+      appendLog("WARN", "雜談測試暫停：目前有互動執行中");
+      return;
+    }
+    freeTalkTestState.textContent = phase === "post_plan_free_talk"
+      ? "已進入雜談測試。"
+      : `雜談測試已啟動：${phase || "等待後端回傳 phase"}`;
+    appendLog("INFO", "已啟動雜談測試");
+    await refreshConversation();
+  } catch (error) {
+    freeTalkTestState.textContent = `雜談測試啟動失敗：${error.message || error}`;
+    appendLog("WARN", `雜談測試啟動失敗：${error.message || error}`);
+  } finally {
+    startFreeTalkTestButton.disabled = false;
+  }
+}
+
 function readPositiveNumber(input, fallback) {
   const value = Number(input.value);
   if (!Number.isFinite(value) || value < 0) return fallback;
@@ -1685,7 +1833,7 @@ function collectDisplaySettings() {
 }
 
 function collectLiveDefaults() {
-  return {
+  const payload = {
     auto_inject_pending_enabled: $("autoInjectPendingEnabled").checked,
     inject_interval_seconds: readPositiveNumber($("injectIntervalSeconds"), 30),
     inject_min_interval_seconds: readPositiveNumber($("injectMinIntervalSeconds"), 10),
@@ -1703,6 +1851,10 @@ function collectLiveDefaults() {
     presentation_queue_enabled: $("presentationQueueEnabled").checked,
     tts_enabled: $("ttsEnabled").checked,
   };
+  if (state.savedFreeTalkTopicPackIds !== null) {
+    payload.post_plan_free_talk_topic_pack_ids = selectedFreeTalkTopicPackIds();
+  }
+  return payload;
 }
 
 function collectConnectorSettings() {
@@ -1764,6 +1916,24 @@ function applyLiveDefaults(settings = {}) {
   setInputChecked("clearRuntimeSessionAfterSummary", settings.clear_runtime_session_after_summary !== false);
   setInputChecked("postPlanFreeTalkEnabled", settings.post_plan_free_talk_enabled);
   setInputValue("postPlanFreeTalkMinutes", settings.post_plan_free_talk_minutes ?? 20);
+  if (
+    settings.post_plan_free_talk_topic_pack_ids_configured === true
+    && Array.isArray(settings.post_plan_free_talk_topic_pack_ids)
+  ) {
+    state.savedFreeTalkTopicPackIds = [...settings.post_plan_free_talk_topic_pack_ids];
+    setSelectedFreeTalkTopicPackIds(state.savedFreeTalkTopicPackIds);
+    state.freeTalkTopicSelectionInitialized = true;
+  } else {
+    state.savedFreeTalkTopicPackIds = null;
+    state.freeTalkTopicSelectionInitialized = false;
+  }
+  if (state.freeTalkTopicPacks.length) {
+    renderFreeTalkTopicChecklist({
+      packs: state.freeTalkTopicPacks,
+      sidecar: state.freeTalkSidecar,
+      total_topic_count: state.freeTalkTopicPacks.reduce((count, pack) => count + (pack.topic_count || 0), state.freeTalkSidecar?.topic_count || 0),
+    });
+  }
   setInputValue("superChatCooldownSeconds", settings.super_chat_cooldown_seconds ?? 45);
   setInputValue("superChatBatchLimit", settings.super_chat_batch_limit ?? 3);
   setInputChecked("safeSearchEnabled", settings.safe_search_enabled !== false);
@@ -2167,6 +2337,7 @@ function bindEvents() {
   startButton.addEventListener("click", () => startLive());
   stopButton.addEventListener("click", () => stopLive());
   detectSourceButton.addEventListener("click", () => refreshStudioSession());
+  reloadFreeTalkTopicsButton.addEventListener("click", () => loadFreeTalkTopics());
   refreshRolesButton.addEventListener("click", async () => {
     await loadEpisodePlanCharacters(planSelect.value);
     appendLog("INFO", "直播角色設定已重新整理");
@@ -2178,6 +2349,7 @@ function bindEvents() {
   });
   $("clearConversation").addEventListener("click", clearConversation);
   $("sendTest").addEventListener("click", sendTestMessage);
+  startFreeTalkTestButton.addEventListener("click", startFreeTalkTest);
   $("runAutoCommentBatch").addEventListener("click", () => {
     generateAutoComments();
     applyTestAutoSaveState("自動留言測試");
@@ -2247,6 +2419,7 @@ function bindEvents() {
     "clearRuntimeSessionAfterSummary",
     "postPlanFreeTalkEnabled",
     "postPlanFreeTalkMinutes",
+    "freeTalkTopicAll",
     "superChatCooldownSeconds",
     "superChatBatchLimit",
     "safeSearchEnabled",
@@ -2260,6 +2433,7 @@ function bindEvents() {
     subtitle.textContent = planSelect.options[planSelect.selectedIndex]?.textContent || planSelect.value;
     updatePlanState();
     await loadEpisodePlanCharacters(planSelect.value);
+    await loadFreeTalkTopics({ quiet: true });
     appendLog("INFO", `切換企劃：${planSelect.value || "未選擇"}`);
   });
   testMessage.addEventListener("input", () => {

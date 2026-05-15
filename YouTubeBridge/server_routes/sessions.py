@@ -371,6 +371,24 @@ async def stop_session(session_id: str):
     return await manager.stop_session(session_id)
 
 
+@router.post("/sessions/{session_id}/phase/free-talk-test/start")
+async def start_free_talk_test(session_id: str):
+    session = storage.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    runtime_status = manager.get_status(session_id)
+    if str(session.get("status") or "") != "running" or not runtime_status.get("running"):
+        raise HTTPException(status_code=409, detail="live session is not running")
+    try:
+        return await manager.start_post_plan_free_talk_test(
+            session_id,
+            topic_root=_require_state().free_talk_topic_root,
+            transition_reason="operator_debug_start_free_talk",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/sessions/{session_id}/recent")
 async def recent_events(
     session_id: str,

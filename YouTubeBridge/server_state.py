@@ -15,5 +15,7 @@ class BridgeAppState:
     static_root: Path = Path()
     ui_assets_root: Path = Path()
     studio_avatar_root: Path = Path()
+    free_talk_topic_root: Path = Path()
+    episode_plan_root: Path = Path()
     e2e_checkpoint_path: Path = Path()
     apply_memoria_config: Callable[[], None] | None = None

@@ -216,6 +216,14 @@
             </div>
           </div>
 
+          <div class="test-section compact">
+            <div class="section-title-row">
+              <h2>雜談測試</h2>
+              <button id="startFreeTalkTestButton" class="secondary small" type="button">開始雜談測試</button>
+            </div>
+            <div id="freeTalkTestState" class="result-box">等待雜談測試。</div>
+          </div>
+
           <label class="field-block">
             <span>留言測試</span>
             <textarea id="testMessage" maxlength="200" placeholder="輸入測試留言內容..."></textarea>
@@ -492,6 +500,23 @@
                 <span>雜談保護上限分鐘</span>
                 <input id="postPlanFreeTalkMinutes" type="number" min="0" max="240" value="20">
               </label>
+            </div>
+            <div class="free-talk-topic-box">
+              <div class="topic-box-head">
+                <div>
+                  <strong>雜談話題庫</strong>
+                  <small>固定路徑：runtime/YouTubeBridge/freeTalkTopics/</small>
+                </div>
+                <button id="reloadFreeTalkTopicsButton" class="secondary small" type="button">重新載入話題庫</button>
+              </div>
+              <div id="freeTalkTopicStats" class="small">話題庫尚未載入</div>
+              <div id="freeTalkSidecarState" class="small">目前企劃 sidecar：尚未檢查</div>
+              <div id="freeTalkTopicChecklist" class="check-list" aria-label="雜談話題庫清單">
+                <label class="check-row setting-check">
+                  <input id="freeTalkTopicAll" type="checkbox">
+                  <span>全部話題庫</span>
+                </label>
+              </div>
             </div>
           </details>
 

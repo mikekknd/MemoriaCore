@@ -15,6 +15,28 @@ class SessionRepositoryMixin:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"yt_{stamp}_{uuid.uuid4().hex[:8]}"
 
+    def _clamped_int(self, value: Any, fallback: int, minimum: int, maximum: int) -> int:
+        return max(minimum, min(self._int_or_default(value, fallback), maximum))
+
+    @staticmethod
+    def _clean_free_talk_topic_pack_ids(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        cleaned: list[str] = []
+        for item in value:
+            pack_id = str(item).strip()[:120]
+            if pack_id:
+                cleaned.append(pack_id)
+        return cleaned
+
+    @staticmethod
+    def _config_value(config: dict, existing: dict | None, key: str, fallback: Any) -> Any:
+        if key in config:
+            return config.get(key)
+        if existing is not None:
+            return existing.get(key, fallback)
+        return fallback
+
     def upsert_session(self, config: dict) -> dict:
         now = datetime.now().isoformat()
         session_id = str(config.get("session_id", "")).strip() or self.generate_session_id()
@@ -107,6 +129,28 @@ class SessionRepositoryMixin:
                 "tts_enabled": 1 if config.get("tts_enabled", existing.get("tts_enabled", False) if existing else False) else 0,
                 "tts_provider": str(config.get("tts_provider", existing.get("tts_provider", "gpt_sovits") if existing else "gpt_sovits") or "gpt_sovits"),
                 "presentation_ack_timeout_seconds": max(1, min(int(config.get("presentation_ack_timeout_seconds", existing.get("presentation_ack_timeout_seconds", 120) if existing else 120) or 120), 600)),
+                "post_plan_free_talk_enabled": 1 if self._config_value(config, existing, "post_plan_free_talk_enabled", False) else 0,
+                "post_plan_free_talk_minutes": self._clamped_int(self._config_value(config, existing, "post_plan_free_talk_minutes", 20), 20, 0, 240),
+                "post_plan_free_talk_tick_interval_seconds": self._clamped_int(
+                    self._config_value(config, existing, "post_plan_free_talk_tick_interval_seconds", 30), 30, 5, 600
+                ),
+                "post_plan_free_talk_idle_turns_min": self._clamped_int(
+                    self._config_value(config, existing, "post_plan_free_talk_idle_turns_min", 6), 6, 1, 12
+                ),
+                "post_plan_free_talk_idle_turns_max": self._clamped_int(
+                    self._config_value(config, existing, "post_plan_free_talk_idle_turns_max", 6), 6, 1, 12
+                ),
+                "post_plan_free_talk_audience_turns_min": self._clamped_int(
+                    self._config_value(config, existing, "post_plan_free_talk_audience_turns_min", 3), 3, 1, 12
+                ),
+                "post_plan_free_talk_audience_turns_max": self._clamped_int(
+                    self._config_value(config, existing, "post_plan_free_talk_audience_turns_max", 3), 3, 1, 12
+                ),
+                "post_plan_free_talk_topic_pack_ids_json": self._json_dump(
+                    self._clean_free_talk_topic_pack_ids(
+                        self._config_value(config, existing, "post_plan_free_talk_topic_pack_ids", [])
+                    )
+                ),
                 "started_at": started_at,
                 "finalized_at": finalized_at,
                 "summary_status": summary_status,
@@ -116,6 +160,10 @@ class SessionRepositoryMixin:
                 "created_at": created_at,
                 "updated_at": now,
             }
+            if row_data["post_plan_free_talk_idle_turns_min"] > row_data["post_plan_free_talk_idle_turns_max"]:
+                row_data["post_plan_free_talk_idle_turns_max"] = row_data["post_plan_free_talk_idle_turns_min"]
+            if row_data["post_plan_free_talk_audience_turns_min"] > row_data["post_plan_free_talk_audience_turns_max"]:
+                row_data["post_plan_free_talk_audience_turns_max"] = row_data["post_plan_free_talk_audience_turns_min"]
             columns = list(row_data.keys())
             placeholders = ", ".join("?" for _ in columns)
             update_clause = ",\n                    ".join(

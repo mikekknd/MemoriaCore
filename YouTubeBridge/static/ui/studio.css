@@ -492,6 +492,41 @@ input[type="text"] {
   list-style: none;
 }
 
+.free-talk-topic-box {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+}
+
+.topic-box-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.topic-box-head strong,
+.topic-box-head small,
+.small {
+  display: block;
+  line-height: 1.45;
+}
+
+.topic-box-head small,
+.small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.check-list {
+  display: grid;
+  gap: 7px;
+}
+
 .check-item {
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr);

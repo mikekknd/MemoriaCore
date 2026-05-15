@@ -75,6 +75,14 @@ class LiveSessionConfig(BaseModel):
     tts_enabled: bool = False
     tts_provider: str = Field("gpt_sovits", max_length=40)
     presentation_ack_timeout_seconds: int = Field(120, ge=1, le=600)
+    post_plan_free_talk_enabled: bool = False
+    post_plan_free_talk_minutes: int = Field(20, ge=0, le=240)
+    post_plan_free_talk_tick_interval_seconds: int = Field(30, ge=5, le=600)
+    post_plan_free_talk_idle_turns_min: int = Field(6, ge=1, le=12)
+    post_plan_free_talk_idle_turns_max: int = Field(6, ge=1, le=12)
+    post_plan_free_talk_audience_turns_min: int = Field(3, ge=1, le=12)
+    post_plan_free_talk_audience_turns_max: int = Field(3, ge=1, le=12)
+    post_plan_free_talk_topic_pack_ids: list[str] = Field(default_factory=list)
 
     @field_validator("session_id")
     @classmethod
@@ -118,6 +126,12 @@ class StudioLiveDefaults(BaseModel):
     clear_runtime_session_after_summary: bool = True
     post_plan_free_talk_enabled: bool = False
     post_plan_free_talk_minutes: int = Field(20, ge=0, le=240)
+    post_plan_free_talk_tick_interval_seconds: int = Field(30, ge=5, le=600)
+    post_plan_free_talk_idle_turns_min: int = Field(6, ge=1, le=12)
+    post_plan_free_talk_idle_turns_max: int = Field(6, ge=1, le=12)
+    post_plan_free_talk_audience_turns_min: int = Field(3, ge=1, le=12)
+    post_plan_free_talk_audience_turns_max: int = Field(3, ge=1, le=12)
+    post_plan_free_talk_topic_pack_ids: list[str] = Field(default_factory=list)
     super_chat_cooldown_seconds: int = Field(45, ge=0, le=600)
     super_chat_batch_limit: int = Field(3, ge=1, le=20)
     safe_search_enabled: bool = True

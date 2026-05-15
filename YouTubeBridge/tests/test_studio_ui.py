@@ -69,7 +69,6 @@ def test_studio_ui_keeps_legacy_features_out_of_main_surface():
 
     forbidden_terms = [
         "topic pack",
-        "topicpack",
         "program segment",
         "programsegment",
         "autonomous director",
@@ -114,6 +113,20 @@ def test_studio_test_tab_exposes_comment_summary_and_event_display_controls():
     assert "留言頻率" in studio_html
     assert "Summary 測試" in studio_html
     assert "顯示直播事件/觀眾留言" in studio_html
+
+
+def test_studio_has_manual_free_talk_test_button():
+    studio_html = _studio_source()
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "開始雜談測試" in studio_html
+    assert 'id="startFreeTalkTestButton"' in studio_html
+    assert 'id="freeTalkTestState"' in studio_html
+    assert "/phase/free-talk-test/start" in studio_js
+    assert "async function startFreeTalkTest()" in studio_js
+    assert "post_plan_free_talk" in studio_js
+    assert 'result?.status === "wait"' in studio_js
+    assert "目前有互動執行中，請稍後再試。" in studio_js
 
 
 def test_studio_debug_log_starts_empty_without_mock_entries():
@@ -455,6 +468,50 @@ def test_studio_keeps_free_talk_mode_out_of_role_settings():
     assert 'id="livePersonaPromptMode"' not in studio_html
     assert 'id="postPlanFreeTalkEnabled"' in studio_html
     assert studio_html.index("Plan 結束後進入無導播雜談") > studio_html.index('id="systemPanel"')
+
+
+def test_studio_exposes_free_talk_topic_library_checklist():
+    studio_html = _studio_source()
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "雜談話題庫" in studio_html
+    assert "runtime/YouTubeBridge/freeTalkTopics/" in studio_html
+    assert "全部話題庫" in studio_html
+    assert "重新載入話題庫" in studio_html
+    assert 'api(`/studio/free-talk-topics?episode_plan_id=${encodeURIComponent(planSelect.value || "")}`)' in studio_js
+    assert "post_plan_free_talk_topic_pack_ids" in studio_js
+    assert "function selectedFreeTalkTopicPackIds()" in studio_js
+
+
+def test_studio_free_talk_topic_selection_restores_saved_live_defaults():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    apply_index = studio_js.index("function applyLiveDefaults(settings = {})")
+    apply_body = studio_js[apply_index:studio_js.index("function applyTtsSources", apply_index)]
+    render_index = studio_js.index("function renderFreeTalkTopicChecklist(result = {})")
+    render_body = studio_js[render_index:studio_js.index("async function loadFreeTalkTopics", render_index)]
+
+    assert "settings.post_plan_free_talk_topic_pack_ids" in apply_body
+    assert "state.savedFreeTalkTopicPackIds" in apply_body
+    assert "setSelectedFreeTalkTopicPackIds(state.savedFreeTalkTopicPackIds)" in apply_body
+    assert "state.savedFreeTalkTopicPackIds !== null" in render_body
+    assert "state.selectedFreeTalkTopicPackIds = [...allPackIds]" in render_body
+
+
+def test_studio_free_talk_topic_selection_uses_configured_presence_flag():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    apply_index = studio_js.index("function applyLiveDefaults(settings = {})")
+    apply_body = studio_js[apply_index:studio_js.index("function applyTtsSources", apply_index)]
+    collect_index = studio_js.index("function collectLiveDefaults()")
+    collect_body = studio_js[collect_index:studio_js.index("function collectConnectorSettings", collect_index)]
+    payload_index = studio_js.index("function studioLiveSessionPayload()")
+    payload_body = studio_js[payload_index:studio_js.index("async function startStudioDirector", payload_index)]
+
+    assert "settings.post_plan_free_talk_topic_pack_ids_configured === true" in apply_body
+    assert "state.savedFreeTalkTopicPackIds = null" in apply_body
+    assert "Array.isArray(settings.post_plan_free_talk_topic_pack_ids)" in apply_body
+    assert "state.savedFreeTalkTopicPackIds !== null" in collect_body
+    assert "payload.post_plan_free_talk_topic_pack_ids = selectedFreeTalkTopicPackIds()" in collect_body
+    assert "state.freeTalkTopicSelectionInitialized" in payload_body
 
 
 def test_studio_p0_exposes_preflight_and_manual_source_session_flow():
