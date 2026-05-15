@@ -255,6 +255,7 @@ def _sync_route_state() -> None:
     for route_module in _ROUTE_MODULES_FOR_SYNC:
         route_module.configure(app_state)
     _install_auto_finalize_callback()
+    _install_phase_pipeline_callbacks()
 
 
 async def _auto_finalize_archive_session(session_id: str, *, finalized_by: str, finalized: dict[str, Any]) -> dict[str, Any]:
@@ -293,7 +294,74 @@ def _install_auto_finalize_callback() -> None:
             pass
 
 
+async def _phase_summary_callback(session_id: str, *, summary_phase: str, reason: str) -> dict[str, Any]:
+    summarize_phase = getattr(summary_manager, "summarize_session_phase", None)
+    if callable(summarize_phase):
+        result = await asyncio.to_thread(
+            summarize_phase,
+            session_id,
+            summary_phase=summary_phase,
+            force=True,
+            min_events=1,
+            max_events=1000,
+            chunk_size=120,
+            include_memoria_session=False,
+            safe_memory_text=True,
+        )
+    else:
+        result = await asyncio.to_thread(
+            summary_manager.summarize_session,
+            session_id,
+            force=True,
+            min_events=1,
+            max_events=1000,
+            chunk_size=120,
+            include_memoria_session=False,
+            safe_memory_text=True,
+        )
+        summary = result.get("summary") if isinstance(result, dict) else None
+        if isinstance(summary, dict) and summary.get("id"):
+            updated = storage.update_summary_metadata(
+                int(summary["id"]),
+                metadata={
+                    **(summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}),
+                    "summary_phase": summary_phase,
+                    "phase_summary_reason": str(reason or "")[:120],
+                },
+            )
+            result = {**result, "summary": updated or summary}
+
+    summary = result.get("summary") if isinstance(result, dict) else None
+    if not isinstance(summary, dict):
+        return {
+            "summary": summary,
+            "memory_write": {"status": "skipped", "reason": "summary_not_created"},
+        }
+    return await _sessions_routes._write_summary_shared_memory_without_cleanup(session_id, summary)
+
+
+async def _phase_cleanup_callback(session_id: str) -> dict[str, Any]:
+    deleted = False
+    session = storage.get_session(session_id)
+    if session and session.get("auto_delete_after_processed"):
+        deleted = storage.delete_session(session_id)
+        runtimes = getattr(manager, "_runtimes", None)
+        if isinstance(runtimes, dict):
+            runtimes.pop(session_id, None)
+        chat_preview_cache.pop(session_id, None)
+    return {"deleted": deleted}
+
+
+def _install_phase_pipeline_callbacks() -> None:
+    try:
+        manager.phase_summary_callback = _phase_summary_callback
+        manager.phase_cleanup_callback = _phase_cleanup_callback
+    except Exception:
+        pass
+
+
 _install_auto_finalize_callback()
+_install_phase_pipeline_callbacks()
 
 
 def _route_handler(func):

@@ -59,6 +59,34 @@ CHUNK_SCHEMA = {
     },
 }
 
+PHASE_SUMMARY_EVENT_PHASES = {
+    "main": {"planned_content", "main_audience_closing"},
+    "free_talk": {"post_plan_free_talk", "free_talk_audience_closing", "free_talk"},
+}
+
+
+def _summary_event_phase(event: dict[str, Any]) -> str:
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    phase = str(metadata.get("phase") or metadata.get("live_phase") or "").strip()
+    return phase or "planned_content"
+
+
+def _summary_interaction_phase(interaction: dict[str, Any]) -> str:
+    metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+    phase = str(metadata.get("phase") or metadata.get("live_phase") or "").strip()
+    if phase:
+        return phase
+    source = str(interaction.get("source") or "").strip()
+    if source == "main_audience_closing":
+        return "main_audience_closing"
+    decision = metadata.get("decision") if isinstance(metadata.get("decision"), dict) else {}
+    action = str(decision.get("action") or "").strip()
+    if action.startswith("post_plan_free_talk"):
+        return "post_plan_free_talk"
+    if action == "free_talk_audience_closing":
+        return "free_talk_audience_closing"
+    return "planned_content"
+
 
 class YouTubeLiveSummaryManager:
     def __init__(self, storage: BridgeStorage, memoria_client: MemoriaClient | None = None):
@@ -112,6 +140,60 @@ class YouTubeLiveSummaryManager:
             )
             raise
 
+    def summarize_session_phase(
+        self,
+        session_id: str,
+        *,
+        summary_phase: str,
+        force: bool = False,
+        min_events: int = 1,
+        max_events: int = 1000,
+        chunk_size: int = 120,
+        include_memoria_session: bool = False,
+        safe_memory_text: bool = True,
+    ) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            raise ValueError("live session 不存在")
+
+        phase = str(summary_phase or "").strip()
+        allowed_event_phases = PHASE_SUMMARY_EVENT_PHASES.get(phase)
+        if allowed_event_phases is None:
+            raise ValueError("summary_phase must be main or free_talk")
+
+        existing = self.storage.get_session_summary_by_phase(session_id, phase)
+        if existing and not force:
+            return {"status": "completed", "reused": True, "summary": existing}
+
+        finalized_at = datetime.now().isoformat()
+        self.storage.update_session_summary_state(
+            session_id,
+            summary_status="summarizing",
+            summary_error="",
+            finalized_at=finalized_at,
+        )
+
+        try:
+            return self._summarize_session_inner(
+                session,
+                min_events=max(1, int(min_events or 1)),
+                max_events=max(1, min(int(max_events or 1000), 5000)),
+                chunk_size=max(20, min(int(chunk_size or 120), 500)),
+                include_memoria_session=include_memoria_session,
+                safe_memory_text=safe_memory_text,
+                finalized_at=finalized_at,
+                summary_phase=phase,
+                allowed_event_phases=allowed_event_phases,
+            )
+        except Exception as exc:
+            self.storage.update_session_summary_state(
+                session_id,
+                summary_status="failed",
+                summary_error=str(exc),
+                finalized_at=finalized_at,
+            )
+            raise
+
     def _summarize_session_inner(
         self,
         session: dict[str, Any],
@@ -122,9 +204,20 @@ class YouTubeLiveSummaryManager:
         include_memoria_session: bool,
         safe_memory_text: bool,
         finalized_at: str,
+        summary_phase: str = "full_session",
+        allowed_event_phases: set[str] | None = None,
     ) -> dict[str, Any]:
         session_id = session["session_id"]
-        events = self.storage.list_summary_events(session_id, limit=max_events)
+        source_limit = 5000 if allowed_event_phases is not None else max_events
+        events = self.storage.list_summary_events(session_id, limit=source_limit)
+        if allowed_event_phases is not None:
+            events = [
+                event for event in events
+                if _summary_event_phase(event) in allowed_event_phases
+            ]
+        phase_event_count = len(events)
+        if len(events) > max_events:
+            events = events[:max_events]
         event_count = len(events)
         if event_count < min_events:
             self.storage.update_session_summary_state(
@@ -165,6 +258,11 @@ class YouTubeLiveSummaryManager:
             chunk_count = len(chunks)
 
         interactions = self.storage.list_interactions(session_id, limit=300)
+        if allowed_event_phases is not None:
+            interactions = [
+                interaction for interaction in interactions
+                if _summary_interaction_phase(interaction) in allowed_event_phases
+            ]
         interaction_lines = self._interaction_lines(interactions)
         memoria_lines = self._memoria_session_lines(session) if include_memoria_session else []
         full_source = self._summary_source(
@@ -220,7 +318,12 @@ class YouTubeLiveSummaryManager:
                     "safe_memory_text": safe_memory_text,
                     "interaction_count": len(interactions),
                     "memoria_message_count": len(memoria_lines),
-                    "truncated": self.storage.count_events(session_id, active_only=True) > event_count,
+                    "truncated": (
+                        phase_event_count > event_count
+                        if allowed_event_phases is not None
+                        else self.storage.count_events(session_id, active_only=True) > event_count
+                    ),
+                    "summary_phase": summary_phase or "full_session",
                     "memory_write_status": "not_started",
                     "memory_text_requires_review": memory_text_requires_review,
                     "verified_topic_pack_count": len(verified_topic_pack_titles),

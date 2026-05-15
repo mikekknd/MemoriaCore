@@ -129,6 +129,19 @@ async def _summarize_and_write_shared_memory(session_id: str) -> dict:
             },
         }
 
+    return await _write_summary_shared_memory_without_cleanup(session_id, summary)
+
+
+async def _write_summary_shared_memory_without_cleanup(session_id: str, summary: dict) -> dict:
+    if not isinstance(summary, dict):
+        return {
+            "summary": summary,
+            "memory_write": {
+                "status": "skipped",
+                "reason": "summary_not_completed",
+            },
+        }
+
     metadata = summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}
     if metadata.get("memory_write_status") == "completed":
         return {

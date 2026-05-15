@@ -163,6 +163,36 @@ async def test_duration_finalize_runs_program_closing_turn_before_final_end(monk
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @pytest.mark.asyncio
+async def test_duration_and_final_closing_accept_missing_interaction_result(monkeypatch, tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    session = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "display_name": "QA Live",
+        "target_memoria_session_id": "mem-a",
+        "character_ids": ["koko", "byakuren"],
+    })
+    storage.update_director_state("live-a", director_enabled=True, status="running")
+    manager = YouTubeBridgeManager(storage)
+    runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+    async def fake_send_director_turn(session_arg, state_arg, decision_arg):
+        return {"interaction": None}
+
+    monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+
+    duration_result = await manager._run_duration_closing_turn(runtime, session)
+    final_result = await manager._run_final_closing_turn(runtime, session)
+
+    assert duration_result == {"status": "completed", "interaction": None}
+    assert final_result == {"status": "completed", "interaction": None}
+
+@pytest.mark.asyncio
 async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
     tmp_dir = _tmp_dir()
     try:

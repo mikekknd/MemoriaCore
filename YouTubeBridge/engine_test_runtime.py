@@ -219,6 +219,7 @@ class TestRuntimeManagerMixin:
                 "metadata": {
                     "source": "test_comment_generator",
                     "topic_hint": str(topic_hint or "")[:300],
+                    "phase": self._event_phase_for_session(session_id),
                 },
             })
             if event:
@@ -266,6 +267,7 @@ class TestRuntimeManagerMixin:
                     "topic_hint": str(topic_hint or "")[:300],
                     "sc_burst": bool(sc_burst),
                     "include_malicious_sc": bool(include_malicious_sc),
+                    "phase": self._event_phase_for_session(session_id),
                 },
             })
             if event:
@@ -366,6 +368,7 @@ class TestRuntimeManagerMixin:
             "priority_class": "super_chat" if is_super else "normal",
             "metadata": {
                 "source": "studio_test_comment",
+                "phase": self._event_phase_for_session(session["session_id"]),
             },
         })
 

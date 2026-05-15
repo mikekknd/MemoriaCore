@@ -405,9 +405,10 @@ class ClosingManagerMixin:
         }
         try:
             result = await self._send_director_turn(session, state, decision)
+            interaction = result.get("interaction") if isinstance(result, dict) else None
             return {
-                "status": str(result.get("interaction", {}).get("status") or "completed"),
-                "interaction": result.get("interaction"),
+                "status": str((interaction or {}).get("status") or "completed"),
+                "interaction": interaction,
             }
         except Exception as exc:
             logger.warning("duration closing turn failed session_id=%s error=%s", runtime.session_id, exc, exc_info=True)
@@ -443,9 +444,10 @@ class ClosingManagerMixin:
         }
         try:
             result = await self._send_director_turn(session, state, decision)
+            interaction = result.get("interaction") if isinstance(result, dict) else None
             return {
-                "status": str(result.get("interaction", {}).get("status") or "completed"),
-                "interaction": result.get("interaction"),
+                "status": str((interaction or {}).get("status") or "completed"),
+                "interaction": interaction,
             }
         except Exception as exc:
             logger.warning("final closing turn failed session_id=%s error=%s", runtime.session_id, exc, exc_info=True)

@@ -67,11 +67,36 @@ async def summarize_session(session_id: str, body: SummarizeRequest):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+def _summary_matches_phase(summary: dict, summary_phase: str) -> bool:
+    metadata = summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}
+    return str(metadata.get("summary_phase") or "") == summary_phase
+
+
+def _list_summaries_by_phase(session_id: str | None, summary_phase: str, limit: int) -> list[dict]:
+    phase = str(summary_phase or "").strip()
+    if session_id and hasattr(storage, "list_session_summaries_by_phase"):
+        return storage.list_session_summaries_by_phase(session_id, summary_phase=phase, limit=limit)
+    search_limit = max(1, min(int(limit or 100), 100)) * 5
+    summaries = storage.list_summaries(session_id=session_id, limit=search_limit)
+    return [summary for summary in summaries if _summary_matches_phase(summary, phase)][:limit]
+
+
+def _get_session_summary_by_phase(session_id: str, summary_phase: str) -> dict | None:
+    phase = str(summary_phase or "").strip()
+    if hasattr(storage, "get_session_summary_by_phase"):
+        return storage.get_session_summary_by_phase(session_id, phase)
+    summaries = _list_summaries_by_phase(session_id, phase, 20)
+    return summaries[0] if summaries else None
+
+
 @router.get("/sessions/{session_id}/summary")
-async def get_session_summary(session_id: str):
+async def get_session_summary(session_id: str, summary_phase: str | None = None):
     if not storage.get_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
-    summary = storage.get_session_summary(session_id)
+    if summary_phase:
+        summary = _get_session_summary_by_phase(session_id, summary_phase)
+    else:
+        summary = storage.get_session_summary(session_id)
     if not summary:
         raise HTTPException(status_code=404, detail="summary not found")
     return summary
@@ -142,7 +167,9 @@ async def write_summary_memory(session_id: str, body: WriteMemoryRequest = Write
 
 
 @router.get("/summaries")
-async def list_summaries(session_id: str | None = None, limit: int = 100):
+async def list_summaries(session_id: str | None = None, limit: int = 100, summary_phase: str | None = None):
+    if summary_phase:
+        return _list_summaries_by_phase(session_id, summary_phase, limit)
     return storage.list_summaries(session_id=session_id, limit=limit)
 
 

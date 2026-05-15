@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,32 @@ logger = logging.getLogger("youtube_bridge")
 
 
 class PhasePipelineManagerMixin:
+    @staticmethod
+    def _summary_phase_from_action(action: str) -> str:
+        action_text = str(action or "").strip()
+        if action_text.startswith("post_plan_free_talk"):
+            return "post_plan_free_talk"
+        if action_text == "free_talk_audience_closing":
+            return "free_talk_audience_closing"
+        return ""
+
+    def _event_phase_for_session(self, session_id: str) -> str:
+        state = self.storage.get_director_state(session_id) or {}
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        phase = str(metadata.get("phase") or metadata.get("live_phase") or "").strip()
+        if phase in {"planned_content", "main_audience_closing", "post_plan_free_talk", "free_talk_audience_closing", "free_talk"}:
+            return phase
+        return "planned_content"
+
+    def _interaction_phase_for_session(self, session_id: str, *, source: str = "", action: str = "") -> str:
+        action_phase = self._summary_phase_from_action(action)
+        if action_phase:
+            return action_phase
+        source_text = str(source or "").strip()
+        if source_text == "main_audience_closing":
+            return "main_audience_closing"
+        return self._event_phase_for_session(session_id)
+
     async def finish_main_phase(
         self,
         session_id: str,
@@ -135,6 +162,55 @@ class PhasePipelineManagerMixin:
         )
         reason_text = str(reason or "operator_finalize")[:120]
 
+        state = self.storage.get_director_state(session_id)
+        phase = str((state.get("metadata") or {}).get("phase") or "").strip()
+        if phase == "post_plan_free_talk":
+            async with runtime.closing_lock:
+                session = self.storage.get_session(session_id) or session
+                metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
+                metadata["phase"] = "free_talk_audience_closing"
+                metadata["free_talk_audience_closing"] = {
+                    **dict(metadata.get("free_talk_audience_closing") or {}),
+                    "status": "completed",
+                    "reason": reason_text,
+                    "completed_at": datetime.now().isoformat(),
+                }
+                metadata["free_talk_summary"] = {
+                    **dict(metadata.get("free_talk_summary") or {}),
+                    "status": "queued",
+                    "reason": reason_text,
+                    "queued_at": datetime.now().isoformat(),
+                }
+                director_state = self.storage.update_director_state(
+                    session_id,
+                    status="free_talk_summary_queued",
+                    metadata=metadata,
+                )
+                await self._broadcast(session_id, {"type": "director_state", "director": director_state})
+
+            await self.run_phase_summary(session_id, summary_phase="free_talk", reason=reason_text)
+            finalized = await self._finalize_live_session(
+                runtime,
+                self.storage.get_session(session_id) or session,
+                finalized_by="phase_finalize",
+                closing_message="free talk summary completed; closing live session",
+                ended_message="free talk summary completed",
+                metadata={
+                    "phase": "ended",
+                    "phase_finalize": {
+                        "status": "completed",
+                        "reason": reason_text,
+                        "completed_at": datetime.now().isoformat(),
+                    },
+                },
+            )
+            cleanup = await self.maybe_run_phase_cleanup(session_id)
+            return {
+                "phase": "free_talk_summary",
+                **finalized,
+                "cleanup": cleanup,
+            }
+
         async with runtime.closing_lock:
             session = self.storage.get_session(session_id) or session
             metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
@@ -169,9 +245,12 @@ class PhasePipelineManagerMixin:
         return {
             "phase": "finalized",
             **finalized,
+            "cleanup": await self.maybe_run_phase_cleanup(session_id),
         }
 
     def _schedule_main_summary_record(self, session_id: str, *, reason: str) -> None:
+        if not getattr(self, "phase_summary_callback", None):
+            return
         task = asyncio.create_task(self._run_main_summary_background(session_id, reason=reason))
 
         def _log_background_error(done: asyncio.Task) -> None:
@@ -185,14 +264,86 @@ class PhasePipelineManagerMixin:
         task.add_done_callback(_log_background_error)
 
     async def _run_main_summary_background(self, session_id: str, *, reason: str) -> None:
+        await self.run_phase_summary(session_id, summary_phase="main", reason=reason)
+        await self.maybe_run_phase_cleanup(session_id)
+
+    async def run_phase_summary(self, session_id: str, *, summary_phase: str, reason: str) -> dict[str, Any]:
+        phase = str(summary_phase or "").strip()
+        if phase not in {"main", "free_talk"}:
+            raise ValueError("summary_phase must be main or free_talk")
+        key = "main_summary" if phase == "main" else "free_talk_summary"
+        reason_text = str(reason or "")[:120]
         state = self.storage.get_director_state(session_id)
         metadata = dict(state.get("metadata") or {})
-        metadata["main_summary"] = {
-            **dict(metadata.get("main_summary") or {}),
+        metadata[key] = {
+            **dict(metadata.get(key) or {}),
             "status": "running",
-            "reason": str(reason or "")[:120],
+            "reason": reason_text,
             "started_at": datetime.now().isoformat(),
-            "stage": "stage2_metadata_only",
         }
         director_state = self.storage.update_director_state(session_id, metadata=metadata)
         await self._broadcast(session_id, {"type": "director_state", "director": director_state})
+
+        callback = getattr(self, "phase_summary_callback", None)
+        if not callback:
+            result: dict[str, Any] = {
+                "summary": None,
+                "memory_write": {"status": "skipped", "reason": "callback_missing"},
+            }
+        else:
+            callback_result = callback(session_id, summary_phase=phase, reason=reason_text)
+            result = await callback_result if inspect.isawaitable(callback_result) else callback_result
+            if not isinstance(result, dict):
+                result = {"summary": result, "memory_write": {"status": "unknown"}}
+
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        memory_write = result.get("memory_write") if isinstance(result.get("memory_write"), dict) else {}
+        memory_write_status = str(memory_write.get("status") or "unknown")
+        status = "completed" if memory_write_status == "completed" else "failed"
+        metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
+        metadata[key] = {
+            **dict(metadata.get(key) or {}),
+            "status": status,
+            "reason": reason_text,
+            "summary_id": summary.get("id"),
+            "memory_write_status": memory_write_status,
+            "completed_at": datetime.now().isoformat(),
+        }
+        director_state = self.storage.update_director_state(session_id, metadata=metadata)
+        await self._broadcast(session_id, {"type": "director_state", "director": director_state})
+        return result
+
+    async def maybe_run_phase_cleanup(self, session_id: str) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            return {"status": "missing"}
+        if not session.get("auto_delete_after_processed"):
+            return {"status": "skipped", "reason": "auto_delete_disabled"}
+        state = self.storage.get_director_state(session_id)
+        metadata = dict(state.get("metadata") or {})
+        cleanup_state = metadata.get("phase_cleanup") if isinstance(metadata.get("phase_cleanup"), dict) else {}
+        if cleanup_state.get("status") == "completed":
+            return {"status": "cleaned", "cleanup": cleanup_state.get("result")}
+
+        required = ["main_summary"]
+        if session.get("post_plan_free_talk_enabled") or isinstance(metadata.get("post_plan_free_talk"), dict):
+            required.append("free_talk_summary")
+        for key in required:
+            item = metadata.get(key) if isinstance(metadata.get(key), dict) else {}
+            if item.get("status") != "completed" or item.get("memory_write_status") != "completed":
+                return {"status": "waiting", "reason": f"{key}_not_complete", "required": required}
+
+        callback = getattr(self, "phase_cleanup_callback", None)
+        if not callback:
+            return {"status": "skipped", "reason": "cleanup_callback_missing"}
+        cleanup_result = callback(session_id)
+        cleanup = await cleanup_result if inspect.isawaitable(cleanup_result) else cleanup_result
+        if self.storage.get_session(session_id):
+            metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
+            metadata["phase_cleanup"] = {
+                "status": "completed",
+                "completed_at": datetime.now().isoformat(),
+                "result": cleanup,
+            }
+            self.storage.update_director_state(session_id, status="ended", metadata=metadata)
+        return {"status": "cleaned", "cleanup": cleanup}

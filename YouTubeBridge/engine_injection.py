@@ -274,6 +274,7 @@ class InjectionManagerMixin:
                     "character_ids": target_character_ids,
                     "content": content,
                     "metadata": {
+                        "phase": self._interaction_phase_for_session(session_id, source=source),
                         "summary": summary,
                     },
                 }

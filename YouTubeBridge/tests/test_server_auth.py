@@ -1808,6 +1808,69 @@ async def test_finalize_session_endpoint_uses_full_finalize_manager_path(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_phase_summary_callback_uses_phase_summary_and_shared_memory_helper(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "status": "running",
+        "character_ids": ["coco"],
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+
+    calls: list[dict] = []
+
+    class FakeSummaryManager:
+        def summarize_session_phase(self, session_id: str, **kwargs):
+            calls.append({"session_id": session_id, **kwargs})
+            return {
+                "status": "completed",
+                "summary": {
+                    "id": 42,
+                    "session_id": session_id,
+                    "memory_text": "雜談摘要",
+                    "character_ids": ["coco"],
+                    "metadata": {"summary_phase": kwargs["summary_phase"]},
+                },
+            }
+
+    async def fake_write(session_id: str, summary: dict):
+        return {
+            "summary": {**summary, "metadata": {**summary["metadata"], "memory_write_status": "completed"}},
+            "memory_write": {"status": "completed"},
+        }
+
+    monkeypatch.setattr(server_module, "summary_manager", FakeSummaryManager())
+    monkeypatch.setattr(
+        server_module._sessions_routes,
+        "_write_summary_shared_memory_without_cleanup",
+        fake_write,
+        raising=False,
+    )
+
+    result = await server_module._phase_summary_callback("live-a", summary_phase="free_talk", reason="test")
+
+    assert calls == [{
+        "session_id": "live-a",
+        "summary_phase": "free_talk",
+        "force": True,
+        "min_events": 1,
+        "max_events": 1000,
+        "chunk_size": 120,
+        "include_memoria_session": False,
+        "safe_memory_text": True,
+    }]
+    assert result["summary"]["id"] == 42
+    assert result["memory_write"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_start_current_session_archives_existing_session_and_writes_memory(monkeypatch, tmp_path):
     storage = server_module.BridgeStorage(tmp_path / "bridge.db")
     storage.upsert_connector({

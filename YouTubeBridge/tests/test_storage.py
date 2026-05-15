@@ -1387,3 +1387,47 @@ def test_delete_session_removes_runtime_data_but_keeps_summary_metadata():
         assert kept["metadata"]["runtime_session_deleted"] is True
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_get_session_summary_by_phase_returns_latest_matching_phase(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YT",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Summary",
+    })
+
+    old_main = storage.create_summary("live-a", {
+        "title": "正式節目摘要舊版",
+        "summary_text": "old main",
+        "memory_text": "old main memory",
+        "event_count": 1,
+        "metadata": {"summary_phase": "main", "memory_write_status": "completed"},
+    })
+    free_talk = storage.create_summary("live-a", {
+        "title": "雜談摘要",
+        "summary_text": "free",
+        "memory_text": "free memory",
+        "event_count": 3,
+        "metadata": {"summary_phase": "free_talk", "memory_write_status": "completed"},
+    })
+    latest_main = storage.create_summary("live-a", {
+        "title": "正式節目摘要新版",
+        "summary_text": "main",
+        "memory_text": "main memory",
+        "event_count": 2,
+        "metadata": {"summary_phase": "main", "memory_write_status": "completed"},
+    })
+
+    assert storage.get_session_summary_by_phase("live-a", "main")["id"] == latest_main["id"]
+    assert storage.get_session_summary_by_phase("live-a", "free_talk")["id"] == free_talk["id"]
+    assert storage.get_session_summary_by_phase("live-a", "missing") is None
+
+    main_summaries = storage.list_session_summaries_by_phase("live-a", summary_phase="main")
+    assert [summary["id"] for summary in main_summaries] == [latest_main["id"], old_main["id"]]

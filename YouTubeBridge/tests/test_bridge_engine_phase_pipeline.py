@@ -500,3 +500,233 @@ async def test_episode_plan_completed_enters_phase_pipeline_instead_of_direct_fi
         "enter_free_talk": True,
         "topic_root": Path(__file__).resolve().parents[2] / "runtime" / "YouTubeBridge" / "freeTalkTopics",
     }]
+
+
+@pytest.mark.asyncio
+async def test_phase_pipeline_runs_summary_callback_and_records_memory_status(tmp_path):
+    storage = _storage(tmp_path)
+    storage.upsert_session({"session_id": "live-a", "connector_id": DEFAULT_CONNECTOR_ID, "display_name": "Summary"})
+    manager = YouTubeBridgeManager(storage)
+    calls = []
+
+    async def fake_callback(session_id, *, summary_phase, reason):
+        calls.append((session_id, summary_phase, reason))
+        return {
+            "summary": {"id": 7, "metadata": {"summary_phase": summary_phase}},
+            "memory_write": {"status": "completed"},
+        }
+
+    manager.phase_summary_callback = fake_callback
+
+    result = await manager.run_phase_summary("live-a", summary_phase="main", reason="test")
+
+    assert calls == [("live-a", "main", "test")]
+    assert result["memory_write"]["status"] == "completed"
+    state = storage.get_director_state("live-a")
+    assert state["metadata"]["main_summary"]["status"] == "completed"
+    assert state["metadata"]["main_summary"]["memory_write_status"] == "completed"
+    assert state["metadata"]["main_summary"]["summary_id"] == 7
+
+
+def test_phase_pipeline_marks_new_runtime_items_with_current_phase(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage)
+    manager = YouTubeBridgeManager(storage)
+
+    assert manager._event_phase_for_session("live-a") == "planned_content"
+
+    storage.update_director_state("live-a", metadata={"phase": "post_plan_free_talk"})
+
+    assert manager._event_phase_for_session("live-a") == "post_plan_free_talk"
+    assert manager._interaction_phase_for_session(
+        "live-a",
+        source="director",
+        action="post_plan_free_talk_topic",
+    ) == "post_plan_free_talk"
+    assert manager._interaction_phase_for_session(
+        "live-a",
+        source="main_audience_closing",
+    ) == "main_audience_closing"
+
+
+@pytest.mark.asyncio
+async def test_free_talk_tick_preserves_completed_main_summary_metadata(tmp_path, monkeypatch):
+    storage = _storage(tmp_path)
+    session = _create_session(storage)
+    manager = YouTubeBridgeManager(storage)
+    runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+    runtime.post_plan_free_talk_topic_queue = []
+    stale_state = storage.update_director_state(
+        "live-a",
+        director_enabled=True,
+        status="post_plan_free_talk",
+        metadata={
+            "phase": "post_plan_free_talk",
+            "post_plan_free_talk": {
+                "topic_cursor": 0,
+                "last_tick_action": "",
+            },
+            "main_summary": {
+                "status": "queued",
+                "reason": "episode_plan_completed",
+            },
+        },
+    )
+
+    async def fake_send(_session, _state, _decision):
+        storage.update_director_state(
+            "live-a",
+            metadata={
+                "main_summary": {
+                    "status": "completed",
+                    "memory_write_status": "completed",
+                    "summary_id": 42,
+                },
+            },
+        )
+        return {"interaction": {"job_id": "job-a", "status": "completed"}}
+
+    monkeypatch.setattr(manager, "_send_director_turn", fake_send)
+
+    await manager._run_post_plan_free_talk_tick(runtime, session, stale_state)
+
+    metadata = storage.get_director_state("live-a")["metadata"]
+    assert metadata["main_summary"]["status"] == "completed"
+    assert metadata["main_summary"]["memory_write_status"] == "completed"
+    assert metadata["main_summary"]["summary_id"] == 42
+    assert metadata["last_result_job_id"] == "job-a"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_waits_for_required_summaries(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage, auto_delete_after_processed=True)
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+        "free_talk_summary": {"status": "running", "memory_write_status": "not_started"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "waiting"
+    assert cleanup_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_runs_after_main_and_free_talk_summaries_complete(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage, auto_delete_after_processed=True)
+    storage.update_director_state("live-a", metadata={
+        "phase": "free_talk_audience_closing",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+        "free_talk_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "cleaned"
+    assert cleanup_calls == ["live-a"]
+    assert storage.get_director_state("live-a")["metadata"]["phase_cleanup"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_requires_only_main_summary_when_free_talk_disabled(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        post_plan_free_talk_enabled=False,
+        auto_delete_after_processed=True,
+    )
+    storage.update_director_state("live-a", metadata={
+        "phase": "finalizing_main_only",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "cleaned"
+    assert cleanup_calls == ["live-a"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_requires_free_talk_summary_when_metadata_exists(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        post_plan_free_talk_enabled=False,
+        auto_delete_after_processed=True,
+    )
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "post_plan_free_talk": {"status": "running"},
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "waiting"
+    assert result["reason"] == "free_talk_summary_not_complete"
+    assert cleanup_calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_phase_during_free_talk_runs_free_talk_summary(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        target_memoria_session_id="",
+        character_ids=[],
+        auto_sc_thanks_on_finalize=False,
+        auto_delete_after_processed=False,
+    )
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    manager._runtimes["live-a"] = LiveRuntime(session_id="live-a", running=True, status="running")
+    summary_calls = []
+
+    async def fake_summary(session_id, *, summary_phase, reason):
+        summary_calls.append((session_id, summary_phase, reason))
+        return {"summary": {"id": 8}, "memory_write": {"status": "completed"}}
+
+    manager.phase_summary_callback = fake_summary
+
+    result = await manager.finalize_phase_pipeline("live-a", reason="operator_finalize")
+
+    assert result["phase"] == "free_talk_summary"
+    assert summary_calls == [("live-a", "free_talk", "operator_finalize")]

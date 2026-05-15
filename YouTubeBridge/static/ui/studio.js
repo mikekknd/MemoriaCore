@@ -1495,6 +1495,19 @@ function sessionIsRunning(session) {
   return Boolean(runtime.running || runtime.status === "running" || runtime.status === "starting" || session.status === "running" || session.status === "starting");
 }
 
+function phaseSummaryStatus(summary = {}) {
+  if (!summary || typeof summary !== "object") return "未開始";
+  return summary.memory_write_status || summary.status || "未開始";
+}
+
+function phaseSummaryText(session) {
+  const base = state.live ? "直播中" : (session ? "已停止" : "未開始");
+  const metadata = session?.director_state?.metadata || session?.metadata || session?.runtime_status?.metadata || {};
+  const mainSummary = phaseSummaryStatus(metadata.main_summary);
+  const freeTalkSummary = phaseSummaryStatus(metadata.free_talk_summary);
+  return `${base} · 正式摘要：${mainSummary} / 雜談摘要：${freeTalkSummary}`;
+}
+
 function applySessionSnapshot(session) {
   state.currentSession = session || null;
   state.sessionId = session?.session_id || "";
@@ -1506,7 +1519,7 @@ function applySessionSnapshot(session) {
   liveBadge.className = state.live ? "state-badge good" : "state-badge neutral";
   leftStatusBadge.textContent = state.live ? "直播中" : (session ? "已停止" : "未開始");
   leftStatusBadge.className = state.live ? "state-badge good" : (session ? "state-badge neutral" : "state-badge neutral");
-  sessionStateText.textContent = state.live ? "直播中" : (session ? "已停止" : "未開始");
+  sessionStateText.textContent = phaseSummaryText(session);
 
   if (session?.started_at) {
     const startedAt = new Date(session.started_at);
@@ -1580,6 +1593,15 @@ async function startStudioDirector(sessionId) {
   }
 }
 
+async function loadDirectorState(sessionId) {
+  if (!sessionId) return null;
+  try {
+    return await api(`/sessions/${encodeURIComponent(sessionId)}/director`);
+  } catch {
+    return null;
+  }
+}
+
 async function refreshStudioSession() {
   try {
     const sessions = await api("/sessions");
@@ -1588,7 +1610,9 @@ async function refreshStudioSession() {
       || list.find((session) => sessionIsRunning(session))
       || list[0]
       || null;
-    applySessionSnapshot(selected);
+    const directorState = selected?.session_id ? await loadDirectorState(selected.session_id) : null;
+    const selectedWithDirector = selected && directorState ? { ...selected, director_state: directorState } : selected;
+    applySessionSnapshot(selectedWithDirector);
     if (selected?.episode_plan_id && state.episodePlans.some((plan) => plan.plan_id === selected.episode_plan_id)) {
       planSelect.value = selected.episode_plan_id;
       subtitle.textContent = planSelect.options[planSelect.selectedIndex]?.textContent || selected.episode_plan_id;

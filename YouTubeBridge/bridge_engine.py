@@ -93,6 +93,8 @@ class YouTubeBridgeManager(
         self._memoria_client_cache = None
         self._tts_provider_cache = None
         self.auto_finalize_archive_callback = None
+        self.phase_summary_callback = None
+        self.phase_cleanup_callback = None
         self._runtimes: dict[str, LiveRuntime] = {}
         self._lock = asyncio.Lock()
 
@@ -747,6 +749,9 @@ class YouTubeBridgeManager(
                     event = normalize_message(item, session=session, connector=connector)
                     if not event.get("youtube_message_id"):
                         continue
+                    metadata = dict(event.get("metadata") if isinstance(event.get("metadata"), dict) else {})
+                    metadata.setdefault("phase", self._event_phase_for_session(runtime.session_id))
+                    event["metadata"] = metadata
                     saved = self.storage.save_event(event)
                     if saved:
                         saved_any = True

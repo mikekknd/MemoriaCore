@@ -10,6 +10,8 @@ BRIDGE_ROOT = Path(__file__).resolve().parents[1]
 if str(BRIDGE_ROOT) not in sys.path:
     sys.path.insert(0, str(BRIDGE_ROOT))
 
+from server_routes import summaries as summaries_route
+
 spec = importlib.util.spec_from_file_location("youtube_bridge_server_for_studio_ui", BRIDGE_ROOT / "server.py")
 server_module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
@@ -174,6 +176,54 @@ def test_studio_summary_test_uses_backend_summary_api_not_mock_text():
     assert 'renderSummaryPreview(null, "直播中不產生摘要；停止直播後可重新生成。")' in studio_js
     assert '"/finalize"' not in studio_js
     assert "summary/write-memory" not in studio_js
+
+
+def test_studio_displays_phase_summary_status():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "function phaseSummaryText(" in studio_js
+    assert "main_summary" in studio_js
+    assert "free_talk_summary" in studio_js
+    assert "memory_write_status" in studio_js
+    assert "正式摘要" in studio_js
+    assert "雜談摘要" in studio_js
+    assert "sessionStateText.textContent = phaseSummaryText(session)" in studio_js
+
+
+@pytest.mark.asyncio
+async def test_summaries_route_filters_by_summary_phase_when_supported(monkeypatch):
+    calls = []
+
+    class FakeStorage:
+        def list_session_summaries_by_phase(self, session_id, *, summary_phase, limit=20):
+            calls.append((session_id, summary_phase, limit))
+            return [{"id": 2, "metadata": {"summary_phase": summary_phase}}]
+
+        def list_summaries(self, session_id=None, limit=100):
+            raise AssertionError("phase query should use list_session_summaries_by_phase")
+
+    monkeypatch.setattr(summaries_route, "storage", FakeStorage())
+
+    result = await summaries_route.list_summaries(session_id="live-a", summary_phase="free_talk", limit=5)
+
+    assert result == [{"id": 2, "metadata": {"summary_phase": "free_talk"}}]
+    assert calls == [("live-a", "free_talk", 5)]
+
+
+@pytest.mark.asyncio
+async def test_summaries_route_phase_query_falls_back_when_storage_method_missing(monkeypatch):
+    class FakeStorage:
+        def list_summaries(self, session_id=None, limit=100):
+            return [
+                {"id": 3, "metadata": {"summary_phase": "main"}},
+                {"id": 4, "metadata": {"summary_phase": "free_talk"}},
+            ]
+
+    monkeypatch.setattr(summaries_route, "storage", FakeStorage())
+
+    result = await summaries_route.list_summaries(session_id="live-a", summary_phase="main", limit=10)
+
+    assert result == [{"id": 3, "metadata": {"summary_phase": "main"}}]
 
 
 def test_studio_test_comments_are_persisted_to_backend_when_session_is_live():

@@ -267,11 +267,12 @@ class DirectorRuntimeManagerMixin:
         )
         await self._broadcast(session_id, {"type": "director_state", "director": updated_state})
         result = await self._send_director_turn(session, updated_state, decision)
+        fresh_metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
         final_state = self.storage.update_director_state(
             session_id,
             status="running",
             metadata={
-                **(updated_state.get("metadata") or {}),
+                **fresh_metadata,
                 "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
             },
         )
@@ -1349,7 +1350,15 @@ class DirectorRuntimeManagerMixin:
                 "memoria_session_id": target_session_id,
                 "character_ids": target_character_ids,
                 "content": public_prompt,
-                "metadata": {"decision": decision, "prefetch_only": prefetch_only},
+                "metadata": {
+                    "phase": self._interaction_phase_for_session(
+                        session_id,
+                        source="director_prefetch" if prefetch_only else "director",
+                        action=action,
+                    ),
+                    "decision": decision,
+                    "prefetch_only": prefetch_only,
+                },
             }
         )
         _director_timing_log(
