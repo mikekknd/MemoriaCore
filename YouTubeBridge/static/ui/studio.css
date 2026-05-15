@@ -694,6 +694,17 @@ button:disabled {
   font-size: 13px;
 }
 
+.conversation-tools .hidden {
+  display: none;
+}
+
+.conversation-tools button.small {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1;
+}
+
 .link-button {
   border-color: transparent;
   background: transparent;

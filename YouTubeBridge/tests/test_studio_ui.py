@@ -178,6 +178,20 @@ def test_studio_summary_test_uses_backend_summary_api_not_mock_text():
     assert "summary/write-memory" not in studio_js
 
 
+def test_studio_presentation_tts_controls_are_exposed():
+    studio_html = _studio_source()
+    studio_css = (Path(server_module.UI_ASSETS_ROOT) / "studio.css").read_text(encoding="utf-8")
+
+    assert 'id="presentationAudioStatus"' in studio_html
+    assert 'id="enablePresentationAudio"' in studio_html
+    assert 'id="skipPresentation"' in studio_html
+    assert "語音待機" in studio_html
+    assert "啟用聲音" in studio_html
+    assert "跳過目前句子" in studio_html
+    assert ".conversation-tools .hidden" in studio_css
+    assert ".conversation-tools button.small" in studio_css
+
+
 def test_studio_displays_phase_summary_status():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
 
