@@ -49,7 +49,7 @@ Do not use the single-agent `superpowers:executing-plans` fallback for this road
 - [x] Stage 2: Main Finish Pipeline And Phase Transition
 - [x] Stage 3: Two Independent Summaries And Cleanup Wait
 - [x] Stage 4: Low-Signal Filter And Large-Batch Free-Talk Closing
-- [ ] Final Goal Gate: Full Studio lifecycle E2E and full regression pass
+- [x] Final Goal Gate: Full Studio lifecycle E2E and full regression pass
 
 ## Stage Checklist
 
@@ -154,8 +154,8 @@ Completion note (2026-05-15): Studio E2E `codex_stage4_noisy` completed with fre
 
 The goal is complete only when all of these are true:
 
-- [ ] Every stage checkbox above is checked.
-- [ ] The full `/studio/` lifecycle works in test mode:
+- [x] Every stage checkbox above is checked.
+- [x] The full `/studio/` lifecycle works in test mode:
   - Start session.
   - Generate planned content.
   - Finish main phase.
@@ -168,10 +168,12 @@ The goal is complete only when all of these are true:
   - Generate free-talk summary.
   - Wait for both Shared Memory writes.
   - Clear runtime session only when configured.
-- [ ] The latest full regression commands from `docs/superpowers/plans/2026-05-15-youtubebridge-free-talk-goal-execution.md` pass.
-- [ ] Browser console has no relevant errors.
-- [ ] Server output has no traceback related to session phase, summary, Studio API, or topic loading.
-- [ ] PR or commit summary lists all changed files, tests run, E2E evidence, and residual risks.
+- [x] The latest full regression commands from `docs/superpowers/plans/2026-05-15-youtubebridge-free-talk-goal-execution.md` pass.
+- [x] Browser console has no relevant errors.
+- [x] Server output has no traceback related to session phase, summary, Studio API, or topic loading.
+- [x] PR or commit summary lists all changed files, tests run, E2E evidence, and residual risks.
+
+Final goal completion note (2026-05-15): Full relevant regression used the actual repo test files `test_bridge_engine_phase_pipeline.py` and `test_summary_engine.py` in place of the stale plan names `test_phase_pipeline.py` and `test_phase_summary.py`; 159 related tests and 10 route/auth tests passed. Studio E2E at `http://127.0.0.1:8091/studio/` finished with console warn/error count 0 and no relevant new server traceback.
 
 ## Non-Goals
 
