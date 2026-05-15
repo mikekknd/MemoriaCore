@@ -919,6 +919,10 @@ async def test_presentation_prefetch_chain_continues_while_prefetched_turn_is_pl
         await _wait_until(
             lambda: provider.call_texts() == ["第一區塊第一句。", "第一區塊收束句。", "第二區塊開場句。"]
         )
+        await _wait_until(
+            lambda: len(storage.list_presentation_items("live-a")) == 3
+            and storage.list_presentation_items("live-a")[2]["status"] == "ready"
+        )
         items = storage.list_presentation_items("live-a")
         assert [item["text"] for item in items] == ["第一區塊第一句。", "第一區塊收束句。", "第二區塊開場句。"]
         assert items[2]["status"] == "ready"

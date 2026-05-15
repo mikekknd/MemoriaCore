@@ -152,6 +152,11 @@ async def test_presentation_queue_prefetches_next_utterance_audio_before_ack():
         assert first["item"]["text"] == "第一句。"
 
         await _wait_for(lambda: provider.call_texts() == ["第一句。", "第二句。"])
+        await _wait_for(
+            lambda: len(storage.list_presentation_items("live-a")) == 2
+            and storage.list_presentation_items("live-a")[1]["status"] == "ready"
+            and bool(storage.list_presentation_items("live-a")[1]["audio_path"])
+        )
         items = storage.list_presentation_items("live-a")
         assert [item["text"] for item in items] == ["第一句。", "第二句。"]
         assert items[1]["status"] == "ready"
