@@ -34,6 +34,44 @@ def _director_timing_log(event: str, **fields: Any) -> None:
 class DirectorRuntimeManagerMixin:
     _POST_PLAN_FREE_TALK_ACTIONS = {"post_plan_free_talk_topic", "post_plan_free_talk_natural"}
 
+    def _post_plan_free_talk_delay_info(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        if metadata.get("phase") != "post_plan_free_talk":
+            return None
+        free_talk_state = metadata.get("post_plan_free_talk")
+        if not isinstance(free_talk_state, dict):
+            return None
+        deadline = self._parse_iso_datetime(str(free_talk_state.get("deadline_at") or ""))
+        now = datetime.now()
+        if deadline and now >= deadline:
+            return {"ready": False, "ended": True, "remaining_seconds": 0.0}
+        last_tick_at = self._parse_iso_datetime(str(free_talk_state.get("last_tick_at") or ""))
+        interval = max(5, min(int(session.get("post_plan_free_talk_tick_interval_seconds", 30) or 30), 600))
+        if not last_tick_at:
+            return {"ready": True, "ended": False, "remaining_seconds": 0.0}
+        remaining = interval - (now - last_tick_at).total_seconds()
+        return {
+            "ready": remaining <= 0,
+            "ended": False,
+            "remaining_seconds": max(0.0, remaining),
+        }
+
+    def _ensure_post_plan_free_talk_director_task(self, runtime: LiveRuntime) -> None:
+        if not runtime.running:
+            return
+        if runtime.director_task and not runtime.director_task.done():
+            return
+        current_task = asyncio.current_task()
+        current_coro = current_task.get_coro() if current_task else None
+        if getattr(current_coro, "__name__", "") == "_director_loop":
+            runtime.director_task = current_task
+            return
+        runtime.director_task = asyncio.create_task(self._director_loop(runtime))
+
     async def start_director(
         self,
         session_id: str,
@@ -84,6 +122,7 @@ class DirectorRuntimeManagerMixin:
 
         now = datetime.now()
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id, mode="test"))
+        should_keep_director_loop = bool(runtime.running)
         runtime.running = True
         runtime.status = "running"
         if str(runtime.mode or "") != "youtube":
@@ -149,7 +188,10 @@ class DirectorRuntimeManagerMixin:
             },
         )
         await self._broadcast(session_id, {"type": "director_state", "director": director_state})
-        return await self._run_post_plan_free_talk_tick(runtime, session, director_state)
+        result = await self._run_post_plan_free_talk_tick(runtime, session, director_state)
+        if should_keep_director_loop:
+            self._ensure_post_plan_free_talk_director_task(runtime)
+        return result
 
     async def _run_post_plan_free_talk_tick(
         self,
@@ -471,6 +513,21 @@ class DirectorRuntimeManagerMixin:
                     _director_timing_log("loop_duration_reached", session_id=runtime.session_id)
                     await self._finalize_for_duration(runtime, session)
                     return
+                free_talk_delay = self._post_plan_free_talk_delay_info(session, state)
+                if free_talk_delay is not None:
+                    if free_talk_delay.get("ended"):
+                        _director_timing_log("loop_free_talk_deadline_reached", session_id=runtime.session_id)
+                        await self.finalize_phase_pipeline(
+                            runtime.session_id,
+                            reason="post_plan_free_talk_deadline_reached",
+                        )
+                        return
+                    if not free_talk_delay.get("ready"):
+                        await asyncio.sleep(min(1.0, max(0.2, float(free_talk_delay.get("remaining_seconds") or 0.2))))
+                        continue
+                    _director_timing_log("loop_free_talk_tick_ready", session_id=runtime.session_id)
+                    await self._run_post_plan_free_talk_tick(runtime, session, state)
+                    continue
                 if runtime.director_prefetch_in_flight > 0:
                     _director_timing_log(
                         "loop_blocked_prefetch_in_flight",
@@ -598,7 +655,7 @@ class DirectorRuntimeManagerMixin:
                     if completed:
                         _director_timing_log("loop_episode_plan_completed", session_id=runtime.session_id)
                         await self._finalize_for_episode_plan_completed(runtime, session, planned_state)
-                        return
+                        continue
                     wait_decision = {
                         "action": "wait",
                         "reason": "episode plan has no runnable planned turn",

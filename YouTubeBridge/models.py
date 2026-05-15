@@ -165,6 +165,15 @@ class InterruptRequest(BaseModel):
     reason: str = "manual_interrupt"
 
 
+class FinishMainPhaseRequest(BaseModel):
+    reason: str = Field("episode_plan_completed", max_length=120)
+    enter_free_talk: bool = True
+
+
+class FinalizePhaseRequest(BaseModel):
+    reason: str = Field("operator_finalize", max_length=120)
+
+
 class EpisodePlanImportRequest(BaseModel):
     plan_json: dict = Field(default_factory=dict)
     source_path: str = Field("", max_length=1000)

@@ -51,13 +51,16 @@ async def test_episode_plan_completed_finalize_runs_formal_final_closing(monkeyp
             "session_id": "live-a",
             "connector_id": "yt-main",
             "display_name": "Plan Live",
+            "status": "running",
             "target_memoria_session_id": "mem-a",
             "auto_sc_thanks_on_finalize": False,
+            "post_plan_free_talk_enabled": False,
             "character_ids": ["koko", "byakuren"],
         })
         storage.update_director_state("live-a", director_enabled=True, status="running")
         manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
         planned_state = {
             "plan_id": "plan-general-panel",
             "plan_status": "completed",
@@ -88,14 +91,17 @@ async def test_episode_plan_completed_finalize_runs_formal_final_closing(monkeyp
         assert runtime.running is False
         assert director_state["director_enabled"] is False
         assert director_state["status"] == "ended"
-        assert director_state["metadata"]["finalized_by"] == "episode_plan_complete"
+        assert director_state["metadata"]["finalized_by"] == "phase_finalize"
+        assert director_state["metadata"]["phase"] == "ended"
+        assert director_state["metadata"]["phase_finalize"]["reason"] == "episode_plan_completed"
+        assert director_state["metadata"]["phase_finalize"]["status"] == "completed"
         assert director_state["metadata"]["final_closing"] == {
             "status": "completed",
             "interaction": {"job_id": "final-closing", "status": "completed"},
         }
         log_output = "\n".join(record.getMessage() for record in caplog.records)
-        assert "episode plan completed; auto finalizing live session session_id=live-a" in log_output
-        assert "live session finalized session_id=live-a finalized_by=episode_plan_complete status=ended" in log_output
+        assert "episode plan completed; entering phase pipeline session_id=live-a" in log_output
+        assert "live session finalized session_id=live-a finalized_by=phase_finalize status=ended" in log_output
         assert "final_closing_status=completed" in log_output
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -240,6 +240,7 @@ class InjectionManagerMixin:
         character_ids: list[str] | None = None,
         source: str = "manual_inject",
         priority: int = 200,
+        claim_timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
         active = self.storage.get_active_interaction(session_id)
@@ -278,7 +279,11 @@ class InjectionManagerMixin:
                 }
             )
             job_id = interaction["job_id"]
-            claimed = await self._claim_interaction_for_execution(runtime, interaction)
+            claimed = await self._claim_interaction_for_execution(
+                runtime,
+                interaction,
+                timeout_seconds=claim_timeout_seconds,
+            )
             if not claimed or claimed.get("status") != "running":
                 return {
                     "summary": summary,

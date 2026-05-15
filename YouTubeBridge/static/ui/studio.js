@@ -124,6 +124,8 @@ const freeTalkSidecarState = $("freeTalkSidecarState");
 const freeTalkTopicChecklist = $("freeTalkTopicChecklist");
 const startFreeTalkTestButton = $("startFreeTalkTestButton");
 const freeTalkTestState = $("freeTalkTestState");
+const skipMainToFreeTalkButton = $("skipMainToFreeTalkButton");
+const skipMainToFreeTalkState = $("skipMainToFreeTalkState");
 
 const liveSettingControls = [
   "injectIntervalSeconds",
@@ -1652,15 +1654,15 @@ async function stopLive() {
   if (!sessionId || state.sourceStatus === "starting") return;
   stopButton.disabled = true;
   try {
-    const data = await api(`/sessions/${encodeURIComponent(sessionId)}/stop`, {
+    const data = await api(`/sessions/${encodeURIComponent(sessionId)}/phase/finalize`, {
       method: "POST",
-      body: {},
+      body: { reason: "operator_finalize" },
     });
-    appendLog("INFO", "直播 runtime 已停止");
+    appendLog("INFO", `節目收尾流程已送出：${data.phase || "finalize"}`);
     applySessionSnapshot({ ...(state.currentSession || {}), runtime_status: data, status: "stopped" });
     await refreshStudioSession();
   } catch (error) {
-    appendLog("WARN", `直播停止失敗：${error.message || error}`);
+    appendLog("WARN", `節目收尾失敗：${error.message || error}`);
   } finally {
     applyStartButtonState();
   }
@@ -1806,6 +1808,34 @@ async function startFreeTalkTest() {
     appendLog("WARN", `雜談測試啟動失敗：${error.message || error}`);
   } finally {
     startFreeTalkTestButton.disabled = false;
+  }
+}
+
+async function skipMainToFreeTalk() {
+  if (!(state.sessionId && state.live)) {
+    skipMainToFreeTalkState.textContent = "請先開始直播。";
+    appendLog("WARN", "正式節目結束測試失敗：尚未開始直播");
+    return;
+  }
+  skipMainToFreeTalkButton.disabled = true;
+  skipMainToFreeTalkState.textContent = "正在結束正式節目並進入雜談。";
+  try {
+    const result = await api(`/sessions/${encodeURIComponent(state.sessionId)}/phase/finish-main`, {
+      method: "POST",
+      body: {
+        reason: "operator_debug_skip_to_free_talk",
+        enter_free_talk: true,
+      },
+    });
+    skipMainToFreeTalkState.textContent = "已結束正式節目階段並進入雜談流程。";
+    appendLog("INFO", `正式節目結束測試完成：${result.phase || "post_plan_free_talk"}`);
+    await refreshStudioSession();
+    await refreshConversation();
+  } catch (error) {
+    skipMainToFreeTalkState.textContent = `正式節目結束測試失敗：${error.message || error}`;
+    appendLog("WARN", `正式節目結束測試失敗：${error.message || error}`);
+  } finally {
+    skipMainToFreeTalkButton.disabled = false;
   }
 }
 
@@ -2350,6 +2380,7 @@ function bindEvents() {
   $("clearConversation").addEventListener("click", clearConversation);
   $("sendTest").addEventListener("click", sendTestMessage);
   startFreeTalkTestButton.addEventListener("click", startFreeTalkTest);
+  skipMainToFreeTalkButton.addEventListener("click", skipMainToFreeTalk);
   $("runAutoCommentBatch").addEventListener("click", () => {
     generateAutoComments();
     applyTestAutoSaveState("自動留言測試");

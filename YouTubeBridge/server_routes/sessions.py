@@ -14,8 +14,19 @@ from episode_plan_character_binding import (
     resolve_episode_plan_character_ids,
 )
 from memoria_client import MemoriaClient
-from models import InterruptRequest, LiveSessionConfig, ReplyRecentRequest
-from server_presenters import sanitize_chat_preview_message, sanitize_chat_preview_session, sanitize_interaction
+from models import (
+    FinalizePhaseRequest,
+    FinishMainPhaseRequest,
+    InterruptRequest,
+    LiveSessionConfig,
+    ReplyRecentRequest,
+)
+from server_presenters import (
+    sanitize_chat_preview_message,
+    sanitize_chat_preview_session,
+    sanitize_interaction,
+    sanitize_phase_pipeline_response,
+)
 from storage import DEFAULT_CONNECTOR_ID
 from youtube_client import extract_video_id
 
@@ -85,6 +96,16 @@ def _session_has_runtime_content(session: dict) -> bool:
         or storage.count_events(session_id) > 0
         or storage.list_interactions(session_id, limit=1)
     )
+
+
+def _require_running_phase_session(session_id: str) -> dict:
+    session = storage.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    runtime_status = manager.get_status(session_id)
+    if str(session.get("status") or "") != "running" or not runtime_status.get("running"):
+        raise HTTPException(status_code=409, detail="live session is not running")
+    return session
 
 
 async def _summarize_and_write_shared_memory(session_id: str) -> dict:
@@ -385,6 +406,34 @@ async def start_free_talk_test(session_id: str):
             topic_root=_require_state().free_talk_topic_root,
             transition_reason="operator_debug_start_free_talk",
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/sessions/{session_id}/phase/finish-main")
+async def finish_main_phase(session_id: str, body: FinishMainPhaseRequest):
+    _require_running_phase_session(session_id)
+    try:
+        result = await manager.finish_main_phase(
+            session_id,
+            reason=body.reason,
+            enter_free_talk=body.enter_free_talk,
+            topic_root=_require_state().free_talk_topic_root,
+        )
+        return sanitize_phase_pipeline_response(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/sessions/{session_id}/phase/finalize")
+async def finalize_phase(
+    session_id: str,
+    body: FinalizePhaseRequest = FinalizePhaseRequest(),
+):
+    _require_running_phase_session(session_id)
+    try:
+        result = await manager.finalize_phase_pipeline(session_id, reason=body.reason)
+        return sanitize_phase_pipeline_response(result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

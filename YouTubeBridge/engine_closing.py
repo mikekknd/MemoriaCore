@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from bridge_contracts import SAFETY_CLASSIFIER_BATCH_LIMIT
@@ -11,6 +12,7 @@ from bridge_runtime import LiveRuntime
 
 
 logger = logging.getLogger("youtube_bridge")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DURATION_CLOSING_ACTIVE_WAIT_TIMEOUT_SECONDS = 180.0
 DURATION_CLOSING_ACTIVE_WAIT_POLL_SECONDS = 1.0
@@ -55,6 +57,70 @@ class ClosingManagerMixin:
                 suffix = "（內容不公開）。"
             lines.append(f"感謝 {author} 的 {amount_text}SC{suffix}")
         return lines
+
+    @staticmethod
+    def _is_main_phase_event(event: dict[str, Any]) -> bool:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        phase = str(metadata.get("phase") or metadata.get("live_phase") or "planned_content").strip()
+        return phase in {"", "main", "planned_content"}
+
+    async def _run_main_audience_sc_closing(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        if not session.get("auto_sc_thanks_on_finalize", True):
+            return {
+                "status": "skipped",
+                "reason": "auto_sc_thanks_disabled",
+                "super_chat_count": 0,
+            }
+        super_chats = [
+            event
+            for event in self._list_unhandled_super_chats_for_closing(runtime.session_id, batch_size=100)
+            if self._is_main_phase_event(event)
+        ]
+        if not super_chats:
+            return {
+                "status": "skipped",
+                "reason": "no_unhandled_main_super_chats",
+                "super_chat_count": 0,
+            }
+
+        event_ids = [int(event["id"]) for event in super_chats]
+        result = await self.inject_recent(
+            runtime.session_id,
+            event_ids=event_ids,
+            max_events=len(event_ids),
+            content="正式節目段落結束，請逐一感謝尚未處理的 Super Chat。",
+            memoria_session_id=str(session.get("target_memoria_session_id") or ""),
+            character_ids=session.get("character_ids", []),
+            source="main_audience_closing",
+            priority=320,
+            claim_timeout_seconds=0.2,
+        )
+        injected_ids = [
+            int(event_id)
+            for event_id in (result.get("summary") or {}).get("event_ids", [])
+        ]
+        marked = self.storage.mark_super_chats_handled_in_closing(runtime.session_id, injected_ids)
+        await self._broadcast(runtime.session_id, {
+            "type": "main_audience_sc_closing_completed",
+            "session_id": runtime.session_id,
+            "marked": marked,
+            "event_ids": injected_ids,
+            "reason": str(reason or "")[:120],
+            "interaction": result.get("interaction"),
+        })
+        return {
+            "status": "completed",
+            "super_chat_count": len(injected_ids),
+            "candidate_super_chat_count": len(super_chats),
+            "marked": marked,
+            "result": result,
+        }
 
     async def _finalize_for_duration(self, runtime: LiveRuntime, session: dict[str, Any]) -> None:
         async with runtime.closing_lock:
@@ -111,64 +177,29 @@ class ClosingManagerMixin:
         session: dict[str, Any],
         planned_state: dict[str, Any],
     ) -> None:
-        async with runtime.closing_lock:
-            session = self.storage.get_session(runtime.session_id) or session
-            if not runtime.running or runtime.status in {"closing", "ended"} or session.get("status") == "ended":
-                return
-            completed_at = datetime.now().isoformat()
-            logger.info(
-                "episode plan completed; auto finalizing live session session_id=%s plan_id=%s completed_turn_count=%s",
-                runtime.session_id,
-                planned_state.get("plan_id") or session.get("episode_plan_id") or "",
-                len(planned_state.get("completed_turn_ids") or []),
-            )
-            runtime.status = "closing"
-            self.storage.update_session_fields(
-                runtime.session_id,
-                status="closing",
-                auto_inject=False,
-                auto_test_events_enabled=False,
-            )
-            director_state = self.storage.update_director_state(
-                runtime.session_id,
-                status="episode_plan_completed_closing",
-                metadata={
-                    "episode_plan_completed_at": completed_at,
-                    "episode_plan_completed_state": planned_state,
-                    "duration_closing_reason": "episode_plan_completed",
-                },
-            )
-            await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
-            await self._broadcast(
-                runtime.session_id,
-                {
-                    "type": "status",
-                    "status": "closing",
-                    "message": "episode plan completed; closing live session",
-                },
-            )
-            await self._wait_for_active_interaction_before_duration_closing(runtime)
-            finalized = await self._finalize_live_session(
-                runtime,
-                self.storage.get_session(runtime.session_id) or session,
-                finalized_by="episode_plan_complete",
-                closing_message="episode plan completed; closing live session",
-                ended_message="episode plan completed",
-                metadata={
-                    "episode_plan_completed": {
-                        "completed_at": completed_at,
-                        "planned_state": planned_state,
-                    }
-                },
-            )
-            try:
-                await self._run_auto_finalize_archive_callback(
-                    runtime.session_id,
-                    finalized_by="episode_plan_complete",
-                    finalized=finalized,
-                )
-            except Exception as exc:
-                logger.warning("auto finalize archive failed session_id=%s error=%s", runtime.session_id, exc)
+        if not runtime.running or runtime.status in {"closing", "ended"} or session.get("status") == "ended":
+            return
+        completed_at = datetime.now().isoformat()
+        logger.info(
+            "episode plan completed; entering phase pipeline session_id=%s plan_id=%s completed_turn_count=%s",
+            runtime.session_id,
+            planned_state.get("plan_id") or session.get("episode_plan_id") or "",
+            len(planned_state.get("completed_turn_ids") or []),
+        )
+        self.storage.update_director_state(
+            runtime.session_id,
+            status="episode_plan_completed",
+            metadata={
+                "episode_plan_completed_at": completed_at,
+                "episode_plan_completed_state": planned_state,
+            },
+        )
+        await self.finish_main_phase(
+            runtime.session_id,
+            reason="episode_plan_completed",
+            enter_free_talk=True,
+            topic_root=PROJECT_ROOT / "runtime" / "YouTubeBridge" / "freeTalkTopics",
+        )
 
     async def finalize_session(self, session_id: str) -> dict[str, Any]:
         session = self.storage.get_session(session_id)

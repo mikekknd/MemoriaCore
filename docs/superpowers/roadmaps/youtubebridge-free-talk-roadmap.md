@@ -46,7 +46,7 @@ Do not use the single-agent `superpowers:executing-plans` fallback for this road
 ## Current Status
 
 - [x] Stage 1: Topic Library And Manual Free Talk Runtime
-- [ ] Stage 2: Main Finish Pipeline And Phase Transition
+- [x] Stage 2: Main Finish Pipeline And Phase Transition
 - [ ] Stage 3: Two Independent Summaries And Cleanup Wait
 - [ ] Stage 4: Low-Signal Filter And Large-Batch Free-Talk Closing
 - [ ] Final Goal Gate: Full Studio lifecycle E2E and full regression pass

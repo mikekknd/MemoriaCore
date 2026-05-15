@@ -129,6 +129,21 @@ def test_studio_has_manual_free_talk_test_button():
     assert "目前有互動執行中，請稍後再試。" in studio_js
 
 
+def test_studio_phase_pipeline_controls():
+    studio_html = _studio_source()
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "結束節目並進入雜談測試" in studio_html
+    assert 'id="skipMainToFreeTalkButton"' in studio_html
+    assert 'id="skipMainToFreeTalkState"' in studio_html
+    assert "/phase/finish-main" in studio_js
+    assert "/phase/finalize" in studio_js
+    assert 'enter_free_talk: true' in studio_js
+    assert 'reason: "operator_debug_skip_to_free_talk"' in studio_js
+    assert 'body: { reason: "operator_finalize" }' in studio_js
+    assert 'api(`/sessions/${encodeURIComponent(sessionId)}/stop`, {' not in studio_js
+
+
 def test_studio_debug_log_starts_empty_without_mock_entries():
     studio_html = _studio_source()
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
@@ -568,7 +583,7 @@ def test_studio_p0_exposes_preflight_and_manual_source_session_flow():
     assert 'api("/episode-plans?limit=100")' in studio_js
     assert 'api("/sessions/current/start", {' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(sessionId)}/director/start`, {' in studio_js
-    assert 'api(`/sessions/${encodeURIComponent(sessionId)}/stop`, {' in studio_js
+    assert 'api(`/sessions/${encodeURIComponent(sessionId)}/phase/finalize`, {' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`)' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/recent?limit=120`)' in studio_js
     assert "new EventSource(`/sessions/${encodeURIComponent(sessionId)}/events`)" in studio_js
@@ -579,6 +594,7 @@ def test_studio_p0_exposes_preflight_and_manual_source_session_flow():
     assert 'min_pending_events: liveDefaults.min_pending_comments' in studio_js
     assert 'max_pending_events: liveDefaults.pending_force_limit' in studio_js
     assert 'research_enabled: liveDefaults.safe_search_enabled' in studio_js
+    assert 'api(`/sessions/${encodeURIComponent(sessionId)}/stop`, {' not in studio_js
     assert '"/finalize"' not in studio_js
     assert "function simulateSourceDetection(" not in studio_js
     assert "function completeSourceDetection(" not in studio_js
