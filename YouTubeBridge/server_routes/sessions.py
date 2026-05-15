@@ -19,6 +19,7 @@ from models import (
     FinishMainPhaseRequest,
     InterruptRequest,
     LiveSessionConfig,
+    PresentationClientDebugRequest,
     ReplyRecentRequest,
 )
 from server_presenters import (
@@ -431,6 +432,7 @@ async def finish_main_phase(session_id: str, body: FinishMainPhaseRequest):
             session_id,
             reason=body.reason,
             enter_free_talk=body.enter_free_talk,
+            force_enter_free_talk=body.force_enter_free_talk,
             topic_root=_require_state().free_talk_topic_root,
         )
         return sanitize_phase_pipeline_response(result)
@@ -607,6 +609,14 @@ async def ack_presentation_item(session_id: str, item_id: str):
     if not item:
         raise HTTPException(status_code=404, detail="presentation item not found")
     return {"ok": True, "item": item}
+
+
+@router.post("/sessions/{session_id}/presentation/debug")
+async def report_presentation_debug(session_id: str, body: PresentationClientDebugRequest):
+    if not storage.get_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    event = manager.report_presentation_client_debug(session_id, body.model_dump())
+    return {"ok": True, "event": event}
 
 
 @router.get("/sessions/{session_id}/presentation/{item_id}/audio")

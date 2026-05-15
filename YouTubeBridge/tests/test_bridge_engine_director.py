@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import shutil
 import subprocess
 import threading
@@ -644,6 +645,170 @@ async def test_presentation_director_prefetches_next_role_before_current_ack(mon
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_presentation_queue_emits_debug_events_and_server_logs(caplog):
+    tmp_dir = _tmp_dir()
+    task = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+        })
+        storage.upsert_tts_profile({
+            "character_id": "host-a",
+            "ref_audio_path": "host-a.wav",
+            "prompt_text": "參考語音文字。",
+        })
+
+        class FakeTTSProvider:
+            def synthesize(self, text, profile):
+                return TTSResult(ok=True, audio_bytes=f"audio:{text}".encode("utf-8"), audio_format="wav")
+
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            tts_provider_factory=FakeTTSProvider,
+        )
+        queue = await manager.subscribe("live-a")
+        caplog.set_level(logging.INFO, logger="youtube_bridge")
+
+        task = asyncio.create_task(manager.present_stream_result(
+            "live-a",
+            {
+                "message_id": "msg-host",
+                "reply": "目前角色。",
+                "character_id": "host-a",
+                "character_name": "主持A",
+            },
+            source="director",
+            interaction_job_id="job-a",
+        ))
+
+        debug_phases = []
+        ready_event = None
+        while ready_event is None:
+            event = await asyncio.wait_for(queue.get(), timeout=1)
+            if event.get("type") == "presentation_debug":
+                debug_phases.append(event["event"]["phase"])
+            if event.get("type") == "presentation_item_ready":
+                ready_event = event
+
+        assert {"item_ready", "item_presenting", "ack_wait_start"} <= set(debug_phases)
+        assert ready_event["item"]["text"] == "目前角色。"
+
+        await manager.ack_presentation_item("live-a", ready_event["item"]["item_id"])
+        ack_debug = await _next_queue_event(queue, "presentation_debug", timeout=1)
+        assert ack_debug["event"]["phase"] == "ack_received"
+        chat = await _next_queue_event(queue, "chat_message", timeout=1)
+        assert chat["message"]["content"] == "目前角色。"
+        await asyncio.wait_for(task, timeout=1)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("PRESENTATION_QUEUE" in message and "item_ready" in message for message in messages)
+        assert any("PRESENTATION_QUEUE" in message and "ack_received" in message for message in messages)
+    finally:
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_prefetch_only_presentation_items_are_debugged_as_waiting_not_playable(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+        })
+        storage.upsert_tts_profile({
+            "character_id": "host-a",
+            "ref_audio_path": "host-a.wav",
+            "prompt_text": "參考語音文字。",
+        })
+
+        class FakeTTSProvider:
+            def synthesize(self, text, profile):
+                return TTSResult(ok=True, audio_bytes=f"audio:{text}".encode("utf-8"), audio_format="wav")
+
+        captured = {}
+
+        class PrefetchStreamClient:
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                kwargs["on_result"]({
+                    "message_id": "msg-prefetch",
+                    "reply": "預取句子。",
+                    "character_id": "host-a",
+                    "character_name": "主持A",
+                })
+                return {
+                    "session_id": "mem-a",
+                    "message_id": 42,
+                    "reply": "預取完成。",
+                }
+
+        monkeypatch.setattr("bridge_engine.MemoriaClient", PrefetchStreamClient)
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            tts_provider_factory=FakeTTSProvider,
+        )
+        queue = await manager.subscribe("live-a")
+
+        result = await manager._send_director_turn(
+            session,
+            storage.get_director_state("live-a"),
+            {
+                "action": "continue_topic",
+                "prompt": "請預取下一輪。",
+                "current_topic": "四月新番",
+            },
+            prefetch_only=True,
+        )
+
+        item = result["prepared_results"][0]["items"][0]
+        assert captured["external_context"]["group_turn_limit"] == 1
+        assert captured["external_context"]["summary"]["group_turn_limit"] == 1
+        assert item["metadata"]["source"] == "director_prefetch"
+
+        phases = []
+        event_types = []
+        while not queue.empty():
+            event = queue.get_nowait()
+            event_types.append(event.get("type"))
+            if event.get("type") == "presentation_debug":
+                phases.append(event["event"]["phase"])
+
+        assert "presentation_item_ready" not in event_types
+        assert "item_prefetch_ready" in phases
+        assert "item_ready" not in phases
+    finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 

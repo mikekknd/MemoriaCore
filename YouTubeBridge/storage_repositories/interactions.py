@@ -344,7 +344,14 @@ class InteractionRepositoryMixin:
                 """
                 SELECT * FROM live_interactions
                 WHERE session_id = ?
-                  AND status IN ('queued', 'running', 'interrupt_requested')
+                  AND status IN (
+                      'queued',
+                      'running',
+                      'presenting',
+                      'prefetching',
+                      'prefetched',
+                      'interrupt_requested'
+                  )
                 ORDER BY id ASC
                 """,
                 (session_id,),

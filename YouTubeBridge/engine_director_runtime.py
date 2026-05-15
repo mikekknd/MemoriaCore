@@ -527,7 +527,9 @@ class DirectorRuntimeManagerMixin:
                         await asyncio.sleep(min(1.0, max(0.2, float(free_talk_delay.get("remaining_seconds") or 0.2))))
                         continue
                     _director_timing_log("loop_free_talk_tick_ready", session_id=runtime.session_id)
-                    await self._run_post_plan_free_talk_tick(runtime, session, state)
+                    tick_result = await self._run_post_plan_free_talk_tick(runtime, session, state)
+                    if isinstance(tick_result, dict) and tick_result.get("status") == "wait":
+                        await asyncio.sleep(1.0)
                     continue
                 if runtime.director_prefetch_in_flight > 0:
                     _director_timing_log(
@@ -1230,6 +1232,8 @@ class DirectorRuntimeManagerMixin:
         presentation_mode = self._presentation_enabled(session)
         if not dialogue_expansion_enabled:
             group_turn_limit = 1
+        elif prefetch_only and presentation_mode:
+            group_turn_limit = 1
         elif presentation_mode:
             group_turn_limit = (
                 1
@@ -1399,7 +1403,7 @@ class DirectorRuntimeManagerMixin:
                     self.prepare_stream_result(
                         session_id,
                         event,
-                        source="director",
+                        source="director_prefetch",
                         interaction_job_id=interaction["job_id"],
                     ),
                     loop,

@@ -128,7 +128,8 @@ def test_studio_has_manual_free_talk_test_button():
     assert "async function startFreeTalkTest()" in studio_js
     assert "post_plan_free_talk" in studio_js
     assert 'result?.status === "wait"' in studio_js
-    assert "目前有互動執行中，請稍後再試。" in studio_js
+    assert "已切換到雜談測試；目前互動執行中，會在結束後繼續。" in studio_js
+    assert "await refreshStudioSession();" in studio_js
 
 
 def test_studio_phase_pipeline_controls():
@@ -141,6 +142,7 @@ def test_studio_phase_pipeline_controls():
     assert "/phase/finish-main" in studio_js
     assert "/phase/finalize" in studio_js
     assert 'enter_free_talk: true' in studio_js
+    assert 'force_enter_free_talk: true' in studio_js
     assert 'reason: "operator_debug_skip_to_free_talk"' in studio_js
     assert 'body: { reason: "operator_finalize" }' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(sessionId)}/stop`, {' not in studio_js
@@ -261,6 +263,23 @@ def test_studio_presentation_tts_player_helpers_are_wired():
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`, {' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {' in studio_js
     assert 'appendChatPreviewMessage(presentationItemToMessage(item), { prepend: true })' in studio_js
+
+
+def test_studio_presentation_debug_logs_backend_and_audio_blocked_events():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    subscribe_body = studio_js[
+        studio_js.index("state.eventSource.onmessage = (event) => {"):
+        studio_js.index("state.eventSource.onerror = () => {", studio_js.index("state.eventSource.onmessage = (event) => {"))
+    ]
+
+    assert "function appendPresentationDebugLog(event)" in studio_js
+    assert "function reportPresentationClientDebug(phase, item, details = {})" in studio_js
+    assert 'if (payload.type === "presentation_debug" && payload.event) {' in subscribe_body
+    assert "appendPresentationDebugLog(payload.event);" in subscribe_body
+    assert 'item_prefetch_ready: "預載完成，等待導播交付"' in studio_js
+    assert 'reportPresentationClientDebug("audio_play_blocked", item, {' in studio_js
+    assert 'phase: "audio_play_blocked"' in studio_js
+    assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/debug`, {' in studio_js
 
 
 def test_studio_displays_phase_summary_status():

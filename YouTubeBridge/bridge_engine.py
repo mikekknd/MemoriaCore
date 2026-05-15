@@ -145,6 +145,98 @@ class YouTubeBridgeManager(
     def _presentation_audio_root() -> Path:
         return PROJECT_ROOT / "runtime" / "YouTubeBridge" / "TTSAudio"
 
+    @staticmethod
+    def _presentation_debug_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {
+                str(key)[:80]: YouTubeBridgeManager._presentation_debug_value(item)
+                for key, item in list(value.items())[:40]
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [YouTubeBridgeManager._presentation_debug_value(item) for item in list(value)[:40]]
+        return str(value)[:500]
+
+    @staticmethod
+    def _presentation_debug_payload(
+        session_id: str,
+        phase: str,
+        item: dict[str, Any] | None = None,
+        **details: Any,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "phase": phase,
+            "session_id": session_id,
+            "at": datetime.now().isoformat(),
+        }
+        if item:
+            text = str(item.get("text") or "")
+            payload.update({
+                "item_id": item.get("item_id") or "",
+                "interaction_job_id": item.get("interaction_job_id") or "",
+                "message_id": item.get("message_id") or "",
+                "character_id": item.get("character_id") or "",
+                "character_name": item.get("character_name") or "",
+                "sequence_index": item.get("sequence_index"),
+                "status": item.get("status") or "",
+                "has_audio": bool(item.get("audio_path")),
+                "audio_format": item.get("audio_format") or "",
+                "text_chars": len(text),
+                "text_preview": text[:80],
+                "presented_at": item.get("presented_at") or "",
+                "acked_at": item.get("acked_at") or "",
+                "error": item.get("error") or "",
+            })
+        for key, value in details.items():
+            if value is not None:
+                payload[str(key)] = YouTubeBridgeManager._presentation_debug_value(value)
+        return payload
+
+    @staticmethod
+    def _log_presentation_debug_event(payload: dict[str, Any]) -> None:
+        logger.warning(
+            "PRESENTATION_QUEUE %s",
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+
+    async def _emit_presentation_debug(
+        self,
+        session_id: str,
+        phase: str,
+        item: dict[str, Any] | None = None,
+        **details: Any,
+    ) -> dict[str, Any]:
+        payload = self._presentation_debug_payload(session_id, phase, item, **details)
+        self._log_presentation_debug_event(payload)
+        await self._broadcast(
+            session_id,
+            {
+                "type": "presentation_debug",
+                "event": payload,
+            },
+        )
+        return payload
+
+    def report_presentation_client_debug(self, session_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        phase = str(data.get("phase") or "client_event")[:80]
+        item_id = str(data.get("item_id") or "")
+        item = self.storage.get_presentation_item(item_id) if item_id else None
+        if item and item.get("session_id") != session_id:
+            item = None
+        details = data.get("details") if isinstance(data.get("details"), dict) else {}
+        payload = self._presentation_debug_payload(
+            session_id,
+            phase,
+            item,
+            source="studio_client",
+            item_id=item_id if not item else None,
+            client_status=str(data.get("status") or "")[:80],
+            details=details,
+        )
+        self._log_presentation_debug_event(payload)
+        return payload
+
     def _presentation_item_public(self, item: dict[str, Any]) -> dict[str, Any]:
         audio_url = ""
         if item.get("audio_path"):
@@ -367,7 +459,9 @@ class YouTubeBridgeManager(
             "audio_format": "wav",
             "metadata": {"source": source},
         })
+        await self._emit_presentation_debug(session_id, "item_created", item, source=source)
         item = self.storage.update_presentation_item(item["item_id"], status="synthesizing") or item
+        await self._emit_presentation_debug(session_id, "item_synthesizing", item, source=source)
         try:
             tts_result = await self._synthesize_presentation_audio(session, item)
             update_fields: dict[str, Any] = {"status": "ready"}
@@ -393,6 +487,8 @@ class YouTubeBridgeManager(
                 "error": str(exc)[:500],
             }
         item = self.storage.update_presentation_item(item["item_id"], **update_fields) or item
+        ready_phase = "item_prefetch_ready" if source == "director_prefetch" else "item_ready"
+        await self._emit_presentation_debug(session_id, ready_phase, item, source=source)
         return item
 
     async def _present_prepared_item(
@@ -413,10 +509,18 @@ class YouTubeBridgeManager(
         if not item.get("audio_path") and item.get("error"):
             update_fields["status"] = "failed"
         item = self.storage.update_presentation_item(item["item_id"], **update_fields) or item
+        await self._emit_presentation_debug(session_id, "item_presenting", item, source=source)
         if interaction_job_id:
             self.storage.update_interaction(interaction_job_id, status="presenting")
         ack_event = asyncio.Event()
         runtime.presentation_ack_events[item["item_id"]] = ack_event
+        await self._emit_presentation_debug(
+            session_id,
+            "ack_wait_start",
+            item,
+            source=source,
+            timeout_seconds=self._presentation_ack_timeout(session),
+        )
         await self._broadcast(
             session_id,
             {
@@ -435,6 +539,7 @@ class YouTubeBridgeManager(
                 status="skipped",
                 error="presentation ack timeout",
             ) or item
+            await self._emit_presentation_debug(session_id, "ack_timeout", item, source=source)
         finally:
             runtime.presentation_ack_events.pop(item["item_id"], None)
         if item.get("status") != "skipped":
@@ -480,6 +585,12 @@ class YouTubeBridgeManager(
         )
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
         ack_event = runtime.presentation_ack_events.get(item_id)
+        await self._emit_presentation_debug(
+            session_id,
+            "ack_received",
+            updated or item,
+            ack_event_found=bool(ack_event),
+        )
         if ack_event:
             ack_event.set()
         return updated
@@ -496,6 +607,12 @@ class YouTubeBridgeManager(
             acked_at=datetime.now().isoformat(),
         )
         ack_event = runtime.presentation_ack_events.get(item["item_id"])
+        await self._emit_presentation_debug(
+            session_id,
+            "item_skipped",
+            updated or item,
+            ack_event_found=bool(ack_event),
+        )
         if ack_event:
             ack_event.set()
         return updated

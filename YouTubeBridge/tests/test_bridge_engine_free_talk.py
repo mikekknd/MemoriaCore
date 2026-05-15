@@ -1,8 +1,11 @@
+import asyncio
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
 from bridge_engine_test_support import BridgeStorage, YouTubeBridgeManager
+from bridge_runtime import LiveRuntime
 from storage import DEFAULT_CONNECTOR_ID
 
 
@@ -137,6 +140,53 @@ async def test_manual_free_talk_tick_waits_for_active_interaction_without_sendin
     assert result["status"] == "wait"
     assert FakeFreeTalkMemoriaClient.calls == []
     assert storage.get_director_state(session["session_id"])["status"] == "waiting_active_interaction"
+
+
+@pytest.mark.asyncio
+async def test_free_talk_loop_backs_off_when_tick_waits_for_active_interaction(tmp_path, monkeypatch):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    session = _create_free_talk_session(storage, post_plan_free_talk_tick_interval_seconds=5)
+    now = datetime.now()
+    storage.update_director_state(
+        session["session_id"],
+        director_enabled=True,
+        status="running",
+        metadata={
+            "phase": "post_plan_free_talk",
+            "post_plan_free_talk": {
+                "started_at": (now - timedelta(minutes=1)).isoformat(),
+                "deadline_at": (now + timedelta(minutes=10)).isoformat(),
+                "last_tick_at": (now - timedelta(seconds=30)).isoformat(),
+                "topic_cursor": 0,
+            },
+        },
+    )
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    manager = YouTubeBridgeManager(
+        storage,
+        memoria_client_factory=lambda: FakeFreeTalkMemoriaClient(),
+    )
+
+    tick_calls = 0
+    sleep_calls: list[float] = []
+
+    async def wait_tick(*args, **kwargs):
+        nonlocal tick_calls
+        tick_calls += 1
+        runtime.running = False
+        return {"phase": "post_plan_free_talk", "status": "wait"}
+
+    async def stop_after_sleep(duration):
+        sleep_calls.append(float(duration))
+
+    monkeypatch.setattr(manager, "_run_post_plan_free_talk_tick", wait_tick)
+    monkeypatch.setattr("engine_director_runtime.asyncio.sleep", stop_after_sleep)
+
+    await asyncio.wait_for(manager._director_loop(runtime), timeout=1)
+
+    assert tick_calls == 1
+    assert sleep_calls
+    assert FakeFreeTalkMemoriaClient.calls == []
 
 
 @pytest.mark.asyncio

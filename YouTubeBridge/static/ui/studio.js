@@ -1098,6 +1098,50 @@ function appendLog(level, message) {
   }
 }
 
+const presentationDebugLabels = {
+  item_created: "建立句子",
+  item_synthesizing: "開始合成",
+  item_prefetch_ready: "預載完成，等待導播交付",
+  item_ready: "合成完成",
+  item_presenting: "送往播放器",
+  ack_wait_start: "等待 ACK",
+  ack_received: "收到 ACK",
+  ack_timeout: "ACK 逾時",
+  item_skipped: "跳過句子",
+  audio_play_blocked: "瀏覽器阻擋播放",
+  audio_retry_blocked: "重試播放被阻擋",
+};
+
+function appendPresentationDebugLog(event) {
+  if (!event || typeof event !== "object") return;
+  const phase = String(event.phase || "unknown");
+  const label = presentationDebugLabels[phase] || phase;
+  const itemId = event.item_id ? `：${event.item_id}` : "";
+  const status = event.status ? ` / ${event.status}` : "";
+  const wait = event.timeout_seconds ? ` / ${event.timeout_seconds}s` : "";
+  const error = event.error ? ` / ${event.error}` : "";
+  const level = phase.includes("timeout") || phase.includes("blocked") || phase.includes("failed")
+    ? "WARN"
+    : "DEBUG";
+  appendLog(level, `TTS Queue ${label}${itemId}${status}${wait}${error}`);
+}
+
+function reportPresentationClientDebug(phase, item, details = {}) {
+  if (!state.sessionId) return Promise.resolve(null);
+  return api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/debug`, {
+    method: "POST",
+    body: {
+      phase,
+      item_id: item?.item_id || "",
+      status: item?.status || "",
+      details,
+    },
+  }).catch((error) => {
+    appendLog("WARN", `TTS Debug 回報失敗：${error.message || error}`);
+    return null;
+  });
+}
+
 function appendMessage(kind, name, role, text) {
   state.messageCount += 1;
   const row = document.createElement("article");
@@ -1340,12 +1384,19 @@ function playPresentationItem() {
       appendLog("WARN", `TTS 錯誤處理失敗：${error.message || error}`);
     });
   }, { once: true });
-  audio.play().catch(() => {
+  audio.play().catch((error) => {
     if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
     state.presentationPlaying = false;
     state.audioUnlockRequired = true;
     updatePresentationStatus("等待啟用聲音", "warn");
     setPresentationControls({ audioUnlock: true, canSkip: true });
+    appendLog("WARN", `TTS 播放被瀏覽器阻擋，等待啟用聲音：${item.item_id}`);
+    reportPresentationClientDebug("audio_play_blocked", item, {
+      phase: "audio_play_blocked",
+      error: error?.message || String(error || "audio.play() rejected"),
+      audio_url_present: Boolean(item.audio_url),
+      queue_length: state.presentationQueue.length,
+    });
   });
 }
 
@@ -1367,12 +1418,17 @@ async function retryCurrentPresentationAudio() {
   setPresentationControls({ canSkip: true });
   try {
     await audio.play();
-  } catch {
+  } catch (error) {
     if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
     state.presentationPlaying = false;
     state.audioUnlockRequired = true;
     updatePresentationStatus("等待啟用聲音", "warn");
     setPresentationControls({ audioUnlock: true, canSkip: true });
+    appendLog("WARN", `TTS 重試播放仍被阻擋：${item.item_id}`);
+    reportPresentationClientDebug("audio_retry_blocked", item, {
+      phase: "audio_retry_blocked",
+      error: error?.message || String(error || "audio.play() rejected"),
+    });
   }
 }
 
@@ -1754,6 +1810,10 @@ function subscribeSessionEvents(sessionId) {
       }
       if (payload.type === "status") {
         refreshStudioSession();
+        return;
+      }
+      if (payload.type === "presentation_debug" && payload.event) {
+        appendPresentationDebugLog(payload.event);
         return;
       }
       if (payload.type === "presentation_item_ready" && payload.item) {
@@ -2146,8 +2206,10 @@ async function startFreeTalkTest() {
     });
     const phase = result?.phase || "";
     if (result?.status === "wait") {
-      freeTalkTestState.textContent = "目前有互動執行中，請稍後再試。";
-      appendLog("WARN", "雜談測試暫停：目前有互動執行中");
+      freeTalkTestState.textContent = "已切換到雜談測試；目前互動執行中，會在結束後繼續。";
+      appendLog("INFO", "已切換到雜談測試，等待目前互動結束");
+      await refreshStudioSession();
+      await refreshConversation();
       return;
     }
     freeTalkTestState.textContent = phase === "post_plan_free_talk"
@@ -2177,6 +2239,7 @@ async function skipMainToFreeTalk() {
       body: {
         reason: "operator_debug_skip_to_free_talk",
         enter_free_talk: true,
+        force_enter_free_talk: true,
       },
     });
     skipMainToFreeTalkState.textContent = "已結束正式節目階段並進入雜談流程。";

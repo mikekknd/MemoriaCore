@@ -255,7 +255,7 @@ def test_live_page_propagates_requested_session_id_to_live_chat_frame():
 def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     live_chat_html = _live_chat_source()
 
-    assert 'live-chat.js?v=presentation-queue-v1' in live_chat_html
+    assert 'live-chat.js?v=interrupt-recovery-v1' in live_chat_html
     assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
     assert '"chat_message"' in live_chat_html
     assert '"youtube_live_event"' in live_chat_html
@@ -274,6 +274,19 @@ def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     assert "state.displayMessages, liveEventMessages, data.messages || []" in live_chat_html
     assert '${message.role || "message"}:${messageId}' in live_chat_html
     assert "scheduleRefresh(0)" in live_chat_html
+
+
+def test_live_chat_recovers_after_interrupt_events():
+    live_chat_html = _live_chat_source()
+
+    assert "interruptRecoveryTimers" in live_chat_html
+    assert "function scheduleInterruptRecoveryRefreshes()" in live_chat_html
+    assert "function handleInteractionInterrupt(payload = {})" in live_chat_html
+    assert 'payload.type === "interrupt_requested" || payload.type === "interaction_interrupted"' in live_chat_html
+    assert "state.presentationQueue = []" in live_chat_html
+    assert "state.currentAudio.pause()" in live_chat_html
+    assert "presentation/current/skip" in live_chat_html
+    assert "35000" in live_chat_html
 
 
 def test_live_chat_renders_youtube_events_as_live_events_not_user_messages():

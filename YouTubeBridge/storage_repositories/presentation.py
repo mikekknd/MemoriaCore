@@ -190,8 +190,12 @@ class PresentationRepositoryMixin:
         items = self.list_presentation_items(
             session_id,
             statuses={"presenting", "played", "failed"},
-            limit=limit,
+            limit=500,
         )
+        items.sort(key=lambda item: (
+            item.get("presented_at") or item.get("created_at") or "",
+            int(item.get("id") or 0),
+        ))
         messages: list[dict] = []
         for item in items:
             text = str(item.get("text") or "").strip()

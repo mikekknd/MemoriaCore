@@ -203,6 +203,7 @@ class PhasePipelineManagerMixin:
         reason: str,
         enter_free_talk: bool,
         topic_root: Path,
+        force_enter_free_talk: bool = False,
     ) -> dict[str, Any]:
         session = self.storage.get_session(session_id)
         if not session:
@@ -275,7 +276,9 @@ class PhasePipelineManagerMixin:
             await self._broadcast(session_id, {"type": "director_state", "director": director_state})
             self._schedule_main_summary_record(session_id, reason=reason_text)
 
-        should_enter_free_talk = bool(enter_free_talk and session.get("post_plan_free_talk_enabled"))
+        should_enter_free_talk = bool(
+            force_enter_free_talk or (enter_free_talk and session.get("post_plan_free_talk_enabled"))
+        )
         if should_enter_free_talk:
             return await self.start_post_plan_free_talk_test(
                 session_id,

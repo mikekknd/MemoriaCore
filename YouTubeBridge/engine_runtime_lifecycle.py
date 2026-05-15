@@ -47,6 +47,42 @@ class RuntimeLifecycleManagerMixin:
     async def sync_autostart(self) -> None:
         for session in self.storage.list_sessions():
             status = session.get("status")
+            if status == "closing":
+                session_id = session["session_id"]
+                finalized_at = datetime.now().isoformat()
+                self.storage.finalize_incomplete_interactions(
+                    session_id,
+                    status="interrupted",
+                    reason="server_restarted_during_closing",
+                    metadata={
+                        "finalized_by": "sync_autostart",
+                        "server_restarted_during_closing": True,
+                    },
+                )
+                self.storage.update_session_summary_state(
+                    session_id,
+                    summary_status=session.get("summary_status") or "pending",
+                    summary_error=session.get("summary_error", ""),
+                    finalized_at=finalized_at,
+                )
+                self.storage.update_session_fields(
+                    session_id,
+                    status="ended",
+                    auto_inject=False,
+                    auto_test_events_enabled=False,
+                )
+                self.storage.update_director_state(
+                    session_id,
+                    director_enabled=False,
+                    status="ended",
+                    consecutive_ai_turns=0,
+                    metadata={
+                        "finalized_by": "sync_autostart",
+                        "server_restarted_during_closing": True,
+                        "server_restart_finalized_at": finalized_at,
+                    },
+                )
+                continue
             should_resume = (
                 session.get("auto_connect")
                 and status in {"starting", "running"}

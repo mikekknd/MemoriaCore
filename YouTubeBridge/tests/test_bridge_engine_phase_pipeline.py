@@ -407,6 +407,38 @@ async def test_finish_main_phase_finalizes_without_free_talk_when_disabled(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_finish_main_phase_force_enters_free_talk_even_when_default_disabled(tmp_path):
+    topic_root = _topic_root(tmp_path)
+    storage = _storage(tmp_path)
+    session = _create_session(
+        storage,
+        post_plan_free_talk_enabled=False,
+        auto_sc_thanks_on_finalize=False,
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    manager._runtimes["live-a"] = runtime
+
+    try:
+        result = await manager.finish_main_phase(
+            "live-a",
+            reason="operator_debug_skip_to_free_talk",
+            enter_free_talk=True,
+            force_enter_free_talk=True,
+            topic_root=topic_root,
+        )
+
+        assert result["phase"] == "post_plan_free_talk"
+        assert storage.get_session("live-a")["status"] == "running"
+        metadata = storage.get_director_state("live-a")["metadata"]
+        assert metadata["phase"] == "post_plan_free_talk"
+        assert metadata["main_audience_closing"]["status"] == "completed"
+        assert metadata["post_plan_free_talk"]["transition_reason"] == "operator_debug_skip_to_free_talk"
+    finally:
+        await _cancel_director_task(runtime)
+
+
+@pytest.mark.asyncio
 async def test_finish_main_phase_refuses_stopped_session_before_mutation(tmp_path):
     storage = _storage(tmp_path)
     _create_session(storage, status="stopped")

@@ -7,6 +7,7 @@ const state = {
   fallbackRefreshTimer: null,
   historyRefreshTimer: null,
   historyRefreshInFlight: false,
+  interruptRecoveryTimers: [],
   presentationQueue: [],
   presentationPlaying: false,
   currentPresentationItem: null,
@@ -279,6 +280,20 @@ function clearStartupRetries() {
   state.startupRetryTimers.forEach((timer) => clearTimeout(timer));
   state.startupRetryTimers = [];
 }
+function clearInterruptRecoveryRefreshes() {
+  state.interruptRecoveryTimers.forEach((timer) => clearTimeout(timer));
+  state.interruptRecoveryTimers = [];
+}
+function scheduleInterruptRecoveryRefreshes() {
+  clearInterruptRecoveryRefreshes();
+  [0, 500, 1500, 3000, 6000, 10000, 20000, 35000].forEach((delay) => {
+    const timer = setTimeout(() => {
+      state.interruptRecoveryTimers = state.interruptRecoveryTimers.filter((item) => item !== timer);
+      refreshChat({ silent: true });
+    }, delay);
+    state.interruptRecoveryTimers.push(timer);
+  });
+}
 function scheduleStartupRetries() {
   clearStartupRetries();
   [500, 1500, 3000, 6000].forEach((delay) => {
@@ -314,6 +329,7 @@ async function ensureSession() {
   if (!selected) {
     state.sessionId = "";
     state.subscribedSessionId = "";
+    clearInterruptRecoveryRefreshes();
     stopHistoryRefresh();
     stopDurationRefresh();
     state.sessionTiming = null;
@@ -325,6 +341,7 @@ async function ensureSession() {
     state.sessionId = selected.session_id;
     state.liveEventMessages = [];
     state.displayMessages = [];
+    clearInterruptRecoveryRefreshes();
     if (state.eventSource) {
       state.eventSource.close();
       state.eventSource = null;
@@ -423,6 +440,26 @@ function presentationItemToMessage(item) {
     source: "presentation",
   };
 }
+function stopPresentationPlayback() {
+  if (state.currentAudio) {
+    state.currentAudio.pause();
+    state.currentAudio.src = "";
+  }
+  state.presentationQueue = [];
+  state.presentationPlaying = false;
+  state.currentPresentationItem = null;
+  state.currentAudio = null;
+}
+function handleInteractionInterrupt(payload = {}) {
+  if (state.presentationEnabled) {
+    stopPresentationPlayback();
+    if (state.sessionId) {
+      apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`).catch(() => {});
+    }
+  }
+  scheduleInterruptRecoveryRefreshes();
+  scheduleRefresh(0);
+}
 async function ackPresentationItem(item) {
   if (!item?.item_id || !state.sessionId) return;
   await apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`);
@@ -516,6 +553,10 @@ function subscribe(sessionId) {
       if (payload.type === "youtube_live_event" && payload.event) {
         appendLiveEvent(payload.event);
         scheduleRefresh(1000);
+        return;
+      }
+      if (payload.type === "interrupt_requested" || payload.type === "interaction_interrupted") {
+        handleInteractionInterrupt(payload);
         return;
       }
       if (payload.type === "presentation_item_ready" && payload.item) {

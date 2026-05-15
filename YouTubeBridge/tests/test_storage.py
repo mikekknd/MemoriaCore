@@ -343,6 +343,81 @@ def test_presentation_items_and_tts_profiles_roundtrip():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_presented_messages_follow_playback_time_when_prefetch_creates_items_early():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+        })
+        first = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-a",
+            "message_id": "msg-a:0",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "sequence_index": 0,
+            "text": "第一句。",
+        })
+        prefetched_next_turn = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-b",
+            "message_id": "msg-b:0",
+            "character_id": "char-b",
+            "character_name": "白蓮",
+            "sequence_index": 0,
+            "text": "下一輪第一句。",
+        })
+        second = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-a",
+            "message_id": "msg-a:1",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "sequence_index": 1,
+            "text": "第二句。",
+        })
+
+        storage.update_presentation_item(
+            first["item_id"],
+            status="played",
+            presented_at="2026-05-15T21:00:00",
+        )
+        storage.update_presentation_item(
+            prefetched_next_turn["item_id"],
+            status="played",
+            presented_at="2026-05-15T21:00:20",
+        )
+        storage.update_presentation_item(
+            second["item_id"],
+            status="played",
+            presented_at="2026-05-15T21:00:10",
+        )
+
+        visible = storage.list_presented_messages("live-a")
+
+        assert [message["content"] for message in visible] == [
+            "第一句。",
+            "第二句。",
+            "下一輪第一句。",
+        ]
+        assert [message["timestamp"] for message in visible] == [
+            "2026-05-15T21:00:00",
+            "2026-05-15T21:00:10",
+            "2026-05-15T21:00:20",
+        ]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_presenting_interaction_is_active():
     tmp_dir = _tmp_dir()
     try:

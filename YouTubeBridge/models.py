@@ -156,6 +156,13 @@ class ReplyRecentRequest(BaseModel):
     priority: int = Field(200, ge=0, le=1000)
 
 
+class PresentationClientDebugRequest(BaseModel):
+    phase: str = Field("client_event", max_length=80)
+    item_id: str = Field("", max_length=120)
+    status: str = Field("", max_length=80)
+    details: dict = Field(default_factory=dict)
+
+
 class CleanupRequest(BaseModel):
     retention_days: int | None = Field(None, ge=1, le=365)
 
@@ -176,6 +183,7 @@ class InterruptRequest(BaseModel):
 class FinishMainPhaseRequest(BaseModel):
     reason: str = Field("episode_plan_completed", max_length=120)
     enter_free_talk: bool = True
+    force_enter_free_talk: bool = False
 
 
 class FinalizePhaseRequest(BaseModel):

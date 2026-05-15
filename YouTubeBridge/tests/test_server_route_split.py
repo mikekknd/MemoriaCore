@@ -167,6 +167,48 @@ async def test_finish_main_phase_route_requires_running_runtime_before_manager_c
 
 
 @pytest.mark.asyncio
+async def test_finish_main_phase_route_passes_force_enter_free_talk(tmp_path):
+    class FakeStorage:
+        def get_session(self, session_id: str):
+            return {"session_id": session_id, "status": "running"}
+
+    class FakeManager:
+        def __init__(self):
+            self.kwargs = None
+
+        def get_status(self, session_id: str):
+            return {"session_id": session_id, "running": True, "status": "running"}
+
+        async def finish_main_phase(self, *args, **kwargs):
+            self.kwargs = kwargs
+            return {"phase": "post_plan_free_talk"}
+
+    manager = FakeManager()
+    server_module._sessions_routes.configure(SimpleNamespace(
+        storage=FakeStorage(),
+        manager=manager,
+        summary_manager=SimpleNamespace(),
+        chat_preview_cache={},
+        static_root=tmp_path,
+        ui_assets_root=tmp_path,
+        e2e_checkpoint_path=tmp_path / "checkpoint.json",
+        free_talk_topic_root=tmp_path / "freeTalkTopics",
+    ))
+
+    await server_module._sessions_routes.finish_main_phase(
+        "session-a",
+        server_module._sessions_routes.FinishMainPhaseRequest(
+            reason="operator",
+            enter_free_talk=True,
+            force_enter_free_talk=True,
+        ),
+    )
+
+    assert manager.kwargs["enter_free_talk"] is True
+    assert manager.kwargs["force_enter_free_talk"] is True
+
+
+@pytest.mark.asyncio
 async def test_finish_main_phase_route_sanitizes_phase_pipeline_response(tmp_path):
     class FakeStorage:
         def get_session(self, session_id: str):

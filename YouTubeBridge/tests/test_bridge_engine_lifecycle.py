@@ -307,3 +307,99 @@ async def test_autostart_finalizes_stale_running_interactions_before_resume():
     finally:
         await manager.stop_all()
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_autostart_finalizes_stale_prefetch_interactions_before_resume():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "auto_connect": True,
+            "status": "running",
+            "auto_inject": False,
+            "auto_test_events_enabled": False,
+        })
+        stale = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetching",
+            "memoria_session_id": "mem-a",
+            "content": "前一個 server process 還沒完成的預載。",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+        await manager.sync_autostart()
+
+        interaction = storage.get_interaction(stale["job_id"])
+        assert interaction["status"] == "interrupted"
+        assert interaction["reason"] == "server_restarted"
+        assert interaction["metadata"]["finalized_by"] == "sync_autostart"
+        assert storage.get_active_interaction("live-a") is None
+        assert manager.get_status("live-a")["running"] is True
+    finally:
+        await manager.stop_all()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_autostart_finalizes_closing_session_left_by_restart():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "auto_connect": True,
+            "status": "closing",
+            "auto_inject": True,
+            "auto_test_events_enabled": True,
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            status="duration_closing_waiting_active",
+        )
+        stale = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetching",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+        await manager.sync_autostart()
+
+        session = storage.get_session("live-a")
+        director_state = storage.get_director_state("live-a")
+        interaction = storage.get_interaction(stale["job_id"])
+        assert manager.get_status("live-a")["running"] is False
+        assert session["status"] == "ended"
+        assert session["auto_inject"] is False
+        assert session["auto_test_events_enabled"] is False
+        assert session["finalized_at"]
+        assert director_state["director_enabled"] is False
+        assert director_state["status"] == "ended"
+        assert director_state["metadata"]["server_restarted_during_closing"] is True
+        assert interaction["status"] == "interrupted"
+        assert interaction["reason"] == "server_restarted_during_closing"
+        assert interaction["metadata"]["finalized_by"] == "sync_autostart"
+        assert storage.get_active_interaction("live-a") is None
+    finally:
+        await manager.stop_all()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
