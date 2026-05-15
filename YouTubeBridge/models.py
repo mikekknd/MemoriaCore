@@ -83,6 +83,10 @@ class LiveSessionConfig(BaseModel):
     post_plan_free_talk_audience_turns_min: int = Field(3, ge=1, le=12)
     post_plan_free_talk_audience_turns_max: int = Field(3, ge=1, le=12)
     post_plan_free_talk_topic_pack_ids: list[str] = Field(default_factory=list)
+    free_talk_closing_target_batches: int = Field(10, ge=1, le=50)
+    free_talk_closing_min_batch_size: int = Field(5, ge=1, le=100)
+    free_talk_closing_max_batch_size: int = Field(30, ge=1, le=200)
+    free_talk_closing_time_limit_seconds: int = Field(300, ge=30, le=3600)
 
     @field_validator("session_id")
     @classmethod
@@ -132,6 +136,10 @@ class StudioLiveDefaults(BaseModel):
     post_plan_free_talk_audience_turns_min: int = Field(3, ge=1, le=12)
     post_plan_free_talk_audience_turns_max: int = Field(3, ge=1, le=12)
     post_plan_free_talk_topic_pack_ids: list[str] = Field(default_factory=list)
+    free_talk_closing_target_batches: int = Field(10, ge=1, le=50)
+    free_talk_closing_min_batch_size: int = Field(5, ge=1, le=100)
+    free_talk_closing_max_batch_size: int = Field(30, ge=1, le=200)
+    free_talk_closing_time_limit_seconds: int = Field(300, ge=30, le=3600)
     super_chat_cooldown_seconds: int = Field(45, ge=0, le=600)
     super_chat_batch_limit: int = Field(3, ge=1, le=20)
     safe_search_enabled: bool = True

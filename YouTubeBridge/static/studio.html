@@ -502,6 +502,22 @@
                 <span>雜談保護上限分鐘</span>
                 <input id="postPlanFreeTalkMinutes" type="number" min="0" max="240" value="20">
               </label>
+              <label class="field-block">
+                <span>雜談收尾目標批次</span>
+                <input id="freeTalkClosingTargetBatches" type="number" min="1" max="50" value="10">
+              </label>
+              <label class="field-block">
+                <span>雜談收尾每批最少留言</span>
+                <input id="freeTalkClosingMinBatchSize" type="number" min="1" max="100" value="5">
+              </label>
+              <label class="field-block">
+                <span>雜談收尾每批最多留言</span>
+                <input id="freeTalkClosingMaxBatchSize" type="number" min="1" max="200" value="30">
+              </label>
+              <label class="field-block">
+                <span>雜談收尾保護秒數</span>
+                <input id="freeTalkClosingTimeLimitSeconds" type="number" min="30" max="3600" value="300">
+              </label>
             </div>
             <div class="free-talk-topic-box">
               <div class="topic-box-head">

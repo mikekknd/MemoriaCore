@@ -96,10 +96,13 @@ class EventRepositoryMixin:
         limit: int = 100,
         after_id: int | None = None,
         uninjected_only: bool = False,
+        include_inactive: bool = False,
     ) -> list[dict]:
         limit = max(1, min(int(limit or 100), 500))
         params: list[Any] = [session_id]
         where = "bridge_session_id = ?"
+        if not include_inactive:
+            where += " AND status = 'active'"
         order = "DESC"
         if uninjected_only:
             where += " AND (injected_at IS NULL OR injected_at = '')"
@@ -116,6 +119,44 @@ class EventRepositoryMixin:
         if after_id is None:
             events.reverse()
         return [event for event in events if event]
+
+    def mark_events_low_signal_skipped(self, session_id: str, reasons_by_event_id: dict[int, str]) -> int:
+        if not reasons_by_event_id:
+            return 0
+        now = datetime.now().isoformat()
+        updated = 0
+        with self._lock, self._connect() as conn:
+            for event_id, reason in reasons_by_event_id.items():
+                try:
+                    normalized_event_id = int(event_id)
+                except (TypeError, ValueError):
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT * FROM live_events
+                    WHERE id = ? AND bridge_session_id = ?
+                    """,
+                    (normalized_event_id, session_id),
+                ).fetchone()
+                if not row:
+                    continue
+                metadata = self._json_load(row["metadata_json"], {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata["low_signal_reason"] = str(reason or "")[:120]
+                metadata["low_signal_skipped_at"] = now
+                cursor = conn.execute(
+                    """
+                    UPDATE live_events
+                    SET status = 'low_signal_skipped',
+                        metadata_json = ?
+                    WHERE id = ? AND bridge_session_id = ?
+                    """,
+                    (self._json_dump(metadata), normalized_event_id, session_id),
+                )
+                updated += int(cursor.rowcount or 0)
+            conn.commit()
+        return updated
 
     def get_events_by_ids(self, session_id: str, event_ids: list[int], *, limit: int = 100) -> list[dict]:
         ids: list[int] = []

@@ -161,6 +161,65 @@ def test_session_persists_post_plan_free_talk_fields(tmp_path):
     assert saved["post_plan_free_talk_topic_pack_ids"] == ["anime-casual", "creator-life"]
 
 
+def test_session_persists_free_talk_closing_batch_settings(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Closing",
+        "free_talk_closing_target_batches": 10,
+        "free_talk_closing_min_batch_size": 5,
+        "free_talk_closing_max_batch_size": 30,
+        "free_talk_closing_time_limit_seconds": 300,
+    })
+
+    assert saved["free_talk_closing_target_batches"] == 10
+    assert saved["free_talk_closing_min_batch_size"] == 5
+    assert saved["free_talk_closing_max_batch_size"] == 30
+    assert saved["free_talk_closing_time_limit_seconds"] == 300
+
+
+def test_session_clamps_and_preserves_free_talk_closing_batch_settings(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Closing",
+        "free_talk_closing_target_batches": 0,
+        "free_talk_closing_min_batch_size": 500,
+        "free_talk_closing_max_batch_size": 2,
+        "free_talk_closing_time_limit_seconds": 5,
+    })
+    updated = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Closing Updated",
+    })
+
+    assert saved["free_talk_closing_target_batches"] == 1
+    assert saved["free_talk_closing_min_batch_size"] == 100
+    assert saved["free_talk_closing_max_batch_size"] == 100
+    assert saved["free_talk_closing_time_limit_seconds"] == 30
+    assert updated["free_talk_closing_target_batches"] == 1
+    assert updated["free_talk_closing_min_batch_size"] == 100
+    assert updated["free_talk_closing_max_batch_size"] == 100
+    assert updated["free_talk_closing_time_limit_seconds"] == 30
+
+
 def test_session_partial_update_preserves_post_plan_free_talk_fields(tmp_path):
     storage = BridgeStorage(tmp_path / "youtube_live.db")
     storage.upsert_connector({
@@ -550,6 +609,42 @@ def test_live_event_dedupes_and_preserves_id_lookup_order():
         assert [event["youtube_message_id"] for event in events] == ["msg-b", "msg-a"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_mark_events_low_signal_skipped_records_reason(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Events",
+    })
+    event = storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "youtube-main",
+        "youtube_message_id": "msg-1",
+        "message_type": "textMessageEvent",
+        "author_channel_id": "u1",
+        "author_display_name": "觀眾",
+        "message_text": "666666",
+        "published_at": "2026-05-15T10:00:00",
+        "received_at": "2026-05-15T10:00:00",
+        "status": "active",
+    })
+
+    updated = storage.mark_events_low_signal_skipped("live-a", {event["id"]: "repeated_short_token"})
+
+    assert updated == 1
+    assert storage.list_events("live-a") == []
+    refreshed = storage.list_events("live-a", include_inactive=True)[0]
+    assert refreshed["status"] == "low_signal_skipped"
+    assert refreshed["metadata"]["low_signal_reason"] == "repeated_short_token"
+    assert refreshed["metadata"]["low_signal_skipped_at"]
 
 
 def test_super_chat_event_starts_pending_until_safety_llm_roundtrip():

@@ -151,6 +151,18 @@ class SessionRepositoryMixin:
                         self._config_value(config, existing, "post_plan_free_talk_topic_pack_ids", [])
                     )
                 ),
+                "free_talk_closing_target_batches": self._clamped_int(
+                    self._config_value(config, existing, "free_talk_closing_target_batches", 10), 10, 1, 50
+                ),
+                "free_talk_closing_min_batch_size": self._clamped_int(
+                    self._config_value(config, existing, "free_talk_closing_min_batch_size", 5), 5, 1, 100
+                ),
+                "free_talk_closing_max_batch_size": self._clamped_int(
+                    self._config_value(config, existing, "free_talk_closing_max_batch_size", 30), 30, 1, 200
+                ),
+                "free_talk_closing_time_limit_seconds": self._clamped_int(
+                    self._config_value(config, existing, "free_talk_closing_time_limit_seconds", 300), 300, 30, 3600
+                ),
                 "started_at": started_at,
                 "finalized_at": finalized_at,
                 "summary_status": summary_status,
@@ -164,6 +176,8 @@ class SessionRepositoryMixin:
                 row_data["post_plan_free_talk_idle_turns_max"] = row_data["post_plan_free_talk_idle_turns_min"]
             if row_data["post_plan_free_talk_audience_turns_min"] > row_data["post_plan_free_talk_audience_turns_max"]:
                 row_data["post_plan_free_talk_audience_turns_max"] = row_data["post_plan_free_talk_audience_turns_min"]
+            if row_data["free_talk_closing_min_batch_size"] > row_data["free_talk_closing_max_batch_size"]:
+                row_data["free_talk_closing_max_batch_size"] = row_data["free_talk_closing_min_batch_size"]
             columns = list(row_data.keys())
             placeholders = ", ".join("?" for _ in columns)
             update_clause = ",\n                    ".join(

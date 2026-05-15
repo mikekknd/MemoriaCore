@@ -139,6 +139,10 @@ const liveSettingControls = [
   "clearRuntimeSessionAfterSummary",
   "postPlanFreeTalkEnabled",
   "postPlanFreeTalkMinutes",
+  "freeTalkClosingTargetBatches",
+  "freeTalkClosingMinBatchSize",
+  "freeTalkClosingMaxBatchSize",
+  "freeTalkClosingTimeLimitSeconds",
   "superChatCooldownSeconds",
   "superChatBatchLimit",
   "safeSearchEnabled",
@@ -1500,12 +1504,39 @@ function phaseSummaryStatus(summary = {}) {
   return summary.memory_write_status || summary.status || "未開始";
 }
 
+function countValue(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? Math.max(0, Math.floor(numberValue)) : 0;
+}
+
+function freeTalkClosingText(metadata = {}) {
+  const closing = metadata?.free_talk_audience_closing;
+  if (!closing || typeof closing !== "object") return "";
+  const countKeys = [
+    "handled_count",
+    "eligible_processed_count",
+    "processed_count",
+    "skipped_count",
+    "closing_skipped_count",
+    "low_signal_skipped_count",
+  ];
+  if (!countKeys.some((key) => Object.prototype.hasOwnProperty.call(closing, key))) {
+    return "";
+  }
+  const handled = countValue(closing.handled_count ?? closing.eligible_processed_count ?? closing.processed_count);
+  const skipped = countValue(closing.skipped_count ?? closing.closing_skipped_count);
+  const lowSignal = countValue(closing.low_signal_skipped_count);
+  return `雜談收尾：處理 ${handled} / 跳過 ${skipped} / 低訊號 ${lowSignal}`;
+}
+
 function phaseSummaryText(session) {
   const base = state.live ? "直播中" : (session ? "已停止" : "未開始");
   const metadata = session?.director_state?.metadata || session?.metadata || session?.runtime_status?.metadata || {};
   const mainSummary = phaseSummaryStatus(metadata.main_summary);
   const freeTalkSummary = phaseSummaryStatus(metadata.free_talk_summary);
-  return `${base} · 正式摘要：${mainSummary} / 雜談摘要：${freeTalkSummary}`;
+  const summaryText = `${base} · 正式摘要：${mainSummary} / 雜談摘要：${freeTalkSummary}`;
+  const closingText = freeTalkClosingText(metadata);
+  return closingText ? `${summaryText} · ${closingText}` : summaryText;
 }
 
 function applySessionSnapshot(session) {
@@ -1569,6 +1600,10 @@ function studioLiveSessionPayload() {
     auto_delete_after_processed: liveDefaults.clear_runtime_session_after_summary,
     sc_interrupt_cooldown_seconds: liveDefaults.super_chat_cooldown_seconds,
     max_sc_per_batch: liveDefaults.super_chat_batch_limit,
+    free_talk_closing_target_batches: liveDefaults.free_talk_closing_target_batches,
+    free_talk_closing_min_batch_size: liveDefaults.free_talk_closing_min_batch_size,
+    free_talk_closing_max_batch_size: liveDefaults.free_talk_closing_max_batch_size,
+    free_talk_closing_time_limit_seconds: liveDefaults.free_talk_closing_time_limit_seconds,
     research_enabled: liveDefaults.safe_search_enabled,
     presentation_enabled: false,
     tts_enabled: false,
@@ -1899,6 +1934,10 @@ function collectLiveDefaults() {
     clear_runtime_session_after_summary: $("clearRuntimeSessionAfterSummary").checked,
     post_plan_free_talk_enabled: $("postPlanFreeTalkEnabled").checked,
     post_plan_free_talk_minutes: readPositiveNumber($("postPlanFreeTalkMinutes"), 20),
+    free_talk_closing_target_batches: readPositiveNumber($("freeTalkClosingTargetBatches"), 10),
+    free_talk_closing_min_batch_size: readPositiveNumber($("freeTalkClosingMinBatchSize"), 5),
+    free_talk_closing_max_batch_size: readPositiveNumber($("freeTalkClosingMaxBatchSize"), 30),
+    free_talk_closing_time_limit_seconds: readPositiveNumber($("freeTalkClosingTimeLimitSeconds"), 300),
     super_chat_cooldown_seconds: readPositiveNumber($("superChatCooldownSeconds"), 45),
     super_chat_batch_limit: readPositiveNumber($("superChatBatchLimit"), 3),
     safe_search_enabled: $("safeSearchEnabled").checked,
@@ -1970,6 +2009,10 @@ function applyLiveDefaults(settings = {}) {
   setInputChecked("clearRuntimeSessionAfterSummary", settings.clear_runtime_session_after_summary !== false);
   setInputChecked("postPlanFreeTalkEnabled", settings.post_plan_free_talk_enabled);
   setInputValue("postPlanFreeTalkMinutes", settings.post_plan_free_talk_minutes ?? 20);
+  setInputValue("freeTalkClosingTargetBatches", settings.free_talk_closing_target_batches ?? 10);
+  setInputValue("freeTalkClosingMinBatchSize", settings.free_talk_closing_min_batch_size ?? 5);
+  setInputValue("freeTalkClosingMaxBatchSize", settings.free_talk_closing_max_batch_size ?? 30);
+  setInputValue("freeTalkClosingTimeLimitSeconds", settings.free_talk_closing_time_limit_seconds ?? 300);
   if (
     settings.post_plan_free_talk_topic_pack_ids_configured === true
     && Array.isArray(settings.post_plan_free_talk_topic_pack_ids)
@@ -2474,6 +2517,10 @@ function bindEvents() {
     "clearRuntimeSessionAfterSummary",
     "postPlanFreeTalkEnabled",
     "postPlanFreeTalkMinutes",
+    "freeTalkClosingTargetBatches",
+    "freeTalkClosingMinBatchSize",
+    "freeTalkClosingMaxBatchSize",
+    "freeTalkClosingTimeLimitSeconds",
     "freeTalkTopicAll",
     "superChatCooldownSeconds",
     "superChatBatchLimit",

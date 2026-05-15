@@ -579,6 +579,67 @@ def test_studio_free_talk_topic_selection_uses_configured_presence_flag():
     assert "state.freeTalkTopicSelectionInitialized" in payload_body
 
 
+def test_studio_free_talk_closing_batch_settings_are_in_payloads():
+    studio_html = _studio_source()
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    apply_index = studio_js.index("function applyLiveDefaults(settings = {})")
+    apply_body = studio_js[apply_index:studio_js.index("function applyTtsSources", apply_index)]
+    collect_index = studio_js.index("function collectLiveDefaults()")
+    collect_body = studio_js[collect_index:studio_js.index("function collectConnectorSettings", collect_index)]
+    payload_index = studio_js.index("function studioLiveSessionPayload()")
+    payload_body = studio_js[payload_index:studio_js.index("async function startStudioDirector", payload_index)]
+    controls_index = studio_js.index("const liveSettingControls = [")
+    controls_body = studio_js[controls_index:studio_js.index("].map((id) => $(id));", controls_index)]
+    binding_index = studio_js.index('"connectorApiKeyInput"')
+    binding_body = studio_js[binding_index:studio_js.index("].forEach((id) => {", binding_index)]
+
+    expected_controls = [
+        'id="freeTalkClosingTargetBatches"',
+        'id="freeTalkClosingMinBatchSize"',
+        'id="freeTalkClosingMaxBatchSize"',
+        'id="freeTalkClosingTimeLimitSeconds"',
+    ]
+    for control in expected_controls:
+        assert control in studio_html
+
+    expected_labels = [
+        "雜談收尾目標批次",
+        "雜談收尾每批最少留言",
+        "雜談收尾每批最多留言",
+        "雜談收尾保護秒數",
+    ]
+    for label in expected_labels:
+        assert label in studio_html
+
+    expected_fields = [
+        ("freeTalkClosingTargetBatches", "free_talk_closing_target_batches", 10),
+        ("freeTalkClosingMinBatchSize", "free_talk_closing_min_batch_size", 5),
+        ("freeTalkClosingMaxBatchSize", "free_talk_closing_max_batch_size", 30),
+        ("freeTalkClosingTimeLimitSeconds", "free_talk_closing_time_limit_seconds", 300),
+    ]
+    for control_id, field_name, fallback in expected_fields:
+        assert f'"{control_id}"' in controls_body
+        assert f'"{control_id}"' in binding_body
+        assert f'setInputValue("{control_id}", settings.{field_name} ?? {fallback})' in apply_body
+        assert f'{field_name}: readPositiveNumber($("{control_id}"), {fallback})' in collect_body
+        assert f'{field_name}: liveDefaults.{field_name}' in payload_body
+
+
+def test_studio_phase_status_mentions_free_talk_closing_counts():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    phase_index = studio_js.index("function phaseSummaryText(session)")
+    phase_body = studio_js[phase_index:studio_js.index("function applySessionSnapshot(session)", phase_index)]
+
+    assert "function freeTalkClosingText(" in studio_js
+    assert "freeTalkClosingText(metadata)" in phase_body
+    assert "free_talk_audience_closing" in studio_js
+    assert "eligible_processed_count" in studio_js
+    assert "closing_skipped_count" in studio_js
+    assert "low_signal_skipped_count" in studio_js
+    assert "雜談收尾" in studio_js
+    assert "低訊號" in studio_js
+
+
 def test_studio_p0_exposes_preflight_and_manual_source_session_flow():
     studio_html = _studio_source()
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")

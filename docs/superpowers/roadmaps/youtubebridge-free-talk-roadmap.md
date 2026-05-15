@@ -48,7 +48,7 @@ Do not use the single-agent `superpowers:executing-plans` fallback for this road
 - [x] Stage 1: Topic Library And Manual Free Talk Runtime
 - [x] Stage 2: Main Finish Pipeline And Phase Transition
 - [x] Stage 3: Two Independent Summaries And Cleanup Wait
-- [ ] Stage 4: Low-Signal Filter And Large-Batch Free-Talk Closing
+- [x] Stage 4: Low-Signal Filter And Large-Batch Free-Talk Closing
 - [ ] Final Goal Gate: Full Studio lifecycle E2E and full regression pass
 
 ## Stage Checklist
@@ -147,6 +147,8 @@ Completion gate:
 - Browser E2E confirms low-signal comments are skipped and not included in generated response text.
 - Browser E2E confirms eligible comments are grouped into larger batches.
 - Final summary excludes skipped low-signal noise.
+
+Completion note (2026-05-15): Studio E2E `codex_stage4_noisy` completed with free-talk closing metadata `eligible_processed_count=3`, `low_signal_skipped_count=3`, `closing_skipped_count=0`, `batch_count=1`; `main` summary id 46 and `free_talk` summary id 47 both completed Shared Memory writes.
 
 ## Final Goal Gate
 

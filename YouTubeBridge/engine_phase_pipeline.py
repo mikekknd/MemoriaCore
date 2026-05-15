@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from bridge_runtime import LiveRuntime
+from free_talk_low_signal import classify_low_signal_comment, free_talk_closing_batch_size
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -37,9 +39,162 @@ class PhasePipelineManagerMixin:
         if action_phase:
             return action_phase
         source_text = str(source or "").strip()
-        if source_text == "main_audience_closing":
-            return "main_audience_closing"
+        if source_text in {"main_audience_closing", "free_talk_audience_closing"}:
+            return source_text
         return self._event_phase_for_session(session_id)
+
+    @staticmethod
+    def _is_free_talk_closing_candidate(event: dict[str, Any]) -> bool:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        phase = str(metadata.get("phase") or metadata.get("live_phase") or "").strip()
+        if phase not in {"post_plan_free_talk", "free_talk"}:
+            return False
+        if str(event.get("status") or "") != "active":
+            return False
+        if not str(event.get("message_text") or "").strip():
+            return False
+        priority_class = str(event.get("priority_class") or "normal").strip()
+        message_type = str(event.get("message_type") or "").strip()
+        if priority_class == "super_chat" or message_type == "superChatEvent":
+            return False
+        return not event.get("injected_at")
+
+    @staticmethod
+    def _duplicate_message_key(text: str) -> str:
+        return "".join(str(text or "").split()).lower()
+
+    async def _run_free_talk_audience_closing(self, session_id: str, *, reason: str) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            raise ValueError("live session 不存在")
+        started_clock = time.monotonic()
+        started_at = datetime.now().isoformat()
+        reason_text = str(reason or "operator_finalize")[:120]
+        limit_seconds = max(1, int(session.get("free_talk_closing_time_limit_seconds", 300) or 300))
+        self.storage.update_session_fields(session_id, auto_inject=False)
+        metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
+        metadata["phase"] = "free_talk_audience_closing"
+        metadata["free_talk_audience_closing"] = {
+            **dict(metadata.get("free_talk_audience_closing") or {}),
+            "status": "running",
+            "reason": reason_text,
+            "started_at": started_at,
+        }
+        director_state = self.storage.update_director_state(
+            session_id,
+            status="free_talk_audience_closing",
+            metadata=metadata,
+        )
+        await self._broadcast(session_id, {"type": "director_state", "director": director_state})
+
+        pending: list[dict[str, Any]] = []
+        after_id = 0
+        time_limited = False
+        while True:
+            if time.monotonic() - started_clock >= limit_seconds:
+                time_limited = True
+                break
+            page = self.storage.list_events(
+                session_id,
+                limit=500,
+                after_id=after_id,
+                uninjected_only=True,
+            )
+            if not page:
+                break
+            after_id = max(int(event.get("id") or 0) for event in page)
+            pending.extend(event for event in page if self._is_free_talk_closing_candidate(event))
+            if len(page) < 500:
+                break
+
+        low_signal_reasons: dict[int, str] = {}
+        eligible: list[dict[str, Any]] = []
+        seen_messages: set[str] = set()
+        for event in pending:
+            text = str(event.get("message_text") or "")
+            reason_code = classify_low_signal_comment(text)
+            duplicate_key = self._duplicate_message_key(text)
+            if duplicate_key and duplicate_key in seen_messages:
+                reason_code = reason_code or "duplicate_message"
+            if reason_code:
+                low_signal_reasons[int(event["id"])] = reason_code
+                continue
+            eligible.append(event)
+            if duplicate_key:
+                seen_messages.add(duplicate_key)
+
+        low_signal_skipped_count = self.storage.mark_events_low_signal_skipped(session_id, low_signal_reasons)
+        batch_size = free_talk_closing_batch_size(
+            len(eligible),
+            target_batches=int(session.get("free_talk_closing_target_batches", 10) or 10),
+            min_batch_size=int(session.get("free_talk_closing_min_batch_size", 5) or 5),
+            max_batch_size=int(session.get("free_talk_closing_max_batch_size", 30) or 30),
+        )
+        processed_ids: list[int] = []
+        batch_count = 0
+        for start in range(0, len(eligible), batch_size):
+            if time.monotonic() - started_clock >= limit_seconds:
+                time_limited = True
+                break
+            batch = eligible[start:start + batch_size]
+            if not batch:
+                continue
+            batch_ids = [int(event["id"]) for event in batch]
+            result = await self.inject_recent(
+                session_id,
+                event_ids=batch_ids,
+                max_events=len(batch_ids),
+                content=(
+                    "以下是雜談收尾時尚未回覆的聊天室留言摘要。"
+                    "請用自然收尾語氣一次回應主要問題與情緒，不需要逐條點名。"
+                ),
+                memoria_session_id=str(session.get("target_memoria_session_id") or ""),
+                character_ids=session.get("character_ids", []),
+                source="free_talk_audience_closing",
+                priority=260,
+                claim_timeout_seconds=0.2,
+            )
+            injected_ids = [
+                int(event_id)
+                for event_id in (result.get("summary") or {}).get("event_ids", [])
+            ]
+            processed_ids.extend(injected_ids)
+            batch_count += 1
+
+        eligible_processed_count = len(dict.fromkeys(processed_ids))
+        closing_skipped_count = max(0, len(eligible) - eligible_processed_count)
+        if closing_skipped_count and time_limited:
+            status = "time_limited"
+        elif closing_skipped_count:
+            status = "completed_with_skips"
+        else:
+            status = "completed"
+        metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
+        closing_metadata = {
+            **dict(metadata.get("free_talk_audience_closing") or {}),
+            "status": status,
+            "reason": reason_text,
+            "eligible_processed_count": eligible_processed_count,
+            "low_signal_skipped_count": low_signal_skipped_count,
+            "closing_skipped_count": closing_skipped_count,
+            "batch_size": batch_size,
+            "batch_count": batch_count,
+            "completed_at": datetime.now().isoformat(),
+        }
+        metadata["phase"] = "free_talk_audience_closing"
+        metadata["free_talk_audience_closing"] = closing_metadata
+        director_state = self.storage.update_director_state(
+            session_id,
+            status="free_talk_audience_closing",
+            metadata=metadata,
+        )
+        await self._broadcast(session_id, {"type": "director_state", "director": director_state})
+        await self._broadcast(session_id, {
+            "type": "free_talk_audience_closing_completed",
+            "session_id": session_id,
+            "closing": closing_metadata,
+        })
+        return closing_metadata
 
     async def finish_main_phase(
         self,
@@ -167,14 +322,10 @@ class PhasePipelineManagerMixin:
         if phase == "post_plan_free_talk":
             async with runtime.closing_lock:
                 session = self.storage.get_session(session_id) or session
+                runtime.status = "free_talk_audience_closing"
+                closing = await self._run_free_talk_audience_closing(session_id, reason=reason_text)
                 metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
                 metadata["phase"] = "free_talk_audience_closing"
-                metadata["free_talk_audience_closing"] = {
-                    **dict(metadata.get("free_talk_audience_closing") or {}),
-                    "status": "completed",
-                    "reason": reason_text,
-                    "completed_at": datetime.now().isoformat(),
-                }
                 metadata["free_talk_summary"] = {
                     **dict(metadata.get("free_talk_summary") or {}),
                     "status": "queued",
@@ -189,6 +340,7 @@ class PhasePipelineManagerMixin:
                 await self._broadcast(session_id, {"type": "director_state", "director": director_state})
 
             await self.run_phase_summary(session_id, summary_phase="free_talk", reason=reason_text)
+            final_metadata = dict((self.storage.get_director_state(session_id) or {}).get("metadata") or {})
             finalized = await self._finalize_live_session(
                 runtime,
                 self.storage.get_session(session_id) or session,
@@ -196,6 +348,7 @@ class PhasePipelineManagerMixin:
                 closing_message="free talk summary completed; closing live session",
                 ended_message="free talk summary completed",
                 metadata={
+                    **final_metadata,
                     "phase": "ended",
                     "phase_finalize": {
                         "status": "completed",
@@ -208,6 +361,7 @@ class PhasePipelineManagerMixin:
             return {
                 "phase": "free_talk_summary",
                 **finalized,
+                "free_talk_audience_closing": closing,
                 "cleanup": cleanup,
             }
 
