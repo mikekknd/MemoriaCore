@@ -32,6 +32,13 @@ const state = {
   selectedFreeTalkTopicPackIds: [],
   savedFreeTalkTopicPackIds: null,
   freeTalkTopicSelectionInitialized: false,
+  presentationQueue: [],
+  presentationPlaying: false,
+  currentPresentationItem: null,
+  currentAudio: null,
+  audioUnlockRequired: false,
+  presentationAckInFlight: false,
+  presentationAudioCache: new Map(),
   summaryLoading: false,
 };
 
@@ -1167,6 +1174,246 @@ function renderConversationEmpty(message = "尚未開始直播；開始後會顯
   empty.className = "conversation-empty";
   empty.textContent = message;
   feed.append(empty);
+}
+
+function updatePresentationStatus(statusText = "語音待機", level = "neutral") {
+  const status = $("presentationAudioStatus");
+  if (!status) return;
+  status.textContent = statusText;
+  status.className = `state-badge ${level}`;
+}
+
+function setPresentationControls({ audioUnlock = false, canSkip = false } = {}) {
+  const enableButton = $("enablePresentationAudio");
+  const skipButton = $("skipPresentation");
+  if (enableButton) enableButton.classList.toggle("hidden", !audioUnlock);
+  if (skipButton) skipButton.disabled = !canSkip;
+}
+
+function stopAudioElement(audio) {
+  if (!audio) return;
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+}
+
+function clearPresentationAudioCache() {
+  state.presentationAudioCache.forEach((audio) => stopAudioElement(audio));
+  state.presentationAudioCache.clear();
+}
+
+function stopCurrentPresentationAudio() {
+  stopAudioElement(state.currentAudio);
+  state.currentAudio = null;
+}
+
+function resetPresentationPlayer({ statusText = "語音待機" } = {}) {
+  stopCurrentPresentationAudio();
+  clearPresentationAudioCache();
+  state.presentationQueue = [];
+  state.presentationPlaying = false;
+  state.currentPresentationItem = null;
+  state.audioUnlockRequired = false;
+  state.presentationAckInFlight = false;
+  updatePresentationStatus(statusText, "neutral");
+  setPresentationControls();
+}
+
+function presentationItemToMessage(item) {
+  return {
+    message_id: item.message_id || item.item_id,
+    role: "assistant",
+    content: item.text || "",
+    created_at: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
+    character_id: item.character_id || "",
+    character_name: item.character_name || "AI",
+    source: "presentation",
+  };
+}
+
+function cachePresentationAudio(item) {
+  const itemId = String(item?.item_id || "");
+  const audioUrl = String(item?.audio_url || "");
+  if (!itemId || !audioUrl || state.presentationAudioCache.has(itemId)) return;
+  const audio = new Audio(audioUrl);
+  audio.preload = "auto";
+  state.presentationAudioCache.set(itemId, audio);
+  appendLog("DEBUG", `已預載 TTS 音訊：${itemId}`);
+}
+
+function audioForPresentationItem(item) {
+  const itemId = String(item?.item_id || "");
+  const cached = itemId ? state.presentationAudioCache.get(itemId) : null;
+  if (cached) {
+    state.presentationAudioCache.delete(itemId);
+    return cached;
+  }
+  const audio = new Audio(item.audio_url || "");
+  audio.preload = "auto";
+  return audio;
+}
+
+async function ackPresentationItem(item) {
+  if (!item?.item_id || !state.sessionId || state.presentationAckInFlight) return false;
+  state.presentationAckInFlight = true;
+  try {
+    await api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`, {
+      method: "POST",
+    });
+    appendLog("DEBUG", `TTS 播放完成並 ACK：${item.item_id}`);
+    return true;
+  } catch (error) {
+    appendLog("WARN", `TTS ACK 失敗：${error.message || error}`);
+    await refreshStudioSession();
+    return false;
+  } finally {
+    state.presentationAckInFlight = false;
+  }
+}
+
+function isCurrentPresentationItem(item) {
+  return Boolean(
+    item?.item_id
+    && state.currentPresentationItem?.item_id
+    && item.item_id === state.currentPresentationItem.item_id
+  );
+}
+
+async function finishPresentationItem(item, reason = "ended") {
+  if (!isCurrentPresentationItem(item)) return;
+  state.presentationPlaying = true;
+  state.audioUnlockRequired = false;
+  setPresentationControls({ canSkip: false });
+  updatePresentationStatus(reason === "error" ? "語音錯誤，送出文字" : "送出 ACK", reason === "error" ? "warn" : "neutral");
+  const acked = await ackPresentationItem(item);
+  if (!isCurrentPresentationItem(item)) return;
+  stopCurrentPresentationAudio();
+  state.currentPresentationItem = null;
+  state.presentationPlaying = false;
+  if (acked) {
+    updatePresentationStatus("語音待機", "neutral");
+    playPresentationItem();
+  } else {
+    updatePresentationStatus("ACK 失敗", "warn");
+    setPresentationControls();
+  }
+}
+
+function playPresentationItem() {
+  if (state.presentationPlaying || state.audioUnlockRequired || state.currentPresentationItem) return;
+  const item = state.presentationQueue.shift();
+  if (!item?.item_id) {
+    updatePresentationStatus("語音待機", "neutral");
+    setPresentationControls();
+    return;
+  }
+  state.presentationPlaying = true;
+  state.currentPresentationItem = item;
+  state.audioUnlockRequired = false;
+  feed.querySelector(".conversation-empty")?.remove();
+  appendChatPreviewMessage(presentationItemToMessage(item), { prepend: true });
+  updatePresentationStatus("播放中", "good");
+  setPresentationControls({ canSkip: true });
+
+  if (!item.audio_url) {
+    appendLog("WARN", `TTS 音訊未產生，改以文字送出：${item.item_id}`);
+    finishPresentationItem(item, "text_fallback").catch((error) => {
+      appendLog("WARN", `文字 fallback ACK 失敗：${error.message || error}`);
+    });
+    return;
+  }
+
+  const audio = audioForPresentationItem(item);
+  state.currentAudio = audio;
+  audio.addEventListener("ended", () => {
+    finishPresentationItem(item, "ended").catch((error) => {
+      appendLog("WARN", `TTS 完播處理失敗：${error.message || error}`);
+    });
+  }, { once: true });
+  audio.addEventListener("error", () => {
+    finishPresentationItem(item, "error").catch((error) => {
+      appendLog("WARN", `TTS 錯誤處理失敗：${error.message || error}`);
+    });
+  }, { once: true });
+  audio.play().catch(() => {
+    state.presentationPlaying = false;
+    state.audioUnlockRequired = true;
+    updatePresentationStatus("等待啟用聲音", "warn");
+    setPresentationControls({ audioUnlock: true, canSkip: true });
+  });
+}
+
+function enqueuePresentationItem(item) {
+  if (!item?.item_id) return;
+  cachePresentationAudio(item);
+  state.presentationQueue.push(item);
+  appendLog("DEBUG", `收到 TTS 句子：${item.item_id}`);
+  playPresentationItem();
+}
+
+async function retryCurrentPresentationAudio() {
+  if (!state.currentPresentationItem || !state.currentAudio) return;
+  state.audioUnlockRequired = false;
+  state.presentationPlaying = true;
+  updatePresentationStatus("播放中", "good");
+  setPresentationControls({ canSkip: true });
+  try {
+    await state.currentAudio.play();
+  } catch {
+    state.presentationPlaying = false;
+    state.audioUnlockRequired = true;
+    updatePresentationStatus("等待啟用聲音", "warn");
+    setPresentationControls({ audioUnlock: true, canSkip: true });
+  }
+}
+
+async function skipCurrentPresentation() {
+  const hadCurrent = Boolean(state.currentPresentationItem);
+  stopCurrentPresentationAudio();
+  state.presentationPlaying = false;
+  state.currentPresentationItem = null;
+  state.audioUnlockRequired = false;
+  updatePresentationStatus("跳過目前句子", "neutral");
+  setPresentationControls();
+  if (!hadCurrent || !state.sessionId) {
+    playPresentationItem();
+    return;
+  }
+  try {
+    await api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {
+      method: "POST",
+    });
+    appendLog("INFO", "已跳過目前 TTS 句子");
+    playPresentationItem();
+  } catch (error) {
+    appendLog("WARN", `跳過 TTS 句子失敗：${error.message || error}`);
+    await refreshStudioSession();
+  }
+}
+
+async function handlePresentationInterrupt(payload = {}) {
+  const hadCurrent = Boolean(state.currentPresentationItem);
+  stopCurrentPresentationAudio();
+  clearPresentationAudioCache();
+  state.presentationQueue = [];
+  state.presentationPlaying = false;
+  state.currentPresentationItem = null;
+  state.audioUnlockRequired = false;
+  updatePresentationStatus("直播互動打斷", "warn");
+  setPresentationControls();
+  appendLog("INFO", `TTS 播放已被打斷：${payload.reason || payload.closure_text || "interaction"}`);
+  if (hadCurrent && state.sessionId) {
+    try {
+      await api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {
+        method: "POST",
+      });
+    } catch (error) {
+      appendLog("WARN", `打斷後解除 TTS 等待失敗：${error.message || error}`);
+      await refreshStudioSession();
+    }
+  }
+  scheduleConversationRefresh("直播打斷");
 }
 
 function summaryFromPayload(payload = {}) {

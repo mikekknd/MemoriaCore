@@ -213,6 +213,46 @@ def test_studio_presentation_tts_controls_are_exposed():
     ) in toolbar_html
 
 
+def test_studio_presentation_tts_player_helpers_are_wired():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    expected_state_fields = [
+        "presentationQueue: []",
+        "presentationPlaying: false",
+        "currentPresentationItem: null",
+        "currentAudio: null",
+        "audioUnlockRequired: false",
+        "presentationAckInFlight: false",
+        "presentationAudioCache: new Map()",
+    ]
+    for field in expected_state_fields:
+        assert field in studio_js
+
+    expected_functions = [
+        "function updatePresentationStatus(statusText = \"語音待機\", level = \"neutral\")",
+        "function setPresentationControls(",
+        "function presentationItemToMessage(item)",
+        "function cachePresentationAudio(item)",
+        "function audioForPresentationItem(item)",
+        "function enqueuePresentationItem(item)",
+        "function playPresentationItem()",
+        "async function ackPresentationItem(item)",
+        "async function finishPresentationItem(item, reason = \"ended\")",
+        "async function skipCurrentPresentation()",
+        "async function retryCurrentPresentationAudio()",
+        "async function handlePresentationInterrupt(payload = {})",
+        "function resetPresentationPlayer(",
+    ]
+    for fn in expected_functions:
+        assert fn in studio_js
+
+    assert "new Audio(audioUrl)" in studio_js
+    assert 'audio.preload = "auto"' in studio_js
+    assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`, {' in studio_js
+    assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {' in studio_js
+    assert 'appendChatPreviewMessage(presentationItemToMessage(item), { prepend: true })' in studio_js
+
+
 def test_studio_displays_phase_summary_status():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
 
