@@ -180,6 +180,120 @@ async def test_generate_test_events_without_llm_saves_events():
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
+@pytest.mark.asyncio
+async def test_generate_test_events_accepts_manual_studio_events():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "director_guidance": "測試留言注入。",
+        })
+        manager = YouTubeBridgeManager(storage)
+
+        result = await manager.generate_test_events(
+            "live-a",
+            count=0,
+            use_llm=False,
+            manual_events=[
+                {
+                    "kind": "comment",
+                    "author_display_name": "觀眾 測試帳號",
+                    "message_text": "這是 Studio 送出的明確測試留言。",
+                },
+                {
+                    "kind": "super",
+                    "author_display_name": "SC 測試帳號",
+                    "message_text": "這是 Studio 送出的明確 SC。",
+                    "amount_display_string": "NT$750",
+                },
+            ],
+        )
+
+        assert result["generated"] == 2
+        assert result["super_chat_generated"] == 1
+        events = storage.list_events("live-a")
+        assert [event["message_text"] for event in events] == [
+            "這是 Studio 送出的明確測試留言。",
+            "這是 Studio 送出的明確 SC。",
+        ]
+        assert [event["priority_class"] for event in events] == ["normal", "super_chat"]
+        assert events[1]["amount_display_string"] == "NT$750"
+        assert all(event["metadata"]["source"] == "studio_test_comment" for event in events)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_generate_test_events_uses_llm_for_regular_and_super_chat_text():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "四月新番直播",
+            "director_guidance": "討論 Witch Hat Atelier 與 Re:ZERO 的新番熱度。",
+        })
+
+        class FakeCommentMemoriaClient:
+            calls: list[dict] = []
+
+            def generate_prompt_json(self, *, prompt_key: str, variables: dict, **_kwargs):
+                assert prompt_key == "youtube_live_test_comment_generator_prompt"
+                self.__class__.calls.append(dict(variables))
+                count = int(variables["count"])
+                return {
+                    "comments": [
+                        {
+                            "author_display_name": f"新番觀眾{index + 1}",
+                            "message_text": f"LLM 依直播內容產生留言 {index + 1}：想聊 Witch Hat Atelier。",
+                        }
+                        for index in range(count)
+                    ]
+                }
+
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeCommentMemoriaClient)
+
+        result = await manager.generate_test_events(
+            "live-a",
+            count=2,
+            super_chat_count=1,
+            use_llm=True,
+            include_malicious_sc=False,
+        )
+
+        assert result["generated"] == 3
+        assert [call["count"] for call in FakeCommentMemoriaClient.calls] == ["3"]
+        events = storage.list_events("live-a")
+        normal_events = [event for event in events if event["priority_class"] != "super_chat"]
+        super_chats = [event for event in events if event["priority_class"] == "super_chat"]
+        assert [event["message_text"] for event in normal_events] == [
+            "LLM 依直播內容產生留言 1：想聊 Witch Hat Atelier。",
+            "LLM 依直播內容產生留言 2：想聊 Witch Hat Atelier。",
+        ]
+        assert len(super_chats) == 1
+        assert super_chats[0]["message_text"] == "LLM 依直播內容產生留言 3：想聊 Witch Hat Atelier。"
+        assert super_chats[0]["amount_display_string"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @pytest.mark.asyncio
 async def test_generate_test_events_classifies_when_ui_is_subscribed():
     tmp_dir = _tmp_dir()

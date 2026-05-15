@@ -43,6 +43,9 @@ async def get_persona_overlay(character_id: str):
             "addressing": {},
             "opening_intro": "",
             "reply_rules": "",
+            "avatar_url": "",
+            "chat_background_color": "",
+            "chat_accent_color": "",
             "created_at": "",
             "updated_at": "",
         }

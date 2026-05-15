@@ -18,6 +18,7 @@ from storage_repositories import (
     LivePersonaRepositoryMixin,
     PresentationRepositoryMixin,
     SessionRepositoryMixin,
+    StudioSettingsRepositoryMixin,
     SummaryRepositoryMixin,
     TopicPackRepositoryMixin,
 )
@@ -41,6 +42,7 @@ class BridgeStorage(
     TopicPackRepositoryMixin,
     LivePersonaRepositoryMixin,
     PresentationRepositoryMixin,
+    StudioSettingsRepositoryMixin,
     InteractionRepositoryMixin,
     DirectorStateRepositoryMixin,
     SummaryRepositoryMixin,

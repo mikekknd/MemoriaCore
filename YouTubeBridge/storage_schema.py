@@ -27,6 +27,13 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS studio_settings (
+            section TEXT PRIMARY KEY,
+            payload_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS live_episode_plans (
             plan_id TEXT PRIMARY KEY,
             schema_version TEXT NOT NULL,
@@ -217,6 +224,9 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             addressing_json TEXT DEFAULT '{}',
             opening_intro TEXT DEFAULT '',
             reply_rules TEXT DEFAULT '',
+            avatar_url TEXT DEFAULT '',
+            chat_background_color TEXT DEFAULT '',
+            chat_accent_color TEXT DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -480,6 +490,9 @@ def ensure_live_persona_overlay_columns(conn: sqlite3.Connection) -> None:
         "addressing_json": "addressing_json TEXT DEFAULT '{}'",
         "opening_intro": "opening_intro TEXT DEFAULT ''",
         "reply_rules": "reply_rules TEXT DEFAULT ''",
+        "avatar_url": "avatar_url TEXT DEFAULT ''",
+        "chat_background_color": "chat_background_color TEXT DEFAULT ''",
+        "chat_accent_color": "chat_accent_color TEXT DEFAULT ''",
         "created_at": "created_at TEXT DEFAULT ''",
         "updated_at": "updated_at TEXT DEFAULT ''",
     }

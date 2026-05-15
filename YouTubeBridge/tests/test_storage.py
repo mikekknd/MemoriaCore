@@ -415,6 +415,26 @@ def test_memoria_config_preserves_password_when_blank():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_studio_settings_roundtrip_and_defaults():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+
+        assert storage.get_studio_settings("test_settings") == {}
+        saved = storage.upsert_studio_settings("test_settings", {
+            "normal_comment_count": 12,
+            "auto_comment_enabled": True,
+        })
+        all_settings = storage.get_all_studio_settings()
+
+        assert saved["normal_comment_count"] == 12
+        assert saved["auto_comment_enabled"] is True
+        assert all_settings["test_settings"]["normal_comment_count"] == 12
+        assert storage.get_studio_settings("missing") == {}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_live_event_dedupes_and_preserves_id_lookup_order():
     tmp_dir = _tmp_dir()
     try:

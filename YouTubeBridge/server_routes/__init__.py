@@ -12,6 +12,7 @@ from . import (
     persona_overlays,
     research,
     sessions,
+    studio_settings,
     summaries,
     testing,
     topic_packs,
@@ -30,6 +31,7 @@ _ROUTE_MODULES = (
     fact_cards,
     research,
     persona_overlays,
+    studio_settings,
     summaries,
     memoria,
 )

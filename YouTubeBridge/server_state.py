@@ -14,5 +14,6 @@ class BridgeAppState:
     chat_preview_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     static_root: Path = Path()
     ui_assets_root: Path = Path()
+    studio_avatar_root: Path = Path()
     e2e_checkpoint_path: Path = Path()
     apply_memoria_config: Callable[[], None] | None = None

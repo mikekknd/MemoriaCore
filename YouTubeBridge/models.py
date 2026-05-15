@@ -1,6 +1,8 @@
 """YouTubeBridge API models。"""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -90,6 +92,39 @@ class LiveSessionConfig(BaseModel):
         return [str(v).strip() for v in value if str(v).strip()]
 
 
+class StudioTestSettings(BaseModel):
+    auto_comment_enabled: bool = False
+    normal_comment_count: int = Field(8, ge=0, le=50)
+    super_chat_count: int = Field(2, ge=0, le=10)
+    malicious_comment_enabled: bool = False
+    comment_frequency_seconds: int = Field(8, ge=1, le=120)
+    test_message: str = Field("", max_length=200)
+    summary_preview: str = Field("", max_length=2000)
+
+
+class StudioDisplaySettings(BaseModel):
+    show_live_events_enabled: bool = False
+
+
+class StudioLiveDefaults(BaseModel):
+    auto_inject_pending_enabled: bool = True
+    inject_interval_seconds: int = Field(30, ge=5, le=600)
+    inject_min_interval_seconds: int = Field(10, ge=5, le=600)
+    min_pending_comments: int = Field(1, ge=1, le=100)
+    pending_force_limit: int = Field(12, ge=1, le=100)
+    planned_duration_minutes: int = Field(52, ge=5, le=360)
+    auto_finalize_at_limit: bool = True
+    thank_unhandled_super_chats: bool = True
+    clear_runtime_session_after_summary: bool = True
+    post_plan_free_talk_enabled: bool = False
+    post_plan_free_talk_minutes: int = Field(20, ge=0, le=240)
+    super_chat_cooldown_seconds: int = Field(45, ge=0, le=600)
+    super_chat_batch_limit: int = Field(3, ge=1, le=20)
+    safe_search_enabled: bool = True
+    presentation_queue_enabled: bool = True
+    tts_enabled: bool = False
+
+
 class ReplyRecentRequest(BaseModel):
     content: str = "請根據已提供的 Topic Pack / fact card / YouTube 直播留言上下文回應。不要自行開啟瀏覽器或搜尋網頁。"
     memoria_session_id: str = ""
@@ -144,13 +179,22 @@ class WriteMemoryRequest(BaseModel):
     force: bool = False
 
 
+class TestChatManualEvent(BaseModel):
+    kind: Literal["comment", "super"] = "comment"
+    author_display_name: str = Field("觀眾 測試帳號", max_length=80)
+    message_text: str = Field("", min_length=1, max_length=500)
+    amount_display_string: str = Field("", max_length=40)
+    amount_micros: int = Field(0, ge=0)
+
+
 class TestChatGenerateRequest(BaseModel):
-    count: int = Field(5, ge=1, le=30)
+    count: int = Field(5, ge=0, le=30)
     topic_hint: str = Field("", max_length=1200)
     use_llm: bool = True
     super_chat_count: int = Field(0, ge=0, le=30)
     include_malicious_sc: bool = False
     sc_burst: bool = False
+    manual_events: list[TestChatManualEvent] = Field(default_factory=list, max_length=30)
 
 
 class TopicPackCreateRequest(BaseModel):
@@ -200,6 +244,19 @@ class MemoriaAuthConfig(BaseModel):
     admin_bypass: bool = True
 
 
+class StudioSettingsPatch(BaseModel):
+    connector: ConnectorConfig | None = None
+    memoria_auth: MemoriaAuthConfig | None = None
+    test_settings: StudioTestSettings | None = None
+    display_settings: StudioDisplaySettings | None = None
+    live_defaults: StudioLiveDefaults | None = None
+
+
+class StudioAvatarUploadRequest(BaseModel):
+    filename: str = Field("", min_length=1, max_length=240)
+    data_url: str = Field("", min_length=1, max_length=3_000_000)
+
+
 class YouTubeLiveGlobalSuffixRequest(BaseModel):
     template: str = Field("", max_length=20000)
 
@@ -212,6 +269,9 @@ class LivePersonaOverlayRequest(BaseModel):
     addressing: dict[str, str] = Field(default_factory=dict)
     opening_intro: str = Field("", max_length=1200)
     reply_rules: str = Field("", max_length=2000)
+    avatar_url: str = Field("", max_length=1000)
+    chat_background_color: str = Field("", max_length=20)
+    chat_accent_color: str = Field("", max_length=20)
 
     @field_validator("mode")
     @classmethod
@@ -220,6 +280,25 @@ class LivePersonaOverlayRequest(BaseModel):
         if value not in {"replace", "append"}:
             raise ValueError("mode 必須是 replace 或 append")
         return value
+
+    @field_validator("avatar_url")
+    @classmethod
+    def normalize_avatar_url(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("chat_background_color", "chat_accent_color")
+    @classmethod
+    def validate_chat_color(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            return ""
+        if len(value) != 7 or not value.startswith("#"):
+            raise ValueError("角色色盤必須是 #RRGGBB 格式")
+        try:
+            int(value[1:], 16)
+        except ValueError as exc:
+            raise ValueError("角色色盤必須是 #RRGGBB 格式") from exc
+        return value.lower()
 
 
 class LiveTTSProfileRequest(BaseModel):

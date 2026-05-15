@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTubeBridge Studio</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v24">
+</head>
+<body>
+  <div class="studio-app">
+    <header class="studio-topbar">
+      <div class="brand-row">
+        <strong>YouTubeBridge</strong>
+        <span class="divider"></span>
+        <span class="page-title">直播工作台</span>
+      </div>
+      <div class="topbar-status">
+        <span class="connection-dot"></span>
+        <span id="connectionState">連線狀態：已連線</span>
+        <span class="divider"></span>
+        <span id="studioClock">--:--:--</span>
+      </div>
+    </header>
+
+    <main class="studio-shell">
+      <section id="studio-control" class="panel control-panel" aria-labelledby="controlTitle">
+        <div class="panel-heading">
+          <div>
+            <h1 id="controlTitle">直播中控台</h1>
+          </div>
+          <span id="leftStatusBadge" class="state-badge neutral">未開始</span>
+        </div>
+
+        <label class="field-block">
+          <span>企劃選擇</span>
+          <select id="planSelect">
+            <option value="">載入 LiveEpisodePlan...</option>
+          </select>
+        </label>
+        <div class="plan-state-row">
+          <span id="planStatusBadge" class="state-badge warn">載入中</span>
+          <span id="planStateText">正在同步本地 LiveEpisodePlan</span>
+        </div>
+
+        <div class="source-card">
+          <div class="section-title-row">
+            <h2>直播來源</h2>
+            <span id="sourceDetectionState" class="state-badge neutral">手動/測試模式</span>
+          </div>
+          <p class="source-hint">第二階段採手動/測試模式：手動欄位留空會啟動測試直播；填入 YouTube URL 或 video_id 時會交由後端解析正式直播來源，OBS 自動偵測留到後續階段。</p>
+          <div class="source-grid" aria-label="直播來源偵測結果">
+            <span>video_id</span>
+            <strong id="detectedVideoId">尚未偵測</strong>
+            <span>live_chat_id</span>
+            <strong id="detectedLiveChatId">尚未偵測</strong>
+          </div>
+          <div class="source-actions">
+            <button id="detectSourceButton" class="secondary" type="button">重新整理直播狀態</button>
+          </div>
+          <details class="manual-source">
+            <summary>手動指定</summary>
+            <label class="field-block">
+              <span>YouTube URL 或 video_id</span>
+              <input id="manualVideoInput" type="text" autocomplete="off" placeholder="留空使用測試模式">
+            </label>
+          </details>
+        </div>
+
+        <div class="info-card">
+          <div class="card-title">直播狀態</div>
+          <div class="session-state-row">
+            <span id="sessionDot" class="session-dot"></span>
+            <strong id="sessionStateText">未開始</strong>
+          </div>
+          <div class="meta-grid">
+            <span>預估時長</span><strong>52 分鐘</strong>
+            <span>開始時間</span><strong id="startedAtText">--:--</strong>
+          </div>
+        </div>
+
+        <div id="roleSummaryState" class="role-section role-summary-card">
+          <div class="section-title-row">
+            <h2>直播角色設定</h2>
+            <button id="openRoleSettingsButton" class="secondary small" type="button">調整角色</button>
+          </div>
+          <div id="roleBindingState" class="role-status-line">尚未載入企劃角色</div>
+          <div id="roleSummaryList" class="role-summary-list" aria-label="已啟用直播角色摘要">
+            <span>請先選擇 LiveEpisodePlan</span>
+          </div>
+        </div>
+
+        <div id="preflightChecklist" class="preflight-card">
+          <div class="card-title">開播前檢查</div>
+          <ul class="preflight-list">
+            <li id="preflightPlan" class="check-item ready">
+              <span class="check-dot"></span>
+              <div>
+                <strong>企劃已選擇</strong>
+                <small>LiveEpisodePlan 已載入</small>
+              </div>
+            </li>
+            <li id="preflightSource" class="check-item ready">
+              <span class="check-dot"></span>
+              <div>
+                <strong>直播來源待偵測</strong>
+                <small>按開始直播後自動抓取 video_id / live_chat_id</small>
+              </div>
+            </li>
+            <li id="preflightRoles" class="check-item ready">
+              <span class="check-dot"></span>
+              <div>
+                <strong>角色可用</strong>
+                <small>至少 1 位角色啟用</small>
+              </div>
+            </li>
+            <li id="preflightSettings" class="check-item ready">
+              <span class="check-dot"></span>
+              <div>
+                <strong>直播設定有效</strong>
+                <small>注入、SC、收尾設定可用</small>
+              </div>
+            </li>
+          </ul>
+          <div id="startBlockReason" class="preflight-note">可以開始直播；直播來源會在按下開始後自動偵測。</div>
+        </div>
+
+        <div class="action-box">
+          <button id="startButton" class="primary action-button" type="button">開始直播</button>
+          <button id="stopButton" class="secondary action-button" type="button">收尾 / 停止直播</button>
+        </div>
+
+        <div class="settings-summary-card">
+          <div class="card-title">進階設定摘要</div>
+          <div id="liveSettingsSummary" class="policy-summary">自動注入 ON · TTS OFF · SC 批次 3</div>
+        </div>
+
+        <p class="control-note">開始後，中間區域主要顯示 AI 角色對話；觀眾留言事件預設不顯示。</p>
+      </section>
+
+      <section id="studio-conversation" class="panel conversation-panel" aria-labelledby="conversationTitle">
+        <div class="conversation-header">
+          <div>
+            <h1 id="conversationTitle">直播對話</h1>
+            <p id="conversationSubtitle">EP08｜AI 助理實戰技巧與工具推薦</p>
+          </div>
+          <div class="conversation-tools">
+            <span id="liveBadge" class="state-badge neutral">待機</span>
+            <span id="durationBadge">直播時間 00:00:00</span>
+            <button id="clearConversation" class="link-button" type="button">清除對話</button>
+          </div>
+        </div>
+
+        <div id="conversationFeed" class="conversation-feed newest-first" aria-live="polite">
+          <div class="conversation-empty">尚未開始直播；開始後會顯示後端 Live Session 的 AI 對話。</div>
+        </div>
+
+      </section>
+
+      <aside id="studio-debug" class="panel debug-panel" aria-labelledby="debugTitle">
+        <div class="panel-heading">
+          <div>
+            <h1 id="debugTitle">Debug 與測試</h1>
+          </div>
+        </div>
+
+        <div class="segmented" role="tablist" aria-label="Debug tabs">
+          <button class="segment active" type="button" role="tab" aria-selected="true" data-tab="debug">Debug</button>
+          <button class="segment" type="button" role="tab" aria-selected="false" data-tab="test">測試</button>
+          <button class="segment" type="button" role="tab" aria-selected="false" data-tab="roles">角色設定</button>
+          <button class="segment" type="button" role="tab" aria-selected="false" data-tab="system">系統設定</button>
+        </div>
+
+        <div id="debugPanel" class="tab-panel active" role="tabpanel">
+          <h2>Debug Log</h2>
+          <ul id="debugLog" class="log-list">
+            <li class="log-empty">尚無操作紀錄</li>
+          </ul>
+        </div>
+
+        <div id="testPanel" class="tab-panel" role="tabpanel" hidden>
+          <div class="auto-save-banner">
+            <span class="state-badge good">自動儲存</span>
+            <span id="testAutoSaveState">測試設定變更會自動儲存；測試送出仍是一次性操作。</span>
+          </div>
+
+          <div class="auto-test-card">
+            <div class="section-title-row">
+              <h2>自動留言測試</h2>
+              <label class="inline-switch">
+                <input id="autoCommentEnabled" type="checkbox">
+                <span>自動留言</span>
+              </label>
+            </div>
+            <div class="auto-test-grid">
+              <label class="field-block">
+                <span>一般留言</span>
+                <input id="normalCommentCount" type="number" min="0" max="50" value="8">
+              </label>
+              <label class="field-block">
+                <span>Super Chat</span>
+                <input id="superChatCount" type="number" min="0" max="10" value="2">
+              </label>
+              <label class="field-block">
+                <span>留言頻率</span>
+                <input id="commentFrequencySeconds" type="number" min="1" max="120" value="8">
+              </label>
+              <label class="check-row">
+                <input id="maliciousCommentEnabled" type="checkbox">
+                <span>開啟惡意留言</span>
+              </label>
+            </div>
+            <div class="auto-test-actions">
+              <span id="autoCommentStatus">自動留言未啟用</span>
+              <button id="runAutoCommentBatch" class="secondary" type="button">生成一批留言</button>
+            </div>
+          </div>
+
+          <label class="field-block">
+            <span>留言測試</span>
+            <textarea id="testMessage" maxlength="200" placeholder="輸入測試留言內容..."></textarea>
+          </label>
+          <div class="test-actions">
+            <button id="clearTest" class="secondary" type="button">清除</button>
+            <span id="testCount">0 / 200</span>
+            <button id="sendTest" class="primary" type="button">送出測試留言</button>
+          </div>
+          <div id="testResult" class="result-box">等待測試留言。</div>
+
+          <div class="test-section">
+            <div class="section-title-row">
+              <h2>Summary 測試</h2>
+              <button id="regenerateSummary" class="secondary small" type="button">重新生成</button>
+            </div>
+            <div id="summaryPreview" class="summary-preview">
+              尚未產生摘要；停止直播後可重新生成。
+            </div>
+          </div>
+
+          <div class="test-section compact">
+            <div class="section-title-row">
+              <h2>畫面顯示</h2>
+            </div>
+            <label class="check-row setting-check">
+              <input id="showLiveEventsEnabled" type="checkbox">
+              <span>顯示直播事件/觀眾留言</span>
+            </label>
+            <p class="field-hint">預設關閉；開啟後才會把測試留言或 YouTube Live 事件顯示在中央對話區。</p>
+          </div>
+        </div>
+
+        <div id="rolesPanel" class="tab-panel roles-panel" role="tabpanel" hidden>
+          <div class="auto-save-banner">
+            <span class="state-badge good">自動儲存</span>
+            <span id="livePersonaSaveState" class="inline-status">角色設定變更會自動儲存。</span>
+          </div>
+
+          <details class="settings-section" open>
+            <summary>直播角色設定</summary>
+            <div class="settings-grid">
+              <label class="field-block">
+                <span>套用角色</span>
+                <select id="livePersonaCharacterSelect">
+                  <option value="">尚未載入角色</option>
+                </select>
+              </label>
+              <button id="refreshRolesButton" class="secondary" type="button">重新讀取企劃角色</button>
+            </div>
+            <div id="roleEditorNav" class="role-editor-nav" role="tablist" aria-label="角色設定分類">
+              <button class="role-section-tab active" type="button" role="tab" aria-selected="true" data-role-section="basic">基本設定</button>
+              <button class="role-section-tab" type="button" role="tab" aria-selected="false" data-role-section="dialogue">對話設定</button>
+              <button class="role-section-tab" type="button" role="tab" aria-selected="false" data-role-section="voice">聲音 TTS</button>
+            </div>
+
+            <div id="roleBasicPanel" class="role-editor-panel active" role="tabpanel">
+              <label class="field-block setting-wide">
+                <span>固定自稱</span>
+                <input id="livePersonaSelfAddress" type="text" value="我" autocomplete="off" placeholder="例：本小姐、老身、在下">
+              </label>
+              <label class="field-block setting-wide">
+                <span>頭像 URL</span>
+                <input id="livePersonaAvatarUrl" type="url" autocomplete="off" placeholder="https://example.com/avatar.png">
+              </label>
+              <div class="avatar-local-tools setting-wide">
+                <label class="field-block">
+                  <span>本地頭像</span>
+                  <select id="livePersonaAvatarSelect">
+                    <option value="">未選取本地頭像</option>
+                  </select>
+                </label>
+                <label class="file-pick-button secondary">
+                  <input id="livePersonaAvatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+                  選取圖片
+                </label>
+                <button id="uploadAvatarButton" class="secondary" type="button">上傳並套用</button>
+              </div>
+              <p class="field-hint setting-wide">建議使用正方形圖片，256×256 以上、2MB 以內；上傳後會存成本機可讀取的 Studio 頭像 URL。</p>
+              <div class="settings-grid setting-wide visual-settings-grid">
+                <label class="field-block">
+                  <span>對話背景色</span>
+                  <input id="livePersonaChatBackgroundColor" type="color" value="#f2fbff">
+                </label>
+                <label class="field-block">
+                  <span>對話強調色</span>
+                  <input id="livePersonaChatAccentColor" type="color" value="#0d9488">
+                </label>
+              </div>
+              <p class="field-hint setting-wide">這裡只控制 YouTubeBridge 直播時的角色覆寫，不會修改 MemoriaCore 原始角色。</p>
+            </div>
+
+            <div id="roleDialoguePanel" class="role-editor-panel" role="tabpanel" hidden>
+              <label class="field-block setting-wide">
+                <span>直播專用 prompt</span>
+                <textarea id="livePersonaSystemPrompt" maxlength="800"></textarea>
+              </label>
+              <label class="field-block setting-wide">
+                <span>開場自我介紹</span>
+                <textarea id="livePersonaOpeningIntro" maxlength="400"></textarea>
+              </label>
+              <label class="field-block setting-wide">
+                <span>角色互稱</span>
+                <div id="livePersonaAddressingFields" class="addressing-field-list"></div>
+              </label>
+              <label class="field-block setting-wide">
+                <span>直播回覆規則</span>
+                <textarea id="livePersonaReplyRules" maxlength="500">接住上一位角色的觀點並補充細節，不要把問題直接丟回觀眾。</textarea>
+              </label>
+            </div>
+
+            <div id="roleVoicePanel" class="role-editor-panel" role="tabpanel" hidden>
+              <div class="section-title-row setting-wide">
+                <h2>GPT-SoVITS 聲音設定</h2>
+              </div>
+              <div class="system-status-row">
+                <span class="state-badge neutral">TTS profile</span>
+                <span>來源資料夾：<code id="liveTtsSourceRoot">runtime/YouTubeBridge/TTSSource</code></span>
+              </div>
+              <label class="field-block setting-wide">
+                <span>快速選擇聲音</span>
+                <select id="liveTtsSourcePreset">
+                  <option value="">手動輸入範例語音</option>
+                  <option value="runtime/YouTubeBridge/TTSSource/sakura/default.wav">預設聲音 A</option>
+                  <option value="runtime/YouTubeBridge/TTSSource/alan/default.wav">預設聲音 B</option>
+                </select>
+              </label>
+              <label class="check-row setting-check">
+                <input id="liveTtsEnabled" type="checkbox">
+                <span>啟用此角色 TTS 聲線</span>
+              </label>
+              <div class="settings-grid">
+                <label class="field-block">
+                  <span>範例語音路徑</span>
+                  <input id="liveTtsRefAudioPath" type="text" autocomplete="off">
+                </label>
+                <label class="field-block">
+                  <span>輸出文字語言</span>
+                  <input id="liveTtsTextLang" type="text" value="zh" autocomplete="off">
+                </label>
+                <label class="field-block">
+                  <span>範例語音語言</span>
+                  <input id="liveTtsPromptLang" type="text" value="zh" autocomplete="off">
+                </label>
+                <label class="field-block">
+                  <span>速度</span>
+                  <input id="liveTtsSpeedFactor" type="number" min="0.25" max="4" step="0.05" value="1">
+                </label>
+                <label class="field-block">
+                  <span>音訊格式</span>
+                  <select id="liveTtsMediaType">
+                    <option value="wav">wav</option>
+                    <option value="mp3">mp3</option>
+                  </select>
+                </label>
+              </div>
+              <label class="field-block setting-wide">
+                <span>範例語音 transcript</span>
+                <textarea id="liveTtsPromptText" maxlength="2000"></textarea>
+              </label>
+            </div>
+
+            <div class="config-actions with-status role-editor-footer">
+              <span class="inline-status">欄位變更後會自動寫入 Studio 設定 API。</span>
+            </div>
+          </details>
+        </div>
+
+        <div id="systemPanel" class="tab-panel settings-panel" role="tabpanel" hidden>
+          <div class="auto-save-banner">
+            <span class="state-badge good">自動儲存</span>
+            <span id="systemAutoSaveState">系統設定變更會自動儲存。</span>
+          </div>
+
+          <details class="settings-section" open>
+            <summary>YouTube Connector</summary>
+            <div class="system-status-row">
+              <span id="connectorStatusBadge" class="state-badge warn">未連線</span>
+              <span>正式直播需要 Connector；測試模式可先略過。</span>
+            </div>
+            <label class="field-block setting-wide">
+              <span>YouTube Data API Key</span>
+              <input id="connectorApiKeyInput" type="text" placeholder="已設定時會以遮罩顯示" autocomplete="off">
+            </label>
+          </details>
+
+          <details class="settings-section">
+            <summary>MemoriaCore Auth</summary>
+            <div class="system-status-row">
+              <span id="memoriaAuthState" class="state-badge good">Admin bypass</span>
+              <span>用於載入角色、記憶與直播後摘要。</span>
+            </div>
+            <label class="field-block setting-wide">
+              <span>Base URL</span>
+              <input id="memoriaBaseUrl" type="text" value="http://127.0.0.1:8088" autocomplete="off">
+            </label>
+            <div class="settings-grid">
+              <label class="field-block">
+                <span>Username</span>
+                <input id="memoriaUsername" type="text" autocomplete="off" placeholder="admin">
+              </label>
+              <label class="field-block">
+                <span>Password</span>
+                <input id="memoriaPassword" type="text" autocomplete="off" placeholder="未顯示">
+              </label>
+            </div>
+            <label class="check-row setting-check">
+              <input id="memoriaAdminBypass" type="checkbox" checked>
+              <span>啟用本機 admin bypass</span>
+            </label>
+            <div class="config-actions">
+              <button id="testMemoriaAuthButton" class="secondary" type="button">測試連線</button>
+            </div>
+          </details>
+
+          <details class="settings-section" open>
+            <summary>留言注入節奏</summary>
+            <div class="settings-grid">
+              <label class="field-block">
+                <span>注入間隔秒數</span>
+                <input id="injectIntervalSeconds" type="number" min="5" max="600" value="30">
+              </label>
+              <label class="field-block">
+                <span>動態注入最短秒數</span>
+                <input id="injectMinIntervalSeconds" type="number" min="5" max="600" value="10">
+              </label>
+              <label class="field-block">
+                <span>最少 pending 留言</span>
+                <input id="minPendingComments" type="number" min="1" max="100" value="1">
+              </label>
+              <label class="field-block">
+                <span>pending 強制注入上限</span>
+                <input id="pendingForceLimit" type="number" min="1" max="100" value="12">
+              </label>
+            </div>
+            <label class="check-row setting-check">
+              <input id="autoInjectPendingEnabled" type="checkbox" checked>
+              <span>自動注入待處理留言</span>
+            </label>
+          </details>
+
+          <details class="settings-section">
+            <summary>直播時長與收尾</summary>
+            <div class="settings-grid">
+              <label class="field-block">
+                <span>預計/保護上限分鐘</span>
+                <input id="plannedDurationMinutes" type="number" min="5" max="360" value="52">
+              </label>
+            </div>
+            <div class="toggle-list">
+              <label class="check-row setting-check">
+                <input id="autoFinalizeAtLimit" type="checkbox" checked>
+                <span>到達時間上限後自動收尾</span>
+              </label>
+              <label class="check-row setting-check">
+                <input id="thankUnhandledSuperChats" type="checkbox" checked>
+                <span>收尾時逐一感謝未處理 SC</span>
+              </label>
+              <label class="check-row setting-check">
+                <input id="clearRuntimeSessionAfterSummary" type="checkbox" checked>
+                <span>摘要與記憶完成後清除 runtime session</span>
+              </label>
+            </div>
+          </details>
+
+          <details class="settings-section" open>
+            <summary>LiveEpisodePlan 後續流程</summary>
+            <label class="check-row setting-check">
+              <input id="postPlanFreeTalkEnabled" type="checkbox">
+              <span>Plan 結束後進入無導播雜談</span>
+            </label>
+            <div class="settings-grid">
+              <label class="field-block">
+                <span>雜談保護上限分鐘</span>
+                <input id="postPlanFreeTalkMinutes" type="number" min="0" max="240" value="20">
+              </label>
+            </div>
+          </details>
+
+          <details class="settings-section">
+            <summary>Super Chat 處理</summary>
+            <div class="settings-grid">
+              <label class="field-block">
+                <span>SC 打斷冷卻秒數</span>
+                <input id="superChatCooldownSeconds" type="number" min="0" max="600" value="45">
+              </label>
+              <label class="field-block">
+                <span>每批 SC 上限</span>
+                <input id="superChatBatchLimit" type="number" min="1" max="20" value="3">
+              </label>
+            </div>
+          </details>
+
+          <details class="settings-section">
+            <summary>安全與補充</summary>
+            <label class="check-row setting-check">
+              <input id="safeSearchEnabled" type="checkbox" checked>
+              <span>觀眾提問啟用安全搜尋補充</span>
+            </label>
+          </details>
+
+          <details class="settings-section">
+            <summary>輸出管線</summary>
+            <div class="toggle-list">
+              <label class="check-row setting-check">
+                <input id="presentationQueueEnabled" type="checkbox" checked>
+                <span>Live Presentation Queue</span>
+              </label>
+              <label class="check-row setting-check">
+                <input id="ttsEnabled" type="checkbox">
+                <span>GPT-SoVITS TTS</span>
+              </label>
+            </div>
+          </details>
+        </div>
+
+        <div class="debug-status">
+          <span class="state-badge good">API：正常</span>
+          <span class="state-badge good">聊天：已連線</span>
+          <span class="state-badge good">AI 服務：正常</span>
+          <span class="state-badge warn">語音：待命中</span>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script type="module" src="/ui-assets/studio.js?v=studio-v24"></script>
+</body>
+</html>

@@ -126,6 +126,7 @@ async def generate_test_chat_events(session_id: str, body: TestChatGenerateReque
             super_chat_count=body.super_chat_count,
             include_malicious_sc=body.include_malicious_sc,
             sc_burst=body.sc_burst,
+            manual_events=[event.model_dump() for event in body.manual_events],
         )
     except ValueError as exc:
         status_code = 404 if "不存在" in str(exc) else 400

@@ -138,6 +138,59 @@ def _resolve_episode_plan_characters(plan_json: dict[str, Any]) -> list[str]:
     )
 
 
+def _public_character_name(character: dict[str, Any], fallback: str = "") -> str:
+    for key in ("name", "display_name", "nickname"):
+        value = str(character.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def _public_character_avatar_url(character: dict[str, Any]) -> str:
+    for key in ("avatar_url", "avatar", "image_url", "profile_image_url", "icon_url", "picture_url"):
+        value = str(character.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolved_episode_plan_character_bindings(plan_json: dict[str, Any]) -> list[dict[str, Any]]:
+    participants = plan_json.get("participants") if isinstance(plan_json.get("participants"), list) else []
+    characters = MemoriaClient().list_characters()
+    resolved_ids = resolve_episode_plan_character_ids(plan_json, characters)
+    characters_by_id = {
+        str(character.get("character_id") or "").strip(): character
+        for character in characters
+        if isinstance(character, dict) and str(character.get("character_id") or "").strip()
+    }
+    bindings: list[dict[str, Any]] = []
+    for index, character_id in enumerate(resolved_ids):
+        participant = participants[index] if index < len(participants) and isinstance(participants[index], dict) else {}
+        participant_name = str(participant.get("display_name") or "").strip()
+        character = characters_by_id.get(character_id, {})
+        bindings.append({
+            "character_id": character_id,
+            "name": _public_character_name(character, participant_name),
+            "avatar_url": _public_character_avatar_url(character),
+            "display_name": str(character.get("display_name") or "").strip(),
+            "nickname": str(character.get("nickname") or "").strip(),
+            "participant_id": str(participant.get("participant_id") or "").strip(),
+            "participant_display_name": participant_name,
+            "role_function": [
+                str(item).strip()
+                for item in (participant.get("role_function") or [])
+                if str(item).strip()
+            ],
+            "speaking_style_bias": [
+                str(item).strip()
+                for item in (participant.get("speaking_style_bias") or [])
+                if str(item).strip()
+            ],
+            "enabled": True,
+        })
+    return bindings
+
+
 def _active_live_session_for_episode_plan_evidence() -> str:
     for session in storage.list_sessions():
         session_id = str(session.get("session_id") or "")
@@ -258,6 +311,29 @@ async def get_episode_plan(plan_id: str):
     if not plan:
         raise HTTPException(status_code=404, detail="episode plan not found")
     return plan
+
+
+@router.get("/episode-plans/{plan_id}/characters")
+async def get_episode_plan_characters(plan_id: str):
+    plan = storage.get_live_episode_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="episode plan not found")
+    try:
+        characters = await asyncio.to_thread(
+            _resolved_episode_plan_character_bindings,
+            plan.get("plan_json") or {},
+        )
+    except EpisodePlanCharacterBindingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"MemoriaCore 角色清單讀取失敗：{exc}") from exc
+    return {
+        "plan_id": plan["plan_id"],
+        "title": plan.get("title") or "",
+        "characters": characters,
+    }
 
 
 @router.delete("/episode-plans/{plan_id}")

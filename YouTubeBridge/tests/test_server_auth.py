@@ -127,6 +127,17 @@ def test_presentation_audio_bypasses_key_only_for_loopback(monkeypatch):
     assert exc.value.status_code == 403
 
 
+def test_studio_avatar_assets_bypass_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/studio/avatar-assets/coco.png"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/studio/avatar-assets/coco.png"))
+
+    assert exc.value.status_code == 403
+
+
 def test_live_page_static_files_are_registered():
     static_root = Path(server_module.STATIC_ROOT)
 

@@ -19,9 +19,25 @@ class LivePersonaRepositoryMixin:
             "addressing": cls._json_load(row["addressing_json"], {}),
             "opening_intro": row["opening_intro"] or "",
             "reply_rules": row["reply_rules"] or "",
+            "avatar_url": row["avatar_url"] or "",
+            "chat_background_color": row["chat_background_color"] or "",
+            "chat_accent_color": row["chat_accent_color"] or "",
             "created_at": row["created_at"] or "",
             "updated_at": row["updated_at"] or "",
         }
+
+    @staticmethod
+    def _clean_chat_color(value: Any) -> str:
+        color = str(value or "").strip()
+        if not color:
+            return ""
+        if len(color) != 7 or not color.startswith("#"):
+            raise ValueError("角色色盤必須是 #RRGGBB 格式")
+        try:
+            int(color[1:], 16)
+        except ValueError as exc:
+            raise ValueError("角色色盤必須是 #RRGGBB 格式") from exc
+        return color.lower()
 
     @staticmethod
     def _clean_overlay_payload(character_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -45,6 +61,9 @@ class LivePersonaRepositoryMixin:
             "addressing": addressing,
             "opening_intro": str(data.get("opening_intro") or "").replace("\r", "\n").strip()[:1200],
             "reply_rules": str(data.get("reply_rules") or "").replace("\r", "\n").strip()[:2000],
+            "avatar_url": str(data.get("avatar_url") or "").strip()[:1000],
+            "chat_background_color": LivePersonaRepositoryMixin._clean_chat_color(data.get("chat_background_color")),
+            "chat_accent_color": LivePersonaRepositoryMixin._clean_chat_color(data.get("chat_accent_color")),
         }
 
     def upsert_live_persona_overlay(self, character_id: str, data: dict[str, Any]) -> dict:
@@ -57,8 +76,9 @@ class LivePersonaRepositoryMixin:
                 """
                 INSERT INTO live_persona_overlays (
                     character_id, enabled, mode, system_prompt, self_address,
-                    addressing_json, opening_intro, reply_rules, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    addressing_json, opening_intro, reply_rules, avatar_url,
+                    chat_background_color, chat_accent_color, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(character_id) DO UPDATE SET
                     enabled=excluded.enabled,
                     mode=excluded.mode,
@@ -67,6 +87,9 @@ class LivePersonaRepositoryMixin:
                     addressing_json=excluded.addressing_json,
                     opening_intro=excluded.opening_intro,
                     reply_rules=excluded.reply_rules,
+                    avatar_url=excluded.avatar_url,
+                    chat_background_color=excluded.chat_background_color,
+                    chat_accent_color=excluded.chat_accent_color,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -78,6 +101,9 @@ class LivePersonaRepositoryMixin:
                     self._json_dump(payload["addressing"]),
                     payload["opening_intro"],
                     payload["reply_rules"],
+                    payload["avatar_url"],
+                    payload["chat_background_color"],
+                    payload["chat_accent_color"],
                     created_at,
                     now,
                 ),

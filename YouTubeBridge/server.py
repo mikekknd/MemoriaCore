@@ -33,6 +33,8 @@ from models import (
     E2ECheckpointRequest, EpisodePlanBindRequest, EpisodePlanEvidenceImportRequest, EpisodePlanImportRequest,
     FactCardImportRequest, InterruptRequest,
     LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
+    StudioAvatarUploadRequest,
+    StudioDisplaySettings, StudioLiveDefaults, StudioSettingsPatch, StudioTestSettings,
     YouTubeLiveGlobalSuffixRequest,
     ResearchRequest, SummarizeRequest, TestChatGenerateRequest, TopicPackCreateRequest,
     TopicPackEntryCreateRequest, TopicPackEntryUpdateRequest,
@@ -59,6 +61,7 @@ from server_routes import (
     register_routes,
     research as _research_routes,
     sessions as _sessions_routes,
+    studio_settings as _studio_settings_routes,
     summaries as _summaries_routes,
     testing as _testing_routes,
     topic_packs as _topic_packs_routes,
@@ -74,6 +77,7 @@ STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 UI_ASSETS_ROOT = Path(STATIC_ROOT) / "ui"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 E2E_CHECKPOINT_PATH = PROJECT_ROOT / "runtime" / "youtube_bridge_e2e_checkpoint.json"
+STUDIO_AVATAR_ROOT = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "StudioAvatars"
 logger = logging.getLogger("youtube_bridge")
 
 
@@ -99,6 +103,7 @@ app_state = BridgeAppState(
     chat_preview_cache=chat_preview_cache,
     static_root=Path(STATIC_ROOT),
     ui_assets_root=UI_ASSETS_ROOT,
+    studio_avatar_root=STUDIO_AVATAR_ROOT,
     e2e_checkpoint_path=E2E_CHECKPOINT_PATH,
     apply_memoria_config=_apply_memoria_config,
 )
@@ -229,6 +234,7 @@ _ROUTE_MODULES_FOR_SYNC = (
     _topic_packs_routes,
     _fact_cards_routes,
     _research_routes,
+    _studio_settings_routes,
     _summaries_routes,
     _memoria_routes,
 )
@@ -239,6 +245,7 @@ def _sync_route_state() -> None:
     app_state.manager = manager
     app_state.summary_manager = summary_manager
     app_state.chat_preview_cache = chat_preview_cache
+    app_state.studio_avatar_root = STUDIO_AVATAR_ROOT
     for route_module in _ROUTE_MODULES_FOR_SYNC:
         route_module.configure(app_state)
     _install_auto_finalize_callback()
@@ -296,6 +303,7 @@ health = _route_handler(_ui_routes.health)
 ui_config = _route_handler(_ui_routes.ui_config)
 bridge_ui_asset = _route_handler(_ui_routes.bridge_ui_asset)
 bridge_ui = _route_handler(_ui_routes.bridge_ui)
+bridge_studio = _route_handler(_ui_routes.bridge_studio)
 bridge_live = _route_handler(_ui_routes.bridge_live)
 bridge_live_chat = _route_handler(_ui_routes.bridge_live_chat)
 
@@ -333,6 +341,7 @@ list_episode_plans = _route_handler(_episode_plans_routes.list_episode_plans)
 sync_local_episode_plans = _route_handler(_episode_plans_routes.sync_local_episode_plans)
 import_episode_plan = _route_handler(_episode_plans_routes.import_episode_plan)
 get_episode_plan = _route_handler(_episode_plans_routes.get_episode_plan)
+get_episode_plan_characters = _route_handler(_episode_plans_routes.get_episode_plan_characters)
 delete_episode_plan = _route_handler(_episode_plans_routes.delete_episode_plan)
 bind_episode_plan = _route_handler(_episode_plans_routes.bind_episode_plan)
 unbind_episode_plan = _route_handler(_episode_plans_routes.unbind_episode_plan)
@@ -387,6 +396,12 @@ memoria_characters = _route_handler(_memoria_routes.memoria_characters)
 memoria_sessions = _route_handler(_memoria_routes.memoria_sessions)
 get_youtube_live_global_suffix = _route_handler(_memoria_routes.get_youtube_live_global_suffix)
 update_youtube_live_global_suffix = _route_handler(_memoria_routes.update_youtube_live_global_suffix)
+
+get_studio_settings = _route_handler(_studio_settings_routes.get_studio_settings)
+update_studio_settings = _route_handler(_studio_settings_routes.update_studio_settings)
+list_studio_avatar_assets = _route_handler(_studio_settings_routes.list_studio_avatar_assets)
+upload_studio_avatar_asset = _route_handler(_studio_settings_routes.upload_studio_avatar_asset)
+get_studio_avatar_asset = _route_handler(_studio_settings_routes.get_studio_avatar_asset)
 
 
 @app.exception_handler(ValueError)
