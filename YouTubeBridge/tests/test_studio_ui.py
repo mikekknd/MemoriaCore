@@ -248,6 +248,16 @@ def test_studio_presentation_tts_player_helpers_are_wired():
 
     assert "new Audio(audioUrl)" in studio_js
     assert 'audio.preload = "auto"' in studio_js
+    assert "const now = new Date().toISOString()" in studio_js
+    assert "created_at: now" in studio_js
+    assert "timestamp: now" in studio_js
+    assert "if (state.presentationAckInFlight) return" in studio_js
+    assert "if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return" in studio_js
+    assert "const item = state.currentPresentationItem" in studio_js
+    assert "const audio = state.currentAudio" in studio_js
+    assert "state.currentPresentationItem = currentItem" in studio_js
+    assert 'updatePresentationStatus("跳過失敗，請重試", "warn")' in studio_js
+    assert 'updatePresentationStatus("打斷解除失敗，請重試", "warn")' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`, {' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {' in studio_js
     assert 'appendChatPreviewMessage(presentationItemToMessage(item), { prepend: true })' in studio_js

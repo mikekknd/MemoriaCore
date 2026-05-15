@@ -1220,12 +1220,13 @@ function resetPresentationPlayer({ statusText = "語音待機" } = {}) {
 }
 
 function presentationItemToMessage(item) {
+  const now = new Date().toISOString();
   return {
     message_id: item.message_id || item.item_id,
     role: "assistant",
     content: item.text || "",
-    created_at: new Date().toISOString(),
-    timestamp: new Date().toISOString(),
+    created_at: now,
+    timestamp: now,
     character_id: item.character_id || "",
     character_name: item.character_name || "AI",
     source: "presentation",
@@ -1282,6 +1283,7 @@ function isCurrentPresentationItem(item) {
 
 async function finishPresentationItem(item, reason = "ended") {
   if (!isCurrentPresentationItem(item)) return;
+  if (state.presentationAckInFlight) return;
   state.presentationPlaying = true;
   state.audioUnlockRequired = false;
   setPresentationControls({ canSkip: false });
@@ -1327,16 +1329,19 @@ function playPresentationItem() {
   const audio = audioForPresentationItem(item);
   state.currentAudio = audio;
   audio.addEventListener("ended", () => {
+    if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
     finishPresentationItem(item, "ended").catch((error) => {
       appendLog("WARN", `TTS 完播處理失敗：${error.message || error}`);
     });
   }, { once: true });
   audio.addEventListener("error", () => {
+    if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
     finishPresentationItem(item, "error").catch((error) => {
       appendLog("WARN", `TTS 錯誤處理失敗：${error.message || error}`);
     });
   }, { once: true });
   audio.play().catch(() => {
+    if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
     state.presentationPlaying = false;
     state.audioUnlockRequired = true;
     updatePresentationStatus("等待啟用聲音", "warn");
@@ -1354,13 +1359,16 @@ function enqueuePresentationItem(item) {
 
 async function retryCurrentPresentationAudio() {
   if (!state.currentPresentationItem || !state.currentAudio) return;
+  const item = state.currentPresentationItem;
+  const audio = state.currentAudio;
   state.audioUnlockRequired = false;
   state.presentationPlaying = true;
   updatePresentationStatus("播放中", "good");
   setPresentationControls({ canSkip: true });
   try {
-    await state.currentAudio.play();
+    await audio.play();
   } catch {
+    if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
     state.presentationPlaying = false;
     state.audioUnlockRequired = true;
     updatePresentationStatus("等待啟用聲音", "warn");
@@ -1369,14 +1377,19 @@ async function retryCurrentPresentationAudio() {
 }
 
 async function skipCurrentPresentation() {
-  const hadCurrent = Boolean(state.currentPresentationItem);
+  const currentItem = state.currentPresentationItem;
+  const hadCurrent = Boolean(currentItem);
   stopCurrentPresentationAudio();
   state.presentationPlaying = false;
-  state.currentPresentationItem = null;
   state.audioUnlockRequired = false;
   updatePresentationStatus("跳過目前句子", "neutral");
   setPresentationControls();
-  if (!hadCurrent || !state.sessionId) {
+  if (!hadCurrent) {
+    playPresentationItem();
+    return;
+  }
+  if (!state.sessionId) {
+    state.currentPresentationItem = null;
     playPresentationItem();
     return;
   }
@@ -1385,20 +1398,26 @@ async function skipCurrentPresentation() {
       method: "POST",
     });
     appendLog("INFO", "已跳過目前 TTS 句子");
+    if (state.currentPresentationItem === currentItem) {
+      state.currentPresentationItem = null;
+    }
     playPresentationItem();
   } catch (error) {
+    state.currentPresentationItem = currentItem;
+    updatePresentationStatus("跳過失敗，請重試", "warn");
+    setPresentationControls({ canSkip: true });
     appendLog("WARN", `跳過 TTS 句子失敗：${error.message || error}`);
     await refreshStudioSession();
   }
 }
 
 async function handlePresentationInterrupt(payload = {}) {
-  const hadCurrent = Boolean(state.currentPresentationItem);
+  const currentItem = state.currentPresentationItem;
+  const hadCurrent = Boolean(currentItem);
   stopCurrentPresentationAudio();
   clearPresentationAudioCache();
   state.presentationQueue = [];
   state.presentationPlaying = false;
-  state.currentPresentationItem = null;
   state.audioUnlockRequired = false;
   updatePresentationStatus("直播互動打斷", "warn");
   setPresentationControls();
@@ -1408,10 +1427,18 @@ async function handlePresentationInterrupt(payload = {}) {
       await api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {
         method: "POST",
       });
+      if (state.currentPresentationItem === currentItem) {
+        state.currentPresentationItem = null;
+      }
     } catch (error) {
+      state.currentPresentationItem = currentItem;
+      updatePresentationStatus("打斷解除失敗，請重試", "warn");
+      setPresentationControls({ canSkip: true });
       appendLog("WARN", `打斷後解除 TTS 等待失敗：${error.message || error}`);
       await refreshStudioSession();
     }
+  } else {
+    state.currentPresentationItem = null;
   }
   scheduleConversationRefresh("直播打斷");
 }
