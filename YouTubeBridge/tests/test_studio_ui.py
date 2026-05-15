@@ -41,8 +41,8 @@ def test_studio_route_is_registered_as_parallel_ui_surface():
 def test_studio_html_uses_external_assets_without_inline_code():
     studio_html = _studio_source()
 
-    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v24">' in studio_html
-    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v24"></script>' in studio_html
+    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v25">' in studio_html
+    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v25"></script>' in studio_html
     assert "<style>" not in studio_html
     assert "<script>\n" not in studio_html
 
@@ -698,8 +698,10 @@ def test_studio_p0_exposes_preflight_and_manual_source_session_flow():
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`)' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/recent?limit=120`)' in studio_js
     assert "new EventSource(`/sessions/${encodeURIComponent(sessionId)}/events`)" in studio_js
-    assert 'presentation_enabled: false' in studio_js
-    assert 'tts_enabled: false' in studio_js
+    assert 'presentation_enabled: liveDefaults.presentation_queue_enabled' in studio_js
+    assert 'tts_enabled: liveDefaults.tts_enabled' in studio_js
+    assert 'presentation_enabled: false' not in studio_js
+    assert 'tts_enabled: false' not in studio_js
     assert 'character_ids: []' in studio_js
     assert 'auto_inject: liveDefaults.auto_inject_pending_enabled' in studio_js
     assert 'min_pending_events: liveDefaults.min_pending_comments' in studio_js

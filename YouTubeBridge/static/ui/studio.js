@@ -1605,8 +1605,8 @@ function studioLiveSessionPayload() {
     free_talk_closing_max_batch_size: liveDefaults.free_talk_closing_max_batch_size,
     free_talk_closing_time_limit_seconds: liveDefaults.free_talk_closing_time_limit_seconds,
     research_enabled: liveDefaults.safe_search_enabled,
-    presentation_enabled: false,
-    tts_enabled: false,
+    presentation_enabled: liveDefaults.presentation_queue_enabled,
+    tts_enabled: liveDefaults.tts_enabled,
     tts_provider: "gpt_sovits",
   };
   if (state.freeTalkTopicSelectionInitialized) {
