@@ -1,6 +1,6 @@
 # YouTubeBridge Free Talk Goal Execution Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan with worker and verifier subagents. The main orchestrator monitors flow, reviews outputs, runs final verification, and updates roadmap status. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Provide a `/goal`-friendly execution plan that runs the free-talk feature as four independently testable vertical slices. The agent must complete and verify one stage before starting the next, with browser E2E evidence at every stage.
 
@@ -36,7 +36,8 @@ Implement YouTubeBridge post-plan free-talk in four E2E-tested vertical stages. 
   ```
 
 - [ ] Read `AGENTS.md` and `CLAUDE.md`; keep the 8088 and 8091 foreground-window service rule.
-- [ ] Use `superpowers:subagent-driven-development` when splitting independent implementation and verification work; use `superpowers:executing-plans` for a single-agent pass.
+- [ ] Use `superpowers:subagent-driven-development` for every stage. Do not use the single-agent `superpowers:executing-plans` path unless the user explicitly changes the roadmap rule.
+- [ ] Keep the main orchestrator out of direct stage implementation. The main orchestrator dispatches worker/verifier subagents, reviews their outputs, runs final verification, handles commits, and reports status.
 - [ ] Use `superpowers:test-driven-development` for every stage: write or update the failing tests first, verify the red failure is about the intended missing behavior, then implement.
 - [ ] Use `superpowers:systematic-debugging` when an E2E or runtime behavior is inconsistent with the plan.
 - [ ] Use `superpowers:verification-before-completion` before marking any stage complete.

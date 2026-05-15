@@ -1,6 +1,6 @@
 # YouTubeBridge Free Talk Stage 2 Main Finish Runtime Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan with worker and verifier subagents. The main orchestrator monitors flow, reviews outputs, runs final verification, and updates roadmap status. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Connect LiveEpisodePlan completion and Studio debug controls to a working phase pipeline that performs main SC closing, starts main summary in the background, and enters post-plan free talk when enabled.
 

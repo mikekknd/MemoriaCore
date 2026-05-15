@@ -1,6 +1,6 @@
 # YouTubeBridge Free Talk Stage 4 Low Signal Closing Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan with worker and verifier subagents. The main orchestrator monitors flow, reviews outputs, runs final verification, and updates roadmap status. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make free talk closing drain all eligible pending comments safely while filtering low-signal spam and protecting finalization from large chat backlogs.
 

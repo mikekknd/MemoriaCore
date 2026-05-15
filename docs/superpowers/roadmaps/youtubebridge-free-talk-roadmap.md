@@ -28,12 +28,20 @@ When implementation touches UI-visible text, also read:
 
 Use these skills during `/goal` execution:
 
-- `superpowers:subagent-driven-development` for stage execution with separate implementation and verification workers.
+- `superpowers:subagent-driven-development` is required for every stage.
 - `superpowers:test-driven-development` for each code change.
 - `superpowers:systematic-debugging` for runtime, E2E, or test failures.
 - `superpowers:verification-before-completion` before marking any stage complete.
 
-If executing without subagents, use `superpowers:executing-plans` and keep the same gates.
+Do not use the single-agent `superpowers:executing-plans` fallback for this roadmap unless the user explicitly changes this roadmap rule. The main orchestrator must not implement stage tasks directly. The main orchestrator owns only:
+
+- Reading the roadmap and selecting the first unchecked stage.
+- Dispatching implementation and verification subagents.
+- Monitoring progress and preventing scope drift.
+- Reviewing subagent outputs before integration.
+- Running final verification for each stage.
+- Updating this roadmap after gates pass.
+- Committing, pushing, and reporting the result.
 
 ## Current Status
 
@@ -198,17 +206,20 @@ These are outside this roadmap:
 
 3. Identify the first unchecked stage in `Current Status`.
 4. Open that stage plan and execute only that stage.
-5. Write or update failing tests before implementation.
-6. Run the stage verification commands.
-7. Run the required Browser E2E.
-8. If all gates pass, update this roadmap by checking the completed stage.
-9. Commit only the files from the completed stage and this roadmap update.
-10. Continue to the next unchecked stage only after the commit is complete.
+5. Dispatch a worker subagent to write or update failing tests before implementation.
+6. Dispatch a worker subagent to implement the minimal stage changes after the failing tests prove the missing behavior.
+7. Dispatch a verifier subagent to run the stage verification commands and report failures without fixing them.
+8. The main orchestrator reviews the worker/verifier outputs and runs final verification locally.
+9. The main orchestrator runs the required Browser E2E.
+10. If all gates pass, update this roadmap by checking the completed stage.
+11. Commit only the files from the completed stage and this roadmap update.
+12. Continue to the next unchecked stage only after the commit is complete.
 
 ## Stop Conditions
 
 Stop and report instead of continuing when:
 
+- Subagent execution is unavailable and the user has not explicitly approved changing this roadmap to a single-agent mode.
 - A stage requires changing an earlier user decision.
 - A required E2E cannot be run.
 - The server can only be started hidden or in a background-only process.

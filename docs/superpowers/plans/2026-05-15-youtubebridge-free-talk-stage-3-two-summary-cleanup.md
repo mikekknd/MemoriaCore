@@ -1,6 +1,6 @@
 # YouTubeBridge Free Talk Stage 3 Two Summary Cleanup Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan with worker and verifier subagents. The main orchestrator monitors flow, reviews outputs, runs final verification, and updates roadmap status. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce independent `main` and `free_talk` summaries, write both to Shared Memory, and defer runtime cleanup until every required phase summary and memory write is complete.
 
