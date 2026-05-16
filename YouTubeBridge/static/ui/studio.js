@@ -1939,6 +1939,10 @@ function sessionFinalizeFailed(session) {
   return Boolean(runtime.status === "closing_failed" || session.status === "closing_failed");
 }
 
+function sessionShouldReceiveEvents(session) {
+  return sessionIsRunning(session) || sessionIsClosing(session);
+}
+
 function phaseSummaryStatus(summary = {}) {
   if (!summary || typeof summary !== "object") return "未開始";
   return summary.memory_write_status || summary.status || "未開始";
@@ -2106,12 +2110,17 @@ async function refreshStudioSession() {
     }
     if (selected?.session_id) {
       await refreshConversation();
-      if (sessionIsRunning(selected)) {
-        renderSummaryPreview(null, "直播中不產生摘要；停止直播後可重新生成。");
+      if (sessionShouldReceiveEvents(selected)) {
+        renderSummaryPreview(
+          null,
+          sessionIsClosing(selected)
+            ? "直播收尾中，等待最後訊息完成。"
+            : "直播中不產生摘要；停止直播後可重新生成。",
+        );
       } else {
         await loadSessionSummary({ quiet: true });
       }
-      if (sessionIsRunning(selected)) {
+      if (sessionShouldReceiveEvents(selected)) {
         subscribeSessionEvents(selected.session_id);
       } else {
         unsubscribeSessionEvents();

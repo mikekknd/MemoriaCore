@@ -41,8 +41,8 @@ def test_studio_route_is_registered_as_parallel_ui_surface():
 def test_studio_html_uses_external_assets_without_inline_code():
     studio_html = _studio_source()
 
-    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v26">' in studio_html
-    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v26"></script>' in studio_html
+    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v27">' in studio_html
+    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v27"></script>' in studio_html
     assert "<style>" not in studio_html
     assert "<script>\n" not in studio_html
 
@@ -921,6 +921,24 @@ def test_studio_closing_state_disables_restart_and_clear_discards_local_visible_
     assert "state.visibleMessages.clear();" in clear_body
 
 
+def test_studio_keeps_event_stream_open_while_closing():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "function sessionShouldReceiveEvents(" in studio_js
+    helper_body = studio_js[
+        studio_js.index("function sessionShouldReceiveEvents("):
+        studio_js.index("function phaseSummaryStatus", studio_js.index("function sessionShouldReceiveEvents("))
+    ]
+    assert "sessionIsRunning(session) || sessionIsClosing(session)" in helper_body
+
+    refresh_body = studio_js[
+        studio_js.index("async function refreshStudioSession()"):
+        studio_js.index("async function startLive()", studio_js.index("async function refreshStudioSession()"))
+    ]
+    assert "if (sessionShouldReceiveEvents(selected))" in refresh_body
+    assert '"直播收尾中，等待最後訊息完成。"' in refresh_body
+
+
 def test_studio_renders_live_events_only_from_recent_aggregate_not_single_sse_or_system_event():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
 
@@ -970,12 +988,12 @@ def test_studio_start_resets_previous_conversation_before_new_session_request():
     assert 'renderConversationEmpty("正在建立新的 Live Session，等待後端產生 AI 對話。")' in studio_js
 
 
-def test_studio_refresh_only_subscribes_running_session_events():
+def test_studio_refresh_subscribes_running_and_closing_session_events():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
     refresh_index = studio_js.index("async function refreshStudioSession()")
     refresh_body = studio_js[refresh_index:studio_js.index("async function startLive()", refresh_index)]
 
-    assert "if (sessionIsRunning(selected))" in refresh_body
+    assert "if (sessionShouldReceiveEvents(selected))" in refresh_body
     assert "subscribeSessionEvents(selected.session_id);" in refresh_body
     assert "unsubscribeSessionEvents();" in refresh_body
 
