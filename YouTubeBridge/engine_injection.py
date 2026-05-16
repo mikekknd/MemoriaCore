@@ -178,6 +178,9 @@ class InjectionManagerMixin:
                         len(active_pending),
                         active_interaction=active_interaction,
                     )
+                    if active and active.get("status") == "presenting":
+                        await asyncio.sleep(sleep_seconds)
+                        continue
                     if self._director_owns_auto_inject(session):
                         result = await self._prepare_director_owned_auto_inject(
                             runtime,
@@ -188,8 +191,12 @@ class InjectionManagerMixin:
                             active=active,
                         )
                         selected_event_ids = result.get("selected_event_ids", [])
+                        selected_source = result.get("selected_source", "none")
                         interrupted_active = bool(result.get("interrupted_active"))
                         if not selected_event_ids and not interrupted_active:
+                            await asyncio.sleep(sleep_seconds)
+                            continue
+                        if selected_source != "super_chat" and len(active_pending) < min_pending:
                             await asyncio.sleep(sleep_seconds)
                             continue
                         runtime.last_auto_inject_at = datetime.now().isoformat()
@@ -197,7 +204,7 @@ class InjectionManagerMixin:
                         await self._broadcast(runtime.session_id, {
                             "type": "director_audience_events_ready",
                             "event_ids": selected_event_ids,
-                            "source": result.get("selected_source", "none"),
+                            "source": selected_source,
                             "count": len(selected_event_ids),
                             "interrupted_active": interrupted_active,
                         })
@@ -215,14 +222,20 @@ class InjectionManagerMixin:
                             if self._is_public_live_event_displayable(event)
                         ]
                         if not selected_sc:
-                            await asyncio.sleep(sleep_seconds)
-                            continue
-                        selected = selected_sc
+                            selected = [
+                                event for event in active_pending
+                                if event.get("priority_class") != "super_chat"
+                            ]
+                            selected.sort(key=lambda item: int(item.get("id", 0) or 0))
+                            selected = selected[:max_pending]
+                            selected_sc = []
+                            if not selected:
+                                await asyncio.sleep(sleep_seconds)
+                                continue
+                        else:
+                            selected = selected_sc
                     else:
                         selected_sc = []
-                    if active and active.get("status") == "presenting":
-                        await asyncio.sleep(sleep_seconds)
-                        continue
                     if (selected_sc or len(active_pending) >= min_pending) and selected:
                         sc_interrupt_allowed = bool(selected_sc and self._sc_interrupt_allowed(runtime, session))
                         if active_interaction and not selected_sc:
@@ -236,6 +249,9 @@ class InjectionManagerMixin:
                             priority = 320 if max_tier >= 3 else 260
                             source = "super_chat"
                             active_priority = int((active or {}).get("priority", 100) or 100)
+                            if active_running and priority <= active_priority:
+                                await asyncio.sleep(sleep_seconds)
+                                continue
                             if active_running and sc_interrupt_allowed and priority > active_priority:
                                 runtime.last_sc_interrupt_at = datetime.now().isoformat()
                         else:
