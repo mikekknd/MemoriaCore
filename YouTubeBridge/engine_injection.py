@@ -223,7 +223,8 @@ class InjectionManagerMixin:
                             max_tier = max(int(event.get("sc_tier", 0) or 0) for event in selected_sc)
                             priority = 320 if max_tier >= 3 else 260
                             source = "super_chat"
-                            if active_interaction and sc_interrupt_allowed:
+                            active_priority = int((active or {}).get("priority", 100) or 100)
+                            if active_interaction and sc_interrupt_allowed and priority > active_priority:
                                 runtime.last_sc_interrupt_at = datetime.now().isoformat()
                         else:
                             priority = 100
