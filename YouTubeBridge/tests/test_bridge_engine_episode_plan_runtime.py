@@ -275,6 +275,11 @@ async def test_episode_audience_interrupt_injects_selected_chat_into_memoria_con
         result = await manager._send_director_turn(session, state, decision)
 
         external_context = captured["external_context"]
+        assert external_context["source"] == "youtube_live_director"
+        assert "直播流程 action=reply_chat_batch" in external_context["context_text"]
+        assert "處理提示：" in external_context["context_text"]
+        assert "本輪已安全過濾的聊天室留言內容" in external_context["context_text"]
+        assert "<external_chat_context" not in external_context["context_text"]
         assert "星河旅人: 可可推薦《怪獸8號》嗎？" in external_context["context_text"]
         assert external_context["event_ids"] == [event["id"]]
         assert result["interaction"]["event_ids"] == [event["id"]]
