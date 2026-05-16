@@ -52,12 +52,11 @@ class InjectionManagerMixin:
         ]
         super_chats = [event for event in active if event.get("priority_class") == "super_chat"]
         normal = [event for event in active if event.get("priority_class") != "super_chat"]
-        super_chats.sort(key=lambda item: (-int(item.get("sc_tier", 0) or 0), int(item.get("id", 0) or 0)))
+        if super_chats:
+            super_chats.sort(key=lambda item: (-int(item.get("sc_tier", 0) or 0), int(item.get("id", 0) or 0)))
+            return super_chats[:max(1, int(max_sc_per_batch or 5))]
         normal.sort(key=lambda item: int(item.get("id", 0) or 0))
-        selected = super_chats[:max(1, int(max_sc_per_batch or 5))]
-        remaining = max(0, int(max_events or 1) - len(selected))
-        selected.extend(normal[:remaining])
-        return selected[:max(1, int(max_events or 1))]
+        return normal[:max(1, int(max_events or 1))]
 
     def _sc_interrupt_allowed(self, runtime: LiveRuntime, session: dict[str, Any]) -> bool:
         cooldown = max(0, int(session.get("sc_interrupt_cooldown_seconds", 30) or 30))
@@ -65,6 +64,79 @@ class InjectionManagerMixin:
         if not last:
             return True
         return (datetime.now() - last).total_seconds() >= cooldown
+
+    def _director_owns_auto_inject(self, session: dict[str, Any]) -> bool:
+        session_id = str(session.get("session_id") or "").strip()
+        if not session_id or not self._episode_plan_for_session(session):
+            return False
+        director_state = self.storage.get_director_state(session_id)
+        return bool(director_state.get("director_enabled"))
+
+    async def _prepare_director_owned_auto_inject(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        active_pending: list[dict[str, Any]],
+        *,
+        max_events: int,
+        max_sc_per_batch: int,
+        active: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        session_id = str(session.get("session_id") or runtime.session_id)
+        candidate_ids: list[int] = []
+        classify_ids: list[int] = []
+        for event in active_pending:
+            try:
+                event_id = int(event.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if (
+                event_id <= 0
+                or str(event.get("status") or "active") != "active"
+                or not str(event.get("message_text") or "").strip()
+            ):
+                continue
+            candidate_ids.append(event_id)
+            if str(event.get("safety_status") or "pending") != "completed":
+                classify_ids.append(event_id)
+        if classify_ids:
+            await self.classify_event_ids_serialized(session_id, classify_ids)
+
+        if candidate_ids:
+            refreshed = self.storage.get_events_by_ids(session_id, candidate_ids, limit=len(candidate_ids))
+        else:
+            refreshed = []
+        refreshed = [
+            event for event in refreshed
+            if str(event.get("status") or "active") == "active"
+            and str(event.get("message_text") or "").strip()
+            and not str(event.get("injected_at") or "").strip()
+            and self._is_public_live_event_displayable(event)
+        ]
+        selection_session = dict(session)
+        selection_session["max_pending_events"] = max_events
+        selection_session["max_sc_per_batch"] = max_sc_per_batch
+        selected = self._episode_select_audience_event_batch(selection_session, refreshed)
+        selected_ids = [int(event["id"]) for event in selected if int(event.get("id") or 0)]
+        selected_sc = [event for event in selected if str(event.get("priority_class") or "") == "super_chat"]
+        selected_source = "super_chat" if selected_sc else ("chat" if selected else "none")
+        active = active if active is not None else self.storage.get_active_interaction(session_id)
+        interrupted_active = False
+        if (
+            selected_sc
+            and active
+            and active.get("status") == "running"
+            and self._sc_interrupt_allowed(runtime, session)
+        ):
+            runtime.last_sc_interrupt_at = datetime.now().isoformat()
+            await self.interrupt_session(session_id, reason="higher_priority:super_chat")
+            interrupted_active = True
+        return {
+            "handled_by_director": True,
+            "selected_event_ids": selected_ids,
+            "selected_source": selected_source,
+            "interrupted_active": interrupted_active,
+        }
 
     async def _auto_inject_loop(self, runtime: LiveRuntime) -> None:
         while runtime.running:
@@ -93,12 +165,6 @@ class InjectionManagerMixin:
                     min_pending = max(1, int(session.get("min_pending_events", 1) or 1))
                     max_pending = max(min_pending, int(session.get("max_pending_events", 12) or 12))
                     max_sc_per_batch = max(1, int(session.get("max_sc_per_batch", 5) or 5))
-                    selected = self._select_pending_events_for_injection(
-                        active_pending,
-                        max_events=max_pending,
-                        max_sc_per_batch=max_sc_per_batch,
-                    )
-                    selected_sc = [event for event in selected if event.get("priority_class") == "super_chat"]
                     active = self.storage.get_active_interaction(runtime.session_id)
                     active_interaction = bool(active)
                     sleep_seconds = self._auto_inject_delay(
@@ -106,6 +172,32 @@ class InjectionManagerMixin:
                         len(active_pending),
                         active_interaction=active_interaction,
                     )
+                    if self._director_owns_auto_inject(session):
+                        result = await self._prepare_director_owned_auto_inject(
+                            runtime,
+                            session,
+                            active_pending,
+                            max_events=max_pending,
+                            max_sc_per_batch=max_sc_per_batch,
+                            active=active,
+                        )
+                        runtime.last_auto_inject_at = datetime.now().isoformat()
+                        runtime.last_auto_inject_error = None
+                        await self._broadcast(runtime.session_id, {
+                            "type": "director_audience_events_ready",
+                            "event_ids": result.get("selected_event_ids", []),
+                            "source": result.get("selected_source", "none"),
+                            "count": len(result.get("selected_event_ids", [])),
+                            "interrupted_active": bool(result.get("interrupted_active")),
+                        })
+                        await asyncio.sleep(sleep_seconds)
+                        continue
+                    selected = self._select_pending_events_for_injection(
+                        active_pending,
+                        max_events=max_pending,
+                        max_sc_per_batch=max_sc_per_batch,
+                    )
+                    selected_sc = [event for event in selected if event.get("priority_class") == "super_chat"]
                     if active and active.get("status") == "presenting":
                         await asyncio.sleep(sleep_seconds)
                         continue

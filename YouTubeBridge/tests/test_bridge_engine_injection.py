@@ -891,6 +891,71 @@ async def test_director_owned_auto_inject_keeps_normal_comment_for_director_prom
 
 
 @pytest.mark.asyncio
+async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 5,
+            "inject_interval_seconds": 5,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "comment-loop-a",
+            "message_type": "textMessageEvent",
+            "author_display_name": "星夜旅人",
+            "message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+        ready = asyncio.Event()
+
+        async def forbidden_inject(*_args, **_kwargs):
+            raise AssertionError("generic inject_recent should not be called")
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+            if payload.get("type") == "director_audience_events_ready":
+                runtime.running = False
+                ready.set()
+
+        monkeypatch.setattr(manager, "inject_recent", forbidden_inject)
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.0)
+
+        await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
+
+        assert ready.is_set()
+        assert any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
+        assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"] == ""
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_owned_auto_inject_does_not_interrupt_for_hidden_super_chat():
     tmp_dir = _tmp_dir()
     try:
@@ -963,6 +1028,76 @@ async def test_director_owned_auto_inject_does_not_interrupt_for_hidden_super_ch
         assert result["interrupted_active"] is False
         assert storage.get_interaction(active["job_id"])["status"] == "running"
         assert storage.get_events_by_ids("live-a", [unsafe_sc["id"]])[0]["handled_in_closing_at"] == ""
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_owned_auto_inject_interrupts_running_interaction_for_visible_super_chat():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "auto_inject": True,
+            "sc_interrupt_cooldown_seconds": 0,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        active = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "content": "正在回應一般留言。",
+        })
+        visible_sc = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "sc-visible",
+            "message_type": "superChatEvent",
+            "author_display_name": "紅色斗內",
+            "message_text": "請優先回應這個 SC",
+            "amount_display_string": "NT$750",
+            "amount_micros": 750_000_000,
+            "priority_class": "super_chat",
+            "sc_tier": 4,
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "請優先回應這個 SC",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager._prepare_director_owned_auto_inject(
+            runtime,
+            storage.get_session("live-a"),
+            storage.get_events_by_ids("live-a", [visible_sc["id"]]),
+            max_events=12,
+            max_sc_per_batch=5,
+        )
+
+        assert result["selected_event_ids"] == [visible_sc["id"]]
+        assert result["selected_source"] == "super_chat"
+        assert result["interrupted_active"] is True
+        assert runtime.last_sc_interrupt_at
+        interrupted = storage.get_interaction(active["job_id"])
+        assert interrupted["status"] == "interrupt_requested"
+        assert interrupted["reason"] == "higher_priority:super_chat"
+        assert storage.get_events_by_ids("live-a", [visible_sc["id"]])[0]["injected_at"] == ""
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
