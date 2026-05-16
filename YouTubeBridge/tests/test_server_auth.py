@@ -1884,7 +1884,7 @@ async def test_phase_summary_callback_uses_phase_summary_and_shared_memory_helpe
 
 
 @pytest.mark.asyncio
-async def test_start_current_session_archives_existing_session_and_writes_memory(monkeypatch, tmp_path):
+async def test_start_current_session_discards_existing_runtime_without_summary(monkeypatch, tmp_path):
     storage = server_module.BridgeStorage(tmp_path / "bridge.db")
     storage.upsert_connector({
         "connector_id": "youtube-main",
@@ -1911,6 +1911,7 @@ async def test_start_current_session_archives_existing_session_and_writes_memory
     monkeypatch.setattr(server_module, "storage", storage)
 
     finalized: list[str] = []
+    stopped: list[str] = []
     started: list[str] = []
 
     class FakeManager:
@@ -1938,42 +1939,22 @@ async def test_start_current_session_archives_existing_session_and_writes_memory
             }
 
         async def stop_session(self, session_id: str):
+            stopped.append(session_id)
             storage.update_session_fields(session_id, status="stopped")
             return self.get_status(session_id)
 
     class FakeSummaryManager:
-        def __init__(self):
-            self.calls: list[str] = []
-
         def summarize_session(self, session_id: str, **_kwargs):
-            self.calls.append(session_id)
-            summary = storage.create_summary(session_id, {
-                "title": "直播摘要",
-                "summary_text": "討論新番作畫。",
-                "memory_text": "本場直播討論新番作畫。",
-                "character_ids": ["coco", "byakuren"],
-                "event_count": 1,
-                "status": "completed",
-                "metadata": {"memory_write_status": "not_started"},
-            })
-            storage.update_session_summary_state(
-                session_id,
-                summary_status="completed",
-                summary_id=summary["id"],
-                finalized_at="2026-05-06T10:10:00",
-            )
-            return {"status": "completed", "summary": summary}
+            raise AssertionError(f"start_current_session must not summarize stale session {session_id}")
 
     memory_writes: list[dict] = []
 
     class FakeMemoriaClient:
         def write_shared_youtube_memory(self, **kwargs):
-            memory_writes.append(kwargs)
-            return {"block_id": "shared-memory-1"}
+            raise AssertionError(f"start_current_session must not write stale memory: {kwargs}")
 
-    fake_summary = FakeSummaryManager()
     monkeypatch.setattr(server_module, "manager", FakeManager())
-    monkeypatch.setattr(server_module, "summary_manager", fake_summary)
+    monkeypatch.setattr(server_module, "summary_manager", FakeSummaryManager())
     monkeypatch.setattr(server_module._sessions_routes, "MemoriaClient", FakeMemoriaClient)
 
     result = await server_module.start_current_session(server_module.LiveSessionConfig(
@@ -1982,15 +1963,18 @@ async def test_start_current_session_archives_existing_session_and_writes_memory
         auto_inject=True,
     ))
 
-    assert finalized == ["old-live"]
-    assert fake_summary.calls == ["old-live"]
-    assert memory_writes and memory_writes[0]["session_id"] == "old-live"
-    assert memory_writes[0]["character_ids"] == ["coco", "byakuren"]
+    assert finalized == []
+    assert stopped == ["old-live"]
+    assert memory_writes == []
     assert storage.get_session("old-live") is None
+    assert storage.count_events("old-live") == 0
+    assert storage.list_interactions("old-live") == []
     assert started == [result["session_id"]]
     assert storage.get_session(result["session_id"])["status"] == "running"
     assert result["archived_sessions"][0]["session_id"] == "old-live"
-    assert result["archived_sessions"][0]["memory_write"]["status"] == "completed"
+    assert result["archived_sessions"][0]["status"] == "discarded"
+    assert result["archived_sessions"][0]["reason"] == "replace_with_new_single_live_session"
+    assert result["archived_sessions"][0]["deleted"] is True
 
 
 @pytest.mark.asyncio

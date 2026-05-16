@@ -1790,7 +1790,6 @@ class YouTubeBridgeManager(
             "suspicious_prompt_injection": "prompt injection 測試",
             "suspicious_secret_request": "祕密/憑證要求",
             "suspicious_url_or_token": "可疑 URL 或 token",
-            "suspicious_sexual_or_coercive_roleplay": "可疑動作或角色狀態注入",
             "spam_or_duplicate": "重複或洗版",
             "unclassified": "尚未通過安全檢查",
             "unsafe_other": "可疑內容",

@@ -1,6 +1,8 @@
 import shutil
 from datetime import datetime, timedelta
 
+import pytest
+
 from bridge_engine_test_support import (
     BridgeStorage,
     LiveEndedClient,
@@ -223,6 +225,60 @@ def test_episode_audience_interrupt_batches_normal_backlog_and_records_deferred_
         assert metadata["audience_batches_since_planned_turn"] == 1
         assert metadata["deferred_event_count"] == 95
         assert metadata["latest_backlog_snapshot"]["normal_count"] == 100
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_episode_audience_interrupt_injects_selected_chat_into_memoria_context():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        captured: dict[str, object] = {}
+
+        class CaptureClient:
+            def list_characters(self):
+                return [
+                    {"character_id": "host-a", "name": "主持A"},
+                    {"character_id": "analyst-b", "name": "分析B"},
+                    {"character_id": "skeptic-c", "name": "質疑C"},
+                ]
+
+            def chat_stream_sync(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "session_id": kwargs.get("session_id") or "mem-a",
+                    "message_id": 601,
+                    "reply": "已回應觀眾留言。",
+                }
+
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            memoria_client_factory=CaptureClient,
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "audience-question",
+            "message_text": "可可推薦《怪獸8號》嗎？",
+            "author_display_name": "星河旅人",
+            "author_channel_id": "viewer-a",
+            "message_type": "textMessageEvent",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "可可推薦《怪獸8號》嗎？",
+        })
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        decision = manager._episode_plan_next_decision(session, state)
+
+        result = await manager._send_director_turn(session, state, decision)
+
+        external_context = captured["external_context"]
+        assert "星河旅人: 可可推薦《怪獸8號》嗎？" in external_context["context_text"]
+        assert external_context["event_ids"] == [event["id"]]
+        assert result["interaction"]["event_ids"] == [event["id"]]
+        assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

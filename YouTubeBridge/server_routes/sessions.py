@@ -469,14 +469,14 @@ async def start_current_session(body: LiveSessionConfig):
         if not session_id:
             continue
         if _session_has_runtime_content(session):
-            try:
-                archived = await _finalize_summarize_write_and_maybe_delete(
-                    session_id,
-                    delete_after=True,
-                    reason="replace_with_new_single_live_session",
-                )
-            except RuntimeError as exc:
-                raise HTTPException(status_code=502, detail=str(exc))
+            await manager.stop_session(session_id)
+            deleted = storage.delete_session(session_id)
+            archived = {
+                "session_id": session_id,
+                "status": "discarded",
+                "reason": "replace_with_new_single_live_session",
+                "deleted": deleted,
+            }
         else:
             await manager.stop_session(session_id)
             deleted = storage.delete_session(session_id)

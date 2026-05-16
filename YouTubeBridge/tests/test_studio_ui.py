@@ -41,8 +41,8 @@ def test_studio_route_is_registered_as_parallel_ui_surface():
 def test_studio_html_uses_external_assets_without_inline_code():
     studio_html = _studio_source()
 
-    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v27">' in studio_html
-    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v27"></script>' in studio_html
+    assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v28">' in studio_html
+    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v28"></script>' in studio_html
     assert "<style>" not in studio_html
     assert "<script>\n" not in studio_html
 
@@ -891,6 +891,29 @@ def test_studio_conversation_refresh_preserves_locally_visible_messages():
     assert "function pruneVisibleMessages(" in studio_js
     assert "const merged = mergePreviewMessages(Array.from(state.visibleMessages.values()), visible).slice(-CHAT_PREVIEW_VISIBLE_LIMIT);" in studio_js
     assert "state.visibleMessages.clear();" in studio_js
+
+
+def test_studio_live_events_are_stable_timeline_items_not_refresh_prepend_rows():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "visibleLiveEvents: new Map()" in studio_js
+    assert "function liveEventKey(" in studio_js
+    assert "function rememberVisibleLiveEvent(" in studio_js
+    assert "function renderConversationTimeline(" in studio_js
+
+    refresh_body = studio_js[
+        studio_js.index("async function refreshConversation()"):
+        studio_js.index("function scheduleConversationRefresh", studio_js.index("async function refreshConversation()"))
+    ]
+    assert "events.forEach(rememberVisibleLiveEvent);" in refresh_body
+    assert "renderConversationTimeline();" in refresh_body
+    assert "appendLiveEventGroup(`YouTube Live 留言注入：${events.length} 則`, events);" not in refresh_body
+
+    clear_body = studio_js[
+        studio_js.index("function clearConversation()"):
+        studio_js.index("async function regenerateSummary", studio_js.index("function clearConversation()"))
+    ]
+    assert "state.visibleLiveEvents.clear();" in clear_body
 
 
 def test_studio_closing_state_disables_restart_and_clear_discards_local_visible_messages():

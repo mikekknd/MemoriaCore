@@ -705,6 +705,19 @@ class LLMRouter:
             long_markdown_doc = len(stripped) > 500 and (heading_count >= 2 or bullet_count >= 8)
             return has_shell_doc or has_code_fence or long_markdown_doc
 
+        def _looks_like_truncated_or_malformed_json(text: str) -> bool:
+            stripped = (text or "").strip()
+            if not stripped:
+                return False
+            if stripped[0] in ("{", "["):
+                return True
+            schema_key_markers = (
+                '"internal_thought"',
+                '"reply"',
+                '"extracted_entities"',
+            )
+            return any(marker in stripped for marker in schema_key_markers)
+
         def _looks_like_group_speaker_leak(text: str, ctx: dict | None) -> bool:
             if not text or not ctx or ctx.get("session_mode") != "group":
                 return False
@@ -736,6 +749,9 @@ class LLMRouter:
             elif _looks_like_document_dump(response_text):
                 retry_strategy = "regenerate"
                 retry_reason = "document_dump"
+            elif _looks_like_truncated_or_malformed_json(response_text):
+                retry_strategy = "regenerate"
+                retry_reason = "truncated_or_malformed_json"
             else:
                 retry_strategy = "preserve_previous"
                 retry_reason = "format_only"

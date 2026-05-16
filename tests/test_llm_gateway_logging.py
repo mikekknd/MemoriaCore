@@ -218,6 +218,40 @@ def test_non_json_retry_preserves_plain_conversational_response(monkeypatch):
     assert "原封不動" in provider.messages_per_call[1][-1]["content"]
 
 
+def test_non_json_retry_regenerates_when_structured_response_is_truncated(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_prompt",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_response",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_error",
+        lambda context, message, details=None: captured.update(details=details),
+    )
+
+    truncated_response = '{\n  "internal_thought": "小貓這番話倒是道出了凡人的畏難情緒，但重頭'
+    provider = _FakeProvider(truncated_response)
+    router = LLMRouter()
+    router.register_route("chat", provider, "fake-model")
+    messages = [
+        {"role": "system", "content": "請輸出 chat schema JSON"},
+        {"role": "user", "content": "接續直播"},
+    ]
+
+    result = router.generate("chat", messages, response_format={"type": "object"})
+
+    assert result == '{"reply": "ok"}'
+    assert captured["details"]["retry_strategy"] == "regenerate"
+    assert captured["details"]["retry_reason"] == "truncated_or_malformed_json"
+    assert "原封不動" not in captured["details"]["retry_warning"]
+    assert truncated_response not in provider.messages_per_call[1][-1]["content"]
+
+
 def test_generate_preserves_separate_group_assistant_history_before_provider(monkeypatch):
     monkeypatch.setattr(
         "core.llm_gateway.SystemLogger.log_llm_prompt",

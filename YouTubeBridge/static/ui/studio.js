@@ -8,6 +8,8 @@ const state = {
   eventSource: null,
   chatRefreshTimer: null,
   visibleMessages: new Map(),
+  visibleLiveEvents: new Map(),
+  localLiveEventSerial: 0,
   startedAt: null,
   elapsedTimer: null,
   autoCommentTimer: null,
@@ -1193,13 +1195,33 @@ function appendLiveEventGroup(title, items) {
     appendLog("INFO", "直播事件顯示已關閉，留言僅保留於測試狀態");
     return;
   }
+  const fallbackTime = new Date().toISOString();
+  items.forEach((item) => {
+    state.localLiveEventSerial += 1;
+    rememberVisibleLiveEvent({
+      ...item,
+      event_id: item.event_id || item.id || item.youtube_message_id || `local-${state.localLiveEventSerial}`,
+      published_at: item.published_at || item.received_at || item.created_at || item.timestamp || fallbackTime,
+      summary: title,
+    });
+  });
+  renderConversationTimeline();
+}
+
+function appendLiveEventItem(item, { prepend = true } = {}) {
+  if (!item?.text) return;
+  const eventId = liveEventKey(item);
+  if (eventId && feed.querySelector(`[data-live-event-id="${CSS.escape(eventId)}"]`)) return;
   state.messageCount += 1;
   const row = document.createElement("article");
   row.className = "chat-line event";
+  row.dataset.liveEventId = eventId;
 
   const time = document.createElement("time");
   time.className = "chat-time";
-  time.textContent = nowTime();
+  time.textContent = chatPreviewTime({
+    created_at: item.published_at || item.received_at || item.created_at || item.timestamp,
+  });
 
   const mark = document.createElement("div");
   mark.className = "event-mark";
@@ -1210,19 +1232,18 @@ function appendLiveEventGroup(title, items) {
   const heading = document.createElement("strong");
   heading.textContent = "直播事件";
   const summary = document.createElement("p");
-  summary.textContent = title;
+  summary.textContent = item.summary || "YouTube Live 留言注入：1 則";
   const list = document.createElement("ul");
   list.className = "event-list";
-  items.forEach((item) => {
-    const line = document.createElement("li");
-    const prefix = item.kind === "super" ? `[SC ${item.amount || "NT$75"}] ` : "";
-    line.textContent = `${prefix}${item.name}: ${item.text}`;
-    list.append(line);
-  });
+  const line = document.createElement("li");
+  const prefix = item.kind === "super" ? `[SC ${item.amount || "NT$75"}] ` : "";
+  line.textContent = `${prefix}${item.name}: ${item.text}`;
+  list.append(line);
   copy.append(heading, summary, list, time);
 
   row.append(mark, copy);
-  feed.prepend(row);
+  if (prepend) feed.prepend(row);
+  else feed.append(row);
   feed.scrollTop = 0;
 }
 
@@ -1639,6 +1660,7 @@ function resetConversationForNewSession() {
   state.sessionId = "";
   state.messageCount = 0;
   state.visibleMessages.clear();
+  state.visibleLiveEvents.clear();
   renderConversationEmpty("正在建立新的 Live Session，等待後端產生 AI 對話。");
 }
 
@@ -1736,6 +1758,19 @@ function previewMessageTimeValue(message = {}) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function liveEventKey(item = {}) {
+  const rawId = item?.event_id || item?.id || item?.youtube_message_id || "";
+  if (rawId) return `event:${rawId}`;
+  const content = String(item?.text || item?.message_text || "").trim();
+  return `event:${item?.published_at || item?.received_at || item?.created_at || item?.timestamp || ""}:${item?.name || item?.author_display_name || ""}:${content.slice(0, 40)}`;
+}
+
+function liveEventTimeValue(item = {}) {
+  const raw = item?.published_at || item?.received_at || item?.created_at || item?.timestamp || "";
+  const value = raw ? new Date(raw).getTime() : 0;
+  return Number.isFinite(value) ? value : 0;
+}
+
 function mergePreviewMessages(...groups) {
   const merged = new Map();
   groups.flat().forEach((message) => {
@@ -1747,6 +1782,19 @@ function mergePreviewMessages(...groups) {
     const timeDelta = previewMessageTimeValue(left) - previewMessageTimeValue(right);
     if (timeDelta !== 0) return timeDelta;
     return previewMessageKey(left).localeCompare(previewMessageKey(right));
+  });
+}
+
+function pruneVisibleLiveEvents(limit = CHAT_PREVIEW_VISIBLE_LIMIT) {
+  const maxItems = Math.max(1, Number(limit) || CHAT_PREVIEW_VISIBLE_LIMIT);
+  const kept = Array.from(state.visibleLiveEvents.values()).sort((left, right) => {
+    const timeDelta = liveEventTimeValue(left) - liveEventTimeValue(right);
+    if (timeDelta !== 0) return timeDelta;
+    return liveEventKey(left).localeCompare(liveEventKey(right));
+  }).slice(-maxItems);
+  state.visibleLiveEvents.clear();
+  kept.forEach((item) => {
+    state.visibleLiveEvents.set(liveEventKey(item), item);
   });
 }
 
@@ -1764,6 +1812,44 @@ function rememberVisibleMessage(message = {}) {
   if (!content) return;
   state.visibleMessages.set(previewMessageKey(message), message);
   pruneVisibleMessages();
+}
+
+function rememberVisibleLiveEvent(item = {}) {
+  const content = String(item?.text || item?.message_text || "").trim();
+  if (!content) return;
+  state.visibleLiveEvents.set(liveEventKey(item), item);
+  pruneVisibleLiveEvents();
+}
+
+function renderConversationTimeline() {
+  const messageItems = Array.from(state.visibleMessages.values()).map((message) => ({
+    type: "message",
+    key: previewMessageKey(message),
+    time: previewMessageTimeValue(message),
+    value: message,
+  }));
+  const eventItems = shouldShowLiveEvents()
+    ? Array.from(state.visibleLiveEvents.values()).map((event) => ({
+      type: "event",
+      key: liveEventKey(event),
+      time: liveEventTimeValue(event),
+      value: event,
+    }))
+    : [];
+  const items = [...messageItems, ...eventItems].sort((left, right) => {
+    const timeDelta = left.time - right.time;
+    if (timeDelta !== 0) return timeDelta;
+    return left.key.localeCompare(right.key);
+  }).slice(-CHAT_PREVIEW_VISIBLE_LIMIT);
+  clearConversationFeed();
+  if (!items.length) {
+    renderConversationEmpty(state.sessionId ? "Live Session 已建立，等待後端產生 AI 對話。" : undefined);
+    return;
+  }
+  items.forEach((item) => {
+    if (item.type === "event") appendLiveEventItem(item.value, { prepend: true });
+    else appendChatPreviewMessage(item.value, { prepend: true });
+  });
 }
 
 function appendChatPreviewMessage(message, { prepend = true } = {}) {
@@ -1801,7 +1887,7 @@ function appendChatPreviewMessage(message, { prepend = true } = {}) {
   feed.scrollTop = 0;
 }
 
-function renderChatPreviewMessages(messages = []) {
+function rememberChatPreviewMessages(messages = []) {
   const visible = Array.isArray(messages) ? messages.filter((message) => (
     String(message?.role || "") !== "system_event"
     && String(message?.content || message?.message_text || "").trim()
@@ -1810,20 +1896,23 @@ function renderChatPreviewMessages(messages = []) {
   const merged = mergePreviewMessages(Array.from(state.visibleMessages.values()), visible).slice(-CHAT_PREVIEW_VISIBLE_LIMIT);
   state.visibleMessages.clear();
   merged.forEach((message) => state.visibleMessages.set(previewMessageKey(message), message));
-  clearConversationFeed();
-  if (!merged.length) {
-    renderConversationEmpty(state.sessionId ? "Live Session 已建立，等待後端產生 AI 對話。" : undefined);
-    return;
-  }
-  merged.forEach((message) => appendChatPreviewMessage(message, { prepend: true }));
+  return merged;
+}
+
+function renderChatPreviewMessages(messages = []) {
+  rememberChatPreviewMessages(messages);
+  renderConversationTimeline();
 }
 
 function eventToLiveEventItem(event) {
   return {
+    event_id: event?.id || event?.event_id || event?.youtube_message_id || "",
+    youtube_message_id: event?.youtube_message_id || "",
     kind: event?.priority_class === "super_chat" || event?.message_type === "superChatEvent" ? "super" : "comment",
-    amount: event?.amount_display || event?.amount || "",
+    amount: event?.amount_display_string || event?.amount_display || event?.amount || "",
     name: event?.author_display_name || "觀眾",
     text: event?.message_text || event?.text || "",
+    published_at: event?.published_at || event?.received_at || event?.created_at || "",
   };
 }
 
@@ -1837,11 +1926,12 @@ async function refreshConversation() {
       api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`),
       api(`/sessions/${encodeURIComponent(state.sessionId)}/recent?limit=120`),
     ]);
-    renderChatPreviewMessages(preview.messages || []);
+    rememberChatPreviewMessages(preview.messages || []);
     const events = Array.isArray(recent.events) ? recent.events.map(eventToLiveEventItem).filter((item) => item.text) : [];
     if (events.length && shouldShowLiveEvents()) {
-      appendLiveEventGroup(`YouTube Live 留言注入：${events.length} 則`, events);
+      events.forEach(rememberVisibleLiveEvent);
     }
+    renderConversationTimeline();
   } catch (error) {
     appendLog("WARN", `直播對話更新失敗：${error.message || error}`);
   }
@@ -2799,6 +2889,7 @@ function startAutoComments() {
 
 function clearConversation() {
   state.visibleMessages.clear();
+  state.visibleLiveEvents.clear();
   renderConversationEmpty("對話區已清空，等待新的直播內容。");
   appendLog("INFO", "直播對話顯示已清除");
 }
@@ -3031,7 +3122,10 @@ function bindEvents() {
       applyTestAutoSaveState("自動留言測試");
     });
   });
-  $("showLiveEventsEnabled").addEventListener("change", () => applyTestAutoSaveState("畫面顯示"));
+  $("showLiveEventsEnabled").addEventListener("change", () => {
+    applyTestAutoSaveState("畫面顯示");
+    renderConversationTimeline();
+  });
   autoCommentEnabled.addEventListener("change", () => {
     if (autoCommentEnabled.checked) startAutoComments();
     else stopAutoComments();
