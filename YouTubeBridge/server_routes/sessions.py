@@ -5,6 +5,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -60,6 +61,98 @@ def _require_state():
     if _state is None:
         raise RuntimeError("server route state is not configured")
     return _state
+
+
+def _compact_prompt_text(value: Any) -> str:
+    return " ".join(str(value or "").replace("\r", "\n").split()).strip()
+
+
+def _parse_debug_info(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _message_timestamp(message: dict) -> datetime | None:
+    return _parse_iso(message.get("timestamp") or message.get("created_at"))
+
+
+def _message_id_text(message: dict) -> str:
+    raw = message.get("message_id")
+    return "" if raw is None else str(raw)
+
+
+def _interaction_result_message_id(interaction: dict) -> str:
+    metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+    raw = metadata.get("result_message_id")
+    return "" if raw is None else str(raw)
+
+
+def _is_discarded_interaction(interaction: dict, target_memoria_session_id: str) -> bool:
+    if str(interaction.get("memoria_session_id") or "") != target_memoria_session_id:
+        return False
+    status = str(interaction.get("status") or "")
+    metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+    return status in {"interrupt_requested", "interrupted", "discarded"} or bool(
+        metadata.get("discarded") or metadata.get("discarded_after_provider_return")
+    )
+
+
+def _message_matches_discarded_interaction(message: dict, interaction: dict) -> bool:
+    if str(message.get("role") or "") != "assistant":
+        return False
+
+    result_message_id = _interaction_result_message_id(interaction)
+    if result_message_id and _message_id_text(message) == result_message_id:
+        return True
+
+    debug_info = _parse_debug_info(message.get("debug_info"))
+    original_query = _compact_prompt_text(debug_info.get("original_query"))
+    interaction_prompt = _compact_prompt_text(interaction.get("content"))
+    if not original_query or not interaction_prompt or not original_query.startswith(interaction_prompt):
+        return False
+
+    message_time = _message_timestamp(message)
+    interaction_started = _parse_iso(interaction.get("started_at") or interaction.get("created_at"))
+    if message_time and interaction_started and message_time < interaction_started:
+        return False
+    return True
+
+
+def _filter_discarded_memoria_messages(
+    messages: list[dict],
+    interactions: list[dict],
+    *,
+    target_memoria_session_id: str,
+) -> list[dict]:
+    discarded = [
+        interaction
+        for interaction in interactions
+        if _is_discarded_interaction(interaction, target_memoria_session_id)
+    ]
+    if not discarded:
+        return messages
+    return [
+        message
+        for message in messages
+        if not any(_message_matches_discarded_interaction(message, interaction) for interaction in discarded)
+    ]
 
 
 def _resolve_episode_plan_characters(plan_id: str) -> list[str]:
@@ -582,6 +675,11 @@ async def get_chat_preview(session_id: str, limit: int = 80):
     if not isinstance(messages, list):
         messages = []
     limit = max(1, min(int(limit or 80), 200))
+    messages = _filter_discarded_memoria_messages(
+        messages,
+        storage.list_interactions(session_id, limit=500),
+        target_memoria_session_id=target_session_id,
+    )
     visible_messages = [
         sanitized
         for message in messages[-limit:]

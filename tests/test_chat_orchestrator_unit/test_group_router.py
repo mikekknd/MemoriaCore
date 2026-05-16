@@ -415,6 +415,90 @@ def test_youtube_live_discussion_mode_discourages_early_stop_after_all_spoke():
     assert "remaining_bot_turns_including_next 是硬上限" in prompt_text
 
 
+def test_youtube_live_discussion_mode_honors_stop_no_new_value_outside_group_closing():
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "這段已經自然收束，下一句只會重述",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "這段已經夠了，不用再補。"},
+            {"role": "assistant", "content": "A 已經完成短收束。", "character_id": "char-a", "character_name": "角色A"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        bot_turn_index=1,
+        max_bot_turns=2,
+        discussion_mode="youtube_live",
+    )
+
+    assert result.should_respond is False
+    assert result.target_character_id is None
+    assert result.action == "stop_no_new_value"
+
+
+def test_youtube_live_group_closing_prompt_marks_group_closing():
+    router = _Router({
+        "conversation_intent": "continue_group_discussion",
+        "action": "new_speaker_reply_to_ai",
+        "target_character_id": "char-b",
+        "reason": "群組收尾仍有未發言角色",
+    })
+
+    run_group_router(
+        [
+            {"role": "user", "content": "請做本場最後收尾，正式道別，不要開新話題。"},
+            {"role": "assistant", "content": "A 已回顧重點並正式道別。", "character_id": "char-a", "character_name": "角色A"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        bot_turn_index=1,
+        max_bot_turns=2,
+        discussion_mode="youtube_live",
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    turn_state = _extract_turn_state(prompt_text)
+    assert turn_state["closing_mode"] == "group_closing"
+    assert "group_closing" in prompt_text
+    assert "仍有未發言角色尚未完成簡短道別" in prompt_text
+
+
+def test_youtube_live_group_closing_allows_unspoken_speaker_after_stop_no_new_value():
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "最近一則 AI 已完成回顧與道別",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "請做本場最後收尾，正式道別，不要開新話題。"},
+            {"role": "assistant", "content": "A 已回顧重點並正式道別。", "character_id": "char-a", "character_name": "角色A"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        bot_turn_index=1,
+        max_bot_turns=2,
+        discussion_mode="youtube_live",
+    )
+
+    assert result.should_respond is True
+    assert result.target_character_id == "char-b"
+    assert result.action == "new_speaker_reply_to_ai"
+    assert result.conversation_intent == "continue_group_discussion"
+
+
 def test_youtube_live_router_reassigns_candidate_matching_previous_speaker():
     router = _Router({
         "conversation_intent": "continue_group_discussion",

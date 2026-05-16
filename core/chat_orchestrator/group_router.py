@@ -118,6 +118,13 @@ def run_group_router(
     not_yet_spoken_refs = _participant_refs(not_yet_spoken_ids, participants)
     all_participants_spoke = len(participants) > 1 and not not_yet_spoken_ids
     remaining_bot_turns = _remaining_bot_turns(bot_turn_index, max_bot_turns)
+    closing_mode = _closing_mode_for_turn(
+        latest_user_text,
+        discussion_mode=normalized_discussion_mode,
+        participants=participants,
+        live_episode_plan=live_episode_plan_context,
+        max_bot_turns=max_bot_turns,
+    )
 
     if len(participants) == 1:
         only_id = participants[0]["character_id"]
@@ -146,6 +153,7 @@ def run_group_router(
                 "bot_turn_index": max(0, int(bot_turn_index or 0)),
                 "max_bot_turns": max_bot_turns,
                 "remaining_bot_turns_including_next": remaining_bot_turns,
+                "closing_mode": closing_mode,
             },
             ensure_ascii=False,
             indent=2,
@@ -201,6 +209,7 @@ def run_group_router(
         remaining_bot_turns=remaining_bot_turns,
         discussion_mode=normalized_discussion_mode,
         live_episode_plan=live_episode_plan_context,
+        closing_mode=closing_mode,
     )
 
 
@@ -475,6 +484,46 @@ def _live_episode_plan_allows_multi_reply(live_episode_plan: dict, max_bot_turns
         return int(dialogue_policy.get("max_replies") or 1) > 1
     except (TypeError, ValueError):
         return False
+
+
+def _closing_mode_for_turn(
+    current_turn_instruction: str,
+    *,
+    discussion_mode: str,
+    participants: list[dict],
+    live_episode_plan: dict,
+    max_bot_turns: int | None,
+) -> str:
+    if not _is_final_closing_request(current_turn_instruction, live_episode_plan):
+        return "none"
+    if discussion_mode != "youtube_live" or len(participants) < 2:
+        return "single_closing"
+    try:
+        if int(max_bot_turns or 0) <= 1:
+            return "single_closing"
+    except (TypeError, ValueError):
+        pass
+    return "group_closing"
+
+
+def _is_final_closing_request(current_turn_instruction: str, live_episode_plan: dict) -> bool:
+    if _live_episode_turn_type(live_episode_plan) == "final_closing":
+        return True
+    text = str(current_turn_instruction or "").strip()
+    if not text:
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            "最後收尾",
+            "正式道別",
+            "結束本場",
+            "結束這場",
+            "結束直播",
+            "本場最後",
+            "收場",
+        )
+    )
 
 
 def _normalize_characters(active_characters: list[dict]) -> list[dict]:
@@ -949,8 +998,25 @@ def _apply_youtube_live_continuation_policy(
     remaining_bot_turns: int | None,
     discussion_mode: str,
     live_episode_plan: dict | None = None,
+    closing_mode: str = "none",
 ) -> GroupRouterResult:
     if discussion_mode != "youtube_live" or result.should_respond:
+        return result
+    if closing_mode == "group_closing" and result.action == "stop_no_new_value":
+        target = _youtube_live_unique_alternative_speaker(
+            participants,
+            already_spoken_ids=already_spoken_ids,
+            last_speaker_id=last_speaker_id,
+        )
+        if target:
+            return GroupRouterResult(
+                True,
+                target,
+                "youtube live group closing allows unspoken speaker to complete a brief farewell",
+                "new_speaker_reply_to_ai",
+                "continue_group_discussion",
+            )
+    if result.action == "stop_no_new_value":
         return result
     if live_episode_plan:
         return result

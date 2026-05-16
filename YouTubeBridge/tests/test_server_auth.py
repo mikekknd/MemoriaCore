@@ -3090,6 +3090,95 @@ def test_chat_preview_message_sanitizer_removes_debug_info():
     assert "debug_info" not in sanitized
 
 
+@pytest.mark.asyncio
+async def test_chat_preview_filters_interrupted_late_memoria_result(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "target_memoria_session_id": "mem-a",
+        "character_ids": ["char-a", "char-b"],
+        "presentation_enabled": False,
+    })
+    stale_prompt = "Beat shape: viewer_worry. 可可說出觀眾可能的擔心。"
+    stale = storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "priority": 50,
+        "status": "running",
+        "memoria_session_id": "mem-a",
+        "character_ids": ["char-a", "char-b"],
+        "content": stale_prompt,
+        "started_at": "2026-05-16T09:20:11",
+    })
+    storage.update_interaction(
+        stale["job_id"],
+        status="interrupted",
+        reason="live_session_closing",
+        completed_at="2026-05-16T09:20:15",
+        interrupted_at="2026-05-16T09:20:13",
+    )
+    storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "priority": 50,
+        "status": "completed",
+        "memoria_session_id": "mem-a",
+        "character_ids": ["char-a", "char-b"],
+        "content": "請做本場最後收尾。",
+        "reply_text": "今天時間差不多了，下次見。",
+        "completed_at": "2026-05-16T09:20:31",
+        "metadata": {"result_message_id": 102},
+    })
+
+    class FakeMemoriaClient:
+        def get_session_history(self, session_id):
+            assert session_id == "mem-a"
+            return {
+                "session": {"session_id": "mem-a", "message_count": 2},
+                "messages": [
+                    {
+                        "message_id": 101,
+                        "role": "assistant",
+                        "content": "這段舊回應不應進入直播顯示。",
+                        "timestamp": "2026-05-16T09:20:19",
+                        "character_id": "char-a",
+                        "character_name": "可可",
+                        "debug_info": {
+                            "original_query": (
+                                f"{stale_prompt}\n\n"
+                                "請根據已提供的直播流程提示回應。"
+                            ),
+                        },
+                    },
+                    {
+                        "message_id": 102,
+                        "role": "assistant",
+                        "content": "今天時間差不多了，下次見。",
+                        "timestamp": "2026-05-16T09:20:31",
+                        "character_id": "char-a",
+                        "character_name": "可可",
+                        "debug_info": {"original_query": "請做本場最後收尾。"},
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(server_module._sessions_routes, "storage", storage)
+    monkeypatch.setattr(server_module._sessions_routes, "chat_preview_cache", {})
+    monkeypatch.setattr(server_module._sessions_routes, "MemoriaClient", FakeMemoriaClient)
+
+    preview = await server_module._sessions_routes.get_chat_preview("live-a", limit=20)
+
+    contents = [message["content"] for message in preview["messages"]]
+    assert contents == ["今天時間差不多了，下次見。"]
+    assert preview["message_count"] == 1
+
+
 def test_chat_preview_session_sanitizer_removes_user_scope_details():
     sanitized = server_module._sanitize_chat_preview_session({
         "session_id": "mem-a",
