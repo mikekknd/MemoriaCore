@@ -499,6 +499,101 @@ def test_youtube_live_group_closing_allows_unspoken_speaker_after_stop_no_new_va
     assert result.conversation_intent == "continue_group_discussion"
 
 
+def test_youtube_live_group_closing_logs_post_policy_route_adjustment(monkeypatch):
+    events = []
+
+    def capture_event(category, message, details=None):
+        events.append({"category": category, "message": message, "details": details or {}})
+
+    monkeypatch.setattr(
+        "core.chat_orchestrator.group_router.SystemLogger.log_system_event",
+        capture_event,
+    )
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "最近一則 AI 已完成回顧與道別",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "請做本場最後收尾，正式道別，不要開新話題。"},
+            {"role": "assistant", "content": "A 已回顧重點並正式道別。", "character_id": "char-a", "character_name": "角色A"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        bot_turn_index=1,
+        max_bot_turns=2,
+        discussion_mode="youtube_live",
+    )
+
+    assert result.should_respond is True
+    assert result.target_character_id == "char-b"
+    assert events == [
+        {
+            "category": "group_router_post_policy",
+            "message": "route adjusted by youtube_live_group_closing",
+            "details": {
+                "policy": "youtube_live_group_closing",
+                "closing_mode": "group_closing",
+                "raw_action": "stop_no_new_value",
+                "raw_target_character_id": None,
+                "final_action": "new_speaker_reply_to_ai",
+                "final_target_character_id": "char-b",
+                "final_conversation_intent": "continue_group_discussion",
+            },
+        }
+    ]
+
+
+def test_youtube_live_budget_exhausted_keeps_stop_without_post_policy_event(monkeypatch):
+    events = []
+
+    def capture_event(category, message, details=None):
+        events.append({"category": category, "message": message, "details": details or {}})
+
+    monkeypatch.setattr(
+        "core.chat_orchestrator.group_router.SystemLogger.log_system_event",
+        capture_event,
+    )
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "planned turn has no remaining reply budget",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "請照計畫進行下一段。"},
+            {"role": "assistant", "content": "A 已完成本段任務。", "character_id": "char-a", "character_name": "角色A"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        bot_turn_index=1,
+        max_bot_turns=1,
+        discussion_mode="youtube_live",
+        live_episode_plan={
+            "mode": "planned_turn",
+            "turn_id": "seg_01_turn_01",
+            "turn_contract": {
+                "turn_id": "seg_01_turn_01",
+                "turn_type": "analysis",
+                "intent": "完成本段分析",
+            },
+        },
+    )
+
+    assert result.should_respond is False
+    assert result.action == "stop_no_new_value"
+    assert events == []
+
+
 def test_youtube_live_router_reassigns_candidate_matching_previous_speaker():
     router = _Router({
         "conversation_intent": "continue_group_discussion",

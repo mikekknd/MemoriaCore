@@ -25,6 +25,32 @@ def test_system_logger_adds_log_id(monkeypatch):
     assert entry["logged_at"]
 
 
+def test_system_logger_system_event_accepts_details(monkeypatch):
+    log_path = os.path.join(os.getcwd(), ".pyTestTemp", "system_logger_event_details_test.jsonl")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    if os.path.exists(log_path):
+        os.remove(log_path)
+    monkeypatch.setattr("core.system_logger._LOG_FILE", str(log_path))
+    SystemLogger._reset_for_tests()
+
+    SystemLogger.log_system_event(
+        "group_router_post_policy",
+        "route adjusted by youtube_live_group_closing",
+        details={
+            "raw_action": "stop_no_new_value",
+            "final_action": "new_speaker_reply_to_ai",
+        },
+    )
+
+    with open(log_path, "r", encoding="utf-8") as f:
+        entry = json.loads(f.read().strip())
+    assert entry["category"] == "group_router_post_policy"
+    assert entry["details"] == {
+        "raw_action": "stop_no_new_value",
+        "final_action": "new_speaker_reply_to_ai",
+    }
+
+
 def test_llm_prompt_and_response_share_call_id(monkeypatch):
     log_path = os.path.join(os.getcwd(), ".pyTestTemp", "system_logger_llm_test.jsonl")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)

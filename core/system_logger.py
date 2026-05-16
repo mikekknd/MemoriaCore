@@ -108,19 +108,22 @@ class SystemLogger:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def log_system_event(category, message):
+    def log_system_event(category, message, details: dict | None = None):
         """通用系統關鍵事件紀錄"""
         ts = SystemLogger._get_time()
         _console_print(f"\n[{ts}] 系統事件 [{category}]")
         _console_print(f"  -> {message}")
         _console_print(f"{'-'*60}\n")
 
-        SystemLogger._write_entry({
+        entry = {
             "timestamp": SystemLogger._get_iso_time(),
             "type": "system_event",
             "category": category,
             "message": message,
-        })
+        }
+        if details is not None:
+            entry["details"] = details
+        SystemLogger._write_entry(entry)
 
     @staticmethod
     def log_shift_trigger(cohesion_score, threshold, trigger_msg):

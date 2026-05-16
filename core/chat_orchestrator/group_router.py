@@ -181,7 +181,7 @@ def run_group_router(
     action = str(parsed.get("action") or "")
     target = parsed.get("target_character_id")
     reason = str(parsed.get("reason", ""))
-    result = _validate_action_result(
+    raw_result = _validate_action_result(
         conversation_intent=conversation_intent,
         action=action,
         target=target,
@@ -191,8 +191,8 @@ def run_group_router(
         not_yet_spoken_ids=not_yet_spoken_ids,
         last_speaker_id=last_speaker_id,
     )
-    result = _enforce_youtube_live_speaker_rules(
-        result,
+    enforced_result = _enforce_youtube_live_speaker_rules(
+        raw_result,
         participants=participants,
         already_spoken_ids=spoken_after_user,
         not_yet_spoken_ids=not_yet_spoken_ids,
@@ -201,8 +201,8 @@ def run_group_router(
         discussion_mode=normalized_discussion_mode,
         live_episode_plan=live_episode_plan_context,
     )
-    return _apply_youtube_live_continuation_policy(
-        result,
+    final_result = _apply_youtube_live_continuation_policy(
+        enforced_result,
         participants=participants,
         already_spoken_ids=spoken_after_user,
         last_speaker_id=last_speaker_id,
@@ -211,6 +211,18 @@ def run_group_router(
         live_episode_plan=live_episode_plan_context,
         closing_mode=closing_mode,
     )
+    if normalized_discussion_mode == "youtube_live":
+        _log_group_router_policy_adjustment(
+            policy=(
+                "youtube_live_group_closing"
+                if closing_mode == "group_closing"
+                else "youtube_live_continuation_policy"
+            ),
+            closing_mode=closing_mode,
+            raw_result=raw_result,
+            final_result=final_result,
+        )
+    return final_result
 
 
 def _normalize_discussion_mode(value: str | None) -> str:
@@ -960,6 +972,38 @@ def _all_participants_already_spoke(participants: list[dict], already_spoken_ids
     if not participants:
         return False
     return all(participant["character_id"] in already_spoken_ids for participant in participants)
+
+
+def _route_identity(result: GroupRouterResult) -> tuple[bool, str | None, str]:
+    return (
+        bool(result.should_respond),
+        result.target_character_id,
+        str(result.action or ""),
+    )
+
+
+def _log_group_router_policy_adjustment(
+    *,
+    policy: str,
+    closing_mode: str,
+    raw_result: GroupRouterResult,
+    final_result: GroupRouterResult,
+) -> None:
+    if _route_identity(raw_result) == _route_identity(final_result):
+        return
+    SystemLogger.log_system_event(
+        "group_router_post_policy",
+        f"route adjusted by {policy}",
+        details={
+            "policy": policy,
+            "closing_mode": closing_mode,
+            "raw_action": raw_result.action,
+            "raw_target_character_id": raw_result.target_character_id,
+            "final_action": final_result.action,
+            "final_target_character_id": final_result.target_character_id,
+            "final_conversation_intent": final_result.conversation_intent,
+        },
+    )
 
 
 def _live_episode_turn_identity(live_episode_plan: dict) -> str:
