@@ -218,6 +218,36 @@ def test_non_json_retry_preserves_plain_conversational_response(monkeypatch):
     assert "原封不動" in provider.messages_per_call[1][-1]["content"]
 
 
+def test_generate_normalizes_assistant_started_group_history_before_provider(monkeypatch):
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_prompt",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_response",
+        lambda *args, **kwargs: None,
+    )
+
+    provider = _FakeProvider('{"reply": "ok"}')
+    router = LLMRouter()
+    router.register_route("chat", provider, "fake-model")
+    messages = [
+        {"role": "system", "content": "直播角色 prompt"},
+        {"role": "assistant", "content": "[可可|char-a]: 開場"},
+        {"role": "assistant", "content": "[白蓮|char-b]: 接話"},
+        {"role": "user", "content": "<external_turn_instruction>請繼續</external_turn_instruction>"},
+    ]
+
+    router.generate("chat", messages, response_format={"type": "object"})
+
+    sent = provider.messages_per_call[0]
+    assert [message["role"] for message in sent] == ["system", "user", "assistant", "user"]
+    assert "既有對話紀錄" in sent[1]["content"]
+    assert "[可可|char-a]: 開場" in sent[2]["content"]
+    assert "[白蓮|char-b]: 接話" in sent[2]["content"]
+    assert sent[-1]["content"] == "<external_turn_instruction>請繼續</external_turn_instruction>"
+
+
 def test_non_json_retry_regenerates_when_group_response_copies_other_agent(monkeypatch):
     captured = {}
 
