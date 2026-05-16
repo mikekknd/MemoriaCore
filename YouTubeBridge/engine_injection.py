@@ -196,7 +196,19 @@ class InjectionManagerMixin:
                         if not selected_event_ids and not interrupted_active:
                             await asyncio.sleep(sleep_seconds)
                             continue
-                        if selected_source != "super_chat" and len(active_pending) < min_pending:
+                        if selected_source == "super_chat" and active_running and not interrupted_active:
+                            selected_events = self.storage.get_events_by_ids(
+                                runtime.session_id,
+                                [int(event_id) for event_id in selected_event_ids],
+                                limit=len(selected_event_ids),
+                            )
+                            max_tier = max((int(event.get("sc_tier", 0) or 0) for event in selected_events), default=0)
+                            selected_priority = 320 if max_tier >= 3 else 260
+                            active_priority = int((active or {}).get("priority", 100) or 100)
+                            if selected_priority <= active_priority:
+                                await asyncio.sleep(sleep_seconds)
+                                continue
+                        if selected_source != "super_chat" and len(selected_event_ids) < min_pending:
                             await asyncio.sleep(sleep_seconds)
                             continue
                         runtime.last_auto_inject_at = datetime.now().isoformat()
