@@ -172,6 +172,7 @@ class InjectionManagerMixin:
                     max_sc_per_batch = max(1, int(session.get("max_sc_per_batch", 5) or 5))
                     active = self.storage.get_active_interaction(runtime.session_id)
                     active_interaction = bool(active)
+                    active_running = bool(active and active.get("status") == "running")
                     sleep_seconds = self._auto_inject_delay(
                         session,
                         len(active_pending),
@@ -207,7 +208,18 @@ class InjectionManagerMixin:
                         max_events=max_pending,
                         max_sc_per_batch=max_sc_per_batch,
                     )
-                    selected_sc = [event for event in selected if event.get("priority_class") == "super_chat"]
+                    raw_selected_sc = [event for event in selected if event.get("priority_class") == "super_chat"]
+                    if raw_selected_sc:
+                        selected_sc = [
+                            event for event in raw_selected_sc
+                            if self._is_public_live_event_displayable(event)
+                        ]
+                        if not selected_sc:
+                            await asyncio.sleep(sleep_seconds)
+                            continue
+                        selected = selected_sc
+                    else:
+                        selected_sc = []
                     if active and active.get("status") == "presenting":
                         await asyncio.sleep(sleep_seconds)
                         continue
@@ -216,7 +228,7 @@ class InjectionManagerMixin:
                         if active_interaction and not selected_sc:
                             await asyncio.sleep(sleep_seconds)
                             continue
-                        if active_interaction and selected_sc and not sc_interrupt_allowed:
+                        if active_running and selected_sc and not sc_interrupt_allowed:
                             await asyncio.sleep(sleep_seconds)
                             continue
                         if selected_sc:
@@ -224,7 +236,7 @@ class InjectionManagerMixin:
                             priority = 320 if max_tier >= 3 else 260
                             source = "super_chat"
                             active_priority = int((active or {}).get("priority", 100) or 100)
-                            if active_interaction and sc_interrupt_allowed and priority > active_priority:
+                            if active_running and sc_interrupt_allowed and priority > active_priority:
                                 runtime.last_sc_interrupt_at = datetime.now().isoformat()
                         else:
                             priority = 100
