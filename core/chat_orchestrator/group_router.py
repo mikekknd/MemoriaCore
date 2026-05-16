@@ -129,11 +129,15 @@ def run_group_router(
 
     prompt = get_prompt_manager().get("group_router_system").format(
         participants_json=json.dumps(participants, ensure_ascii=False, indent=2),
-        history_text=_format_history(session_messages[-12:]),
+        history_text=_format_previous_context(
+            session_messages,
+            turn_start_index=turn_start_index,
+            current_user_text=latest_user_text,
+            limit=3,
+        ),
         turn_state_json=json.dumps(
             {
                 "original_user_request": latest_user_text,
-                "latest_user_text": latest_user_text,
                 "last_speaker": _participant_ref(last_speaker_id, participants),
                 "already_spoken_this_turn": already_spoken_refs,
                 "not_yet_spoken_this_turn": not_yet_spoken_refs,
@@ -142,8 +146,6 @@ def run_group_router(
                 "bot_turn_index": max(0, int(bot_turn_index or 0)),
                 "max_bot_turns": max_bot_turns,
                 "remaining_bot_turns_including_next": remaining_bot_turns,
-                "discussion_mode": normalized_discussion_mode,
-                "live_episode_plan": live_episode_plan_context,
             },
             ensure_ascii=False,
             indent=2,
@@ -208,15 +210,12 @@ def _normalize_discussion_mode(value: str | None) -> str:
 
 def _youtube_live_group_router_rules(live_hosting: dict | None = None) -> str:
     base = (
-        "<youtube_live_group_router_rules>\n"
+        "<youtube_live_rules>\n"
         "- 這是 YouTube 直播的多角色對話，不是普通使用者問答。\n"
-        "- 一般直播對話禁止同一角色連續發言；若上一位 speaker 與候選 speaker 相同，除非是 final_closing、系統安全補充、使用者明確指定或格式錯誤重試，必須改派其他角色或停止。\n"
-        "- 同一個 live_episode_plan.turn_id / turn_type 內，同一角色不可針對同一段任務發言兩次；所有可用角色都已完成後應停止並交回導播推進下一段。\n"
-        "- remaining_bot_turns_including_next 是硬性上限，不是必須用完的目標；段落核心資訊已說出後，可停止而不是補同一資料點。\n"
-        "- 角色把問題丟給觀眾時，不代表應該等待觀眾；應讓另一位角色接住，除非目前正在回應留言或 Super Chat。\n"
-        "- 若 live_episode_plan.speaker_policy.anchor_status=first_reply_already_completed，代表第一棒指定角色已完成；後續應優先評估其他角色是否能接話、補充或反駁。\n"
-        "- 只有在近期交換已自然收束、沒有具體主張可補充，或已沒有剩餘回合時才停止。\n"
-        "</youtube_live_group_router_rules>"
+        "- 除非使用者指定、final_closing、修正錯誤或安全補充，避免同角色連續發言。\n"
+        "- 同一直播段落中，角色完成本輪任務後不應再次發言。\n"
+        "- 若角色把問題丟給觀眾，本輪任務仍未完成時可由另一位角色接住；若是正式收尾或禁止開新話題，應停止。\n"
+        "</youtube_live_rules>"
     )
     hosting = _youtube_live_hosting_router_rules(live_hosting)
     return base + ("\n\n" + hosting if hosting else "")
@@ -486,16 +485,32 @@ def _normalize_characters(active_characters: list[dict]) -> list[dict]:
         if not cid or cid in seen:
             continue
         seen.add(cid)
-        normalized.append({
+        item = {
             "character_id": cid,
             "name": char.get("name") or cid,
-            "summary": _summarize_character(char),
-        })
+            "routing_profile": _routing_profile_text(char),
+        }
+        role_functions = _routing_role_functions(char)
+        if role_functions:
+            item["role_functions"] = role_functions
+        normalized.append(item)
     return normalized
 
 
-def _summarize_character(char: dict) -> str:
+def _routing_profile_text(char: dict) -> str:
     return character_summary_text(char, fallback_to_prompt=True)
+
+
+def _routing_role_functions(char: dict) -> list[str]:
+    raw = char.get("routing_role_functions") or char.get("role_functions") or []
+    if not isinstance(raw, list):
+        return []
+    roles = []
+    for item in raw:
+        role = str(item or "").strip()
+        if role:
+            roles.append(role)
+    return roles[:6]
 
 
 def _participant_ref(character_id: str | None, participants: list[dict]) -> dict | None:
@@ -686,6 +701,38 @@ def _format_history(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_previous_context(
+    messages: list[dict],
+    *,
+    turn_start_index: int | None,
+    current_user_text: str = "",
+    limit: int,
+) -> str:
+    """只提供跨輪上下文，避免和本輪 turn_state 的發話狀態互相干擾。"""
+    if turn_start_index is not None:
+        candidates = messages[:max(0, int(turn_start_index or 0))]
+        if _is_current_user_message(candidates[-1] if candidates else None, current_user_text):
+            candidates = candidates[:-1]
+    else:
+        latest_user_index = None
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "user":
+                latest_user_index = idx
+                break
+        candidates = messages[:latest_user_index] if latest_user_index is not None else messages
+    text = _format_history(candidates[-max(1, int(limit or 1)):])
+    return text or "（無）"
+
+
+def _is_current_user_message(message: dict | None, current_user_text: str) -> bool:
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    expected = str(current_user_text or "").strip()
+    if not expected:
+        return False
+    return str(message.get("content") or "").strip() == expected
+
+
 def _coerce_legacy_router_result(
     parsed: dict,
     already_spoken_ids: set[str],
@@ -783,6 +830,20 @@ def _enforce_youtube_live_speaker_rules(
         return result
     if remaining_bot_turns is not None and remaining_bot_turns <= 0:
         return GroupRouterResult(False, None, "youtube live planned turn reply budget exhausted", "stop_no_new_value")
+    if (
+        result.should_respond
+        and result.action != "explicit_user_request"
+        and result.conversation_intent != "directed_character"
+        and _live_episode_turn_type(live_episode_plan) == "final_closing"
+        and _all_participants_already_spoke(participants, already_spoken_ids)
+    ):
+        return GroupRouterResult(
+            False,
+            None,
+            "youtube live final closing already completed",
+            "stop_all_spoken",
+            "continue_group_discussion",
+        )
     if _youtube_live_allows_same_speaker_repeat(result, live_episode_plan):
         return result
     if not result.should_respond or not result.target_character_id:
@@ -844,6 +905,12 @@ def _youtube_live_unique_alternative_speaker(
         if cid != last and cid not in already_spoken_ids:
             return cid
     return None
+
+
+def _all_participants_already_spoke(participants: list[dict], already_spoken_ids: set[str]) -> bool:
+    if not participants:
+        return False
+    return all(participant["character_id"] in already_spoken_ids for participant in participants)
 
 
 def _live_episode_turn_identity(live_episode_plan: dict) -> str:

@@ -261,13 +261,18 @@ def test_more_turns_request_is_left_to_router_semantics():
     prompt_messages = router.args[1]
     prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
     turn_state = _extract_turn_state(prompt_text)
-    assert turn_state["latest_user_text"] == "請你們輪流多講幾輪"
+    assert turn_state["original_user_request"] == "請你們輪流多講幾輪"
+    assert "latest_user_text" not in turn_state
     assert turn_state["bot_turn_index"] == 0
     assert turn_state["max_bot_turns"] is None
     assert turn_state["remaining_bot_turns_including_next"] is None
     assert "user_explicitly_requested_multi_turn_discussion" not in turn_state
-    assert "<available_intents>" in prompt_text
-    assert "不要期待 turn_state_json 另外提供布林旗標" in prompt_text
+    assert "<decision_flow>" in prompt_text
+    assert "<stop_gate>" in prompt_text
+    assert "<speaker_selection>" in prompt_text
+    assert "<routing_priority>" not in prompt_text
+    assert "<available_intents>" not in prompt_text
+    assert "一般群組延伸不算 explicit" in prompt_text
 
 
 def test_router_prompt_separates_original_request_from_recent_exchange():
@@ -298,16 +303,50 @@ def test_router_prompt_separates_original_request_from_recent_exchange():
     prompt_messages = router.args[1]
     prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
     turn_state = _extract_turn_state(prompt_text)
+    previous_context = _extract_previous_context(prompt_text)
     assert turn_state["original_user_request"] == "用這個主題聊看看，我幫你們評分"
-    assert turn_state["latest_user_text"] == "用這個主題聊看看，我幫你們評分"
+    assert "latest_user_text" not in turn_state
     assert [item["content"] for item in turn_state["recent_assistant_exchange_this_turn"]] == [
         "B 第一輪。",
         "A 第二輪。",
         "B 第二輪，並問 A。",
         "A 第三輪回應。",
     ]
-    assert "主題、評分方式或開場任務" in prompt_text
+    assert "A 第一輪" not in previous_context
+    assert "B 第二輪" not in previous_context
+    assert "bot_turn_index > 0 時不可視為新的使用者追問" in prompt_text
     assert "只有原文包含" not in prompt_text
+
+
+def test_previous_context_excludes_persisted_current_user_message():
+    router = _Router({
+        "conversation_intent": "group_discussion",
+        "action": "new_speaker_add",
+        "target_character_id": "char-a",
+        "reason": "第一位角色開始本輪",
+    })
+    messages = [
+        {"role": "user", "content": "上一輪主題"},
+        {"role": "assistant", "content": "上一輪 A。", "character_id": "char-a", "character_name": "角色A"},
+        {"role": "user", "content": "這一輪新主題"},
+    ]
+
+    run_group_router(
+        messages,
+        _chars(),
+        router,
+        honor_mentions=False,
+        current_turn_instruction="這一輪新主題",
+        current_turn_start_index=len(messages),
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    previous_context = _extract_previous_context(prompt_text)
+    turn_state = _extract_turn_state(prompt_text)
+    assert turn_state["original_user_request"] == "這一輪新主題"
+    assert "上一輪主題" in previous_context
+    assert "上一輪 A" in previous_context
+    assert "這一輪新主題" not in previous_context
 
 
 def test_continue_discussion_intent_with_stop_all_spoken_stops_when_valid():
@@ -368,10 +407,12 @@ def test_youtube_live_discussion_mode_discourages_early_stop_after_all_spoke():
     prompt_messages = router.args[1]
     prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
     turn_state = _extract_turn_state(prompt_text)
-    assert turn_state["discussion_mode"] == "youtube_live"
-    assert "<youtube_live_group_router_rules>" in prompt_text
-    assert "禁止同一角色連續發言" in prompt_text
-    assert "remaining_bot_turns_including_next 是硬性上限" in prompt_text
+    assert "discussion_mode" not in turn_state
+    assert "live_episode_plan" not in turn_state
+    assert "<youtube_live_rules>" in prompt_text
+    assert "<youtube_live_group_router_rules>" not in prompt_text
+    assert "避免同角色連續發言" in prompt_text
+    assert "remaining_bot_turns_including_next 是硬上限" in prompt_text
 
 
 def test_youtube_live_router_reassigns_candidate_matching_previous_speaker():
@@ -499,6 +540,49 @@ def test_youtube_live_final_closing_allows_previous_speaker_when_router_requests
     assert result.action == "repeat_speaker_reply_to_ai"
 
 
+def test_youtube_live_final_closing_stops_after_all_speakers_completed():
+    router = _Router({
+        "conversation_intent": "continue_group_discussion",
+        "action": "repeat_speaker_reply_to_ai",
+        "target_character_id": "char-a",
+        "reason": "final closing continues",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "請正式收尾，不要開新話題。"},
+            {"role": "assistant", "content": "A 回顧今天重點。", "character_id": "char-a", "character_name": "角色A"},
+            {"role": "assistant", "content": "B 道別並結束本場。", "character_id": "char-b", "character_name": "角色B"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-b",
+        honor_mentions=False,
+        bot_turn_index=2,
+        max_bot_turns=4,
+        discussion_mode="youtube_live",
+        live_episode_plan={
+            "mode": "planned_turn",
+            "turn_id": "seg_99_turn_01",
+            "turn_contract": {
+                "turn_id": "seg_99_turn_01",
+                "turn_type": "final_closing",
+                "intent": "雙主持正式收尾",
+            },
+            "dialogue_policy": {
+                "min_replies": 2,
+                "max_replies": 2,
+                "autonomy": "guided",
+            },
+        },
+    )
+
+    assert result.should_respond is False
+    assert result.target_character_id is None
+    assert result.action == "stop_all_spoken"
+    assert "final closing" in result.reason
+
+
 def test_youtube_live_router_prompt_includes_hosting_rules():
     router = _Router({
         "conversation_intent": "continue_group_discussion",
@@ -542,7 +626,7 @@ def test_youtube_live_router_prompt_includes_hosting_rules():
     assert "節目段落流程" not in prompt_text
 
 
-def test_youtube_live_router_prompt_includes_live_episode_plan_constraints():
+def test_youtube_live_router_prompt_omits_live_episode_plan_details_but_keeps_candidate_restriction():
     router = _Router({
         "conversation_intent": "group_discussion",
         "action": "new_speaker_add",
@@ -584,9 +668,13 @@ def test_youtube_live_router_prompt_includes_live_episode_plan_constraints():
     prompt_messages = router.args[1]
     prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
     turn_state = _extract_turn_state(prompt_text)
-    assert turn_state["live_episode_plan"]["turn_contract"]["turn_id"] == "seg_01_turn_01"
-    assert turn_state["live_episode_plan"]["speaker_policy"]["allowed_character_ids"] == ["char-a", "char-b"]
+    assert "live_episode_plan" not in turn_state
+    assert "discussion_mode" not in turn_state
     assert "char-c" not in json.dumps(turn_state["not_yet_spoken_this_turn"], ensure_ascii=False)
+    assert "plan-general-panel" not in prompt_text
+    assert "seg_01_turn_01" not in prompt_text
+    assert "allowed_character_ids" not in prompt_text
+    assert "用具體事件開場" not in prompt_text
 
 
 def test_youtube_live_fixed_speaker_policy_routes_to_only_allowed_character_without_llm_call():
@@ -681,10 +769,10 @@ def test_youtube_live_fixed_speaker_policy_anchors_first_reply_then_allows_hando
     prompt_text = "\n".join(str(m.get("content", "")) for m in followup_router.args[1])
     turn_state = _extract_turn_state(prompt_text)
     assert turn_state["not_yet_spoken_this_turn"] == [{"character_id": "char-a", "name": "角色A"}]
-    assert turn_state["live_episode_plan"]["dialogue_policy"]["max_replies"] == 3
-    assert "allowed_character_ids" not in turn_state["live_episode_plan"]["speaker_policy"]
-    assert turn_state["live_episode_plan"]["speaker_policy"]["anchored_character_ids"] == ["char-b"]
-    assert turn_state["live_episode_plan"]["speaker_policy"]["anchor_status"] == "first_reply_already_completed"
+    assert "live_episode_plan" not in turn_state
+    assert "discussion_mode" not in turn_state
+    assert "first_reply_already_completed" not in prompt_text
+    assert "allowed_character_ids" not in prompt_text
 
 
 def test_youtube_live_fixed_speaker_policy_does_not_force_previous_speaker_on_content_turn():
@@ -757,7 +845,9 @@ def test_youtube_live_router_does_not_treat_participant_ids_as_character_ids():
     assert router.called is True
     prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
     turn_state = _extract_turn_state(prompt_text)
-    assert "allowed_character_ids" not in turn_state["live_episode_plan"]["speaker_policy"]
+    assert "live_episode_plan" not in turn_state
+    assert "allowed_participant_ids" not in prompt_text
+    assert "allowed_character_ids" not in prompt_text
 
 
 def test_default_discussion_mode_keeps_normal_stop_policy():
@@ -787,7 +877,7 @@ def test_default_discussion_mode_keeps_normal_stop_policy():
     assert result.action == "stop_all_spoken"
 
 
-def test_router_participant_summary_prefers_character_summary():
+def test_router_participant_profile_prefers_character_summary():
     router = _Router({
         "conversation_intent": "single_response",
         "action": "stop_no_new_value",
@@ -818,6 +908,9 @@ def test_router_participant_summary_prefers_character_summary():
 
     prompt_messages = router.args[1]
     prompt_text = "\n".join(str(m.get("content", "")) for m in prompt_messages)
+    participants = _extract_participants(prompt_text)
+    assert "summary" not in participants[0]
+    assert "routing_profile" in participants[0]
     assert "短版簡介 A" in prompt_text
     assert "很長的完整人設 A" not in prompt_text
     assert "fallback 人設 B" in prompt_text
@@ -837,3 +930,15 @@ def _extract_turn_state(prompt_text: str) -> dict:
     match = re.search(r"<turn_state_json>\s*(.*?)\s*</turn_state_json>", prompt_text, re.S)
     assert match, prompt_text
     return json.loads(match.group(1))
+
+
+def _extract_participants(prompt_text: str) -> list[dict]:
+    match = re.search(r"<participants_json>\s*(.*?)\s*</participants_json>", prompt_text, re.S)
+    assert match, prompt_text
+    return json.loads(match.group(1))
+
+
+def _extract_previous_context(prompt_text: str) -> str:
+    match = re.search(r"<previous_context>\s*(.*?)\s*</previous_context>", prompt_text, re.S)
+    assert match, prompt_text
+    return match.group(1)

@@ -153,6 +153,11 @@ def test_group_participant_block_uses_live_addressing_rules(monkeypatch):
     participants = apply_live_persona_to_participants(list(chars.values()), ctx)
     block = build_group_participants_block(ctx, _CharacterManager({c["character_id"]: c for c in participants}), "coco")
 
+    coco = next(c for c in participants if c["character_id"] == "coco")
+    assert coco["character_summary"] == "原本可可摘要"
+    assert "routing_profile" not in coco
+    assert "今天的直播主持可可" not in json.dumps(participants, ensure_ascii=False)
+    assert "每次接話都要自然接住前一位角色" not in json.dumps(participants, ensure_ascii=False)
     assert "白蓮大人" in block
     assert "直播稱呼" in block
     assert "固定自稱：本小姐" in block

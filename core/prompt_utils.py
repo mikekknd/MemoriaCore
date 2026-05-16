@@ -2,6 +2,7 @@
 
 此模組存放跨模組共享的 prompt 組裝邏輯，避免在 coordinator / orchestration 重複定義。
 """
+import re
 from datetime import datetime, timezone, timedelta
 
 from core.prompt_manager import get_prompt_manager
@@ -88,6 +89,46 @@ def _build_external_chat_context_block(session_ctx: dict | None) -> str:
     )
 
 
+def _normalize_prompt_text_for_dedupe(value: str) -> str:
+    return " ".join(str(value or "").replace("\r", "\n").split()).strip()
+
+
+def _extract_youtube_live_director_handling_hints(ext: dict) -> list[str]:
+    context_text = str(ext.get("context_text") or "").replace("\r", "\n")
+    hints: list[str] = []
+    for line in context_text.splitlines():
+        stripped = line.strip()
+        for prefix in ("處理提示：", "處理提示:"):
+            if stripped.startswith(prefix):
+                hint = stripped[len(prefix):].strip()
+                if hint:
+                    hints.append(hint)
+                break
+    return hints
+
+
+def _dedupe_external_turn_instruction(instruction: str, ext: dict) -> str:
+    source = str(ext.get("source") or "external").strip() or "external"
+    if source != "youtube_live_director":
+        return instruction
+
+    hints = {
+        _normalize_prompt_text_for_dedupe(hint)
+        for hint in _extract_youtube_live_director_handling_hints(ext)
+    }
+    if not hints:
+        return instruction
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", instruction) if part.strip()]
+    if not paragraphs:
+        return instruction
+
+    first = _normalize_prompt_text_for_dedupe(paragraphs[0])
+    if first in hints:
+        return "\n\n".join(paragraphs[1:]).strip()
+    return instruction
+
+
 def _is_youtube_live_prompt_context(session_ctx: dict | None) -> bool:
     """判斷目前前綴是否服務 YouTube 直播導播流程。"""
     if not session_ctx:
@@ -163,6 +204,7 @@ def build_external_context_turn_control(
         session_ctx=session_ctx,
     ).strip()
     instruction = str(content or "").replace("\r", "\n").strip()
+    instruction = _dedupe_external_turn_instruction(instruction, ext)
     if instruction:
         source = str(ext.get("source") or "external").strip() or "external"
         instruction_block = xml_block(

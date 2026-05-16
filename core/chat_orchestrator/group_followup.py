@@ -318,7 +318,7 @@ def inject_group_followup_instruction(
 
 def _prefix_session_ctx_for_followup(followup: dict, session_ctx: dict | None) -> dict:
     ctx = dict(session_ctx or {})
-    if not _live_reply_context(followup, session_ctx):
+    if not (_is_youtube_live_followup(session_ctx) or _live_reply_context(followup, session_ctx)):
         return ctx
     external_context = dict(ctx.get("external_chat_context") or {})
     external_context["context_text"] = ""

@@ -240,6 +240,123 @@ def test_youtube_live_director_control_ends_with_user_after_assistant_history():
     assert "請根據已提供的直播流程提示回應。" in api_messages[-1]["content"]
 
 
+def test_youtube_live_director_control_dedupes_handling_hint_from_turn_instruction():
+    handling_hint = (
+        "請做本場最後收尾，簡短回顧「最新週榜與台灣譯名入口」最重要的一個重點並正式道別。"
+        "不要開新話題，不要重複前面已說過的收尾比喻，也不要把問題丟回聊天室。"
+    )
+    api_messages, clean_history, _sys_prompt = build_final_chat_context(
+        char_sys_prompt="直播角色 prompt",
+        group_participants_block="",
+        mem_ctx="",
+        reply_rules="請用繁體中文。",
+        session_messages=[
+            {
+                "role": "assistant",
+                "content": "[可可|char-a]: 為什麼台灣平台看片單跟海外榜單的感覺差這麼多？",
+                "character_id": "char-a",
+            }
+        ],
+        context_window=10,
+        user_prefs={},
+        session_ctx={
+            "channel": "youtube_live",
+            "session_mode": "group",
+            "active_character_ids": ["char-a", "char-b"],
+            "external_chat_context": {
+                "source": "youtube_live_director",
+                "context_text": (
+                    "直播流程 action=final_closing\n"
+                    f"處理提示：{handling_hint}"
+                ),
+            },
+        },
+        force_group=True,
+        turn_instruction=(
+            f"{handling_hint}\n\n"
+            "請根據已提供的直播流程提示回應。這是直播自主推進，不保證有觀眾即時回覆；"
+            "請讓角色彼此接話、補充或提出不同角度。"
+        ),
+    )
+
+    assert clean_history == [
+        {
+            "role": "assistant",
+            "content": "[char-a]: [可可|char-a]: 為什麼台灣平台看片單跟海外榜單的感覺差這麼多？",
+        }
+    ]
+    user_content = api_messages[-1]["content"]
+    assert "<director_context" in user_content
+    assert "<external_turn_instruction" in user_content
+    assert f"處理提示：{handling_hint}" in user_content
+    assert user_content.count(handling_hint) == 1
+    assert "請根據已提供的直播流程提示回應。" in user_content
+
+
+def test_youtube_live_followup_uses_single_user_control_without_full_director_context():
+    session_messages = [
+        {
+            "role": "assistant",
+            "content": "既然妳已經意識到推薦名單的混亂，那我們今晚就聊到這裡。各位，再見。",
+            "character_id": "char-b",
+            "character_name": "白蓮",
+        },
+    ]
+    session_ctx = {
+        "channel": "youtube_live",
+        "session_mode": "group",
+        "active_character_ids": ["char-a", "char-b"],
+        "external_chat_context": {
+            "source": "youtube_live_director",
+            "context_text": (
+                "直播流程 action=final_closing\n"
+                "處理提示：請做本場最後收尾，正式道別。不要開新話題。"
+            ),
+        },
+        "followup_instruction": {
+            "user_prompt_original": "請做本場最後收尾，正式道別。不要開新話題。",
+            "last_character_name": "白蓮",
+            "last_reply": "既然妳已經意識到推薦名單的混亂，那我們今晚就聊到這裡。各位，再見。",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "new_speaker_reply_to_ai",
+        },
+    }
+
+    api_messages, _, _ = build_final_chat_context(
+        char_sys_prompt="直播角色 prompt",
+        group_participants_block="",
+        mem_ctx="",
+        reply_rules="請用繁體中文。",
+        session_messages=session_messages,
+        context_window=10,
+        user_prefs={},
+        session_ctx=session_ctx,
+        force_group=True,
+        turn_instruction="請做本場最後收尾，正式道別。不要開新話題。",
+    )
+
+    assert [message["role"] for message in api_messages] == ["system", "assistant"]
+
+    inject_group_followup_instruction(
+        api_messages,
+        session_ctx["followup_instruction"],
+        "請做本場最後收尾，正式道別。不要開新話題。",
+        session_messages=session_messages,
+        session_ctx=session_ctx,
+    )
+
+    user_messages = [message for message in api_messages if message["role"] == "user"]
+    assert len(user_messages) == 1
+    user_content = user_messages[0]["content"]
+    assert '<group_followup_instruction source="system_control">' in user_content
+    assert "本輪原始意圖摘要：請做本場最後收尾，正式道別。不要開新話題。" in user_content
+    assert "primary_reply_target:" in user_content
+    assert "各位，再見" in user_content
+    assert "<director_context" not in user_content
+    assert "<external_turn_instruction" not in user_content
+    assert "直播流程 action=final_closing" not in user_content
+
+
 def test_external_context_visible_event_only_previews_three_chat_lines():
     body = ChatSyncRequest(
         content="請根據已帶入的 YouTube 直播留言上下文回應。",

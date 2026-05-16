@@ -769,6 +769,12 @@ class YouTubeBridgeManager(
             "source": source,
         }
 
+    def _stream_interaction_is_stale(self, interaction_job_id: str) -> bool:
+        if not interaction_job_id:
+            return False
+        current = self.storage.get_interaction(interaction_job_id)
+        return bool(current and current.get("status") in {"interrupt_requested", "interrupted", "discarded"})
+
     def _broadcast_stream_chat_message(
         self,
         loop: asyncio.AbstractEventLoop,
@@ -776,19 +782,31 @@ class YouTubeBridgeManager(
         event: dict[str, Any],
         *,
         source: str,
+        interaction_job_id: str = "",
     ) -> None:
         message = self._chat_message_from_stream_result(event, source=source)
         if not message:
             return
-        asyncio.run_coroutine_threadsafe(
-            self._broadcast(
+        async def broadcast_if_current() -> None:
+            if self._stream_interaction_is_stale(interaction_job_id):
+                logger.warning(
+                    "stale_generation_dropped_before_broadcast session_id=%s job_id=%s source=%s",
+                    session_id,
+                    interaction_job_id,
+                    source,
+                )
+                return
+            await self._broadcast(
                 session_id,
                 {
                     "type": "chat_message",
                     "message": message,
                     "source": source,
                 },
-            ),
+            )
+
+        asyncio.run_coroutine_threadsafe(
+            broadcast_if_current(),
             loop,
         )
 
@@ -815,7 +833,13 @@ class YouTubeBridgeManager(
                 return None
         session = self.storage.get_session(session_id)
         if not self._presentation_enabled(session):
-            self._broadcast_stream_chat_message(loop, session_id, event, source=source)
+            self._broadcast_stream_chat_message(
+                loop,
+                session_id,
+                event,
+                source=source,
+                interaction_job_id=interaction_job_id,
+            )
             return None
         future = asyncio.run_coroutine_threadsafe(
             self.present_stream_result(

@@ -37,6 +37,72 @@ from test_live_episode_plan_contract import sample_plan
 from tts_gpt_sovits import TTSResult
 
 
+async def _next_queue_event(queue: asyncio.Queue, event_type: str, *, timeout: float = 1.0) -> dict:
+    while True:
+        event = await asyncio.wait_for(queue.get(), timeout=timeout)
+        if event.get("type") == event_type:
+            return event
+
+
+@pytest.mark.asyncio
+async def test_stream_result_drops_message_if_interrupted_before_broadcast():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "presentation_enabled": False,
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "雜談生成中",
+        })
+        manager = YouTubeBridgeManager(storage)
+        queue = await manager.subscribe("live-a")
+
+        manager._dispatch_stream_chat_result(
+            asyncio.get_running_loop(),
+            "live-a",
+            {
+                "message_id": 42,
+                "reply": "這段舊雜談不應在收尾後顯示。",
+                "character_id": "char-a",
+                "character_name": "可可",
+            },
+            source="director",
+            interaction_job_id=interaction["job_id"],
+        )
+        storage.update_interaction(
+            interaction["job_id"],
+            status="interrupted",
+            reason="live_session_closing",
+            completed_at=datetime.now().isoformat(),
+        )
+        await asyncio.sleep(0.05)
+
+        messages = []
+        while not queue.empty():
+            payload = queue.get_nowait()
+            if payload.get("type") == "chat_message":
+                messages.append(payload["message"]["content"])
+        assert messages == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @pytest.mark.asyncio
 async def test_inject_recent_classifies_only_selected_event_ids(monkeypatch):
     tmp_dir = _tmp_dir()
@@ -362,8 +428,7 @@ async def test_inject_recent_uses_presentation_queue_when_enabled():
 
         first = await asyncio.wait_for(queue.get(), timeout=1)
         assert first["type"] == "interaction_started"
-        second = await asyncio.wait_for(queue.get(), timeout=1)
-        assert second["type"] == "presentation_item_ready"
+        second = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
         assert second["item"]["text"] == "第一句。"
         assert queue.empty()
 
@@ -371,8 +436,7 @@ async def test_inject_recent_uses_presentation_queue_when_enabled():
         assert active["status"] == "presenting"
 
         await manager.ack_presentation_item("live-a", second["item"]["item_id"])
-        chat = await asyncio.wait_for(queue.get(), timeout=1)
-        assert chat["type"] == "chat_message"
+        chat = await _next_queue_event(queue, "chat_message", timeout=1)
         assert chat["message"]["content"] == "第一句。"
         await asyncio.wait_for(task, timeout=1)
     finally:

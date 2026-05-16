@@ -156,7 +156,7 @@ def build_final_chat_context(
         memory_context = build_retrieved_memory_context_user_block(mem_ctx)
         latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], session_ctx)
         api_messages[-1] = {**api_messages[-1], "content": memory_context + prefix + latest_user}
-    else:
+    elif not _is_group_followup_context(session_ctx):
         turn_control = build_external_context_turn_control(
             turn_instruction,
             session_messages=session_messages,
@@ -178,6 +178,10 @@ def _is_youtube_live_prompt_context(session_ctx: dict | None) -> bool:
         str(ctx.get("channel") or "").strip() == "youtube_live"
         and str(external.get("source") or "").strip() in {"youtube_live", "youtube_live_director"}
     )
+
+
+def _is_group_followup_context(session_ctx: dict | None) -> bool:
+    return isinstance(session_ctx, dict) and bool(session_ctx.get("followup_instruction"))
 
 
 def build_history_preview(clean_history: list[dict]) -> str:
