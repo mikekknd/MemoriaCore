@@ -158,6 +158,9 @@ def _normalize_live_episode_plan(raw_plan) -> dict:
     evidence_policy = _normalize_live_episode_evidence_policy(raw_plan.get("evidence_policy"))
     if evidence_policy:
         normalized["evidence_policy"] = evidence_policy
+    evidence_brief = _normalize_live_episode_evidence_brief(raw_plan.get("evidence_brief"))
+    if evidence_brief:
+        normalized["evidence_brief"] = evidence_brief
     focus_policy = _normalize_live_episode_focus_policy(raw_plan.get("focus_policy"))
     if focus_policy:
         normalized["focus_policy"] = focus_policy
@@ -303,6 +306,29 @@ def _normalize_compact_string_list(raw_items, *, limit: int, max_length: int) ->
         if len(items) >= limit:
             break
     return items
+
+
+def _normalize_live_episode_evidence_brief(raw_evidence) -> dict:
+    if not isinstance(raw_evidence, dict):
+        return {}
+    facts_to_state = _normalize_compact_string_list(
+        raw_evidence.get("facts_to_state"),
+        limit=4,
+        max_length=300,
+    )
+    source_boundaries = _normalize_compact_string_list(
+        raw_evidence.get("source_boundaries"),
+        limit=3,
+        max_length=300,
+    )
+    normalized = {}
+    if facts_to_state:
+        normalized["facts_to_state"] = facts_to_state
+    if source_boundaries:
+        normalized["source_boundaries"] = source_boundaries
+    if isinstance(raw_evidence.get("do_not_delegate_to_character"), bool):
+        normalized["do_not_delegate_to_character"] = raw_evidence.get("do_not_delegate_to_character")
+    return normalized
 
 
 def _normalize_live_episode_focus_policy(raw_focus) -> dict:

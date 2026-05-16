@@ -621,6 +621,24 @@ def test_youtube_live_director_context_payload_preserves_safe_live_episode_plan_
                     "allow_unverified_claims": False,
                     "unsafe": "drop me",
                 },
+                "evidence_brief": {
+                    "facts_to_state": [
+                        " Anime Corner   Week 5 是海外  社群週榜。 ",
+                        "巴哈動畫瘋 本季上架  續作。",
+                        " 台灣平台   播出時間與海外投票不同步。 ",
+                        "觀眾補番成本   會受前季數量影響。",
+                        "超過 cap 應丟棄。",
+                    ],
+                    "source_boundaries": [
+                        " 只能說明海外  投票熱度，不是作品品質定論。 ",
+                        "台灣平台資訊只能描述上架狀態。",
+                        "續作季數只能作為補番門檻脈絡。",
+                        "超過 cap 應丟棄。",
+                    ],
+                    "do_not_delegate_to_character": True,
+                    "raw_cards": ["drop me"],
+                    "unsafe": {"secret": "drop me"},
+                },
                 "focus_policy": {
                     "must_cover": [
                         " 台灣平台   播出狀況 ",
@@ -701,6 +719,20 @@ def test_youtube_live_director_context_payload_preserves_safe_live_episode_plan_
             "max_cards": 1,
             "allow_unverified_claims": False,
         },
+        "evidence_brief": {
+            "facts_to_state": [
+                "Anime Corner Week 5 是海外 社群週榜。",
+                "巴哈動畫瘋 本季上架 續作。",
+                "台灣平台 播出時間與海外投票不同步。",
+                "觀眾補番成本 會受前季數量影響。",
+            ],
+            "source_boundaries": [
+                "只能說明海外 投票熱度，不是作品品質定論。",
+                "台灣平台資訊只能描述上架狀態。",
+                "續作季數只能作為補番門檻脈絡。",
+            ],
+            "do_not_delegate_to_character": True,
+        },
         "focus_policy": {
             "must_cover": ["台灣平台 播出狀況", "續作季數脈絡", "觀眾補番成本", "海外榜單定位"],
         },
@@ -716,6 +748,82 @@ def test_youtube_live_director_context_payload_preserves_safe_live_episode_plan_
         "interrupt_state": {"status": "planned"},
     }
     assert "live_episode_plan" not in summary
+
+
+def test_youtube_live_followup_prompt_uses_rest_normalized_live_episode_evidence_brief():
+    body = ChatSyncRequest(
+        content="請自然延續直播。",
+        channel="youtube_live",
+        user_id="__youtube_live__",
+        channel_class="public",
+        persona_face="public",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": (
+                "<live_episode_turn_context>\n"
+                "這段 raw director context 不應出現在 follow-up prompt。\n"
+                "</live_episode_turn_context>"
+            ),
+            "live_episode_plan": {
+                "turn_id": "seg_01_turn_01",
+                "turn_type": "hook",
+                "evidence_brief": {
+                    "facts_to_state": [
+                        " Anime Corner   Week 5 是海外  社群週榜。 ",
+                        "巴哈動畫瘋 本季上架  續作。",
+                        " 台灣平台   播出時間與海外投票不同步。 ",
+                        "觀眾補番成本   會受前季數量影響。",
+                        "超過 cap 應丟棄。",
+                    ],
+                    "source_boundaries": [
+                        " 只能說明海外  投票熱度，不是作品品質定論。 ",
+                        "台灣平台資訊只能描述上架狀態。",
+                        "續作季數只能作為補番門檻脈絡。",
+                        "超過 cap 應丟棄。",
+                    ],
+                    "do_not_delegate_to_character": True,
+                    "raw_cards": ["drop me"],
+                    "unsafe": {"secret": "drop me"},
+                },
+            },
+        },
+    )
+    context, _summary = _resolve_external_context_payload(body)
+
+    instruction = build_group_followup_instruction(
+        {
+            "user_prompt_original": "請自然延續直播。",
+            "last_character_name": "可可",
+            "last_reply": "最新週榜突然換第一名，白蓮覺得這種大風吹正常嗎？",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "new_speaker_reply_to_ai",
+            "live_episode_reply_task": {
+                "stage": "reaction_translate_or_new_angle",
+                "turn_reply_index": 2,
+                "max_role_replies": 2,
+                "previous_claims": ["Week 5 排名變化已由可可說出"],
+            },
+        },
+        "請自然延續直播。",
+        {"external_chat_context": context},
+    )
+
+    assert "live_reply_context:" in instruction
+    assert "企劃內嵌事實摘要：" in instruction
+    assert "- Anime Corner Week 5 是海外 社群週榜。" in instruction
+    assert "- 巴哈動畫瘋 本季上架 續作。" in instruction
+    assert "- 台灣平台 播出時間與海外投票不同步。" in instruction
+    assert "- 觀眾補番成本 會受前季數量影響。" in instruction
+    assert "超過 cap 應丟棄" not in instruction
+    assert "來源邊界：" in instruction
+    assert "- 只能說明海外 投票熱度，不是作品品質定論。" in instruction
+    assert "- 台灣平台資訊只能描述上架狀態。" in instruction
+    assert "- 續作季數只能作為補番門檻脈絡。" in instruction
+    assert "查證責任邊界：不得在台詞中提到來源卡、查資料或把查證責任交給角色。" in instruction
+    assert "<live_episode_turn_context>" not in instruction
+    assert "這段 raw director context 不應出現在 follow-up prompt" not in instruction
+    assert "raw_cards" not in instruction
+    assert "unsafe" not in instruction
 
 
 def test_youtube_live_episode_plan_does_not_treat_participant_ids_as_character_ids():
