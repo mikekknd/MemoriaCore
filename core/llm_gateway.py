@@ -16,60 +16,6 @@ _tokenizer = None
 CHAT_JSON_MAX_TOKENS = 768
 YOUTUBE_SAFETY_JSON_MAX_TOKENS = 4096
 
-
-_ASSISTANT_HISTORY_CONTEXT = (
-    "<conversation_history_context>"
-    "以下 assistant 訊息是既有對話紀錄，用於理解上下文；"
-    "請不要把它當成新的使用者要求。"
-    "</conversation_history_context>"
-)
-
-
-def _append_same_role_message(target: dict, source: dict) -> dict:
-    merged = dict(target)
-    left = str(merged.get("content") or "").strip()
-    right = str(source.get("content") or "").strip()
-    merged["content"] = "\n\n".join(part for part in (left, right) if part)
-    return merged
-
-
-def _normalize_chat_role_sequence(messages: list) -> list:
-    """確保一般 chat completion 訊息符合 user/assistant 交替限制。
-
-    多角色群組歷史可能自然產生 assistant, assistant 或以 assistant 開頭的
-    transcript。部分 provider 會直接拒絕這種序列；在 Router 邊界正規化，
-    讓既有 transcript 保留為上下文，但不破壞 provider role contract。
-    """
-    normalized: list[dict] = []
-    last_chat_role: str | None = None
-    saw_chat_role = False
-
-    for raw in messages or []:
-        msg = dict(raw)
-        role = str(msg.get("role") or "").strip()
-        if role == "system" and not saw_chat_role:
-            normalized.append(msg)
-            continue
-        if role not in {"user", "assistant"}:
-            normalized.append(msg)
-            last_chat_role = None
-            continue
-
-        if role == "assistant" and not saw_chat_role:
-            normalized.append({"role": "user", "content": _ASSISTANT_HISTORY_CONTEXT})
-            last_chat_role = "user"
-            saw_chat_role = True
-
-        if last_chat_role == role and normalized:
-            normalized[-1] = _append_same_role_message(normalized[-1], msg)
-        else:
-            normalized.append(msg)
-        last_chat_role = role
-        saw_chat_role = True
-
-    return normalized
-
-
 def get_bge_m3_onnx_instance():
     global _onnx_session, _tokenizer
     if _onnx_session is None:
@@ -721,7 +667,6 @@ class LLMRouter:
         if not route:
             raise ValueError(f"[Router] 找不到任務 '{task_key}' 的路由設定。請確認已註冊。")
 
-        messages = _normalize_chat_role_sequence(messages)
         llm_call_id = SystemLogger.log_llm_prompt(task_key, route["model"], messages, log_context=log_context)
         if isinstance(log_context, dict):
             log_context["_last_llm_call"] = {
@@ -841,7 +786,6 @@ class LLMRouter:
                     }
                 else:
                     retry_msgs.append({"role": "user", "content": retry_warning})
-            retry_msgs = _normalize_chat_role_sequence(retry_msgs)
             response_text, _ = self._generate_chat_with_optional_limit(
                 route["provider"],
                 retry_msgs,
