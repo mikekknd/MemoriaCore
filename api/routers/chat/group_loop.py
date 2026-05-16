@@ -340,6 +340,15 @@ def _live_episode_plan_for_external_context(extra_session_ctx: dict | None) -> d
     return live_episode_plan if isinstance(live_episode_plan, dict) and live_episode_plan else None
 
 
+def _compact_prompt_list(value: Any, *, limit: int = 4) -> list[str]:
+    items = value if isinstance(value, list) else []
+    return [
+        " ".join(str(item or "").split())
+        for item in items
+        if str(item or "").strip()
+    ][:limit]
+
+
 def _build_live_episode_reply_task(
     live_episode_plan: dict | None,
     *,
@@ -371,6 +380,21 @@ def _build_live_episode_reply_task(
         if isinstance(live_episode_plan.get("turn_contract"), dict)
         else {}
     )
+    focus_policy = (
+        live_episode_plan.get("focus_policy")
+        if isinstance(live_episode_plan.get("focus_policy"), dict)
+        else {}
+    )
+    evidence_policy = (
+        live_episode_plan.get("evidence_policy")
+        if isinstance(live_episode_plan.get("evidence_policy"), dict)
+        else {}
+    )
+    forbidden_repetition = (
+        live_episode_plan.get("forbidden_repetition")
+        if isinstance(live_episode_plan.get("forbidden_repetition"), dict)
+        else {}
+    )
     task = {
         "stage": stage,
         "turn_reply_index": reply_index,
@@ -381,6 +405,18 @@ def _build_live_episode_reply_task(
         "turn_type": str(live_episode_plan.get("turn_type") or turn_contract.get("turn_type") or "").strip(),
         "previous_claims": previous_claims,
     }
+    must_cover = _compact_prompt_list(focus_policy.get("must_cover"))
+    forbidden_claims = _compact_prompt_list(forbidden_repetition.get("claims"))
+    forbidden_phrases = _compact_prompt_list(forbidden_repetition.get("phrases"), limit=6)
+    if must_cover:
+        task["must_cover"] = must_cover
+    allow_unverified_claims = evidence_policy.get("allow_unverified_claims")
+    if isinstance(allow_unverified_claims, bool):
+        task["allow_unverified_claims"] = allow_unverified_claims
+    if forbidden_claims:
+        task["forbidden_claims"] = forbidden_claims
+    if forbidden_phrases:
+        task["forbidden_phrases"] = forbidden_phrases
     if last_character_name:
         task["previous_speaker_name"] = str(last_character_name or "").strip()
     if last_reply:

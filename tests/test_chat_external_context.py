@@ -621,6 +621,35 @@ def test_youtube_live_director_context_payload_preserves_safe_live_episode_plan_
                     "allow_unverified_claims": False,
                     "unsafe": "drop me",
                 },
+                "focus_policy": {
+                    "must_cover": [
+                        " 台灣平台   播出狀況 ",
+                        "續作季數脈絡",
+                        "觀眾補番成本",
+                        "海外榜單定位",
+                        "超過 cap 應丟棄",
+                    ],
+                    "unsafe": "drop me",
+                },
+                "forbidden_repetition": {
+                    "claims": [
+                        " 不要再次說  週榜只是即時快照 ",
+                        "不要重講平台選擇變多",
+                        "不要重講補番壓力",
+                        "不要重講作品品質排名",
+                        "超過 cap 應丟棄",
+                    ],
+                    "phrases": [
+                        "大風吹",
+                        "補番壓力",
+                        "神作",
+                        "霸權",
+                        "品質定論",
+                        "炎上",
+                        "超過 cap 應丟棄",
+                    ],
+                    "raw_notes": {"secret": "drop me"},
+                },
                 "interrupt_state": {"status": "planned", "secret": "drop me"},
             },
         },
@@ -671,6 +700,18 @@ def test_youtube_live_director_context_payload_preserves_safe_live_episode_plan_
             "required_entities": ["作品A"],
             "max_cards": 1,
             "allow_unverified_claims": False,
+        },
+        "focus_policy": {
+            "must_cover": ["台灣平台 播出狀況", "續作季數脈絡", "觀眾補番成本", "海外榜單定位"],
+        },
+        "forbidden_repetition": {
+            "claims": [
+                "不要再次說 週榜只是即時快照",
+                "不要重講平台選擇變多",
+                "不要重講補番壓力",
+                "不要重講作品品質排名",
+            ],
+            "phrases": ["大風吹", "補番壓力", "神作", "霸權", "品質定論", "炎上"],
         },
         "interrupt_state": {"status": "planned"},
     }
@@ -1064,6 +1105,55 @@ def test_youtube_live_episode_followup_uses_compact_live_reply_context():
     assert "第 1 位角色：提出主觀點或核心資訊" not in instruction
     assert "本輪必須使用的新主張" not in instruction
     assert "收束時機" not in instruction
+
+
+def test_youtube_live_episode_followup_task_renders_turn_boundaries_without_raw_context():
+    instruction = build_group_followup_instruction(
+        {
+            "user_prompt_original": (
+                "Beat shape: taiwan_lineup_context.\n\n"
+                "<live_episode_turn_context>\n"
+                "這段 raw context 不應出現在 follow-up。\n"
+                "</live_episode_turn_context>"
+            ),
+            "last_character_name": "可可",
+            "last_reply": "台灣平台上的選擇變多了，但補番壓力也變重。",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "new_speaker_reply_to_ai",
+            "live_episode_reply_task": {
+                "stage": "reaction_translate_or_new_angle",
+                "turn_reply_index": 2,
+                "max_role_replies": 2,
+                "previous_claims": ["可可已說出台灣平台選擇變多"],
+                "must_cover": ["續作季數脈絡", "觀眾補番成本"],
+                "allow_unverified_claims": False,
+                "forbidden_claims": ["不要再次說台灣平台選擇變多"],
+                "forbidden_phrases": ["補番壓力", "大風吹", "神作", "霸權", "品質定論", "炎上"],
+            },
+        },
+        "請自然延續直播。",
+        {
+            "external_chat_context": {
+                "source": "youtube_live_director",
+                "live_episode_plan": {
+                    "turn_id": "seg_02_turn_02",
+                    "turn_type": "analysis",
+                    "evidence_brief": {
+                        "facts_to_state": ["本輪只確認台灣平台與續作季數脈絡。"],
+                        "source_boundaries": ["不能推論作品品質排名。"],
+                        "do_not_delegate_to_character": True,
+                    },
+                },
+            },
+        },
+    )
+
+    assert "本輪可補角度：續作季數脈絡；觀眾補番成本" in instruction
+    assert "不得新增未由 live_reply_context 支撐的事實或數字" in instruction
+    assert "禁止重複主張：不要再次說台灣平台選擇變多" in instruction
+    assert "避免沿用詞句：補番壓力；大風吹；神作；霸權；品質定論；炎上" in instruction
+    assert "這段 raw context 不應出現在 follow-up" not in instruction
+    assert "<live_episode_turn_context>" not in instruction
 
 
 def test_youtube_live_episode_followup_injection_suppresses_full_director_context():

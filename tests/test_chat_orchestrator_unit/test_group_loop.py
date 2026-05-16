@@ -384,6 +384,16 @@ async def test_group_loop_adds_live_episode_reply_task_to_session_context_and_fo
                         "segment_memory": {
                             "covered_claims": ["Anime Corner 週榜只是即時快照"],
                         },
+                        "focus_policy": {
+                            "must_cover": ["台灣平台播出狀況", "續作季數脈絡", "觀眾補番成本"],
+                        },
+                        "evidence_policy": {
+                            "allow_unverified_claims": False,
+                        },
+                        "forbidden_repetition": {
+                            "claims": ["不要再次說週榜只是即時快照"],
+                            "phrases": ["大風吹", "補番壓力", "神作", "霸權", "品質定論", "炎上"],
+                        },
                     },
                 }
             },
@@ -401,6 +411,10 @@ async def test_group_loop_adds_live_episode_reply_task_to_session_context_and_fo
     assert second_task["turn_reply_index"] == 2
     assert second_task["previous_speaker_name"] == "角色A"
     assert second_task["previous_reply"] == "回覆 char-a"
+    assert second_task["must_cover"] == ["台灣平台播出狀況", "續作季數脈絡", "觀眾補番成本"]
+    assert second_task["allow_unverified_claims"] is False
+    assert second_task["forbidden_claims"] == ["不要再次說週榜只是即時快照"]
+    assert second_task["forbidden_phrases"] == ["大風吹", "補番壓力", "神作", "霸權", "品質定論", "炎上"]
     assert captured_session_ctx[1]["followup_instruction"]["live_episode_reply_task"] == second_task
 
 

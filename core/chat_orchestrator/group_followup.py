@@ -21,6 +21,15 @@ def _prompt_scalar(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
+def _prompt_list(value: object, *, limit: int = 4) -> list[str]:
+    items = value if isinstance(value, list) else []
+    return [
+        _prompt_scalar(item)
+        for item in items
+        if _prompt_scalar(item)
+    ][:limit]
+
+
 def _literal_block(value: object, *, indent: str = "    ") -> str:
     """建立 Markdown literal block 內容，保留多行正文。"""
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -216,6 +225,9 @@ def _live_episode_reply_task_context(followup: dict, session_ctx: dict | None) -
         for item in task.get("previous_claims") or []
         if str(item).strip()
     ] if isinstance(task.get("previous_claims"), list) else []
+    must_cover = _prompt_list(task.get("must_cover"))
+    forbidden_claims = _prompt_list(task.get("forbidden_claims"))
+    forbidden_phrases = _prompt_list(task.get("forbidden_phrases"), limit=6)
     if stage == "primary_point":
         stage_rule = "第 1 位角色負責提出主觀點或核心資訊。"
     elif stage == "reaction_translate_or_new_angle":
@@ -227,6 +239,14 @@ def _live_episode_reply_task_context(followup: dict, session_ctx: dict | None) -
     ]
     if previous_claims:
         lines.append("previous_claims：" + "；".join(previous_claims[:6]))
+    if must_cover:
+        lines.append("本輪可補角度：" + "；".join(must_cover))
+    if task.get("allow_unverified_claims") is False:
+        lines.append("不得新增未由 live_reply_context 支撐的事實或數字")
+    if forbidden_claims:
+        lines.append("禁止重複主張：" + "；".join(forbidden_claims))
+    if forbidden_phrases:
+        lines.append("避免沿用詞句：" + "；".join(forbidden_phrases))
     return _context_item(
         "live_episode_reply_task",
         [

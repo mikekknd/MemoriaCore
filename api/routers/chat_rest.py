@@ -158,6 +158,12 @@ def _normalize_live_episode_plan(raw_plan) -> dict:
     evidence_policy = _normalize_live_episode_evidence_policy(raw_plan.get("evidence_policy"))
     if evidence_policy:
         normalized["evidence_policy"] = evidence_policy
+    focus_policy = _normalize_live_episode_focus_policy(raw_plan.get("focus_policy"))
+    if focus_policy:
+        normalized["focus_policy"] = focus_policy
+    forbidden_repetition = _normalize_live_episode_forbidden_repetition(raw_plan.get("forbidden_repetition"))
+    if forbidden_repetition:
+        normalized["forbidden_repetition"] = forbidden_repetition
     interrupt_state = _normalize_live_episode_interrupt_state(raw_plan.get("interrupt_state"))
     if interrupt_state:
         normalized["interrupt_state"] = interrupt_state
@@ -283,6 +289,51 @@ def _normalize_live_episode_evidence_policy(raw_evidence) -> dict:
         normalized["max_cards"] = max(0, min(max_cards, 8))
     if isinstance(raw_evidence.get("allow_unverified_claims"), bool):
         normalized["allow_unverified_claims"] = raw_evidence.get("allow_unverified_claims")
+    return normalized
+
+
+def _normalize_compact_string_list(raw_items, *, limit: int, max_length: int) -> list[str]:
+    if not isinstance(raw_items, list):
+        return []
+    items: list[str] = []
+    for raw in raw_items:
+        item = " ".join(str(raw or "").split())[:max_length].strip()
+        if item:
+            items.append(item)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _normalize_live_episode_focus_policy(raw_focus) -> dict:
+    if not isinstance(raw_focus, dict):
+        return {}
+    must_cover = _normalize_compact_string_list(
+        raw_focus.get("must_cover"),
+        limit=4,
+        max_length=200,
+    )
+    return {"must_cover": must_cover} if must_cover else {}
+
+
+def _normalize_live_episode_forbidden_repetition(raw_repetition) -> dict:
+    if not isinstance(raw_repetition, dict):
+        return {}
+    claims = _normalize_compact_string_list(
+        raw_repetition.get("claims"),
+        limit=4,
+        max_length=200,
+    )
+    phrases = _normalize_compact_string_list(
+        raw_repetition.get("phrases"),
+        limit=6,
+        max_length=120,
+    )
+    normalized = {}
+    if claims:
+        normalized["claims"] = claims
+    if phrases:
+        normalized["phrases"] = phrases
     return normalized
 
 
