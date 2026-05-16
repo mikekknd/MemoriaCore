@@ -122,10 +122,15 @@ class InjectionManagerMixin:
         selected_source = "super_chat" if selected_sc else ("chat" if selected else "none")
         active = active if active is not None else self.storage.get_active_interaction(session_id)
         interrupted_active = False
+        incoming_priority = 0
+        if selected_sc:
+            max_tier = max(int(event.get("sc_tier", 0) or 0) for event in selected_sc)
+            incoming_priority = 320 if max_tier >= 3 else 260
         if (
             selected_sc
             and active
             and active.get("status") == "running"
+            and incoming_priority > int(active.get("priority", 100) or 100)
             and self._sc_interrupt_allowed(runtime, session)
         ):
             runtime.last_sc_interrupt_at = datetime.now().isoformat()
@@ -181,14 +186,19 @@ class InjectionManagerMixin:
                             max_sc_per_batch=max_sc_per_batch,
                             active=active,
                         )
+                        selected_event_ids = result.get("selected_event_ids", [])
+                        interrupted_active = bool(result.get("interrupted_active"))
+                        if not selected_event_ids and not interrupted_active:
+                            await asyncio.sleep(sleep_seconds)
+                            continue
                         runtime.last_auto_inject_at = datetime.now().isoformat()
                         runtime.last_auto_inject_error = None
                         await self._broadcast(runtime.session_id, {
                             "type": "director_audience_events_ready",
-                            "event_ids": result.get("selected_event_ids", []),
+                            "event_ids": selected_event_ids,
                             "source": result.get("selected_source", "none"),
-                            "count": len(result.get("selected_event_ids", [])),
-                            "interrupted_active": bool(result.get("interrupted_active")),
+                            "count": len(selected_event_ids),
+                            "interrupted_active": interrupted_active,
                         })
                         await asyncio.sleep(sleep_seconds)
                         continue
