@@ -1,4 +1,6 @@
 """群組對話 loop 測試。"""
+import asyncio
+
 import pytest
 
 from api.session_manager import SessionState, session_manager
@@ -1111,3 +1113,141 @@ def test_group_turn_limit_allows_deeper_testing_and_clamps_at_hard_limit():
 
     assert group_loop._group_turn_limit({"group_chat_max_bot_turns": 12}) == 12
     assert group_loop._group_turn_limit({"group_chat_max_bot_turns": 99}) == 12
+
+
+@pytest.mark.asyncio
+async def test_group_loop_stops_before_followup_when_cancel_requested(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-cancel-before-followup",
+        messages=[{"role": "system_event", "content": "直播節奏提示"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions[session.session_id] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(True, "char-b", "second", "new_speaker_reply_to_ai", "continue_group_discussion"),
+    ]
+    cancel_event = asyncio.Event()
+    orchestration_calls = []
+
+    def fake_group_router(*_args, **_kwargs):
+        return route_results.pop(0)
+
+    def fake_orchestration(*_args, **kwargs):
+        orchestration_calls.append(kwargs["session_ctx"]["character_id"])
+        return (
+            "第一段回覆", [], {}, False, None,
+            "內心", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    def cancel_after_first_turn(_turn):
+        cancel_event.set()
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 2, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            on_turn=cancel_after_first_turn,
+            cancel_event=cancel_event,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert [turn["character_id"] for turn in turns] == ["char-a"]
+    assert orchestration_calls == ["char-a"]
+    assert route_results == [
+        GroupRouterResult(True, "char-b", "second", "new_speaker_reply_to_ai", "continue_group_discussion")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_group_loop_does_not_persist_reply_when_cancel_requested_before_persistence(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-cancel-before-persist",
+        messages=[{"role": "system_event", "content": "直播節奏提示"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions[session.session_id] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    route_results = [
+        GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(True, "char-b", "second", "new_speaker_reply_to_ai", "continue_group_discussion"),
+    ]
+    cancel_event = asyncio.Event()
+    orchestration_calls = []
+
+    def fake_group_router(*_args, **_kwargs):
+        return route_results.pop(0)
+
+    def fake_orchestration(*_args, **kwargs):
+        orchestration_calls.append(kwargs["session_ctx"]["character_id"])
+        cancel_event.set()
+        return (
+            "過期回覆", [], {}, False, None,
+            "內心", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 2, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            cancel_event=cancel_event,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert turns == []
+    assert orchestration_calls == ["char-a"]
+    assert [message["role"] for message in session.messages] == ["system_event"]
+    assert route_results == [
+        GroupRouterResult(True, "char-b", "second", "new_speaker_reply_to_ai", "continue_group_discussion")
+    ]

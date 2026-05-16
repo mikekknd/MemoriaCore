@@ -262,6 +262,9 @@ class MemoriaClient:
                         raise RuntimeError(str(event.get("message") or "MemoriaCore stream chat failed"))
                     if event.get("type") == "result":
                         last_result = event
+                        if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
+                            response.close()
+                            raise GenerationInterrupted("generation interrupted")
                         if trace_director and not first_result_logged:
                             first_result_logged = True
                             _director_timing_log(

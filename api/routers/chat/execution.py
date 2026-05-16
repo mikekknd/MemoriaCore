@@ -329,6 +329,7 @@ async def _iter_group_sse_events(prepared: PreparedChatExecution):
             **turn,
         })
 
+    cancel_event = asyncio.Event()
     group_task = asyncio.create_task(chat_rest.run_group_chat_loop(
         session=prepared.runtime_session,
         user_prompt=prepared.orchestration_prompt,
@@ -344,6 +345,7 @@ async def _iter_group_sse_events(prepared: PreparedChatExecution):
             prepared.runtime_session,
             prepared.external_context,
         ),
+        cancel_event=cancel_event,
     ))
 
     try:
@@ -366,6 +368,7 @@ async def _iter_group_sse_events(prepared: PreparedChatExecution):
         async for event in _iter_group_tts_events(prepared, turns):
             yield event
     finally:
+        cancel_event.set()
         if not group_task.done():
             group_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

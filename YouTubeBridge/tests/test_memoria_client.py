@@ -1,12 +1,14 @@
 import sys
+import threading
 from pathlib import Path
 
+import pytest
 
 BRIDGE_ROOT = Path(__file__).resolve().parents[1]
 if str(BRIDGE_ROOT) not in sys.path:
     sys.path.insert(0, str(BRIDGE_ROOT))
 
-from memoria_client import MemoriaClient
+from memoria_client import GenerationInterrupted, MemoriaClient
 
 
 class _FakeResponse:
@@ -21,11 +23,17 @@ class _FakeStreamResponse:
     status_code = 200
     text = ""
 
+    def __init__(self):
+        self.closed = False
+
     def __enter__(self):
         return self
 
     def __exit__(self, _exc_type, _exc, _tb):
         return False
+
+    def close(self):
+        self.closed = True
 
     def iter_lines(self, decode_unicode=False):
         lines = [
@@ -112,3 +120,64 @@ def test_chat_stream_sync_calls_on_result_for_each_stream_result():
 
     assert result["message_id"] == 2
     assert [event["character_id"] for event in streamed] == ["char-a", "char-b"]
+
+
+class _CancelBeforeResultResponse(_FakeStreamResponse):
+    def __init__(self, cancel_event):
+        super().__init__()
+        self.cancel_event = cancel_event
+        self.status_code = 200
+        self.text = ""
+
+    def iter_lines(self, decode_unicode=False):
+        line = _CancelOnPayloadStrip(
+            'data: {"type": "result", "session_id": "mem-a", "message_id": 3, "reply": "過期", "character_id": "char-b"}',
+            self.cancel_event,
+        )
+        return [line] if decode_unicode else [line.encode("utf-8")]
+
+
+class _CancelOnPayloadStrip(str):
+    def __new__(cls, value, cancel_event):
+        instance = str.__new__(cls, value)
+        instance.cancel_event = cancel_event
+        return instance
+
+    def __getitem__(self, item):
+        value = super().__getitem__(item)
+        if isinstance(item, slice) and item.start == 5:
+            return _CancelOnStripResult(value, self.cancel_event)
+        return value
+
+
+class _CancelOnStripResult(str):
+    def __new__(cls, value, cancel_event):
+        instance = str.__new__(cls, value)
+        instance.cancel_event = cancel_event
+        return instance
+
+    def strip(self, chars=None):
+        self.cancel_event.set()
+        return super().strip(chars)
+
+
+def test_chat_stream_sync_does_not_dispatch_result_after_cancel():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _CancelBeforeResultResponse(cancel_event)
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+    streamed = []
+
+    with pytest.raises(GenerationInterrupted):
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+            on_result=streamed.append,
+        )
+
+    assert streamed == []

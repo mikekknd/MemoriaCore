@@ -31,6 +31,10 @@ def get_session_characters(session: SessionState) -> list[dict]:
     return characters
 
 
+def _group_loop_cancel_requested(cancel_event: asyncio.Event | None) -> bool:
+    return bool(cancel_event and cancel_event.is_set())
+
+
 async def run_group_chat_loop(
     *,
     session: SessionState,
@@ -44,6 +48,7 @@ async def run_group_chat_loop(
     extra_session_ctx: dict | None = None,
     transient_user_content: str = "",
     max_turns_override: int | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
@@ -89,6 +94,9 @@ async def run_group_chat_loop(
     live_episode_plan = _live_episode_plan_for_external_context(extra_session_ctx)
 
     for turn_index in range(max_turns):
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         route = await asyncio.to_thread(
             run_group_router,
             working_messages,
@@ -106,6 +114,9 @@ async def run_group_chat_loop(
             current_turn_instruction=turn_instruction,
             current_turn_start_index=current_turn_start_index,
         )
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         if not route.should_respond or not route.target_character_id:
             if turn_index == 0:
                 target_character_id = _fallback_first_turn_target(
@@ -124,6 +135,9 @@ async def run_group_chat_loop(
         if not target_char:
             break
         character_name = target_char.get("name") or target_character_id
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         live_episode_reply_task = _build_live_episode_reply_task(
             live_episode_plan,
             turn_index=turn_index,
@@ -182,6 +196,9 @@ async def run_group_chat_loop(
         if live_episode_reply_task:
             session_ctx["live_episode_reply_task"] = live_episode_reply_task
 
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         result = await asyncio.to_thread(
             orchestration_fn,
             generation_messages,
@@ -191,6 +208,9 @@ async def run_group_chat_loop(
             on_event=on_event,
             session_ctx=session_ctx,
         )
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
             inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
             tool_state_export = _unpack_orchestration_result(result)
@@ -263,7 +283,7 @@ async def run_group_chat_loop(
         turns[-1]["is_final"] = True
         # 若迴圈提前結束（早退），最後一個 turn 的 is_final 在 on_turn 時是 False，
         # 需補送一次更正過的 snapshot，讓 WS/SSE 客戶端感知真實的結束旗標。
-        if not was_final and on_turn:
+        if not was_final and on_turn and not _group_loop_cancel_requested(cancel_event):
             callback_result = on_turn(dict(turns[-1]))
             if inspect.isawaitable(callback_result):
                 await callback_result
