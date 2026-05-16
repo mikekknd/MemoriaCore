@@ -192,6 +192,155 @@ async def test_duration_and_final_closing_accept_missing_interaction_result(monk
     assert duration_result == {"status": "completed", "interaction": None}
     assert final_result == {"status": "completed", "interaction": None}
 
+
+@pytest.mark.asyncio
+async def test_final_closing_uses_latest_visible_message_as_reply_target(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a", "char-b"],
+            "auto_sc_thanks_on_finalize": False,
+        })
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "interrupted",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a", "char-b"],
+            "content": "前一輪來源邊界",
+            "metadata": {
+                "visible_messages": [{
+                    "message_id": 201,
+                    "role": "assistant",
+                    "content": "這句已經問白蓮下一步怎麼看。",
+                    "timestamp": "2026-05-16T09:20:19",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                    "source": "director",
+                }],
+                "last_visible_message": {
+                    "message_id": 201,
+                    "role": "assistant",
+                    "content": "這句已經問白蓮下一步怎麼看。",
+                    "timestamp": "2026-05-16T09:20:19",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                    "source": "director",
+                },
+                "has_visible_output": True,
+            },
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        captured: dict[str, str] = {}
+
+        async def capture_send(_session, _state, decision):
+            captured["prompt"] = decision["prompt"]
+            captured["visible_reply_target"] = decision["visible_reply_target"]["content"]
+            return {"interaction": {"status": "completed"}, "memoria_result": {}}
+
+        monkeypatch.setattr(manager, "_send_director_turn", capture_send)
+
+        result = await manager._run_final_closing_turn(runtime, session)
+
+        assert result["status"] == "completed"
+        assert "最後已顯示訊息" in captured["prompt"]
+        assert "這句已經問白蓮下一步怎麼看。" in captured["prompt"]
+        assert captured["visible_reply_target"] == "這句已經問白蓮下一步怎麼看。"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_final_closing_prefers_latest_visible_message_without_message_timestamp(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a", "char-b"],
+            "auto_sc_thanks_on_finalize": False,
+        })
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "interrupted",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "較早一輪",
+            "metadata": {
+                "visible_messages": [{
+                    "message_id": 200,
+                    "role": "assistant",
+                    "content": "較早但有 timestamp 的內容。",
+                    "timestamp": "2026-05-16T09:20:19",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                    "source": "director",
+                }],
+                "has_visible_output": True,
+            },
+        })
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "interrupted",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-b"],
+            "content": "較晚一輪",
+            "metadata": {
+                "visible_messages": [{
+                    "message_id": 201,
+                    "role": "assistant",
+                    "content": "較晚但沒有 timestamp 的最後內容。",
+                    "timestamp": "",
+                    "created_at": "",
+                    "character_id": "char-b",
+                    "character_name": "白蓮",
+                    "source": "director",
+                }],
+                "has_visible_output": True,
+            },
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        captured: dict[str, str] = {}
+
+        async def capture_send(_session, _state, decision):
+            captured["visible_reply_target"] = decision["visible_reply_target"]["content"]
+            return {"interaction": {"status": "completed"}, "memoria_result": {}}
+
+        monkeypatch.setattr(manager, "_send_director_turn", capture_send)
+
+        result = await manager._run_final_closing_turn(runtime, session)
+
+        assert result["status"] == "completed"
+        assert captured["visible_reply_target"] == "較晚但沒有 timestamp 的最後內容。"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @pytest.mark.asyncio
 async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
     tmp_dir = _tmp_dir()

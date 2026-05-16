@@ -528,6 +528,17 @@ class YouTubeBridgeManager(
                 "item": self._presentation_item_public(item),
             },
         )
+        self._mark_interaction_message_visible(
+            interaction_job_id,
+            {
+                **message,
+                "message_id": item.get("message_id") or message.get("message_id"),
+                "content": item.get("text") or message.get("content") or "",
+                "created_at": item.get("presented_at") or message.get("created_at"),
+                "timestamp": item.get("presented_at") or message.get("timestamp"),
+            },
+            source=source,
+        )
         try:
             await asyncio.wait_for(
                 ack_event.wait(),
@@ -557,6 +568,11 @@ class YouTubeBridgeManager(
                     "message": chat_message,
                     "source": source,
                 },
+            )
+            self._mark_interaction_message_visible(
+                interaction_job_id,
+                chat_message,
+                source=source,
             )
 
     async def _synthesize_presentation_audio(
@@ -769,6 +785,40 @@ class YouTubeBridgeManager(
             "source": source,
         }
 
+    def _mark_interaction_message_visible(
+        self,
+        interaction_job_id: str,
+        message: dict[str, Any],
+        *,
+        source: str,
+    ) -> None:
+        if not interaction_job_id or not isinstance(message, dict):
+            return
+        content = str(message.get("content") or "").strip()
+        if not content:
+            return
+        current = self.storage.get_interaction(interaction_job_id)
+        if not current:
+            return
+        visible_message = {
+            "message_id": message.get("message_id"),
+            "role": message.get("role") or "assistant",
+            "content": content,
+            "created_at": message.get("created_at") or message.get("timestamp") or "",
+            "timestamp": message.get("timestamp") or message.get("created_at") or "",
+            "character_id": message.get("character_id"),
+            "character_name": message.get("character_name"),
+            "source": source,
+        }
+        self.storage.append_interaction_visible_message(interaction_job_id, visible_message)
+
+    @staticmethod
+    def _log_stream_broadcast_future(future: Any) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning("stream chat broadcast task failed error=%s", exc, exc_info=True)
+
     def _stream_interaction_is_stale(self, interaction_job_id: str) -> bool:
         if not interaction_job_id:
             return False
@@ -804,11 +854,17 @@ class YouTubeBridgeManager(
                     "source": source,
                 },
             )
+            self._mark_interaction_message_visible(
+                interaction_job_id,
+                message,
+                source=source,
+            )
 
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             broadcast_if_current(),
             loop,
         )
+        future.add_done_callback(self._log_stream_broadcast_future)
 
     def _dispatch_stream_chat_result(
         self,

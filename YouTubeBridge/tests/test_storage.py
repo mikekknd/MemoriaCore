@@ -128,6 +128,57 @@ def test_connector_and_session_roundtrip():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_append_interaction_visible_message_preserves_metadata_and_dedupes():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "metadata": {
+                "result_message_id": 99,
+                "decision": {"action": "planned_turn"},
+            },
+        })
+
+        visible_message = {
+            "message_id": 42,
+            "role": "assistant",
+            "content": "這句已經出現在畫面上。",
+            "timestamp": "2026-05-16T09:20:19",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "source": "director",
+        }
+        storage.append_interaction_visible_message(interaction["job_id"], visible_message)
+        storage.append_interaction_visible_message(interaction["job_id"], visible_message)
+
+        metadata = storage.get_interaction(interaction["job_id"])["metadata"]
+        assert metadata["result_message_id"] == 99
+        assert metadata["decision"] == {"action": "planned_turn"}
+        assert metadata["visible_messages"] == [{
+            **visible_message,
+            "created_at": "2026-05-16T09:20:19",
+        }]
+        assert metadata["last_visible_message"]["content"] == "這句已經出現在畫面上。"
+        assert metadata["has_visible_output"] is True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_session_persists_post_plan_free_talk_fields(tmp_path):
     storage = BridgeStorage(tmp_path / "youtube_live.db")
     storage.upsert_connector({

@@ -104,6 +104,70 @@ async def test_stream_result_drops_message_if_interrupted_before_broadcast():
 
 
 @pytest.mark.asyncio
+async def test_stream_result_marks_message_visible_after_broadcast():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "presentation_enabled": False,
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "收尾前一則生成",
+        })
+        manager = YouTubeBridgeManager(storage)
+        queue = await manager.subscribe("live-a")
+
+        manager._dispatch_stream_chat_result(
+            asyncio.get_running_loop(),
+            "live-a",
+            {
+                "message_id": 42,
+                "reply": "這句已經出現在畫面上。",
+                "character_id": "char-a",
+                "character_name": "可可",
+                "timestamp": "2026-05-16T09:20:19",
+            },
+            source="director",
+            interaction_job_id=interaction["job_id"],
+        )
+
+        payload = await _next_queue_event(queue, "chat_message")
+        assert payload["message"]["content"] == "這句已經出現在畫面上。"
+
+        updated = storage.get_interaction(interaction["job_id"])
+        visible = updated["metadata"]["visible_messages"]
+        assert visible == [{
+            "message_id": 42,
+            "role": "assistant",
+            "content": "這句已經出現在畫面上。",
+            "created_at": "2026-05-16T09:20:19",
+            "timestamp": "2026-05-16T09:20:19",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "source": "director",
+        }]
+        assert updated["metadata"]["last_visible_message"]["content"] == "這句已經出現在畫面上。"
+        assert updated["metadata"]["has_visible_output"] is True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_inject_recent_classifies_only_selected_event_ids(monkeypatch):
     tmp_dir = _tmp_dir()
     try:

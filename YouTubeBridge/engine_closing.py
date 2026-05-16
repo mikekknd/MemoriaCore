@@ -19,6 +19,16 @@ DURATION_CLOSING_ACTIVE_WAIT_POLL_SECONDS = 1.0
 DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS = 1.0
 
 
+def _parse_iso(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 class ClosingManagerMixin:
     def _list_unhandled_super_chats_for_closing(
         self,
@@ -414,6 +424,33 @@ class ClosingManagerMixin:
             logger.warning("duration closing turn failed session_id=%s error=%s", runtime.session_id, exc, exc_info=True)
             return {"status": "failed", "error": str(exc)[:500]}
 
+    def _latest_visible_message_for_session(self, session_id: str) -> dict[str, Any] | None:
+        latest: dict[str, Any] | None = None
+        latest_rank: tuple[datetime, int, int] | None = None
+        for interaction in self.storage.list_interactions(session_id, limit=500):
+            metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+            visible_messages = metadata.get("visible_messages")
+            if not isinstance(visible_messages, list):
+                continue
+            interaction_time = _parse_iso(
+                interaction.get("completed_at")
+                or interaction.get("created_at")
+                or interaction.get("started_at")
+            ) or datetime.min
+            interaction_id = int(interaction.get("id") or 0)
+            for index, message in enumerate(visible_messages):
+                if not isinstance(message, dict):
+                    continue
+                content = str(message.get("content") or "").strip()
+                if not content:
+                    continue
+                timestamp = _parse_iso(message.get("timestamp") or message.get("created_at")) or interaction_time
+                rank = (timestamp, interaction_id, index)
+                if latest_rank is None or rank >= latest_rank:
+                    latest = message
+                    latest_rank = rank
+        return latest
+
     async def _run_final_closing_turn(
         self,
         runtime: LiveRuntime,
@@ -442,6 +479,23 @@ class ClosingManagerMixin:
             ),
             "current_topic": topic[:200],
         }
+        visible_reply_target = self._latest_visible_message_for_session(runtime.session_id)
+        if visible_reply_target:
+            speaker = str(
+                visible_reply_target.get("character_name")
+                or visible_reply_target.get("role")
+                or "上一位角色"
+            ).strip()
+            content = str(visible_reply_target.get("content") or "").strip()
+            decision["visible_reply_target"] = visible_reply_target
+            decision["prompt"] = (
+                decision["prompt"]
+                + "\n\n最後已顯示訊息："
+                + f"{speaker}: {content}\n"
+                + "收尾回應必須優先承接這句已顯示內容；若這句在回答問題，請承認它已回答過；"
+                + "若這句在提問或交接給下一位角色，請對這句完成自然收束。"
+                + "不要回到更早的問題重答。"
+            )
         try:
             result = await self._send_director_turn(session, state, decision)
             interaction = result.get("interaction") if isinstance(result, dict) else None

@@ -100,6 +100,65 @@ class InteractionRepositoryMixin:
             row = conn.execute("SELECT * FROM live_interactions WHERE job_id = ?", (job_id,)).fetchone()
         return self._row_to_interaction(row)
 
+    def append_interaction_visible_message(
+        self,
+        job_id: str,
+        visible_message: dict[str, Any],
+        *,
+        limit: int = 20,
+    ) -> dict | None:
+        content = str((visible_message or {}).get("content") or "").strip()
+        if not job_id or not content:
+            return self.get_interaction(job_id)
+        limit = max(1, min(int(limit or 20), 100))
+        normalized = {
+            "message_id": visible_message.get("message_id"),
+            "role": visible_message.get("role") or "assistant",
+            "content": content,
+            "created_at": visible_message.get("created_at") or visible_message.get("timestamp") or "",
+            "timestamp": visible_message.get("timestamp") or visible_message.get("created_at") or "",
+            "character_id": visible_message.get("character_id"),
+            "character_name": visible_message.get("character_name"),
+            "source": visible_message.get("source") or "",
+        }
+
+        def message_key(item: dict[str, Any]) -> str:
+            raw_id = str(item.get("message_id") or "")
+            if raw_id:
+                return f"id:{raw_id}"
+            return (
+                f"text:{item.get('timestamp') or item.get('created_at') or ''}:"
+                f"{str(item.get('content') or '')[:120]}"
+            )
+
+        normalized_key = message_key(normalized)
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM live_interactions WHERE job_id = ?", (job_id,)).fetchone()
+            if row is None:
+                return None
+            metadata = self._json_load(row["metadata_json"], {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            visible_messages = [
+                item
+                for item in metadata.get("visible_messages", [])
+                if isinstance(item, dict)
+            ]
+            if all(message_key(item) != normalized_key for item in visible_messages):
+                visible_messages.append(normalized)
+            metadata.update({
+                "visible_messages": visible_messages[-limit:],
+                "last_visible_message": normalized,
+                "has_visible_output": True,
+            })
+            conn.execute(
+                "UPDATE live_interactions SET metadata_json = ? WHERE job_id = ?",
+                (self._json_dump(metadata), job_id),
+            )
+            conn.commit()
+            updated = conn.execute("SELECT * FROM live_interactions WHERE job_id = ?", (job_id,)).fetchone()
+        return self._row_to_interaction(updated)
+
     def get_interaction(self, job_id: str) -> dict | None:
         with self._lock, self._connect() as conn:
             row = conn.execute("SELECT * FROM live_interactions WHERE job_id = ?", (job_id,)).fetchone()

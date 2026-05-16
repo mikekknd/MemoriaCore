@@ -188,6 +188,7 @@ class FinishMainPhaseRequest(BaseModel):
 
 class FinalizePhaseRequest(BaseModel):
     reason: str = Field("operator_finalize", max_length=120)
+    background: bool = False
 
 
 class EpisodePlanImportRequest(BaseModel):

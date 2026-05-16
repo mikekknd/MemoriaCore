@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,9 @@ chat_preview_cache = None
 STATIC_ROOT = ""
 UI_ASSETS_ROOT = None
 E2E_CHECKPOINT_PATH = None
+logger = logging.getLogger(__name__)
+_phase_finalize_tasks: set[asyncio.Task] = set()
+_phase_finalize_tasks_by_session: dict[str, asyncio.Task] = {}
 
 
 def configure(state):
@@ -104,6 +108,27 @@ def _interaction_result_message_id(interaction: dict) -> str:
     return "" if raw is None else str(raw)
 
 
+def _interaction_visible_messages(interaction: dict) -> list[dict]:
+    metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+    visible = metadata.get("visible_messages")
+    if not isinstance(visible, list):
+        return []
+    return [item for item in visible if isinstance(item, dict)]
+
+
+def _message_matches_visible_interaction(message: dict, interaction: dict) -> bool:
+    message_id = _message_id_text(message)
+    message_content = _compact_prompt_text(message.get("content"))
+    for visible in _interaction_visible_messages(interaction):
+        visible_id = "" if visible.get("message_id") is None else str(visible.get("message_id"))
+        if visible_id and message_id and visible_id == message_id:
+            return True
+        visible_content = _compact_prompt_text(visible.get("content"))
+        if visible_content and message_content and visible_content == message_content:
+            return True
+    return False
+
+
 def _is_discarded_interaction(interaction: dict, target_memoria_session_id: str) -> bool:
     if str(interaction.get("memoria_session_id") or "") != target_memoria_session_id:
         return False
@@ -116,6 +141,8 @@ def _is_discarded_interaction(interaction: dict, target_memoria_session_id: str)
 
 def _message_matches_discarded_interaction(message: dict, interaction: dict) -> bool:
     if str(message.get("role") or "") != "assistant":
+        return False
+    if _message_matches_visible_interaction(message, interaction):
         return False
 
     result_message_id = _interaction_result_message_id(interaction)
@@ -198,6 +225,20 @@ def _require_running_phase_session(session_id: str) -> dict:
         raise HTTPException(status_code=404, detail="session not found")
     runtime_status = manager.get_status(session_id)
     if str(session.get("status") or "") != "running" or not runtime_status.get("running"):
+        raise HTTPException(status_code=409, detail="live session is not running")
+    return session
+
+
+def _require_finalizable_phase_session(session_id: str) -> dict:
+    session = storage.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    runtime_status = manager.get_status(session_id)
+    session_status = str(session.get("status") or "")
+    runtime_status_text = str(runtime_status.get("status") or "")
+    if session_status == "closing_failed" or runtime_status_text == "closing_failed":
+        return session
+    if session_status != "running" or not runtime_status.get("running"):
         raise HTTPException(status_code=409, detail="live session is not running")
     return session
 
@@ -533,12 +574,113 @@ async def finish_main_phase(session_id: str, body: FinishMainPhaseRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _active_phase_finalize_task(session_id: str) -> asyncio.Task | None:
+    task = _phase_finalize_tasks_by_session.get(session_id)
+    if task and not task.done():
+        return task
+    if task:
+        _phase_finalize_tasks_by_session.pop(session_id, None)
+    return None
+
+
+def _mark_phase_finalize_closing(session_id: str) -> None:
+    update_session_fields = getattr(storage, "update_session_fields", None)
+    if callable(update_session_fields):
+        update_session_fields(session_id, status="closing")
+    runtimes = getattr(manager, "_runtimes", None)
+    runtime = runtimes.get(session_id) if isinstance(runtimes, dict) else None
+    if runtime is not None:
+        runtime.status = "closing"
+        runtime.running = True
+
+
+def _mark_phase_finalize_failed(session_id: str) -> None:
+    update_session_fields = getattr(storage, "update_session_fields", None)
+    if callable(update_session_fields):
+        update_session_fields(session_id, status="closing_failed")
+    runtimes = getattr(manager, "_runtimes", None)
+    runtime = runtimes.get(session_id) if isinstance(runtimes, dict) else None
+    if runtime is not None:
+        runtime.status = "closing_failed"
+        runtime.running = False
+
+
+def _track_phase_finalize_task(session_id: str, task: asyncio.Task) -> None:
+    _phase_finalize_tasks.add(task)
+    _phase_finalize_tasks_by_session[session_id] = task
+
+    def _discard(done: asyncio.Task) -> None:
+        _phase_finalize_tasks.discard(done)
+        if _phase_finalize_tasks_by_session.get(session_id) is done:
+            _phase_finalize_tasks_by_session.pop(session_id, None)
+        try:
+            exc = done.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.warning(
+                "background phase finalize failed error=%s",
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    task.add_done_callback(_discard)
+
+
+async def _run_phase_finalize_background(session_id: str, reason: str) -> None:
+    try:
+        result = await manager.finalize_phase_pipeline(session_id, reason=reason)
+        broadcast = getattr(manager, "_broadcast", None)
+        if callable(broadcast):
+            await broadcast(session_id, {
+                "type": "phase_finalize_completed",
+                "session_id": session_id,
+                "phase": result.get("phase") if isinstance(result, dict) else "finalized",
+                "finalized": sanitize_phase_pipeline_response(result) if isinstance(result, dict) else {},
+            })
+    except Exception as exc:
+        _mark_phase_finalize_failed(session_id)
+        broadcast = getattr(manager, "_broadcast", None)
+        if callable(broadcast):
+            await broadcast(session_id, {
+                "type": "status",
+                "session_id": session_id,
+                "status": "closing_failed",
+                "message": "phase finalize failed; retry allowed",
+            })
+            await broadcast(session_id, {
+                "type": "phase_finalize_failed",
+                "session_id": session_id,
+                "error": str(exc)[:500],
+            })
+        raise
+
+
 @router.post("/sessions/{session_id}/phase/finalize")
 async def finalize_phase(
     session_id: str,
     body: FinalizePhaseRequest = FinalizePhaseRequest(),
 ):
-    _require_running_phase_session(session_id)
+    if body.background:
+        existing = _active_phase_finalize_task(session_id)
+        if existing:
+            return {
+                "phase": "finalize_started",
+                "session_id": session_id,
+                "status": "closing",
+                "runtime_status": manager.get_status(session_id),
+            }
+        _require_finalizable_phase_session(session_id)
+        _mark_phase_finalize_closing(session_id)
+        task = asyncio.create_task(_run_phase_finalize_background(session_id, body.reason))
+        _track_phase_finalize_task(session_id, task)
+        return {
+            "phase": "finalize_started",
+            "session_id": session_id,
+            "status": "closing",
+            "runtime_status": manager.get_status(session_id),
+        }
+    _require_finalizable_phase_session(session_id)
     try:
         result = await manager.finalize_phase_pipeline(session_id, reason=body.reason)
         return sanitize_phase_pipeline_response(result)

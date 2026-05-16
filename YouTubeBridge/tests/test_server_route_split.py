@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -382,3 +383,191 @@ async def test_finalize_phase_route_returns_public_phase_shape_without_closing_i
     assert "FINALIZE_CLOSING_PROMPT" not in serialized
     assert "FINALIZE_RAW_RESULT" not in serialized
     assert "<topic_pack_fact_cards>" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_finalize_phase_route_background_returns_started_and_schedules_task(tmp_path):
+    calls: list[tuple[str, str]] = []
+
+    class FakeStorage:
+        def get_session(self, session_id: str):
+            return {"session_id": session_id, "status": "running"}
+
+    class FakeManager:
+        def get_status(self, session_id: str):
+            return {"session_id": session_id, "running": True, "status": "running"}
+
+        async def finalize_phase_pipeline(self, session_id: str, *, reason: str):
+            calls.append((session_id, reason))
+            return {"phase": "finalized", "session_id": session_id, "status": "ended"}
+
+        async def _broadcast(self, session_id: str, payload: dict):
+            calls.append((session_id, payload["type"]))
+
+    server_module._sessions_routes.configure(SimpleNamespace(
+        storage=FakeStorage(),
+        manager=FakeManager(),
+        summary_manager=SimpleNamespace(),
+        chat_preview_cache={},
+        static_root=tmp_path,
+        ui_assets_root=tmp_path,
+        e2e_checkpoint_path=tmp_path / "checkpoint.json",
+        free_talk_topic_root=tmp_path / "freeTalkTopics",
+    ))
+
+    result = await server_module._sessions_routes.finalize_phase(
+        "session-a",
+        server_module._sessions_routes.FinalizePhaseRequest(
+            reason="operator",
+            background=True,
+        ),
+    )
+    await asyncio.sleep(0)
+
+    assert result == {
+        "phase": "finalize_started",
+        "session_id": "session-a",
+        "status": "closing",
+        "runtime_status": {"session_id": "session-a", "running": True, "status": "running"},
+    }
+    assert ("session-a", "operator") in calls
+
+
+@pytest.mark.asyncio
+async def test_finalize_phase_background_marks_closing_and_dedupes_running_task(tmp_path):
+    release = asyncio.Event()
+    calls: list[tuple[str, str]] = []
+
+    class FakeStorage:
+        def __init__(self):
+            self.session = {"session_id": "session-a", "status": "running"}
+
+        def get_session(self, session_id: str):
+            return dict(self.session)
+
+        def update_session_fields(self, session_id: str, **fields):
+            self.session.update(fields)
+            return dict(self.session)
+
+    class FakeManager:
+        def __init__(self):
+            self._runtimes = {
+                "session-a": SimpleNamespace(session_id="session-a", running=True, status="running")
+            }
+
+        def get_status(self, session_id: str):
+            runtime = self._runtimes[session_id]
+            return {"session_id": session_id, "running": runtime.running, "status": runtime.status}
+
+        async def finalize_phase_pipeline(self, session_id: str, *, reason: str):
+            calls.append((session_id, reason))
+            await release.wait()
+            return {"phase": "finalized", "session_id": session_id, "status": "ended"}
+
+        async def _broadcast(self, session_id: str, payload: dict):
+            calls.append((session_id, payload["type"]))
+
+    fake_storage = FakeStorage()
+    fake_manager = FakeManager()
+    server_module._sessions_routes.configure(SimpleNamespace(
+        storage=fake_storage,
+        manager=fake_manager,
+        summary_manager=SimpleNamespace(),
+        chat_preview_cache={},
+        static_root=tmp_path,
+        ui_assets_root=tmp_path,
+        e2e_checkpoint_path=tmp_path / "checkpoint.json",
+        free_talk_topic_root=tmp_path / "freeTalkTopics",
+    ))
+
+    first = await server_module._sessions_routes.finalize_phase(
+        "session-a",
+        server_module._sessions_routes.FinalizePhaseRequest(reason="operator", background=True),
+    )
+    second = await server_module._sessions_routes.finalize_phase(
+        "session-a",
+        server_module._sessions_routes.FinalizePhaseRequest(reason="operator", background=True),
+    )
+    await asyncio.sleep(0)
+
+    assert first["runtime_status"]["status"] == "closing"
+    assert second["runtime_status"]["status"] == "closing"
+    assert fake_storage.get_session("session-a")["status"] == "closing"
+    assert calls == [("session-a", "operator")]
+
+    release.set()
+    pending = list(server_module._sessions_routes._phase_finalize_tasks)
+    if pending:
+        await asyncio.gather(*pending)
+
+
+@pytest.mark.asyncio
+async def test_finalize_phase_background_failure_marks_retryable_state(tmp_path):
+    calls: list[tuple[str, str]] = []
+
+    class FakeStorage:
+        def __init__(self):
+            self.session = {"session_id": "session-a", "status": "running"}
+
+        def get_session(self, session_id: str):
+            return dict(self.session)
+
+        def update_session_fields(self, session_id: str, **fields):
+            self.session.update(fields)
+            return dict(self.session)
+
+    class FakeManager:
+        def __init__(self):
+            self._runtimes = {
+                "session-a": SimpleNamespace(session_id="session-a", running=True, status="running")
+            }
+
+        def get_status(self, session_id: str):
+            runtime = self._runtimes[session_id]
+            return {"session_id": session_id, "running": runtime.running, "status": runtime.status}
+
+        async def finalize_phase_pipeline(self, session_id: str, *, reason: str):
+            calls.append((session_id, reason))
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            return {"phase": "finalized", "session_id": session_id, "status": "ended"}
+
+        async def _broadcast(self, session_id: str, payload: dict):
+            calls.append((session_id, payload["type"]))
+
+    fake_storage = FakeStorage()
+    fake_manager = FakeManager()
+    server_module._sessions_routes.configure(SimpleNamespace(
+        storage=fake_storage,
+        manager=fake_manager,
+        summary_manager=SimpleNamespace(),
+        chat_preview_cache={},
+        static_root=tmp_path,
+        ui_assets_root=tmp_path,
+        e2e_checkpoint_path=tmp_path / "checkpoint.json",
+        free_talk_topic_root=tmp_path / "freeTalkTopics",
+    ))
+
+    await server_module._sessions_routes.finalize_phase(
+        "session-a",
+        server_module._sessions_routes.FinalizePhaseRequest(reason="operator", background=True),
+    )
+    pending = list(server_module._sessions_routes._phase_finalize_tasks)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    assert fake_storage.get_session("session-a")["status"] == "closing_failed"
+    assert fake_manager.get_status("session-a")["status"] == "closing_failed"
+
+    retry = await server_module._sessions_routes.finalize_phase(
+        "session-a",
+        server_module._sessions_routes.FinalizePhaseRequest(reason="operator", background=True),
+    )
+    pending = list(server_module._sessions_routes._phase_finalize_tasks)
+    if pending:
+        await asyncio.gather(*pending)
+
+    assert retry["status"] == "closing"
+    assert calls.count(("session-a", "operator")) == 2
+    assert ("session-a", "phase_finalize_failed") in calls
+    assert ("session-a", "phase_finalize_completed") in calls

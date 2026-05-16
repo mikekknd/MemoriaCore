@@ -144,7 +144,7 @@ def test_studio_phase_pipeline_controls():
     assert 'enter_free_talk: true' in studio_js
     assert 'force_enter_free_talk: true' in studio_js
     assert 'reason: "operator_debug_skip_to_free_talk"' in studio_js
-    assert 'body: { reason: "operator_finalize" }' in studio_js
+    assert 'body: { reason: "operator_finalize", background: true }' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(sessionId)}/stop`, {' not in studio_js
 
 
@@ -744,7 +744,7 @@ def test_studio_phase_status_mentions_free_talk_closing_counts():
     assert "低訊號" in studio_js
 
 
-def test_studio_p0_exposes_preflight_and_manual_source_session_flow():
+def test_studio_app_wires_episode_plan_session_lifecycle():
     studio_html = _studio_source()
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
 
@@ -799,6 +799,8 @@ def test_studio_p0_exposes_preflight_and_manual_source_session_flow():
     assert 'api("/sessions/current/start", {' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(sessionId)}/director/start`, {' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(sessionId)}/phase/finalize`, {' in studio_js
+    assert 'body: { reason: "operator_finalize", background: true }' in studio_js
+    assert 'appendLog("INFO", "節目收尾流程已送出");' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`)' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/recent?limit=120`)' in studio_js
     assert "new EventSource(`/sessions/${encodeURIComponent(sessionId)}/events`)" in studio_js
@@ -879,6 +881,46 @@ def test_studio_conversation_is_newest_first_and_live_events_default_hidden():
     assert "10:20:15" not in studio_html
 
 
+def test_studio_conversation_refresh_preserves_locally_visible_messages():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "const CHAT_PREVIEW_VISIBLE_LIMIT = 120;" in studio_js
+    assert "visibleMessages: new Map()" in studio_js
+    assert "function previewMessageKey(" in studio_js
+    assert "function rememberVisibleMessage(" in studio_js
+    assert "function pruneVisibleMessages(" in studio_js
+    assert "const merged = mergePreviewMessages(Array.from(state.visibleMessages.values()), visible).slice(-CHAT_PREVIEW_VISIBLE_LIMIT);" in studio_js
+    assert "state.visibleMessages.clear();" in studio_js
+
+
+def test_studio_closing_state_disables_restart_and_clear_discards_local_visible_messages():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+
+    assert "function sessionIsClosing(" in studio_js
+    assert "function sessionFinalizeFailed(" in studio_js
+    start_readiness = studio_js[
+        studio_js.index("function startReadiness()"):
+        studio_js.index("function updateCheckItem", studio_js.index("function startReadiness()"))
+    ]
+    assert 'state.sourceStatus !== "closing"' in start_readiness
+    assert 'state.sourceStatus !== "closing_failed"' in start_readiness
+
+    button_state = studio_js[
+        studio_js.index("function applyStartButtonState()"):
+        studio_js.index("function updatePreflightChecklist", studio_js.index("function applyStartButtonState()"))
+    ]
+    assert 'state.sourceStatus === "closing"' in button_state
+    assert 'state.sourceStatus === "closing_failed"' in button_state
+    assert 'stopButton.disabled = (!state.live && state.sourceStatus !== "closing_failed") || state.sourceStatus === "closing";' in button_state
+    assert 'stopButton.textContent = state.sourceStatus === "closing_failed" ? "重試收尾" : "收尾";' in button_state
+
+    clear_body = studio_js[
+        studio_js.index("function clearConversation()"):
+        studio_js.index("async function regenerateSummary", studio_js.index("function clearConversation()"))
+    ]
+    assert "state.visibleMessages.clear();" in clear_body
+
+
 def test_studio_renders_live_events_only_from_recent_aggregate_not_single_sse_or_system_event():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
 
@@ -955,7 +997,12 @@ def test_studio_presentation_tts_events_and_lifecycle_are_wired():
     assert 'if (payload.type === "interrupt_requested") {' in subscribe_body
     assert "handlePresentationInterrupt(payload)" in subscribe_body
     assert 'if (payload.type === "interaction_interrupted") {' in subscribe_body
-    assert 'scheduleConversationRefresh("直播打斷");' in subscribe_body
+    interrupted_branch = subscribe_body[
+        subscribe_body.index('if (payload.type === "interaction_interrupted") {'):
+        subscribe_body.index('if (["interaction_completed", "super_chat_batch_injected"].includes(payload.type)) {')
+    ]
+    assert 'appendLog("DEBUG", "互動已中斷，保留已顯示對話");' in interrupted_branch
+    assert 'scheduleConversationRefresh("直播打斷");' not in interrupted_branch
     assert '["interaction_completed", "presentation_item_ready", "super_chat_batch_injected"]' not in subscribe_body
     assert '["interaction_completed", "super_chat_batch_injected"]' in subscribe_body
 

@@ -3179,6 +3179,83 @@ async def test_chat_preview_filters_interrupted_late_memoria_result(monkeypatch,
     assert preview["message_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_chat_preview_keeps_interrupted_result_once_visible(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "target_memoria_session_id": "mem-a",
+        "character_ids": ["char-a", "char-b"],
+        "presentation_enabled": False,
+    })
+    visible_prompt = "Beat shape: source_reframe. 白蓮回答榜單來源邊界。"
+    visible = storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "priority": 50,
+        "status": "running",
+        "memoria_session_id": "mem-a",
+        "character_ids": ["char-a", "char-b"],
+        "content": visible_prompt,
+        "started_at": "2026-05-16T09:20:11",
+        "metadata": {
+            "visible_messages": [{
+                "message_id": 101,
+                "role": "assistant",
+                "content": "這句已經出現在畫面上。",
+                "timestamp": "2026-05-16T09:20:19",
+                "character_id": "char-a",
+                "character_name": "可可",
+                "source": "director",
+            }],
+            "has_visible_output": True,
+        },
+    })
+    storage.update_interaction(
+        visible["job_id"],
+        status="interrupted",
+        reason="live_session_closing",
+        completed_at="2026-05-16T09:20:15",
+        interrupted_at="2026-05-16T09:20:13",
+    )
+
+    class FakeMemoriaClient:
+        def get_session_history(self, session_id):
+            assert session_id == "mem-a"
+            return {
+                "session": {"session_id": "mem-a", "message_count": 1},
+                "messages": [{
+                    "message_id": 101,
+                    "role": "assistant",
+                    "content": "這句已經出現在畫面上。",
+                    "timestamp": "2026-05-16T09:20:19",
+                    "character_id": "char-a",
+                    "character_name": "可可",
+                    "debug_info": {
+                        "original_query": (
+                            f"{visible_prompt}\n\n"
+                            "請根據已提供的直播流程提示回應。"
+                        ),
+                    },
+                }],
+            }
+
+    monkeypatch.setattr(server_module._sessions_routes, "storage", storage)
+    monkeypatch.setattr(server_module._sessions_routes, "chat_preview_cache", {})
+    monkeypatch.setattr(server_module._sessions_routes, "MemoriaClient", FakeMemoriaClient)
+
+    preview = await server_module._sessions_routes.get_chat_preview("live-a", limit=20)
+
+    assert [message["content"] for message in preview["messages"]] == ["這句已經出現在畫面上。"]
+    assert preview["message_count"] == 1
+
+
 def test_chat_preview_session_sanitizer_removes_user_scope_details():
     sanitized = server_module._sanitize_chat_preview_session({
         "session_id": "mem-a",

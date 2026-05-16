@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const CHAT_PREVIEW_VISIBLE_LIMIT = 120;
 
 const state = {
   live: false,
@@ -6,6 +7,7 @@ const state = {
   currentSession: null,
   eventSource: null,
   chatRefreshTimer: null,
+  visibleMessages: new Map(),
   startedAt: null,
   elapsedTimer: null,
   autoCommentTimer: null,
@@ -319,7 +321,10 @@ function startReadiness() {
   const hasPlan = Boolean(planSelect.value);
   const rolesReady = activeRoleCount() > 0;
   const settingsReady = settingsAreValid();
-  const idle = !state.live && state.sourceStatus !== "starting";
+  const idle = !state.live
+    && state.sourceStatus !== "starting"
+    && state.sourceStatus !== "closing"
+    && state.sourceStatus !== "closing_failed";
   return {
     hasPlan,
     rolesReady,
@@ -990,6 +995,12 @@ function updateSourceDetectionState() {
   if (state.sourceStatus === "starting") {
     sourceDetectionState.textContent = "啟動中";
     sourceDetectionState.className = "state-badge warn";
+  } else if (state.sourceStatus === "closing") {
+    sourceDetectionState.textContent = "收尾中";
+    sourceDetectionState.className = "state-badge warn";
+  } else if (state.sourceStatus === "closing_failed") {
+    sourceDetectionState.textContent = "收尾失敗";
+    sourceDetectionState.className = "state-badge warn";
   } else if (state.live && hasRealSource) {
     sourceDetectionState.textContent = "正式直播";
     sourceDetectionState.className = "state-badge good";
@@ -1018,6 +1029,12 @@ function applyStartButtonState() {
   if (state.live) {
     startButton.disabled = true;
     startButton.textContent = "直播中";
+  } else if (state.sourceStatus === "closing") {
+    startButton.disabled = true;
+    startButton.textContent = "收尾中...";
+  } else if (state.sourceStatus === "closing_failed") {
+    startButton.disabled = true;
+    startButton.textContent = "收尾失敗";
   } else if (state.sourceStatus === "starting") {
     startButton.disabled = true;
     startButton.textContent = "啟動直播中...";
@@ -1025,7 +1042,8 @@ function applyStartButtonState() {
     startButton.disabled = !readiness.canStart;
     startButton.textContent = "開始直播";
   }
-  stopButton.disabled = !state.live;
+  stopButton.disabled = (!state.live && state.sourceStatus !== "closing_failed") || state.sourceStatus === "closing";
+  stopButton.textContent = state.sourceStatus === "closing_failed" ? "重試收尾" : "收尾";
 }
 
 function updatePreflightChecklist() {
@@ -1620,6 +1638,7 @@ function resetConversationForNewSession() {
   state.currentSession = null;
   state.sessionId = "";
   state.messageCount = 0;
+  state.visibleMessages.clear();
   renderConversationEmpty("正在建立新的 Live Session，等待後端產生 AI 對話。");
 }
 
@@ -1705,9 +1724,52 @@ function chatPreviewTime(message) {
   return date.toLocaleTimeString("zh-TW", { hour12: false });
 }
 
+function previewMessageKey(message = {}) {
+  const messageId = String(message?.message_id || message?.id || "").trim();
+  if (messageId) return `${message?.role || "message"}:${messageId}`;
+  return `${message?.character_id || message?.character_name || message?.role || "message"}:${message?.created_at || message?.timestamp || ""}:${String(message?.content || message?.message_text || "").slice(0, 80)}`;
+}
+
+function previewMessageTimeValue(message = {}) {
+  const raw = message?.created_at || message?.timestamp || message?.published_at || "";
+  const value = raw ? new Date(raw).getTime() : 0;
+  return Number.isFinite(value) ? value : 0;
+}
+
+function mergePreviewMessages(...groups) {
+  const merged = new Map();
+  groups.flat().forEach((message) => {
+    const content = String(message?.content || message?.message_text || "").trim();
+    if (!content) return;
+    merged.set(previewMessageKey(message), message);
+  });
+  return Array.from(merged.values()).sort((left, right) => {
+    const timeDelta = previewMessageTimeValue(left) - previewMessageTimeValue(right);
+    if (timeDelta !== 0) return timeDelta;
+    return previewMessageKey(left).localeCompare(previewMessageKey(right));
+  });
+}
+
+function pruneVisibleMessages(limit = CHAT_PREVIEW_VISIBLE_LIMIT) {
+  const maxItems = Math.max(1, Number(limit) || CHAT_PREVIEW_VISIBLE_LIMIT);
+  const kept = mergePreviewMessages(Array.from(state.visibleMessages.values())).slice(-maxItems);
+  state.visibleMessages.clear();
+  kept.forEach((message) => {
+    state.visibleMessages.set(previewMessageKey(message), message);
+  });
+}
+
+function rememberVisibleMessage(message = {}) {
+  const content = String(message?.content || message?.message_text || "").trim();
+  if (!content) return;
+  state.visibleMessages.set(previewMessageKey(message), message);
+  pruneVisibleMessages();
+}
+
 function appendChatPreviewMessage(message, { prepend = true } = {}) {
   const content = String(message?.content || message?.message_text || "").trim();
   if (!content) return;
+  rememberVisibleMessage(message);
   const messageId = String(message?.message_id || message?.id || `${message?.created_at || ""}-${content.slice(0, 24)}`);
   if (messageId && feed.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`)) return;
   const kind = chatPreviewKind(message);
@@ -1740,16 +1802,20 @@ function appendChatPreviewMessage(message, { prepend = true } = {}) {
 }
 
 function renderChatPreviewMessages(messages = []) {
-  clearConversationFeed();
   const visible = Array.isArray(messages) ? messages.filter((message) => (
     String(message?.role || "") !== "system_event"
     && String(message?.content || message?.message_text || "").trim()
   )) : [];
-  if (!visible.length) {
+  visible.forEach(rememberVisibleMessage);
+  const merged = mergePreviewMessages(Array.from(state.visibleMessages.values()), visible).slice(-CHAT_PREVIEW_VISIBLE_LIMIT);
+  state.visibleMessages.clear();
+  merged.forEach((message) => state.visibleMessages.set(previewMessageKey(message), message));
+  clearConversationFeed();
+  if (!merged.length) {
     renderConversationEmpty(state.sessionId ? "Live Session 已建立，等待後端產生 AI 對話。" : undefined);
     return;
   }
-  visible.forEach((message) => appendChatPreviewMessage(message, { prepend: true }));
+  merged.forEach((message) => appendChatPreviewMessage(message, { prepend: true }));
 }
 
 function eventToLiveEventItem(event) {
@@ -1827,7 +1893,18 @@ function subscribeSessionEvents(sessionId) {
         return;
       }
       if (payload.type === "interaction_interrupted") {
-        scheduleConversationRefresh("直播打斷");
+        appendLog("DEBUG", "互動已中斷，保留已顯示對話");
+        return;
+      }
+      if (payload.type === "phase_finalize_completed") {
+        appendLog("INFO", "節目收尾流程已完成");
+        refreshStudioSession();
+        refreshConversation();
+        return;
+      }
+      if (payload.type === "phase_finalize_failed") {
+        appendLog("WARN", `節目收尾失敗：${payload.error || "unknown error"}`);
+        refreshStudioSession();
         return;
       }
       if (["interaction_completed", "super_chat_batch_injected"].includes(payload.type)) {
@@ -1844,8 +1921,22 @@ function subscribeSessionEvents(sessionId) {
 
 function sessionIsRunning(session) {
   if (!session) return false;
+  if (sessionIsClosing(session)) return false;
+  if (sessionFinalizeFailed(session)) return false;
   const runtime = session.runtime_status || {};
   return Boolean(runtime.running || runtime.status === "running" || runtime.status === "starting" || session.status === "running" || session.status === "starting");
+}
+
+function sessionIsClosing(session) {
+  if (!session) return false;
+  const runtime = session.runtime_status || {};
+  return Boolean(runtime.status === "closing" || session.status === "closing");
+}
+
+function sessionFinalizeFailed(session) {
+  if (!session) return false;
+  const runtime = session.runtime_status || {};
+  return Boolean(runtime.status === "closing_failed" || session.status === "closing_failed");
 }
 
 function phaseSummaryStatus(summary = {}) {
@@ -1895,11 +1986,13 @@ function applySessionSnapshot(session) {
   state.detectedVideoId = session?.video_id || "";
   state.detectedLiveChatId = session?.live_chat_id || "";
   state.live = sessionIsRunning(session);
+  const closing = sessionIsClosing(session);
+  const closingFailed = sessionFinalizeFailed(session);
   sessionDot.classList.toggle("is-live", state.live);
-  liveBadge.textContent = state.live ? "直播中" : "待機";
-  liveBadge.className = state.live ? "state-badge good" : "state-badge neutral";
-  leftStatusBadge.textContent = state.live ? "直播中" : (session ? "已停止" : "未開始");
-  leftStatusBadge.className = state.live ? "state-badge good" : (session ? "state-badge neutral" : "state-badge neutral");
+  liveBadge.textContent = closing ? "收尾中" : (closingFailed ? "收尾失敗" : (state.live ? "直播中" : "待機"));
+  liveBadge.className = (closing || closingFailed) ? "state-badge warn" : (state.live ? "state-badge good" : "state-badge neutral");
+  leftStatusBadge.textContent = closing ? "收尾中" : (closingFailed ? "收尾失敗" : (state.live ? "直播中" : (session ? "已停止" : "未開始")));
+  leftStatusBadge.className = (closing || closingFailed) ? "state-badge warn" : (state.live ? "state-badge good" : (session ? "state-badge neutral" : "state-badge neutral"));
   sessionStateText.textContent = phaseSummaryText(session);
 
   if (session?.started_at) {
@@ -1916,7 +2009,9 @@ function applySessionSnapshot(session) {
   if (state.live) {
     state.elapsedTimer = setInterval(updateDuration, 1000);
   }
-  state.sourceStatus = state.live ? (state.detectedVideoId || state.detectedLiveChatId ? "detected" : "test") : "idle";
+  state.sourceStatus = closing
+    ? "closing"
+    : (closingFailed ? "closing_failed" : (state.live ? (state.detectedVideoId || state.detectedLiveChatId ? "detected" : "test") : "idle"));
   if (state.live) {
     renderSummaryPreview(null, "直播中不產生摘要；停止直播後可重新生成。");
   } else if (!state.sessionId) {
@@ -1998,6 +2093,9 @@ async function refreshStudioSession() {
       || list.find((session) => sessionIsRunning(session))
       || list[0]
       || null;
+    if ((selected?.session_id || "") !== state.sessionId) {
+      state.visibleMessages.clear();
+    }
     const directorState = selected?.session_id ? await loadDirectorState(selected.session_id) : null;
     const selectedWithDirector = selected && directorState ? { ...selected, director_state: directorState } : selected;
     applySessionSnapshot(selectedWithDirector);
@@ -2063,16 +2161,15 @@ async function startLive() {
 
 async function stopLive() {
   const sessionId = state.sessionId;
-  if (!sessionId || state.sourceStatus === "starting") return;
+  if (!sessionId || state.sourceStatus === "starting" || state.sourceStatus === "closing") return;
   stopButton.disabled = true;
   try {
     const data = await api(`/sessions/${encodeURIComponent(sessionId)}/phase/finalize`, {
       method: "POST",
-      body: { reason: "operator_finalize" },
+      body: { reason: "operator_finalize", background: true },
     });
-    appendLog("INFO", `節目收尾流程已送出：${data.phase || "finalize"}`);
-    applySessionSnapshot({ ...(state.currentSession || {}), runtime_status: data, status: "stopped" });
-    await refreshStudioSession();
+    appendLog("INFO", "節目收尾流程已送出");
+    applySessionSnapshot({ ...(state.currentSession || {}), runtime_status: data.runtime_status || data, status: "closing" });
   } catch (error) {
     appendLog("WARN", `節目收尾失敗：${error.message || error}`);
   } finally {
@@ -2692,6 +2789,7 @@ function startAutoComments() {
 }
 
 function clearConversation() {
+  state.visibleMessages.clear();
   renderConversationEmpty("對話區已清空，等待新的直播內容。");
   appendLog("INFO", "直播對話顯示已清除");
 }
