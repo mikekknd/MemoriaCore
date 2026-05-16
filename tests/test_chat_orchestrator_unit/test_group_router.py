@@ -471,6 +471,58 @@ def test_youtube_live_group_closing_prompt_marks_group_closing():
     assert "仍有未發言角色尚未完成簡短道別" in prompt_text
 
 
+def test_youtube_live_non_closing_router_prompt_omits_closing_only_rules():
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "無新增價值",
+    })
+
+    run_group_router(
+        [{"role": "user", "content": "這段榜單分析先到這裡。"}],
+        _chars(),
+        router,
+        honor_mentions=False,
+        bot_turn_index=0,
+        max_bot_turns=2,
+        discussion_mode="youtube_live",
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    assert "closing_mode 表示收尾路由目標" not in prompt_text
+    assert "每位可用角色最多一次簡短道別" not in prompt_text
+    assert "youtube_live_closing_rules" not in prompt_text
+
+
+def test_youtube_live_closing_router_prompt_appends_closing_only_rules():
+    router = _Router({
+        "conversation_intent": "continue_group_discussion",
+        "action": "new_speaker_reply_to_ai",
+        "target_character_id": "char-b",
+        "reason": "群組收尾仍有未發言角色",
+    })
+
+    run_group_router(
+        [
+            {"role": "user", "content": "請做本場最後收尾，正式道別，不要開新話題。"},
+            {"role": "assistant", "content": "A 已道別。", "character_id": "char-a", "character_name": "角色A"},
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        bot_turn_index=1,
+        max_bot_turns=2,
+        discussion_mode="youtube_live",
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    assert "youtube_live_closing_rules" in prompt_text
+    assert "closing_mode=group_closing" in prompt_text
+    assert "仍有未發言角色尚未完成簡短道別" in prompt_text
+
+
 def test_youtube_live_group_closing_allows_unspoken_speaker_after_stop_no_new_value():
     router = _Router({
         "conversation_intent": "single_response",

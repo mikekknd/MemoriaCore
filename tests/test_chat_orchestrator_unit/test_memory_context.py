@@ -200,3 +200,22 @@ def test_youtube_live_chat_system_suffix_omits_dynamic_rules_and_memory_block():
     assert "<reply_content_rules>" in sys_prompt
     assert "文字與語氣規則：2. `reply`" not in sys_prompt
     assert "<retrieved_memory_context>" in api_messages[-1]["content"]
+
+
+def test_chat_response_schema_limits_internal_thought_length():
+    from core.chat_orchestrator.generation_context import build_chat_response_schema
+
+    schema = build_chat_response_schema()
+
+    assert schema["properties"]["internal_thought"]["type"] == "string"
+    assert schema["properties"]["internal_thought"]["maxLength"] == 40
+
+
+def test_normalize_internal_thought_trims_to_40_characters():
+    from core.chat_orchestrator.generation_context import normalize_internal_thought
+
+    text = "這是一段超過四十個字的內心獨白，用來確認解析層會穩定截斷多餘內容並忽略模型多寫的部分"
+
+    assert normalize_internal_thought(text) == text[:40]
+    assert len(normalize_internal_thought(text)) == 40
+    assert normalize_internal_thought(None) is None

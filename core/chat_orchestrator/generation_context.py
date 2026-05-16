@@ -43,11 +43,20 @@ def resolve_orchestration_scope(session_ctx: dict | None) -> OrchestrationScope:
     )
 
 
+def normalize_internal_thought(value: object, *, max_chars: int = 40) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return ""
+    return text[:max_chars]
+
+
 def build_chat_response_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "internal_thought": {"type": "string"},
+            "internal_thought": {"type": "string", "maxLength": 40},
             "reply": {"type": "string"},
             "extracted_entities": {"type": "array", "items": {"type": "string"}},
         },

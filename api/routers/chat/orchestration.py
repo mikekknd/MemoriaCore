@@ -25,6 +25,7 @@ from core.chat_orchestrator.generation_context import (
     build_final_chat_context,
     build_history_preview,
     memory_lookup_skip_reason,
+    normalize_internal_thought,
     resolve_orchestration_scope,
 )
 from core.xml_prompt import format_tool_context_xml, format_tool_results_xml
@@ -426,7 +427,7 @@ def _run_chat_orchestration(
                     reply_text = _sanitize_group_reply(parsed.get("reply", "解析錯誤"), log_context)
                     parsed_reply_valid = isinstance(parsed.get("reply"), str)
                     new_entities = parsed.get("extracted_entities", [])
-                    inner_thought = parsed.get("internal_thought")
+                    inner_thought = normalize_internal_thought(parsed.get("internal_thought"))
                 except Exception:
                     reply_text = _sanitize_group_reply(full_res, log_context)
                     new_entities = []
@@ -508,9 +509,13 @@ def _unpack_orchestration_result(result):
          speech, thinking_speech, cited_uids, tool_state_export)
     """
     if isinstance(result, OrchestrationResult):
-        return result.as_tuple()
+        unpacked = list(result.as_tuple())
+        unpacked[5] = normalize_internal_thought(unpacked[5])
+        return tuple(unpacked)
     if isinstance(result, tuple) and len(result) == 12:
-        return result
+        unpacked = list(result)
+        unpacked[5] = normalize_internal_thought(unpacked[5])
+        return tuple(unpacked)
     try:
         item_count = len(result)
     except TypeError:

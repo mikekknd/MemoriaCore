@@ -959,6 +959,43 @@ class TestDualLayerCoordinator:
 
         assert result[0] == "我沿用剛剛那張圖。"
 
+    def test_single_layer_truncates_internal_thought_from_provider_response(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層解析層應截斷 provider 未遵守 schema 的過長 internal_thought。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        long_thought = "這是一段超過四十個字的內心獨白，用來確認解析層會穩定截斷多餘內容並忽略模型多寫的部分"
+        mock_router_with_tools.set_chat_response({
+            "internal_thought": long_thought,
+            "reply": "已完成。",
+            "extracted_entities": [],
+        })
+
+        result = orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請回覆"}],
+            last_entities=[],
+            user_prompt="請回覆",
+            user_prefs={**sample_user_prefs, "dual_layer_enabled": False},
+        )
+
+        assert result[5] == long_thought[:40]
+        assert len(result[5]) == 40
+
     def test_dual_layer_updates_opening_penalty_state_by_character(
         self, mock_deps, sample_user_prefs
     ):
@@ -1077,15 +1114,35 @@ class TestSelectOrchestration:
 
 
 class TestUnpackOrchestrationResult:
-    def test_handles_12_tuple(self):
-        """12-tuple（最新）應直接回傳"""
+    def test_normalizes_12_tuple_internal_thought(self):
+        """12-tuple（最新）也應套用 internal_thought 長度限制。"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
-        result = tuple(range(12))
+        long_thought = "這是一段超過四十個字的內心獨白，用來確認 tuple path 也會穩定截斷多餘內容"
+        slots = list(range(12))
+        slots[5] = long_thought
+        result = tuple(slots)
+
         unpacked = _unpack_orchestration_result(result)
+        expected = list(result)
+        expected[5] = long_thought[:40]
 
         assert len(unpacked) == 12
-        assert unpacked == result
+        assert unpacked == tuple(expected)
+        assert len(unpacked[5]) == 40
+
+    def test_normalizes_orchestration_result_internal_thought(self):
+        """OrchestrationResult 經 API 解構時也應套用 internal_thought 長度限制。"""
+        from api.routers.chat.orchestration import _unpack_orchestration_result
+        from core.chat_orchestrator.dataclasses import OrchestrationResult
+
+        long_thought = "這是一段超過四十個字的內心獨白，用來確認解析層會穩定截斷多餘內容並忽略模型多寫的部分"
+        result = OrchestrationResult(reply_text="已完成。", inner_thought=long_thought)
+
+        unpacked = _unpack_orchestration_result(result)
+
+        assert unpacked[5] == long_thought[:40]
+        assert len(unpacked[5]) == 40
 
     @pytest.mark.parametrize("length", [9, 10, 11, 13])
     def test_rejects_legacy_tuple_lengths(self, length):

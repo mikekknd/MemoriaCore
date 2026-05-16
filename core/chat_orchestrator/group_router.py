@@ -161,6 +161,10 @@ def run_group_router(
     )
     if normalized_discussion_mode == "youtube_live":
         prompt += "\n\n" + _youtube_live_group_router_rules(live_hosting)
+        if closing_mode != "none":
+            prompt += "\n\n" + get_prompt_manager().get("group_router_youtube_live_closing_rules").format(
+                closing_mode=closing_mode,
+            )
 
     try:
         parsed = router.generate_json(
