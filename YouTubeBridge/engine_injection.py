@@ -196,7 +196,7 @@ class InjectionManagerMixin:
                         if not selected_event_ids and not interrupted_active:
                             await asyncio.sleep(sleep_seconds)
                             continue
-                        if selected_source == "super_chat" and active_running and not interrupted_active:
+                        if selected_source == "super_chat" and active_interaction and not interrupted_active:
                             selected_events = self.storage.get_events_by_ids(
                                 runtime.session_id,
                                 [int(event_id) for event_id in selected_event_ids],
@@ -248,12 +248,9 @@ class InjectionManagerMixin:
                             selected = selected_sc
                     else:
                         selected_sc = []
-                    if (selected_sc or len(active_pending) >= min_pending) and selected:
+                    if (selected_sc or len(selected) >= min_pending) and selected:
                         sc_interrupt_allowed = bool(selected_sc and self._sc_interrupt_allowed(runtime, session))
                         if active_interaction and not selected_sc:
-                            await asyncio.sleep(sleep_seconds)
-                            continue
-                        if active_running and selected_sc and not sc_interrupt_allowed:
                             await asyncio.sleep(sleep_seconds)
                             continue
                         if selected_sc:
@@ -261,7 +258,10 @@ class InjectionManagerMixin:
                             priority = 320 if max_tier >= 3 else 260
                             source = "super_chat"
                             active_priority = int((active or {}).get("priority", 100) or 100)
-                            if active_running and priority <= active_priority:
+                            if active_interaction and priority <= active_priority:
+                                await asyncio.sleep(sleep_seconds)
+                                continue
+                            if active_running and not sc_interrupt_allowed:
                                 await asyncio.sleep(sleep_seconds)
                                 continue
                             if active_running and sc_interrupt_allowed and priority > active_priority:
