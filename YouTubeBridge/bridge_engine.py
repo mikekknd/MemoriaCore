@@ -1110,10 +1110,10 @@ class YouTubeBridgeManager(
         if top_score < AUDIENCE_QUERY_FACT_CARD_MIN_SCORE:
             return False
         query_terms = YouTubeBridgeManager._audience_query_topic_terms(query_text)
-        if query_terms and YouTubeBridgeManager._topic_pack_entry_matches_query_terms(entries[0], query_terms):
-            return True
         if len(entries) == 1:
-            return not query_terms
+            if not query_terms:
+                return True
+            return YouTubeBridgeManager._topic_pack_entry_matches_query_terms(entries[0], query_terms)
         second_score = float(entries[1].get("similarity") or 0.0)
         return (top_score - second_score) >= AUDIENCE_QUERY_FACT_CARD_MIN_GAP
 
@@ -1199,9 +1199,6 @@ class YouTubeBridgeManager(
                     continue
                 for index in range(0, len(segment) - size + 1):
                     add_term(segment[index:index + size])
-            if len(segment) <= 6:
-                for index in range(0, len(segment) - 1):
-                    add_term(segment[index:index + 2])
         return sorted(terms, key=len, reverse=True)
 
     @staticmethod

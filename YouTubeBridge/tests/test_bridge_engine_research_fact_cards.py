@@ -166,6 +166,102 @@ def test_audience_question_rejects_single_wrong_topic_fact_card_and_queues_resea
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
+def test_topic_pack_entries_can_answer_keeps_gap_rule_for_multiple_matching_entries():
+    entries = [
+        {
+            "title": "黃泉使者 劇情與畫風解說",
+            "body": "作品以柔和線條呈現黃泉使者的療癒氛圍。",
+            "similarity": 0.210,
+        },
+        {
+            "title": "黃泉使者 角色關係整理",
+            "body": "這張卡整理黃泉使者的主要角色與劇情背景。",
+            "similarity": 0.205,
+        },
+    ]
+
+    assert YouTubeBridgeManager._topic_pack_entries_can_answer(
+        entries,
+        query_text="黃泉使者 劇情 解說",
+    ) is False
+    assert YouTubeBridgeManager._topic_pack_entries_can_answer(
+        entries[:1],
+        query_text="黃泉使者 劇情 解說",
+    ) is True
+
+
+def test_audience_question_rejects_wrong_topic_fact_card_sharing_short_suffix(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        wrong_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "異世界使者角色整理",
+            "body": "這張卡只整理異世界作品中的使者定位與配角關係。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_type": "superChatEvent",
+            "message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "safe_message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "author_display_name": "觀眾A",
+            "amount_display_string": "NT$75",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        queued: list[dict] = []
+
+        monkeypatch.setattr(manager, "_audience_query_intent_from_events", lambda _events: {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": "黃泉使者 劇情 解說",
+            "topic_scope": "anime_work",
+            "risk_label": "clean",
+            "reason": "測試 query。",
+        })
+        monkeypatch.setattr(
+            manager,
+            "_topic_pack_entries_for_query",
+            lambda *_args, **_kwargs: ([{**wrong_entry, "similarity": 0.556}], {"top_similarity": 0.556}),
+        )
+
+        def fake_ensure_worker(session: dict, query: str, *, pack_id: int | None = None):
+            queued.append({"query": query, "pack_id": pack_id})
+            return {"status": "queued", "query": query}
+
+        monkeypatch.setattr(manager, "_ensure_audience_research_worker", fake_ensure_worker, raising=False)
+
+        context, summary = manager.build_external_context("live-a", event_ids=[event["id"]])
+
+        assert "異世界使者" not in context["context_text"]
+        assert "相關查證仍在背景處理" in context["context_text"]
+        assert queued == [{"query": "黃泉使者 劇情 解說", "pack_id": pack["id"]}]
+        assert summary["query_resolution"]["local_answerable"] is False
+        assert summary["query_resolution"]["research_status"] == "queued"
+        assert summary["query_resolution"]["local_rejected_by_topic_count"] == 1
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_audience_question_accepts_single_matching_topic_fact_card(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
