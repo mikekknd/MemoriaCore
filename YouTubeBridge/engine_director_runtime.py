@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import threading
@@ -72,6 +73,26 @@ class DirectorRuntimeManagerMixin:
             return
         runtime.director_task = asyncio.create_task(self._director_loop(runtime))
 
+    def _ensure_audience_preprocessing_task(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+    ) -> None:
+        if not runtime.running:
+            return
+        existing = runtime.audience_preprocess_task
+        if existing and not existing.done():
+            return
+        if not self._audience_preprocessing_enabled(session):
+            return
+        audience_preprocess_coro = self._audience_preprocessing_loop(runtime)
+        if not inspect.iscoroutine(audience_preprocess_coro):
+            close_coro = getattr(audience_preprocess_coro, "close", None)
+            if callable(close_coro):
+                close_coro()
+            raise RuntimeError("audience preprocessing loop must return a coroutine")
+        runtime.audience_preprocess_task = asyncio.create_task(audience_preprocess_coro)
+
     async def start_director(
         self,
         session_id: str,
@@ -102,6 +123,7 @@ class DirectorRuntimeManagerMixin:
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
         if runtime.running and (not runtime.director_task or runtime.director_task.done()):
             runtime.director_task = asyncio.create_task(self._director_loop(runtime))
+        self._ensure_audience_preprocessing_task(runtime, self.storage.get_session(session_id) or session)
         if kickoff and runtime.running and (not runtime.director_kickoff_task or runtime.director_kickoff_task.done()):
             runtime.director_kickoff_task = asyncio.create_task(self._director_kickoff(runtime))
         await self._broadcast(session_id, {"type": "director_state", "director": state})
@@ -1072,6 +1094,112 @@ class DirectorRuntimeManagerMixin:
             return {"status": "skipped", "reason": "no_committable_content", "committed_count": 0}
         return {"status": "committed", "committed_count": committed_count}
 
+    async def _audience_preprocessing_loop(self, runtime: LiveRuntime) -> None:
+        while runtime.running:
+            session = self.storage.get_session(runtime.session_id)
+            if not session:
+                return
+            if not self._audience_preprocessing_enabled(session):
+                await asyncio.sleep(1.0)
+                continue
+            if not self._audience_preprocessing_accepts_events(runtime, session):
+                await asyncio.sleep(0.5)
+                continue
+            try:
+                state = self.storage.get_director_state(runtime.session_id)
+                prepared = await self._prepare_next_audience_gap_turn(
+                    runtime,
+                    session,
+                    state,
+                )
+                interaction = (
+                    prepared.get("interaction", {})
+                    if isinstance(prepared, dict) and isinstance(prepared.get("interaction"), dict)
+                    else {}
+                )
+                if str(interaction.get("status") or "") == "prepared":
+                    if not self._director_audience_prepare_session_live(runtime):
+                        error = "session_not_running"
+                        runtime.last_auto_inject_error = error
+                        self._cancel_prepared_audience_gap_after_session_stopped(
+                            runtime,
+                            interaction,
+                            error,
+                        )
+                        runtime.audience_preprocess_wake.clear()
+                        continue
+                    runtime.audience_preprocess_wake.set()
+                    await self._broadcast(runtime.session_id, {
+                        "type": "director_audience_preprocessed",
+                        "interaction": interaction,
+                    })
+                    await asyncio.sleep(0.2)
+                    continue
+                if interaction:
+                    status = str(interaction.get("status") or "none")
+                    self._mark_director_audience_prepare_finished(
+                        runtime.session_id,
+                        error=f"audience_gap_prepare_failed:{status}",
+                        interaction=interaction,
+                    )
+                runtime.audience_preprocess_wake.clear()
+                try:
+                    await asyncio.wait_for(runtime.audience_preprocess_wake.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "audience preprocessing failed session_id=%s error=%s",
+                    runtime.session_id,
+                    exc,
+                    exc_info=True,
+                )
+                latest_state = self.storage.get_director_state(runtime.session_id) or {}
+                metadata = dict(
+                    latest_state.get("metadata")
+                    if isinstance(latest_state.get("metadata"), dict)
+                    else {}
+                )
+                metadata["last_audience_prepare_error"] = str(exc)[:500]
+                self.storage.update_director_state(runtime.session_id, metadata=metadata)
+                await asyncio.sleep(1.0)
+
+    def _cancel_prepared_audience_gap_after_session_stopped(
+        self,
+        runtime: LiveRuntime,
+        interaction: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any] | None:
+        session_id = runtime.session_id
+        updated_interaction = interaction
+        job_id = str(interaction.get("job_id") or "") if interaction else ""
+        if job_id and str(interaction.get("status") or "") in {"preparing", "prepared"}:
+            self._discard_prepared_items_for_interaction(
+                session_id,
+                job_id,
+                reason,
+            )
+            updated_interaction = self.storage.update_interaction(
+                job_id,
+                status="interrupted",
+                reason=reason,
+                completed_at=datetime.now().isoformat(),
+                interrupted_at=datetime.now().isoformat(),
+                metadata={
+                    "prepare_ready": False,
+                    "audience_prepare_cancelled_reason": reason,
+                },
+            ) or interaction
+        self._mark_director_audience_prepare_finished(
+            session_id,
+            error=reason,
+            interaction=updated_interaction,
+            cancelled_reason=reason,
+        )
+        return updated_interaction
+
     async def _schedule_audience_gap_prepare_if_needed(
         self,
         runtime: LiveRuntime,
@@ -1225,25 +1353,42 @@ class DirectorRuntimeManagerMixin:
         sidecar_session_id = str(metadata.get("audience_sidecar_memoria_session_id") or "")
         audience_session = dict(session)
         audience_session["target_memoria_session_id"] = sidecar_session_id
-        result = await self._send_director_turn(
-            audience_session,
-            state,
-            decision,
-            prepare_only=True,
-            prepare_source="director_audience_prepare",
-        )
-        result_session_id = str((result.get("memoria_result") or {}).get("session_id") or "")
-        if result_session_id:
-            latest_state = self.storage.get_director_state(runtime.session_id) or {}
-            next_metadata = dict(
-                latest_state.get("metadata")
-                if isinstance(latest_state.get("metadata"), dict)
-                else {}
+        try:
+            result = await self._send_director_turn(
+                audience_session,
+                state,
+                decision,
+                prepare_only=True,
+                prepare_source="director_audience_prepare",
             )
+        except Exception as exc:
+            self._mark_director_audience_prepare_finished(
+                runtime.session_id,
+                error=str(exc)[:500],
+            )
+            raise
+        result_session_id = str((result.get("memoria_result") or {}).get("session_id") or "")
+        latest_state = self.storage.get_director_state(runtime.session_id) or {}
+        next_metadata = dict(
+            latest_state.get("metadata")
+            if isinstance(latest_state.get("metadata"), dict)
+            else {}
+        )
+        next_metadata["audience_prepare_in_flight"] = False
+        if result_session_id:
             next_metadata["audience_sidecar_memoria_session_id"] = result_session_id
-            next_metadata["audience_prepare_in_flight"] = False
             next_metadata["latest_audience_gap_job_id"] = result.get("interaction", {}).get("job_id", "")
-            self.storage.update_director_state(runtime.session_id, metadata=next_metadata)
+        self.storage.update_director_state(runtime.session_id, metadata=next_metadata)
+        interaction = (
+            result.get("interaction")
+            if isinstance(result, dict) and isinstance(result.get("interaction"), dict)
+            else None
+        )
+        if interaction and str(interaction.get("status") or "") == "prepared":
+            self._mark_director_audience_prepare_finished(
+                runtime.session_id,
+                interaction=interaction,
+            )
         return result
 
     def _prepared_results_for_audience_gap_interaction(

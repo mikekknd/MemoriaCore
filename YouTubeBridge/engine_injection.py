@@ -73,6 +73,34 @@ class InjectionManagerMixin:
         director_state = self.storage.get_director_state(session_id)
         return bool(director_state.get("director_enabled"))
 
+    def _audience_preprocessing_enabled(self, session: dict[str, Any]) -> bool:
+        session_id = str(session.get("session_id") or "").strip()
+        if not session_id:
+            return False
+        director_state = self.storage.get_director_state(session_id)
+        return bool(
+            self._presentation_enabled(session)
+            and self._episode_plan_for_session(session)
+            and director_state.get("director_enabled")
+        )
+
+    def _audience_preprocessing_accepts_events(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+    ) -> bool:
+        if not self._audience_preprocessing_enabled(session):
+            return False
+        if not runtime.running:
+            return False
+        if runtime.graceful_closing_requested or not runtime.accepting_audience_events:
+            return False
+        if str(runtime.status or "") in {"closing", "ended", "stopped"}:
+            return False
+        if str(session.get("status") or "") in {"closing", "ended", "stopped"}:
+            return False
+        return True
+
     @staticmethod
     def _active_director_interaction_matches_events(
         active: dict[str, Any] | None,

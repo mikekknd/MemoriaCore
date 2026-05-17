@@ -157,6 +157,9 @@ class EventSafetyManagerMixin:
                 )
                 if display_event:
                     await self._broadcast(session_id, {"type": "youtube_live_event", "event": display_event})
+                    runtime = self._runtimes.get(session_id)
+                    if runtime and runtime.audience_preprocess_wake:
+                        runtime.audience_preprocess_wake.set()
         return {
             "session_id": session_id,
             "classified_count": len(updated_events) - failed_count,

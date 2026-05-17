@@ -269,10 +269,12 @@ async def test_start_session_rejects_partial_audience_preprocessing_hooks(monkey
         manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
         if missing_hook == "loop":
             monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: True, raising=False)
+            monkeypatch.setattr(manager, "_audience_preprocessing_loop", None, raising=False)
         else:
             async def fake_audience_preprocessing_loop(_runtime):
                 await asyncio.Event().wait()
 
+            monkeypatch.setattr(manager, "_audience_preprocessing_enabled", None, raising=False)
             monkeypatch.setattr(
                 manager,
                 "_audience_preprocessing_loop",
@@ -331,6 +333,7 @@ async def test_start_session_rejects_partial_audience_hooks_before_youtube_side_
             fake_disable_test_events,
         )
         monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: True, raising=False)
+        monkeypatch.setattr(manager, "_audience_preprocessing_loop", None, raising=False)
 
         with pytest.raises(RuntimeError, match="audience preprocessing lifecycle requires both"):
             await manager.start_session("live-a")

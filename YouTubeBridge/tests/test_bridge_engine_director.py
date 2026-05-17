@@ -1264,6 +1264,498 @@ async def test_audience_gap_scheduler_does_not_require_auto_inject(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_audience_preprocessing_loop_prepares_and_broadcasts(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        runtime.audience_preprocess_wake.clear()
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+        prepared_event = asyncio.Event()
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+            if payload.get("type") == "director_audience_preprocessed":
+                runtime.running = False
+                prepared_event.set()
+
+        async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
+            assert _session["session_id"] == session["session_id"]
+            assert _state["director_enabled"] is True
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-worker-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+            }
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
+
+        await manager._audience_preprocessing_loop(runtime)
+
+        assert prepared_event.is_set()
+        assert runtime.audience_preprocess_wake.is_set()
+        assert emitted == [
+            {
+                "type": "director_audience_preprocessed",
+                "interaction": {
+                    "job_id": "audience-gap-worker-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+            }
+        ]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_audience_preprocessing_loop_does_not_signal_failed_prepare(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        runtime.audience_preprocess_wake.clear()
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+
+        async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
+            runtime.running = False
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-failed-job",
+                    "source": "director_audience_prepare",
+                    "status": "failed",
+                },
+            }
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
+
+        await manager._audience_preprocessing_loop(runtime)
+
+        assert runtime.audience_preprocess_wake.is_set() is False
+        assert all(payload.get("type") != "director_audience_preprocessed" for payload in emitted)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_audience_preprocessing_loop_records_failed_prepare_result(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            status="running",
+            metadata={
+                "audience_prepare_in_flight": True,
+                "last_audience_prepare_error": "previous failure",
+            },
+        )
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        runtime.audience_preprocess_wake.clear()
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+
+        async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
+            runtime.running = False
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-failed-job",
+                    "source": "director_audience_prepare",
+                    "status": "failed",
+                },
+            }
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
+
+        await manager._audience_preprocessing_loop(runtime)
+
+        metadata = storage.get_director_state("live-a")["metadata"]
+        assert runtime.audience_preprocess_wake.is_set() is False
+        assert all(payload.get("type") != "director_audience_preprocessed" for payload in emitted)
+        assert metadata["audience_prepare_in_flight"] is False
+        assert metadata["latest_audience_gap_job_id"] == "audience-gap-failed-job"
+        assert metadata["last_audience_prepare_error"] == "audience_gap_prepare_failed:failed"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_audience_preprocessing_loop_discards_prepared_when_session_stops(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        runtime.audience_preprocess_wake.clear()
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+
+        async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
+            interaction = storage.create_interaction({
+                "job_id": "audience-gap-stopped-job",
+                "session_id": "live-a",
+                "source": "director_audience_prepare",
+                "priority": 45,
+                "status": "prepared",
+                "metadata": {"prepare_ready": True},
+            })
+            storage.create_presentation_item({
+                "session_id": "live-a",
+                "interaction_job_id": interaction["job_id"],
+                "message_id": "audience-msg-1:0",
+                "character_id": "host-a",
+                "character_name": "主持A",
+                "sequence_index": 0,
+                "status": "ready",
+                "text": "這句不應該留下 ready。",
+            })
+            storage.update_session_fields("live-a", status="closing")
+            runtime.status = "closing"
+            runtime.running = False
+            return {"interaction": interaction}
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
+
+        await manager._audience_preprocessing_loop(runtime)
+
+        interaction = storage.get_interaction("audience-gap-stopped-job")
+        items = storage.list_presentation_items("live-a", limit=10)
+        metadata = storage.get_director_state("live-a")["metadata"]
+        assert runtime.audience_preprocess_wake.is_set() is False
+        assert all(payload.get("type") != "director_audience_preprocessed" for payload in emitted)
+        assert interaction["status"] == "interrupted"
+        assert interaction["reason"] == "session_not_running"
+        assert interaction["metadata"]["prepare_ready"] is False
+        assert interaction["metadata"]["audience_prepare_cancelled_reason"] == "session_not_running"
+        assert items[0]["status"] == "skipped"
+        assert items[0]["error"] == "session_not_running"
+        assert metadata["audience_prepare_in_flight"] is False
+        assert metadata["audience_prepare_cancelled_reason"] == "session_not_running"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_audience_preprocessing_disabled_when_director_disabled():
+    tmp_dir = _tmp_dir()
+    manager = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state("live-a", director_enabled=False, status="running")
+
+        class ListCharactersClient:
+            def list_characters(self):
+                return _episode_plan_characters()
+
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            memoria_client_factory=ListCharactersClient,
+        )
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        assert manager._audience_preprocessing_enabled(session) is False
+        assert manager._audience_preprocessing_accepts_events(runtime, session) is False
+        await manager.start_session("live-a")
+        runtime = manager._runtimes["live-a"]
+        assert runtime.audience_preprocess_task is None
+    finally:
+        if manager is not None:
+            await manager.stop_all()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_start_director_starts_audience_preprocessing_worker_after_session_running(monkeypatch):
+    tmp_dir = _tmp_dir()
+    manager = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        storage.update_director_state("live-a", director_enabled=False, status="stopped")
+
+        class ListCharactersClient:
+            def list_characters(self):
+                return _episode_plan_characters()
+
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            memoria_client_factory=ListCharactersClient,
+        )
+        worker_started = asyncio.Event()
+        worker_cancelled = asyncio.Event()
+
+        async def fake_audience_preprocessing_loop(_runtime):
+            worker_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                worker_cancelled.set()
+                raise
+
+        monkeypatch.setattr(manager, "_audience_preprocessing_loop", fake_audience_preprocessing_loop)
+
+        await manager.start_session("live-a")
+        runtime = manager._runtimes["live-a"]
+        assert runtime.audience_preprocess_task is None
+
+        await manager.start_director("live-a", idle_seconds=1, kickoff=False)
+
+        assert runtime.audience_preprocess_task is not None
+        assert not runtime.audience_preprocess_task.done()
+        await asyncio.wait_for(worker_started.wait(), timeout=1)
+
+        await manager.stop_session("live-a")
+
+        assert runtime.audience_preprocess_task is None
+        assert worker_cancelled.is_set()
+    finally:
+        if manager is not None:
+            await manager.stop_all()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_audience_gap_prepare_success_clears_stale_error(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        storage.upsert_live_episode_plan(sample_plan())
+        session = storage.bind_episode_plan_to_session("live-a", "plan-general-panel")
+        state = storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            status="running",
+            metadata={
+                "audience_prepare_in_flight": True,
+                "last_audience_prepare_error": "previous failure",
+            },
+        )
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        async def fake_send_director_turn(_session, _state, _decision, **_kwargs):
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-success-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+                "memoria_result": {"session_id": "audience-sidecar-success"},
+            }
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        result = await manager._prepare_next_audience_gap_turn(
+            runtime,
+            session,
+            state,
+            decision={"action": "reply_chat_batch", "prompt": "回應觀眾。"},
+        )
+
+        metadata = storage.get_director_state("live-a")["metadata"]
+        assert result["interaction"]["status"] == "prepared"
+        assert metadata["audience_prepare_in_flight"] is False
+        assert metadata["last_audience_prepare_error"] == ""
+        assert metadata["audience_sidecar_memoria_session_id"] == "audience-sidecar-success"
+        assert metadata["latest_audience_gap_job_id"] == "audience-gap-success-job"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_safety_displayed_event_wakes_audience_preprocessing_worker(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "status": "running",
+        })
+        pending_event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "safety-wake-1",
+            "message_text": "這一段可以補充一下嗎？",
+            "author_display_name": "觀眾A",
+            "author_channel_id": "viewer-a",
+            "message_type": "textMessageEvent",
+            "safety_status": "pending",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            memoria_client_factory=FakeSafetyMemoriaClient,
+        )
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        runtime.audience_preprocess_wake.clear()
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+
+        result = await manager._classify_event_batch("live-a", [pending_event])
+
+        assert result["classified_count"] == 1
+        assert runtime.audience_preprocess_wake.is_set()
+        assert any(payload.get("type") == "youtube_live_event" for payload in emitted)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_stop_session_cancels_audience_gap_prepare_task():
     tmp_dir = _tmp_dir()
     try:
