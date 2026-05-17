@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -1027,6 +1028,7 @@ class YouTubeBridgeManager(
             "query_intent": query_intent,
             "local_answerable": False,
             "local_entry_count": 0,
+            "local_rejected_by_topic_count": 0,
             "local_top_similarity": None,
             "research_status": "not_needed" if not query_text else "not_attempted",
             "research_error": "",
@@ -1042,19 +1044,27 @@ class YouTubeBridgeManager(
 
         entries, search_status = self._topic_pack_entries_for_query(
             session_id,
-            base_query,
+            query_text,
             limit=6,
             min_score=AUDIENCE_QUERY_FACT_CARD_MIN_SCORE,
             allow_fallback=False,
         )
         resolution["local_entry_count"] = len(entries)
         resolution["local_top_similarity"] = search_status.get("top_similarity")
-        if self._topic_pack_entries_can_answer(entries):
+        query_terms = self._audience_query_topic_terms(query_text)
+        topic_matched_entries = entries
+        if query_terms:
+            topic_matched_entries = [
+                entry for entry in entries
+                if self._topic_pack_entry_matches_query_terms(entry, query_terms)
+            ]
+            resolution["local_rejected_by_topic_count"] = max(0, len(entries) - len(topic_matched_entries))
+        if self._topic_pack_entries_can_answer(topic_matched_entries, query_text=query_text):
             resolution["local_answerable"] = True
             resolution["research_status"] = "not_needed"
             context_entries = self._topic_graph_context_entries_for_hits(
                 session_id,
-                entries[:1],
+                topic_matched_entries[:1],
                 query_text,
                 "external_context",
                 max_entries=4,
@@ -1091,7 +1101,7 @@ class YouTubeBridgeManager(
         return "", resolution
 
     @staticmethod
-    def _topic_pack_entries_can_answer(entries: list[dict[str, Any]]) -> bool:
+    def _topic_pack_entries_can_answer(entries: list[dict[str, Any]], *, query_text: str = "") -> bool:
         if not entries:
             return False
         top_score = float(entries[0].get("similarity") or 0.0)
@@ -1099,10 +1109,121 @@ class YouTubeBridgeManager(
             return True
         if top_score < AUDIENCE_QUERY_FACT_CARD_MIN_SCORE:
             return False
-        if len(entries) == 1:
+        query_terms = YouTubeBridgeManager._audience_query_topic_terms(query_text)
+        if query_terms and YouTubeBridgeManager._topic_pack_entry_matches_query_terms(entries[0], query_terms):
             return True
+        if len(entries) == 1:
+            return not query_terms
         second_score = float(entries[1].get("similarity") or 0.0)
         return (top_score - second_score) >= AUDIENCE_QUERY_FACT_CARD_MIN_GAP
+
+    @staticmethod
+    def _normalize_topic_match_text(value: Any) -> str:
+        text = str(value or "").lower()
+        text = re.sub(r"[《》〈〉「」『』【】\[\]（）()]", " ", text)
+        text = re.sub(r"[\s\r\n\t_\-／/・:：,，.。!！?？;；、]+", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _audience_query_topic_terms(query_text: str) -> list[str]:
+        normalized = YouTubeBridgeManager._normalize_topic_match_text(query_text)
+        if not normalized:
+            return []
+        generic_terms = {
+            "劇情",
+            "解說",
+            "介紹",
+            "分析",
+            "評價",
+            "看點",
+            "心得",
+            "整理",
+            "動畫",
+            "作品",
+            "這部",
+            "這部動畫",
+        }
+        terms: list[str] = []
+
+        def add_term(value: str) -> None:
+            term = value.strip()
+            if not term or term in generic_terms or len(term) < 2:
+                return
+            if term not in terms:
+                terms.append(term)
+
+        for token in normalized.split():
+            add_term(token.replace("的", ""))
+
+        compact = "".join(normalized.split()).replace("的", "")
+        compact = re.sub(r"^(請問|想知道|想補一下|幫我查|可以講一下|可以說一下)", "", compact)
+        for phrase in (
+            "可以講一下嗎",
+            "可以說一下嗎",
+            "可以講一下",
+            "可以說一下",
+            "有什麼看點",
+            "有哪些看點",
+            "是誰",
+            "嗎",
+            "呢",
+        ):
+            compact = compact.replace(phrase, "")
+        for suffix in (
+            "劇情解說",
+            "劇情介紹",
+            "劇情分析",
+            "畫風解說",
+            "評價解說",
+            "解說",
+            "介紹",
+            "分析",
+            "評價",
+            "看點",
+            "心得",
+        ):
+            if compact.endswith(suffix):
+                compact = compact[: -len(suffix)]
+                break
+        add_term(compact)
+        topicish = compact
+        for phrase in ("有什麼", "有哪些", "可以", "深入", "比較", "細節", "查證", "資料"):
+            topicish = topicish.replace(phrase, " ")
+        for segment in re.split(r"\s+", topicish):
+            segment = segment.strip()
+            if not segment:
+                continue
+            add_term(segment)
+            for size in (4, 3):
+                if len(segment) <= size:
+                    continue
+                for index in range(0, len(segment) - size + 1):
+                    add_term(segment[index:index + size])
+            if len(segment) <= 6:
+                for index in range(0, len(segment) - 1):
+                    add_term(segment[index:index + 2])
+        return sorted(terms, key=len, reverse=True)
+
+    @staticmethod
+    def _topic_pack_entry_matches_query_terms(entry: dict[str, Any], terms: list[str]) -> bool:
+        if not terms:
+            return True
+        values: list[Any] = [
+            entry.get("title"),
+            entry.get("body"),
+            entry.get("summary"),
+        ]
+        tags = entry.get("tags")
+        if isinstance(tags, list):
+            values.extend(tags)
+        entry_text = YouTubeBridgeManager._normalize_topic_match_text(" ".join(str(value or "") for value in values))
+        entry_compact = "".join(entry_text.split()).replace("的", "")
+        for term in terms:
+            normalized_term = YouTubeBridgeManager._normalize_topic_match_text(term)
+            compact_term = "".join(normalized_term.split()).replace("的", "")
+            if compact_term and compact_term in entry_compact:
+                return True
+        return False
 
     def _audience_query_text_from_events(self, events: list[dict[str, Any]]) -> str:
         return str(self._audience_query_intent_from_events(events).get("sanitized_query") or "").strip()

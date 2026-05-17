@@ -96,6 +96,137 @@ def test_audience_question_queues_research_gate_without_blocking_injection(monke
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+def test_audience_question_rejects_single_wrong_topic_fact_card_and_queues_research(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        magic_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "魔法帽的工作室 第一集 評價",
+            "body": "這張卡描述魔法帽的工作室第一集觀眾評價與動畫演出。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_type": "superChatEvent",
+            "message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "safe_message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "author_display_name": "觀眾A",
+            "amount_display_string": "NT$75",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        queued: list[dict] = []
+
+        monkeypatch.setattr(manager, "_audience_query_intent_from_events", lambda _events: {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": "黃泉使者 劇情 解說",
+            "topic_scope": "anime_work",
+            "risk_label": "clean",
+            "reason": "測試 query。",
+        })
+        monkeypatch.setattr(
+            manager,
+            "_topic_pack_entries_for_query",
+            lambda *_args, **_kwargs: ([{**magic_entry, "similarity": 0.556}], {"top_similarity": 0.556}),
+        )
+
+        def fake_ensure_worker(session: dict, query: str, *, pack_id: int | None = None):
+            queued.append({"query": query, "pack_id": pack_id})
+            return {"status": "queued", "query": query}
+
+        monkeypatch.setattr(manager, "_ensure_audience_research_worker", fake_ensure_worker, raising=False)
+
+        context, summary = manager.build_external_context("live-a", event_ids=[event["id"]])
+
+        assert "魔法帽的工作室" not in context["context_text"]
+        assert "相關查證仍在背景處理" in context["context_text"]
+        assert queued == [{"query": "黃泉使者 劇情 解說", "pack_id": pack["id"]}]
+        assert summary["query_resolution"]["local_answerable"] is False
+        assert summary["query_resolution"]["research_status"] == "queued"
+        assert summary["query_resolution"]["local_rejected_by_topic_count"] == 1
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def test_audience_question_accepts_single_matching_topic_fact_card(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        yomi_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "黃泉使者 劇情與畫風解說",
+            "body": "作品以柔和線條呈現黃泉使者的療癒氛圍，並用單元劇情收束角色情緒。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_type": "superChatEvent",
+            "message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "safe_message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "author_display_name": "觀眾A",
+            "amount_display_string": "NT$75",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+
+        monkeypatch.setattr(manager, "_audience_query_intent_from_events", lambda _events: {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": "黃泉使者 劇情 解說",
+            "topic_scope": "anime_work",
+            "risk_label": "clean",
+            "reason": "測試 query。",
+        })
+        monkeypatch.setattr(
+            manager,
+            "_topic_pack_entries_for_query",
+            lambda *_args, **_kwargs: ([{**yomi_entry, "similarity": 0.556}], {"top_similarity": 0.556}),
+        )
+
+        context, summary = manager.build_external_context("live-a", event_ids=[event["id"]])
+
+        assert "黃泉使者 劇情與畫風解說" in context["context_text"]
+        assert "柔和線條" in context["context_text"]
+        assert summary["query_resolution"]["local_answerable"] is True
+        assert summary["query_resolution"]["research_status"] == "not_needed"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 def test_audience_question_uses_completed_research_fact_card_on_next_injection():
     tmp_dir = _tmp_dir()
     try:
