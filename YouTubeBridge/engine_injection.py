@@ -237,6 +237,7 @@ class InjectionManagerMixin:
                             selected = [
                                 event for event in active_pending
                                 if event.get("priority_class") != "super_chat"
+                                and self._is_public_live_event_displayable(event)
                             ]
                             selected.sort(key=lambda item: int(item.get("id", 0) or 0))
                             selected = selected[:max_pending]
