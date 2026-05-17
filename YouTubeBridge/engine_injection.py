@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import threading
@@ -72,6 +73,45 @@ class InjectionManagerMixin:
         director_state = self.storage.get_director_state(session_id)
         return bool(director_state.get("director_enabled"))
 
+    @staticmethod
+    def _active_director_interaction_matches_events(
+        active: dict[str, Any] | None,
+        *,
+        action: str,
+        event_ids: list[int],
+    ) -> bool:
+        if not active or active.get("status") != "running" or active.get("source") != "director":
+            return False
+        metadata = active.get("metadata") if isinstance(active.get("metadata"), dict) else {}
+        decision = metadata.get("decision") if isinstance(metadata.get("decision"), dict) else {}
+        if str(decision.get("action") or "") != action:
+            return False
+
+        raw_ids = active.get("event_ids_json") if "event_ids_json" in active else active.get("event_ids")
+        if raw_ids is None:
+            external_context = (
+                metadata.get("external_context")
+                if isinstance(metadata.get("external_context"), dict)
+                else {}
+            )
+            raw_ids = external_context.get("event_ids")
+        if isinstance(raw_ids, str):
+            try:
+                raw_ids = json.loads(raw_ids)
+            except json.JSONDecodeError:
+                raw_ids = []
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+
+        active_ids: set[int] = set()
+        for event_id in raw_ids:
+            try:
+                active_ids.add(int(event_id))
+            except (TypeError, ValueError):
+                continue
+        selected_ids = {int(event_id) for event_id in event_ids}
+        return bool(selected_ids) and active_ids == selected_ids
+
     async def _prepare_director_owned_auto_inject(
         self,
         runtime: LiveRuntime,
@@ -126,12 +166,18 @@ class InjectionManagerMixin:
         if selected_sc:
             max_tier = max(int(event.get("sc_tier", 0) or 0) for event in selected_sc)
             incoming_priority = 320 if max_tier >= 3 else 260
+        same_director_batch_running = self._active_director_interaction_matches_events(
+            active,
+            action="reply_super_chat_batch",
+            event_ids=selected_ids,
+        )
         if (
             selected_sc
             and active
             and active.get("status") == "running"
             and incoming_priority > int(active.get("priority", 100) or 100)
             and self._sc_interrupt_allowed(runtime, session)
+            and not same_director_batch_running
         ):
             runtime.last_sc_interrupt_at = datetime.now().isoformat()
             await self.interrupt_session(session_id, reason="higher_priority:super_chat")
@@ -141,6 +187,53 @@ class InjectionManagerMixin:
             "selected_event_ids": selected_ids,
             "selected_source": selected_source,
             "interrupted_active": interrupted_active,
+        }
+
+    async def prepare_director_super_chat_reply_batch(
+        self,
+        session_id: str,
+        *,
+        event_ids: list[int],
+    ) -> dict[str, Any]:
+        session = self.storage.get_session(session_id)
+        if not session:
+            raise ValueError("live session 不存在")
+        if not self._director_owns_auto_inject(session):
+            raise ValueError("director 未接管此 live session")
+        normalized_ids: list[int] = []
+        for event_id in event_ids:
+            try:
+                normalized_ids.append(int(event_id))
+            except (TypeError, ValueError):
+                continue
+        if not normalized_ids:
+            raise ValueError("沒有未處理 Super Chat")
+
+        events = self.storage.get_events_by_ids(session_id, normalized_ids, limit=len(normalized_ids))
+        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        result = await self._prepare_director_owned_auto_inject(
+            runtime,
+            session,
+            events,
+            max_events=max(1, int(session.get("max_pending_events", 12) or 12)),
+            max_sc_per_batch=max(1, int(session.get("max_sc_per_batch", 5) or 5)),
+        )
+        selected_ids = [int(event_id) for event_id in result.get("selected_event_ids", [])]
+        if not selected_ids:
+            raise ValueError("沒有可交給導播回應的 Super Chat")
+        await self._broadcast(session_id, {
+            "type": "director_audience_events_ready",
+            "event_ids": selected_ids,
+            "source": "super_chat",
+            "count": len(selected_ids),
+            "interrupted_active": bool(result.get("interrupted_active")),
+        })
+        return {
+            "status": "queued_for_director",
+            "session_id": session_id,
+            "event_ids": selected_ids,
+            "source": "super_chat",
+            "interrupted_active": bool(result.get("interrupted_active")),
         }
 
     async def _auto_inject_loop(self, runtime: LiveRuntime) -> None:

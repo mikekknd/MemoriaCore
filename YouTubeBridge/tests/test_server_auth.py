@@ -2358,6 +2358,69 @@ async def test_start_current_session_with_episode_plan_resolves_characters_by_na
     ]
 
 
+@pytest.mark.asyncio
+async def test_super_chat_reply_batch_uses_director_handoff_for_episode_session(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "yt-main",
+        "display_name": "YouTube Main",
+        "api_key": "key",
+        "enabled": True,
+    })
+    plan = sample_plan()
+    storage.upsert_live_episode_plan(plan)
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "yt-main",
+        "target_memoria_session_id": "mem-a",
+        "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+        "episode_plan_id": plan["plan_id"],
+        "auto_inject": True,
+    })
+    storage.update_director_state("live-a", director_enabled=True, status="running")
+    super_chat = storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "yt-main",
+        "youtube_message_id": "sc-clean",
+        "message_type": "superChatEvent",
+        "author_display_name": "紅色斗內",
+        "message_text": "請優先回應這個 SC",
+        "amount_display_string": "NT$750",
+        "amount_micros": 750_000_000,
+        "priority_class": "super_chat",
+        "sc_tier": 4,
+        "safety_status": "completed",
+        "safety_label": "clean",
+        "safe_message_text": "請優先回應這個 SC",
+        "status": "active",
+    })
+    calls: list[dict] = []
+
+    class FakeManager:
+        def _director_owns_auto_inject(self, session):
+            return True
+
+        async def prepare_director_super_chat_reply_batch(self, session_id: str, *, event_ids):
+            calls.append({"session_id": session_id, "event_ids": event_ids})
+            return {
+                "status": "queued_for_director",
+                "session_id": session_id,
+                "event_ids": event_ids,
+                "source": "super_chat",
+            }
+
+        async def inject_recent(self, **_kwargs):
+            raise AssertionError("director session must not use generic super_chat inject")
+
+    monkeypatch.setattr(server_module._sessions_routes, "storage", storage)
+    monkeypatch.setattr(server_module._sessions_routes, "manager", FakeManager())
+
+    result = await server_module._sessions_routes.reply_super_chat_batch("live-a")
+
+    assert result["status"] == "queued_for_director"
+    assert calls == [{"session_id": "live-a", "event_ids": [super_chat["id"]]}]
+
+
 @pytest.mark.parametrize(
     ("characters", "expected"),
     [

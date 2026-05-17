@@ -2056,6 +2056,79 @@ async def test_director_owned_auto_inject_does_not_interrupt_for_hidden_super_ch
 
 
 @pytest.mark.asyncio
+async def test_director_owned_super_chat_handoff_does_not_interrupt_same_event_batch():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "auto_inject": True,
+            "sc_interrupt_cooldown_seconds": 0,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        visible_sc = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "sc-visible",
+            "message_type": "superChatEvent",
+            "author_display_name": "紅色斗內",
+            "message_text": "請優先回應這個 SC",
+            "amount_display_string": "NT$750",
+            "amount_micros": 750_000_000,
+            "priority_class": "super_chat",
+            "sc_tier": 4,
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "請優先回應這個 SC",
+            "status": "active",
+        })
+        active = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "event_ids": [visible_sc["id"]],
+            "content": "正在回應這批 Super Chat。",
+            "metadata": {
+                "decision": {"action": "reply_super_chat_batch"},
+                "external_context": {"event_ids": [visible_sc["id"]]},
+            },
+        })
+        active["event_ids_json"] = [visible_sc["id"]]
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager._prepare_director_owned_auto_inject(
+            runtime,
+            storage.get_session("live-a"),
+            storage.get_events_by_ids("live-a", [visible_sc["id"]]),
+            max_events=12,
+            max_sc_per_batch=5,
+            active=active,
+        )
+
+        assert result["selected_event_ids"] == [visible_sc["id"]]
+        assert result["selected_source"] == "super_chat"
+        assert result["interrupted_active"] is False
+        assert storage.get_interaction(active["job_id"])["status"] == "running"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_owned_auto_inject_interrupts_running_interaction_for_visible_super_chat():
     tmp_dir = _tmp_dir()
     try:
