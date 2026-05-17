@@ -999,13 +999,26 @@ class DirectorRuntimeManagerMixin:
                 count += sum(1 for item in prepared.get("items") or [] if isinstance(item, dict))
         return count
 
+    def _ready_prepared_items_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in self.storage.list_presentation_items(session_id, statuses={"ready"}, limit=500)
+            if str((item.get("metadata") or {}).get("source") or "") in {
+                "director_prefetch",
+                "director_audience_prepare",
+            }
+        ]
+
     def _discard_prepared_items_for_interaction(self, session_id: str, job_id: str, reason: str) -> None:
         if not job_id:
             return
         for item in self.storage.list_presentation_items(session_id, limit=500):
             if str(item.get("interaction_job_id") or "") != job_id:
                 continue
-            if str(item.get("status") or "") in {"played", "skipped"}:
+            status = str(item.get("status") or "")
+            if status in {"played", "skipped", "presenting"}:
+                continue
+            if status == "ready" and reason not in {"session_not_running", "interaction_not_preparing"}:
                 continue
             self.storage.update_presentation_item(
                 item["item_id"],

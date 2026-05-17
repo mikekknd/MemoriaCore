@@ -554,6 +554,7 @@ class YouTubeBridgeManager(
                 timeout=self._presentation_ack_timeout(session),
             )
         except asyncio.TimeoutError:
+            # 這是真實播放失敗：item 已送到 client 並進入 presenting，ACK timeout 才是終端 skipped 狀態。
             item = self.storage.update_presentation_item(
                 item["item_id"],
                 status="skipped",

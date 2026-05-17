@@ -5600,6 +5600,98 @@ async def test_main_thread_presents_ready_audience_only_after_planned_turn_ack(m
 
 
 @pytest.mark.asyncio
+async def test_ready_audience_item_is_consumed_before_next_new_planned_generation(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+            "episode_plan_id": plan["plan_id"],
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        state = storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            metadata={"planned_state": initial_planned_state(plan)},
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "audience-ready-before-plan-1",
+            "message_type": "textMessageEvent",
+            "author_display_name": "觀眾A",
+            "message_text": "先回答這句。",
+            "safe_message_text": "先回答這句。",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "status": "active",
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "prepared",
+            "event_ids": [event["id"]],
+            "memoria_session_id": "mem-a:audience",
+            "character_ids": ["char-a"],
+            "content": "audience reply",
+            "metadata": {
+                "prepare_only": True,
+                "decision": {
+                    "action": "reply_chat_batch",
+                    "episode_plan": {"mode": "audience_gap"},
+                },
+            },
+        })
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": interaction["job_id"],
+            "message_id": "audience-ready-before-plan:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "已預處理的觀眾回應。",
+            "status": "ready",
+            "audio_path": "audience.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+        manager = YouTubeBridgeManager(storage, tts_provider_factory=lambda: FakeTTSProvider())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        queue = await manager.subscribe("live-a")
+        called_new_plan = False
+
+        async def fail_new_plan(*_args, **_kwargs):
+            nonlocal called_new_plan
+            called_new_plan = True
+            raise AssertionError("main thread must consume ready audience before generating another planned turn")
+
+        monkeypatch.setattr(manager, "_send_director_turn", fail_new_plan)
+        present_task = asyncio.create_task(
+            manager._present_ready_audience_gap_turn(runtime, storage.get_session("live-a"), state)
+        )
+
+        ready = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert ready["item"]["item_id"] == item["item_id"]
+        assert called_new_plan is False
+        await manager.ack_presentation_item("live-a", item["item_id"])
+        await asyncio.wait_for(present_task, timeout=1)
+
+        assert called_new_plan is False
+        assert storage.get_interaction(interaction["job_id"])["status"] == "completed"
+        assert storage.get_presentation_item(item["item_id"])["status"] == "played"
+
+
+@pytest.mark.asyncio
 async def test_after_main_turn_sequence_plays_ready_audience_before_prefetch(monkeypatch):
     with temp_storage() as storage:
         storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
@@ -5917,6 +6009,138 @@ def test_prefetch_stop_cleanup_cancels_ready_item_without_active_prefetch():
         assert updated_item["error"] == "prefetch_stopped_after_current_turn"
         assert updated["status"] == "interrupted"
         assert storage.get_active_interaction("live-a") is None
+
+
+def test_ready_prepared_items_for_session_reports_ready_prefetch_and_audience_without_mutation():
+    with temp_storage() as storage:
+        manager = YouTubeBridgeManager(storage)
+        audience_interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "prepared",
+            "memoria_session_id": "mem-a:audience",
+        })
+        prefetch_interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetched",
+            "memoria_session_id": "mem-a:prefetch",
+        })
+        ordinary_interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 40,
+            "status": "completed",
+            "memoria_session_id": "mem-a",
+        })
+        audience_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": audience_interaction["job_id"],
+            "message_id": "audience-ready:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 0,
+            "text": "ready audience",
+            "status": "ready",
+            "audio_path": "audience.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+        prefetch_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": prefetch_interaction["job_id"],
+            "message_id": "prefetch-ready:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 0,
+            "text": "ready prefetch",
+            "status": "ready",
+            "audio_path": "prefetch.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": ordinary_interaction["job_id"],
+            "message_id": "ordinary-ready:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 0,
+            "text": "ordinary ready",
+            "status": "ready",
+            "audio_path": "ordinary.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director"},
+        })
+        storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": audience_interaction["job_id"],
+            "message_id": "audience-synth:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 1,
+            "text": "not ready",
+            "status": "synthesizing",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+
+        ready = manager._ready_prepared_items_for_session("live-a")
+
+        assert [item["item_id"] for item in ready] == [
+            audience_item["item_id"],
+            prefetch_item["item_id"],
+        ]
+        assert storage.get_presentation_item(audience_item["item_id"])["status"] == "ready"
+        assert storage.get_presentation_item(prefetch_item["item_id"])["status"] == "ready"
+
+
+def test_discard_prepared_items_preserves_ready_items_for_normal_reasons():
+    with temp_storage() as storage:
+        manager = YouTubeBridgeManager(storage)
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "prepared",
+            "memoria_session_id": "mem-a:audience",
+        })
+        ready_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": interaction["job_id"],
+            "message_id": "normal-ready:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 0,
+            "text": "正常流程仍可消費的 ready item。",
+            "status": "ready",
+            "audio_path": "ready.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+        preparing_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": interaction["job_id"],
+            "message_id": "normal-preparing:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 1,
+            "text": "尚未 ready 的 item。",
+            "status": "synthesizing",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+
+        manager._discard_prepared_items_for_interaction(
+            "live-a",
+            interaction["job_id"],
+            "prefetch_not_active",
+        )
+
+        assert storage.get_presentation_item(ready_item["item_id"])["status"] == "ready"
+        assert storage.get_presentation_item(preparing_item["item_id"])["status"] == "skipped"
 
 
 @pytest.mark.asyncio
