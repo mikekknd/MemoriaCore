@@ -39,4 +39,10 @@ class LiveRuntime:
     presentation_ack_events: dict[str, asyncio.Event] = field(default_factory=dict)
     director_prefetch_in_flight: int = 0
     audience_gap_prepare_task: asyncio.Task | None = None
+    audience_preprocess_task: asyncio.Task | None = None
+    audience_preprocess_wake: asyncio.Event = field(default_factory=asyncio.Event)
+    accepting_audience_events: bool = True
+    stop_after_current_turn: bool = False
+    graceful_closing_requested: bool = False
+    drain_started_at: str = ""
     post_plan_free_talk_topic_queue: list[dict[str, str]] = field(default_factory=list)
