@@ -181,3 +181,31 @@ def test_chat_stream_sync_does_not_dispatch_result_after_cancel():
         )
 
     assert streamed == []
+
+
+class _CancelReadErrorResponse(_FakeStreamResponse):
+    def __init__(self, cancel_event):
+        super().__init__()
+        self.cancel_event = cancel_event
+
+    def iter_lines(self, decode_unicode=False):
+        self.cancel_event.set()
+        raise RuntimeError("'NoneType' object has no attribute 'read'")
+
+
+def test_chat_stream_sync_treats_read_error_after_cancel_as_generation_interrupted():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _CancelReadErrorResponse(cancel_event)
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    with pytest.raises(GenerationInterrupted):
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+        )

@@ -73,6 +73,23 @@ class MemoriaClient:
         return headers
 
     @staticmethod
+    def _raise_generation_interrupted_if_cancelled(
+        exc: Exception,
+        *,
+        cancel_event: threading.Event | None,
+        should_cancel=None,
+    ) -> None:
+        cancelled = bool(cancel_event and cancel_event.is_set())
+        if not cancelled and should_cancel:
+            try:
+                cancelled = bool(should_cancel())
+            except Exception:
+                cancelled = False
+        message = str(exc)
+        if cancelled and "NoneType" in message and "read" in message:
+            raise GenerationInterrupted("generation interrupted") from exc
+
+    @staticmethod
     def _live_scope_payload(external_context: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(external_context, dict):
             return {}
@@ -239,42 +256,50 @@ class MemoriaClient:
                 watcher.start()
             try:
                 first_result_logged = False
-                for raw_line in response.iter_lines(decode_unicode=True):
-                    if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
-                        response.close()
-                        raise GenerationInterrupted("generation interrupted")
-                    if not raw_line or not raw_line.startswith("data:"):
-                        continue
-                    raw_data = raw_line[5:].strip()
-                    if not raw_data:
-                        continue
-                    try:
-                        event = json.loads(raw_data)
-                    except Exception:
-                        continue
-                    if event.get("type") == "error":
-                        if trace_director:
-                            _director_timing_log(
-                                "memoria_client_stream_error",
-                                duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
-                                message=str(event.get("message") or "")[:300],
-                            )
-                        raise RuntimeError(str(event.get("message") or "MemoriaCore stream chat failed"))
-                    if event.get("type") == "result":
-                        last_result = event
+                try:
+                    for raw_line in response.iter_lines(decode_unicode=True):
                         if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
                             response.close()
                             raise GenerationInterrupted("generation interrupted")
-                        if trace_director and not first_result_logged:
-                            first_result_logged = True
-                            _director_timing_log(
-                                "memoria_client_first_result",
-                                duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
-                                message_id=event.get("message_id"),
-                                result_session_id=event.get("session_id"),
-                            )
-                        if callable(on_result):
-                            on_result(event)
+                        if not raw_line or not raw_line.startswith("data:"):
+                            continue
+                        raw_data = raw_line[5:].strip()
+                        if not raw_data:
+                            continue
+                        try:
+                            event = json.loads(raw_data)
+                        except Exception:
+                            continue
+                        if event.get("type") == "error":
+                            if trace_director:
+                                _director_timing_log(
+                                    "memoria_client_stream_error",
+                                    duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                                    message=str(event.get("message") or "")[:300],
+                                )
+                            raise RuntimeError(str(event.get("message") or "MemoriaCore stream chat failed"))
+                        if event.get("type") == "result":
+                            last_result = event
+                            if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
+                                response.close()
+                                raise GenerationInterrupted("generation interrupted")
+                            if trace_director and not first_result_logged:
+                                first_result_logged = True
+                                _director_timing_log(
+                                    "memoria_client_first_result",
+                                    duration_ms=round((time.perf_counter() - client_started) * 1000, 1),
+                                    message_id=event.get("message_id"),
+                                    result_session_id=event.get("session_id"),
+                                )
+                            if callable(on_result):
+                                on_result(event)
+                except Exception as exc:
+                    self._raise_generation_interrupted_if_cancelled(
+                        exc,
+                        cancel_event=cancel_event,
+                        should_cancel=should_cancel,
+                    )
+                    raise
             finally:
                 watcher_done.set()
                 if watcher:
