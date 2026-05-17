@@ -189,8 +189,12 @@ class _CancelReadErrorResponse(_FakeStreamResponse):
         self.cancel_event = cancel_event
 
     def iter_lines(self, decode_unicode=False):
-        self.cancel_event.set()
-        raise RuntimeError("'NoneType' object has no attribute 'read'")
+        def _lines():
+            self.cancel_event.set()
+            raise RuntimeError("'NoneType' object has no attribute 'read'")
+            yield ""
+
+        return _lines()
 
 
 def test_chat_stream_sync_treats_read_error_after_cancel_as_generation_interrupted():
@@ -209,3 +213,95 @@ def test_chat_stream_sync_treats_read_error_after_cancel_as_generation_interrupt
             external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
             cancel_event=cancel_event,
         )
+
+
+class _StreamErrorResponse(_FakeStreamResponse):
+    def __init__(self, exc, cancel_event=None, set_cancel=False):
+        super().__init__()
+        self.exc = exc
+        self.cancel_event = cancel_event
+        self.set_cancel = set_cancel
+
+    def iter_lines(self, decode_unicode=False):
+        def _lines():
+            if self.set_cancel and self.cancel_event is not None:
+                self.cancel_event.set()
+            raise self.exc
+            yield ""
+
+        return _lines()
+
+
+def test_chat_stream_sync_keeps_exact_read_error_without_cancel_as_runtime_error():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _StreamErrorResponse(
+        RuntimeError("'NoneType' object has no attribute 'read'"),
+        cancel_event=cancel_event,
+    )
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+        )
+
+    assert exc_info.type is RuntimeError
+    assert str(exc_info.value) == "'NoneType' object has no attribute 'read'"
+
+
+def test_chat_stream_sync_keeps_different_stream_error_after_cancel_as_runtime_error():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _StreamErrorResponse(
+        RuntimeError("different read failure"),
+        cancel_event=cancel_event,
+        set_cancel=True,
+    )
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+        )
+
+    assert exc_info.type is RuntimeError
+    assert str(exc_info.value) == "different read failure"
+
+
+def test_chat_stream_sync_keeps_on_result_read_error_after_cancel_as_runtime_error():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _FakeStreamResponse()
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    def fail_on_result(_event):
+        cancel_event.set()
+        raise RuntimeError("'NoneType' object has no attribute 'read'")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+            on_result=fail_on_result,
+        )
+
+    assert exc_info.type is RuntimeError
+    assert str(exc_info.value) == "'NoneType' object has no attribute 'read'"
