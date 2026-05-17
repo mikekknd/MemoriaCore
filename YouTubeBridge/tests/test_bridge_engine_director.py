@@ -39,6 +39,27 @@ from test_live_episode_plan_contract import sample_plan
 from tts_gpt_sovits import TTSResult
 
 
+@contextlib.contextmanager
+def temp_storage():
+    tmp_dir = _tmp_dir()
+    try:
+        yield BridgeStorage(tmp_dir / "youtube_live.db")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class FakeTTSProvider:
+    def __init__(self):
+        self.calls = []
+
+    def synthesize(self, text, profile):
+        self.calls.append({"text": text, "profile": dict(profile)})
+        return TTSResult(ok=True, audio_bytes=f"audio:{text}".encode("utf-8"), audio_format="wav")
+
+    def call_texts(self):
+        return [call["text"] for call in self.calls]
+
+
 def _episode_plan_characters() -> list[dict]:
     return [
         {"character_id": "host-a", "name": "主持A"},
@@ -4978,3 +4999,109 @@ def test_director_decision_prompt_uses_public_context_only():
         assert "內部 prompt" not in prompt_context
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_main_thread_presents_ready_audience_only_after_planned_turn_ack(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+            "episode_plan_id": plan["plan_id"],
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        state = storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            metadata={"planned_state": initial_planned_state(plan)},
+        )
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, tts_provider_factory=lambda: FakeTTSProvider())
+        manager._runtimes["live-a"] = runtime
+        queue = await manager.subscribe("live-a")
+
+        audience_event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "audience-gap-1",
+            "message_type": "textMessageEvent",
+            "author_display_name": "觀眾A",
+            "message_text": "這段可以補充嗎？",
+            "safe_message_text": "這段可以補充嗎？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "status": "active",
+        })
+        audience_interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "prepared",
+            "event_ids": [audience_event["id"]],
+            "memoria_session_id": "mem-a:audience",
+            "character_ids": ["char-a"],
+            "content": "audience reply",
+            "metadata": {"prepare_only": True, "decision": {"action": "reply_chat_batch", "episode_plan": {"mode": "audience_gap"}}},
+        })
+        audience_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": audience_interaction["job_id"],
+            "message_id": "audience-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "先回應觀眾這句。",
+            "status": "ready",
+            "audio_path": "ready.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+
+        planned_message = {
+            "message_id": "planned-msg",
+            "role": "assistant",
+            "content": "主線 planned turn。",
+            "character_id": "char-a",
+            "character_name": "角色A",
+        }
+        planned_item = await manager._prepare_presentation_item(
+            storage.get_session("live-a"),
+            planned_message,
+            "主線 planned turn。",
+            index=0,
+            source="director",
+            interaction_job_id="planned-job",
+            runtime=runtime,
+        )
+        present_task = asyncio.create_task(manager.present_prepared_stream_results(
+            "live-a",
+            [{"message": planned_message, "items": [planned_item]}],
+            source="director",
+            interaction_job_id="planned-job",
+        ))
+        ready = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert ready["item"]["item_id"] == planned_item["item_id"]
+        assert storage.get_interaction(audience_interaction["job_id"])["status"] == "prepared"
+
+        audience_present_task = asyncio.create_task(
+            manager._present_ready_audience_gap_turn(runtime, storage.get_session("live-a"), state)
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await _next_queue_event(queue, "presentation_item_ready", timeout=0.1)
+        assert audience_present_task.done() is False
+
+        await manager.ack_presentation_item("live-a", planned_item["item_id"])
+        await present_task
+        await audience_present_task
+
+        audience_ready = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert audience_ready["item"]["item_id"] == audience_item["item_id"]

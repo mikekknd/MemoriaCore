@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -35,6 +36,15 @@ from bridge_engine_test_support import (
     normalize_message,
 )
 import engine_closing
+
+
+@contextlib.contextmanager
+def temp_storage():
+    tmp_dir = _tmp_dir()
+    try:
+        yield BridgeStorage(tmp_dir / "youtube_live.db")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
@@ -1068,3 +1078,55 @@ async def test_duration_finalize_cancels_background_tasks_before_closing():
                 task.cancel()
         await asyncio.gather(*sleep_tasks, return_exceptions=True)
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_manual_finalize_enters_graceful_drain_without_interrupting_presenting_item(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-presenting",
+            "message_id": "planned-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "正在播放的 planned turn。",
+            "status": "presenting",
+            "audio_path": "planned.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director"},
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+
+        async def fail_interrupt(*_args, **_kwargs):
+            raise AssertionError("manual finalize must not interrupt currently presenting item")
+
+        monkeypatch.setattr(manager, "_interrupt_active_generation_for_closing", fail_interrupt)
+        monkeypatch.setattr(
+            manager,
+            "_drain_live_session_before_closing",
+            AsyncMock(return_value={"status": "drained"}),
+            raising=False,
+        )
+        monkeypatch.setattr(manager, "_run_final_closing_turn", AsyncMock(return_value={"status": "completed"}))
+        monkeypatch.setattr(manager, "_resolve_pending_safety_for_closing", AsyncMock(return_value={"status": "no_pending"}))
+        monkeypatch.setattr(manager, "run_closing_super_chat_thanks", AsyncMock(return_value={"status": "skipped", "reason": "no_unhandled_super_chats"}))
+
+        await manager.finalize_session("live-a")
+
+        refreshed = storage.get_presentation_item(item["item_id"])
+        assert refreshed["status"] == "presenting"
+        assert manager._drain_live_session_before_closing.await_count == 1

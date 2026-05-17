@@ -34,8 +34,18 @@ from bridge_engine_test_support import (
     normalize_message,
 )
 import engine_injection
+from live_episode_plan_contract import initial_planned_state
 from test_live_episode_plan_contract import sample_plan
 from tts_gpt_sovits import TTSResult
+
+
+@contextlib.contextmanager
+def temp_storage():
+    tmp_dir = _tmp_dir()
+    try:
+        yield BridgeStorage(tmp_dir / "youtube_live.db")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def _next_queue_event(queue: asyncio.Queue, event_type: str, *, timeout: float = 1.0) -> dict:
@@ -2726,3 +2736,86 @@ def test_normalize_message_marks_super_chat_priority_fields():
     assert event["priority_class"] == "super_chat"
     assert event["amount_micros"] == 150000000
     assert event["sc_tier"] == 2
+
+
+@pytest.mark.asyncio
+async def test_super_chat_enters_audience_queue_without_interrupting_active_planned_turn(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({
+            "connector_id": "yt",
+            "name": "YouTube",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "auto_inject": True,
+            "episode_plan_id": plan["plan_id"],
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "max_sc_per_batch": 3,
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            metadata={"planned_state": initial_planned_state(plan)},
+        )
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        active = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "event_ids": [],
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "planned turn running",
+            "metadata": {"decision": {"episode_plan": {"mode": "planned_turn"}}},
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "sc-no-interrupt-1",
+            "message_type": "superChatEvent",
+            "author_display_name": "SC viewer",
+            "message_text": "這段可以補充嗎？",
+            "priority_class": "super_chat",
+            "amount_micros": 5000000,
+            "amount_display_string": "NT$150",
+            "sc_tier": 3,
+            "status": "active",
+        })
+        storage.update_event_safety(
+            int(event["id"]),
+            status="completed",
+            label="clean",
+            safe_message_text="這段可以補充嗎？",
+            safety_summary="clean question",
+            reason="test",
+            confidence=1.0,
+        )
+        manager = YouTubeBridgeManager(storage)
+
+        async def fail_interrupt(*_args, **_kwargs):
+            raise AssertionError("SC must not interrupt active planned turn in presentation episode mode")
+
+        monkeypatch.setattr(manager, "interrupt_session", fail_interrupt)
+        result = await manager._prepare_director_owned_auto_inject(
+            runtime,
+            storage.get_session("live-a"),
+            storage.list_events("live-a", uninjected_only=True),
+            max_events=12,
+            max_sc_per_batch=3,
+            active=active,
+        )
+
+        assert result["selected_source"] == "super_chat"
+        assert result["selected_event_ids"] == [event["id"]]
+        assert storage.get_interaction(active["job_id"])["status"] == "running"
