@@ -6892,10 +6892,6 @@ async def test_after_main_turn_sequence_does_not_preempt_prefetch_with_audience_
             director_enabled=True,
             metadata={"planned_state": initial_planned_state(plan)},
         )
-        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
-        manager = YouTubeBridgeManager(storage, tts_provider_factory=lambda: FakeTTSProvider())
-        queue = await manager.subscribe("live-a")
-
         prefetch_interaction = storage.create_interaction({
             "session_id": "live-a",
             "source": "director_prefetch",
@@ -6943,6 +6939,14 @@ async def test_after_main_turn_sequence_does_not_preempt_prefetch_with_audience_
         class CommitOnlyMemoriaClient:
             def add_assistant_event(self, **kwargs):
                 return {"ok": True, **kwargs}
+
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(
+            storage,
+            memoria_client_factory=CommitOnlyMemoriaClient,
+            tts_provider_factory=lambda: FakeTTSProvider(),
+        )
+        queue = await manager.subscribe("live-a")
 
         async def fake_wait(_runtime, _prefetch_task, *, timeout_seconds):
             audience_event = storage.save_event({
