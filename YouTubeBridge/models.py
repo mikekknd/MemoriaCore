@@ -75,6 +75,7 @@ class LiveSessionConfig(BaseModel):
     tts_enabled: bool = False
     tts_provider: str = Field("gpt_sovits", max_length=40)
     presentation_ack_timeout_seconds: int = Field(120, ge=1, le=600)
+    prefetch_wait_timeout_seconds: float = Field(10.0, ge=0.1, le=600.0)
     post_plan_free_talk_enabled: bool = False
     post_plan_free_talk_minutes: int = Field(20, ge=0, le=240)
     post_plan_free_talk_tick_interval_seconds: int = Field(30, ge=5, le=600)

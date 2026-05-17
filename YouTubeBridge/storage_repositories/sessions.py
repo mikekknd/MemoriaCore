@@ -129,6 +129,7 @@ class SessionRepositoryMixin:
                 "tts_enabled": 1 if config.get("tts_enabled", existing.get("tts_enabled", False) if existing else False) else 0,
                 "tts_provider": str(config.get("tts_provider", existing.get("tts_provider", "gpt_sovits") if existing else "gpt_sovits") or "gpt_sovits"),
                 "presentation_ack_timeout_seconds": max(1, min(int(config.get("presentation_ack_timeout_seconds", existing.get("presentation_ack_timeout_seconds", 120) if existing else 120) or 120), 600)),
+                "prefetch_wait_timeout_seconds": min(600.0, max(0.1, float(config.get("prefetch_wait_timeout_seconds", existing.get("prefetch_wait_timeout_seconds", 10.0) if existing else 10.0) or 10.0))),
                 "post_plan_free_talk_enabled": 1 if self._config_value(config, existing, "post_plan_free_talk_enabled", False) else 0,
                 "post_plan_free_talk_minutes": self._clamped_int(self._config_value(config, existing, "post_plan_free_talk_minutes", 20), 20, 0, 240),
                 "post_plan_free_talk_tick_interval_seconds": self._clamped_int(

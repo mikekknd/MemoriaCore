@@ -133,6 +133,7 @@ def row_to_session(row: sqlite3.Row | None) -> dict | None:
         "tts_enabled": bool(row_value(row, "tts_enabled", 0)),
         "tts_provider": row_value(row, "tts_provider", "gpt_sovits") or "gpt_sovits",
         "presentation_ack_timeout_seconds": int(row_value(row, "presentation_ack_timeout_seconds", 120) or 120),
+        "prefetch_wait_timeout_seconds": float(row_value(row, "prefetch_wait_timeout_seconds", 10.0) or 10.0),
         "post_plan_free_talk_enabled": bool(row_value(row, "post_plan_free_talk_enabled", 0)),
         "post_plan_free_talk_minutes": int_or_default(row_value(row, "post_plan_free_talk_minutes", 20), 20),
         "post_plan_free_talk_tick_interval_seconds": int(row_value(row, "post_plan_free_talk_tick_interval_seconds", 30) or 30),

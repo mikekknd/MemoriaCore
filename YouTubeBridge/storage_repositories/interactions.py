@@ -100,6 +100,61 @@ class InteractionRepositoryMixin:
             row = conn.execute("SELECT * FROM live_interactions WHERE job_id = ?", (job_id,)).fetchone()
         return self._row_to_interaction(row)
 
+    def update_interaction_if_status(
+        self,
+        job_id: str,
+        expected_status: str,
+        **fields,
+    ) -> dict | None:
+        allowed = {
+            "source", "priority", "status", "reason", "event_ids", "memoria_session_id",
+            "character_ids", "content", "reply_text", "closure_text", "started_at",
+            "completed_at", "interrupted_at",
+        }
+        column_map = {
+            "event_ids": "event_ids_json",
+            "character_ids": "character_ids_json",
+            "metadata": "metadata_json",
+        }
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM live_interactions WHERE job_id = ?", (job_id,)).fetchone()
+            current = self._row_to_interaction(row)
+            if not current:
+                return None
+            if str(current.get("status") or "") != str(expected_status or ""):
+                return current
+            updates: dict[str, Any] = {}
+            for key, value in fields.items():
+                if key in allowed:
+                    updates[key] = value
+            metadata_patch = fields.get("metadata")
+            if isinstance(metadata_patch, dict):
+                merged = dict(current.get("metadata") or {})
+                merged.update(metadata_patch)
+                updates["metadata"] = merged
+            if not updates:
+                return current
+            columns: list[str] = []
+            params: list[Any] = []
+            for key, value in updates.items():
+                column = column_map.get(key, key)
+                if key in {"event_ids", "character_ids", "metadata"}:
+                    value = self._json_dump(value)
+                columns.append(f"{column} = ?")
+                params.append(value)
+            params.extend([job_id, expected_status])
+            conn.execute(
+                f"""
+                UPDATE live_interactions
+                SET {', '.join(columns)}
+                WHERE job_id = ? AND status = ?
+                """,
+                params,
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM live_interactions WHERE job_id = ?", (job_id,)).fetchone()
+        return self._row_to_interaction(row)
+
     def append_interaction_visible_message(
         self,
         job_id: str,

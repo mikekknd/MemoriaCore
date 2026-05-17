@@ -237,6 +237,26 @@ def test_session_persists_free_talk_closing_batch_settings(tmp_path):
     assert saved["free_talk_closing_time_limit_seconds"] == 300
 
 
+def test_session_persists_prefetch_wait_timeout_seconds(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Prefetch Timeout Test",
+        "prefetch_wait_timeout_seconds": 0.25,
+    })
+
+    assert saved["prefetch_wait_timeout_seconds"] == 0.25
+    assert storage.get_session("live-a")["prefetch_wait_timeout_seconds"] == 0.25
+
+
 def test_session_clamps_and_preserves_free_talk_closing_batch_settings(tmp_path):
     storage = BridgeStorage(tmp_path / "youtube_live.db")
     storage.upsert_connector({
