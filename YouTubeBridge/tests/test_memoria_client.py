@@ -102,6 +102,31 @@ def test_add_system_event_posts_to_session_endpoint():
     }
 
 
+def test_add_assistant_event_posts_to_session_endpoint():
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    client.add_assistant_event(
+        session_id="mem-a",
+        content="已播放的導播台詞。",
+        character_id="host-a",
+        character_name="主持A",
+        debug_info={"event_type": "youtube_live_played_commit"},
+        extracted_entities=["動畫新番"],
+    )
+
+    assert fake_session.url == "http://memoria.test/api/v1/session/mem-a/assistant-event"
+    assert fake_session.payload == {
+        "content": "已播放的導播台詞。",
+        "character_id": "host-a",
+        "character_name": "主持A",
+        "debug_info": {"event_type": "youtube_live_played_commit"},
+        "extracted_entities": ["動畫新番"],
+    }
+
+
 def test_chat_stream_sync_calls_on_result_for_each_stream_result():
     client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
     fake_session = _FakeSession()

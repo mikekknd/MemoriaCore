@@ -229,6 +229,44 @@ def test_episode_audience_interrupt_batches_normal_backlog_and_records_deferred_
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_presentation_mode_uses_audience_gap_for_chat_without_interrupting_plan():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        storage.update_session_fields(
+            "live-a",
+            presentation_enabled=True,
+            max_pending_events=4,
+            director_max_audience_batches_per_planned_turn=1,
+        )
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        for index in range(12):
+            storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"gap-chat-{index}",
+                "message_text": f"gap 留言 {index}：這段可以補充嗎？",
+                "author_display_name": f"viewer-{index}",
+                "author_channel_id": f"gap-viewer-{index}",
+                "message_type": "textMessageEvent",
+                "safety_status": "completed",
+                "safety_label": "clean",
+                "safe_message_text": f"gap 留言 {index}：這段可以補充嗎？",
+            })
+
+        gap_decision = manager._episode_plan_next_audience_gap_decision(session, state)
+        main_decision = manager._episode_plan_next_decision(session, state)
+
+        assert gap_decision["action"] == "reply_chat_batch"
+        assert gap_decision["episode_plan"]["mode"] == "audience_gap"
+        assert gap_decision["episode_plan"]["backlog_snapshot"]["selected_count"] == 4
+        assert main_decision["episode_plan"]["mode"] == "planned_turn"
+        assert main_decision["episode_plan"]["backlog_snapshot"]["selected_count"] == 4
+        assert main_decision["episode_plan"]["backlog_snapshot"]["defer_reason"] == "presentation_audience_gap_lane"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @pytest.mark.asyncio
 async def test_episode_audience_interrupt_injects_selected_chat_into_memoria_context():
     tmp_dir, storage, manager = _manager_with_bound_plan()
@@ -377,6 +415,97 @@ def test_episode_super_chat_burst_is_bounded_and_cooldown_defers_next_interrupt(
         cooldown_decision = manager._episode_plan_next_decision(session, cooldown_state)
 
         assert cooldown_decision["episode_plan"]["mode"] == "planned_turn"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_presentation_mode_super_chat_audience_gap_is_bounded_and_records_gap_metadata():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        storage.update_session_fields(
+            "live-a",
+            presentation_enabled=True,
+            max_sc_per_batch=3,
+            sc_interrupt_cooldown_seconds=60,
+            director_max_audience_batches_per_planned_turn=1,
+        )
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        for index in range(10):
+            storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"gap-sc-{index}",
+                "message_text": f"SC gap 留言 {index}：這題想聽回答。",
+                "author_display_name": f"sc-viewer-{index}",
+                "author_channel_id": f"gap-sc-viewer-{index}",
+                "message_type": "superChatEvent",
+                "amount_display_string": "NT$150",
+                "amount_micros": 150_000_000,
+                "safety_status": "completed",
+                "safety_label": "clean",
+                "safe_message_text": f"SC gap 留言 {index}：這題想聽回答。",
+            })
+
+        gap_decision = manager._episode_plan_next_audience_gap_decision(session, state)
+        main_decision = manager._episode_plan_next_decision(session, state)
+        metadata = manager._episode_metadata_after_turn(session, state, gap_decision)
+        interrupt_state = gap_decision["episode_plan"]["interrupt_state"]
+
+        assert gap_decision["action"] == "reply_super_chat_batch"
+        assert gap_decision["episode_plan"]["mode"] == "audience_gap"
+        assert len(interrupt_state["source_event_ids"]) == 3
+        assert main_decision["episode_plan"]["mode"] == "planned_turn"
+        assert metadata["last_audience_gap_at"]
+        assert metadata["last_sc_gap_at"]
+        assert "last_audience_interrupt_at" not in metadata
+        assert "last_sc_interrupt_at" not in metadata
+        assert metadata["audience_batches_since_planned_turn"] == 1
+        assert metadata["planned_state"]["current_turn_index"] == 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_presentation_mode_super_chat_audience_gap_respects_gap_cooldown():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        storage.update_session_fields(
+            "live-a",
+            presentation_enabled=True,
+            max_sc_per_batch=1,
+            sc_interrupt_cooldown_seconds=60,
+            director_max_audience_batches_per_planned_turn=5,
+        )
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        for index in range(2):
+            storage.save_event({
+                "bridge_session_id": "live-a",
+                "connector_id": "yt-main",
+                "youtube_message_id": f"gap-cooldown-sc-{index}",
+                "message_text": f"SC cooldown 留言 {index}：這題想聽回答。",
+                "author_display_name": f"cooldown-sc-viewer-{index}",
+                "author_channel_id": f"cooldown-sc-viewer-{index}",
+                "message_type": "superChatEvent",
+                "amount_display_string": "NT$150",
+                "amount_micros": 150_000_000,
+                "safety_status": "completed",
+                "safety_label": "clean",
+                "safe_message_text": f"SC cooldown 留言 {index}：這題想聽回答。",
+            })
+
+        first_gap = manager._episode_plan_next_audience_gap_decision(session, state)
+        metadata = manager._episode_metadata_after_turn(session, state, first_gap)
+        second_gap = manager._episode_plan_next_audience_gap_decision(
+            session,
+            {"metadata": metadata},
+        )
+        main_decision = manager._episode_plan_next_decision(session, {"metadata": metadata})
+
+        assert first_gap["action"] == "reply_super_chat_batch"
+        assert metadata["last_sc_gap_at"]
+        assert second_gap is None
+        assert main_decision["episode_plan"]["mode"] == "planned_turn"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

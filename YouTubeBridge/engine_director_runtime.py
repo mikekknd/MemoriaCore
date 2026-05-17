@@ -393,6 +393,14 @@ class DirectorRuntimeManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                await self._schedule_audience_gap_prepare_if_needed(
+                    runtime,
+                    session,
+                    next_state,
+                    trigger="after_planned_turn",
+                )
+                if await self._present_ready_audience_gap_turn(runtime, session, next_state):
+                    next_state = self.storage.get_director_state(runtime.session_id) or next_state
                 prefetch_task = result.get("after_memoria_task")
                 if prefetch_task:
                     await self._consume_prefetched_episode_chain(
@@ -433,6 +441,13 @@ class DirectorRuntimeManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                await self._schedule_audience_gap_prepare_if_needed(
+                    runtime,
+                    session,
+                    next_state,
+                    trigger="after_opening_turn",
+                )
+                await self._present_ready_audience_gap_turn(runtime, session, next_state)
                 return
             final_decision = decision
             final_result = result
@@ -483,6 +498,13 @@ class DirectorRuntimeManagerMixin:
                 },
             )
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+            await self._schedule_audience_gap_prepare_if_needed(
+                runtime,
+                session,
+                next_state,
+                trigger="after_kickoff_turn",
+            )
+            await self._present_ready_audience_gap_turn(runtime, session, next_state)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -531,6 +553,12 @@ class DirectorRuntimeManagerMixin:
                     if isinstance(tick_result, dict) and tick_result.get("status") == "wait":
                         await asyncio.sleep(1.0)
                     continue
+                await self._schedule_audience_gap_prepare_if_needed(
+                    runtime,
+                    session,
+                    state,
+                    trigger="director_loop",
+                )
                 if runtime.director_prefetch_in_flight > 0:
                     _director_timing_log(
                         "loop_blocked_prefetch_in_flight",
@@ -859,6 +887,14 @@ class DirectorRuntimeManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+                await self._schedule_audience_gap_prepare_if_needed(
+                    runtime,
+                    session,
+                    next_state,
+                    trigger="after_planned_turn",
+                )
+                if await self._present_ready_audience_gap_turn(runtime, session, next_state):
+                    next_state = self.storage.get_director_state(runtime.session_id) or next_state
                 prefetch_task = result.get("after_memoria_task")
                 if prefetch_task:
                     next_state = await self._consume_prefetched_episode_chain(
@@ -908,6 +944,436 @@ class DirectorRuntimeManagerMixin:
                 updated["target_memoria_session_id"] = result_session_id
         return updated
 
+    @staticmethod
+    def _prefetch_draft_memoria_session_id(session_id: str, interaction_job_id: str) -> str:
+        return f"{session_id}:prefetch:{interaction_job_id}"
+
+    def _visible_prepared_results(
+        self,
+        session: dict[str, Any],
+        prepared_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not self._presentation_enabled(session):
+            return [
+                prepared for prepared in prepared_results
+                if isinstance(prepared, dict) and isinstance(prepared.get("message"), dict)
+            ]
+        visible_results: list[dict[str, Any]] = []
+        for prepared in prepared_results:
+            if not isinstance(prepared, dict):
+                continue
+            message = prepared.get("message") if isinstance(prepared.get("message"), dict) else {}
+            visible_items: list[dict[str, Any]] = []
+            for raw_item in prepared.get("items") or []:
+                if not isinstance(raw_item, dict):
+                    continue
+                item_id = str(raw_item.get("item_id") or "")
+                item = self.storage.get_presentation_item(item_id) if item_id else None
+                item = item or raw_item
+                status = str(item.get("status") or "")
+                if status == "played" or (status == "failed" and item.get("acked_at")):
+                    visible_items.append(item)
+            if not visible_items:
+                continue
+            visible_message = dict(message)
+            visible_message["content"] = "\n".join(
+                str(item.get("text") or "").strip()
+                for item in visible_items
+                if str(item.get("text") or "").strip()
+            )
+            if not visible_message["content"]:
+                visible_message["content"] = str(message.get("content") or "")
+            visible_results.append({**prepared, "message": visible_message, "items": visible_items})
+        return visible_results
+
+    @staticmethod
+    def _prepared_result_item_count(prepared_results: list[dict[str, Any]]) -> int:
+        count = 0
+        for prepared in prepared_results:
+            if isinstance(prepared, dict):
+                count += sum(1 for item in prepared.get("items") or [] if isinstance(item, dict))
+        return count
+
+    def _discard_prepared_items_for_interaction(self, session_id: str, job_id: str, reason: str) -> None:
+        if not job_id:
+            return
+        for item in self.storage.list_presentation_items(session_id, limit=500):
+            if str(item.get("interaction_job_id") or "") != job_id:
+                continue
+            if str(item.get("status") or "") in {"played", "skipped"}:
+                continue
+            self.storage.update_presentation_item(
+                item["item_id"],
+                status="skipped",
+                error=reason,
+            )
+
+    def _commit_prefetched_played_results(
+        self,
+        session: dict[str, Any],
+        interaction: dict[str, Any],
+        prepared_results: list[dict[str, Any]],
+        memoria_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+        main_session_id = str(metadata.get("main_memoria_session_id") or session.get("target_memoria_session_id") or "")
+        draft_session_id = str(metadata.get("draft_memoria_session_id") or interaction.get("memoria_session_id") or "")
+        if not main_session_id:
+            return {"status": "skipped", "reason": "missing_main_session", "committed_count": 0}
+        extracted_entities = None
+        if isinstance(memoria_result, dict) and isinstance(memoria_result.get("extracted_entities"), list):
+            extracted_entities = memoria_result.get("extracted_entities")
+        committed_count = 0
+        errors: list[str] = []
+        for prepared in prepared_results:
+            if not isinstance(prepared, dict):
+                continue
+            message = prepared.get("message") if isinstance(prepared.get("message"), dict) else {}
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            presentation_message_id = str(message.get("message_id") or "")
+            for item in prepared.get("items") or []:
+                if isinstance(item, dict) and str(item.get("message_id") or ""):
+                    presentation_message_id = str(item.get("message_id") or "")
+                    break
+            try:
+                self._memoria_client().add_assistant_event(
+                    session_id=main_session_id,
+                    content=content,
+                    character_id=str(message.get("character_id") or ""),
+                    character_name=str(message.get("character_name") or ""),
+                    extracted_entities=extracted_entities,
+                    debug_info={
+                        "event_type": "youtube_live_played_commit",
+                        "source": "director_prefetch",
+                        "bridge_session_id": str(session.get("session_id") or ""),
+                        "interaction_job_id": str(interaction.get("job_id") or ""),
+                        "draft_session_id": draft_session_id,
+                        "presentation_message_id": presentation_message_id,
+                    },
+                )
+                committed_count += 1
+            except Exception as exc:
+                errors.append(str(exc)[:500])
+                logger.warning(
+                    "prefetched played commit failed session_id=%s job_id=%s error=%s",
+                    session.get("session_id"),
+                    interaction.get("job_id"),
+                    exc,
+                )
+        if errors:
+            return {
+                "status": "failed",
+                "error": "; ".join(errors)[:500],
+                "committed_count": committed_count,
+            }
+        if committed_count <= 0:
+            return {"status": "skipped", "reason": "no_committable_content", "committed_count": 0}
+        return {"status": "committed", "committed_count": committed_count}
+
+    async def _schedule_audience_gap_prepare_if_needed(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        trigger: str,
+    ) -> bool:
+        def log_skip(reason: str, **fields: Any) -> None:
+            if reason in {"no_decision", "presentation_disabled"}:
+                return
+            _director_timing_log(
+                "audience_gap_prepare_skipped",
+                session_id=runtime.session_id,
+                trigger=trigger,
+                reason=reason,
+                **fields,
+            )
+
+        if not self._presentation_enabled(session):
+            log_skip("presentation_disabled")
+            return False
+        stopped_statuses = {"closing", "stopped", "ended"}
+        if (
+            not runtime.running
+            or str(runtime.status or "") in stopped_statuses
+            or str(session.get("status") or "") in stopped_statuses
+        ):
+            log_skip(
+                "session_not_running",
+                runtime_status=runtime.status,
+                session_status=session.get("status"),
+            )
+            return False
+        existing_task = runtime.audience_gap_prepare_task
+        if existing_task is not None:
+            if existing_task.done():
+                self._consume_background_task_exception(existing_task)
+                runtime.audience_gap_prepare_task = None
+            else:
+                log_skip("task_in_flight")
+                return False
+        if self._director_audience_prepare_blocked(runtime.session_id, state):
+            log_skip("blocked_existing_prepare")
+            return False
+        decision = self._episode_plan_next_audience_prepare_decision(session, state)
+        if not isinstance(decision, dict) or not decision:
+            log_skip("no_decision")
+            return False
+        payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
+        interrupt_state = (
+            payload.get("interrupt_state")
+            if isinstance(payload.get("interrupt_state"), dict)
+            else {}
+        )
+        event_ids = [
+            int(event_id)
+            for event_id in (interrupt_state.get("source_event_ids") or [])
+            if str(event_id).isdigit()
+        ]
+        if not event_ids:
+            log_skip("no_event_ids")
+            return False
+        event_type = str(payload.get("event_type") or "").strip()
+        source = (
+            "super_chat"
+            if event_type == "super_chat" or decision.get("action") == "reply_super_chat_batch"
+            else "chat"
+        )
+        scheduled_state = self._mark_director_audience_prepare_in_flight(
+            runtime.session_id,
+            event_ids=event_ids,
+            source=source,
+        )
+        task = asyncio.create_task(
+            self._run_director_audience_gap_prepare_background(
+                runtime,
+                session,
+                scheduled_state,
+                event_ids=event_ids,
+                source=source,
+                decision=decision,
+            )
+        )
+        runtime.audience_gap_prepare_task = task
+
+        def clear_prepare_task(done_task: asyncio.Task) -> None:
+            self._consume_background_task_exception(done_task)
+            if runtime.audience_gap_prepare_task is done_task:
+                runtime.audience_gap_prepare_task = None
+
+        task.add_done_callback(clear_prepare_task)
+        if trigger == "auto_inject_loop":
+            runtime.last_auto_inject_at = datetime.now().isoformat()
+            runtime.last_auto_inject_error = None
+        _director_timing_log(
+            "audience_gap_prepare_scheduled",
+            session_id=runtime.session_id,
+            trigger=trigger,
+            event_ids=event_ids,
+            source=source,
+            event_type=event_type,
+        )
+        await self._broadcast(runtime.session_id, {
+            "type": "director_audience_events_ready",
+            "event_ids": event_ids,
+            "source": source,
+            "count": len(event_ids),
+            "interrupted_active": False,
+        })
+        return True
+
+    def _audience_gap_interaction_by_status(
+        self,
+        session_id: str,
+        statuses: set[str] | list[str] | tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        status_set = {str(status or "").strip() for status in statuses}
+        status_set.discard("")
+        if not status_set:
+            return None
+        matches = [
+            interaction
+            for interaction in self.storage.list_interactions(session_id, limit=200)
+            if interaction.get("source") == "director_audience_prepare"
+            and str(interaction.get("status") or "") in status_set
+        ]
+        if not matches:
+            return None
+        return sorted(matches, key=lambda item: int(item.get("id") or 0))[0]
+
+    async def _prepare_next_audience_gap_turn(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        decision: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if not self._presentation_enabled(session):
+            return None
+        if self._audience_gap_interaction_by_status(
+            runtime.session_id,
+            {"preparing", "prepared", "presenting"},
+        ):
+            return None
+        decision = decision or self._episode_plan_next_audience_prepare_decision(session, state)
+        if not isinstance(decision, dict) or not decision:
+            return None
+        metadata = dict(state.get("metadata") if isinstance(state.get("metadata"), dict) else {})
+        sidecar_session_id = str(metadata.get("audience_sidecar_memoria_session_id") or "")
+        audience_session = dict(session)
+        audience_session["target_memoria_session_id"] = sidecar_session_id
+        result = await self._send_director_turn(
+            audience_session,
+            state,
+            decision,
+            prepare_only=True,
+            prepare_source="director_audience_prepare",
+        )
+        result_session_id = str((result.get("memoria_result") or {}).get("session_id") or "")
+        if result_session_id:
+            latest_state = self.storage.get_director_state(runtime.session_id) or {}
+            next_metadata = dict(
+                latest_state.get("metadata")
+                if isinstance(latest_state.get("metadata"), dict)
+                else {}
+            )
+            next_metadata["audience_sidecar_memoria_session_id"] = result_session_id
+            next_metadata["audience_prepare_in_flight"] = False
+            next_metadata["latest_audience_gap_job_id"] = result.get("interaction", {}).get("job_id", "")
+            self.storage.update_director_state(runtime.session_id, metadata=next_metadata)
+        return result
+
+    def _prepared_results_for_audience_gap_interaction(
+        self,
+        session_id: str,
+        interaction: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        job_id = str(interaction.get("job_id") or "")
+        if not job_id:
+            return []
+        prepared: list[dict[str, Any]] = []
+        for item in self.storage.list_presentation_items(session_id, statuses={"ready"}, limit=500):
+            if str(item.get("interaction_job_id") or "") != job_id:
+                continue
+            message_id = str(item.get("message_id") or item.get("item_id") or "")
+            base_message_id = message_id.split(":", 1)[0] if ":" in message_id else message_id
+            prepared.append({
+                "message": {
+                    "message_id": base_message_id,
+                    "role": "assistant",
+                    "content": item.get("text") or "",
+                    "character_id": item.get("character_id") or "",
+                    "character_name": item.get("character_name") or "",
+                    "created_at": item.get("created_at") or "",
+                    "timestamp": item.get("created_at") or "",
+                },
+                "items": [item],
+            })
+        return prepared
+
+    async def _present_ready_audience_gap_turn(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self._presentation_enabled(session):
+            return None
+        interaction = self._audience_gap_interaction_by_status(runtime.session_id, {"prepared"})
+        if not interaction:
+            return None
+        event_ids: list[int] = []
+        for raw_event_id in interaction.get("event_ids") or []:
+            try:
+                event_id = int(raw_event_id)
+            except (TypeError, ValueError):
+                continue
+            if event_id > 0:
+                event_ids.append(event_id)
+        selected_events = self.storage.get_events_by_ids(
+            runtime.session_id,
+            event_ids,
+            limit=len(event_ids),
+        ) if event_ids else []
+        block_reason = self._episode_audience_gap_block_reason(session, state, selected_events)
+        if block_reason:
+            _director_timing_log(
+                "audience_gap_present_deferred",
+                session_id=runtime.session_id,
+                job_id=interaction.get("job_id"),
+                reason=block_reason,
+                event_ids=event_ids,
+            )
+            return None
+        prepared_results = self._prepared_results_for_audience_gap_interaction(runtime.session_id, interaction)
+        if not prepared_results:
+            return self.storage.update_interaction(
+                interaction["job_id"],
+                status="failed",
+                reason="audience_gap_missing_prepared_items",
+                completed_at=datetime.now().isoformat(),
+            )
+        started = self.storage.update_interaction(
+            interaction["job_id"],
+            status="presenting",
+        ) or interaction
+        await self._broadcast(
+            runtime.session_id,
+            {"type": "director_audience_gap_presenting", "interaction": started},
+        )
+        await self.present_prepared_stream_results(
+            runtime.session_id,
+            prepared_results,
+            source="director_audience_gap",
+            interaction_job_id=interaction["job_id"],
+        )
+        visible_results = self._visible_prepared_results(session, prepared_results)
+        played_item_count = self._prepared_result_item_count(visible_results)
+        marked = (
+            self.storage.mark_events_injected(runtime.session_id, event_ids)
+            if played_item_count > 0
+            else 0
+        )
+        completed = self.storage.update_interaction(
+            interaction["job_id"],
+            status="completed",
+            completed_at=datetime.now().isoformat(),
+            metadata={
+                "audience_gap_presented": played_item_count > 0,
+                "marked_injected": marked,
+                "played_item_count": played_item_count,
+            },
+        ) or started
+        latest_state = self.storage.get_director_state(runtime.session_id) or state
+        metadata = dict(
+            latest_state.get("metadata")
+            if isinstance(latest_state.get("metadata"), dict)
+            else {}
+        )
+        if played_item_count > 0:
+            metadata["last_audience_gap_presented_at"] = datetime.now().isoformat()
+        interaction_metadata = (
+            interaction.get("metadata")
+            if isinstance(interaction.get("metadata"), dict)
+            else {}
+        )
+        decision = (
+            interaction_metadata.get("decision")
+            if isinstance(interaction_metadata.get("decision"), dict)
+            else {}
+        )
+        if decision and played_item_count > 0:
+            metadata.update(self._episode_metadata_after_turn(session, latest_state or state, decision))
+        self.storage.update_director_state(runtime.session_id, status="running", metadata=metadata)
+        await self._broadcast(
+            runtime.session_id,
+            {"type": "director_audience_gap_presented", "interaction": completed},
+        )
+        return completed
+
     async def _prefetch_next_episode_planned_turn(
         self,
         runtime: LiveRuntime,
@@ -917,8 +1383,6 @@ class DirectorRuntimeManagerMixin:
     ) -> dict[str, Any] | None:
         payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
         if str(payload.get("mode") or "") != "planned_turn":
-            return None
-        if self._pending_director_blocking_events(runtime.session_id):
             return None
         projected_state = self._project_state_after_episode_decision(session, state, decision)
         next_decision = self._episode_plan_next_decision(session, projected_state)
@@ -993,6 +1457,14 @@ class DirectorRuntimeManagerMixin:
                 metadata=metadata,
             )
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+            await self._schedule_audience_gap_prepare_if_needed(
+                runtime,
+                session,
+                next_state,
+                trigger="after_prefetch_consumed",
+            )
+            if await self._present_ready_audience_gap_turn(runtime, session, next_state):
+                next_state = self.storage.get_director_state(runtime.session_id) or next_state
             consumed_count += 1
             prefetch_task = consumed.get("after_memoria_task")
         return next_state
@@ -1013,28 +1485,36 @@ class DirectorRuntimeManagerMixin:
         ]
         if not job_id or not prepared_results:
             return None
-        if self._pending_director_blocking_events(runtime.session_id):
+        stopped_statuses = {"closing", "stopped", "ended"}
+        runtime_status = str(runtime.status or "").strip().lower()
+        session_status = str(session.get("status") or "").strip().lower()
+        if not runtime.running or runtime_status in stopped_statuses or session_status in stopped_statuses:
             _director_timing_log(
-                "prefetch_discarded_pending_chat",
+                "prefetch_consume_refused",
                 session_id=runtime.session_id,
                 job_id=job_id,
+                status=interaction.get("status"),
+                reason="session_not_running",
+                runtime_running=runtime.running,
+                runtime_status=runtime.status,
+                session_status=session.get("status"),
             )
-            updated = self.storage.update_interaction(
-                job_id,
-                status="discarded",
-                reason="prefetch_discarded_pending_chat",
-                completed_at=datetime.now().isoformat(),
-                metadata={"discarded_before_presentation": True},
+            return None
+        current_interaction = self.storage.get_interaction(job_id) or interaction
+        if str(current_interaction.get("status") or "") in {
+            "interrupted",
+            "discarded",
+            "failed",
+            "interrupt_requested",
+        }:
+            _director_timing_log(
+                "prefetch_consume_refused",
+                session_id=runtime.session_id,
+                job_id=job_id,
+                status=current_interaction.get("status"),
             )
-            for prepared in prepared_results:
-                for item in prepared.get("items") or []:
-                    if isinstance(item, dict) and item.get("item_id"):
-                        self.storage.update_presentation_item(
-                            item["item_id"],
-                            status="skipped",
-                            error="prefetch discarded because chat is pending",
-                        )
-            return {"interaction": updated or interaction, "discarded": True}
+            return None
+        interaction = current_interaction
         _director_timing_log(
             "prefetch_consume_start",
             session_id=runtime.session_id,
@@ -1049,8 +1529,10 @@ class DirectorRuntimeManagerMixin:
         base_state = prefetch.get("base_state") if isinstance(prefetch.get("base_state"), dict) else {}
         if decision and base_state:
             chained_session = dict(session)
-            if result_session_id:
-                chained_session["target_memoria_session_id"] = result_session_id
+            metadata = started.get("metadata") if isinstance(started.get("metadata"), dict) else {}
+            main_session_id = str(metadata.get("main_memoria_session_id") or session.get("target_memoria_session_id") or "")
+            if main_session_id:
+                chained_session["target_memoria_session_id"] = main_session_id
             _director_timing_log(
                 "prefetch_chain_scheduled",
                 session_id=runtime.session_id,
@@ -1080,31 +1562,50 @@ class DirectorRuntimeManagerMixin:
             source="director",
             interaction_job_id=job_id,
         )
+        visible_results = self._visible_prepared_results(session, prepared_results)
+        played_item_count = self._prepared_result_item_count(visible_results)
+        if played_item_count > 0:
+            commit_result = self._commit_prefetched_played_results(
+                session,
+                started,
+                visible_results,
+                result,
+            )
+        else:
+            commit_result = {"status": "skipped", "reason": "no_played_items", "committed_count": 0}
+        played_commit_status = str(commit_result.get("status") or "skipped")
+        interaction_metadata = {
+            "prefetch_consumed": True,
+            "played_commit_status": played_commit_status,
+            "played_item_count": played_item_count,
+            "played_commit_count": int(commit_result.get("committed_count") or 0),
+        }
+        if commit_result.get("error"):
+            interaction_metadata["played_commit_error"] = str(commit_result.get("error") or "")[:500]
+        if commit_result.get("reason"):
+            interaction_metadata["played_commit_reason"] = str(commit_result.get("reason") or "")
         updated = self.storage.update_interaction(
             job_id,
             status="completed",
             reply_text=str(result.get("reply") or ""),
-            memoria_session_id=str(result.get("session_id") or session.get("target_memoria_session_id") or ""),
             completed_at=datetime.now().isoformat(),
-            metadata={"prefetch_consumed": True},
+            metadata=interaction_metadata,
         ) or started
         _director_timing_log(
             "prefetch_consume_done",
             session_id=runtime.session_id,
             job_id=job_id,
         )
-        if result_session_id and result_session_id != str(session.get("target_memoria_session_id") or ""):
-            self.storage.update_session_fields(runtime.session_id, target_memoria_session_id=result_session_id)
         await self._broadcast(runtime.session_id, {
             "type": "interaction_completed",
             "interaction": updated,
-            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
+            "memoria_session_id": session.get("target_memoria_session_id") or "",
             "source": "director",
         })
         await self._broadcast(runtime.session_id, {
             "type": "director_injected",
             "interaction": updated,
-            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
+            "memoria_session_id": session.get("target_memoria_session_id") or "",
         })
         response = {**prefetch, "interaction": updated, "discarded": False}
         if next_prefetch_task is not None:
@@ -1118,16 +1619,40 @@ class DirectorRuntimeManagerMixin:
         decision: dict[str, Any],
         *,
         prefetch_only: bool = False,
+        prepare_only: bool = False,
+        prepare_source: str = "director_prepare",
         after_memoria_callback=None,
     ) -> dict[str, Any]:
         session_id = session["session_id"]
         send_started = time.perf_counter()
         target_session_id = session.get("target_memoria_session_id", "")
+        main_target_session_id = str(target_session_id or "")
+        draft_target_session_id = ""
+        audience_prepare_started_at = datetime.now().isoformat() if prepare_only else ""
+        source_name = (
+            str(prepare_source or "director_prepare")
+            if prepare_only
+            else "director_prefetch" if prefetch_only else "director"
+        )
         target_character_ids = session.get("character_ids", [])
         action = str(decision.get("action") or "continue_topic")
         is_free_talk_action = action in self._POST_PLAN_FREE_TALK_ACTIONS
         prompt = str(decision.get("prompt") or "").strip()
-        has_episode_plan = self._episode_plan_for_session(session) is not None and not is_free_talk_action
+        decision_episode_payload = (
+            decision.get("episode_plan")
+            if isinstance(decision.get("episode_plan"), dict)
+            else {}
+        )
+        episode_plan_mode = str(decision_episode_payload.get("mode") or "").strip()
+        is_audience_gap_turn = (
+            episode_plan_mode in {"audience_gap", "audience_gap_prepare"}
+            or (prepare_only and source_name == "director_audience_prepare")
+        )
+        has_episode_plan = (
+            self._episode_plan_for_session(session) is not None
+            and not is_free_talk_action
+            and not is_audience_gap_turn
+        )
         public_prompt = self._public_director_prompt(action, session, state)
         if action == "opening":
             public_prompt = self._public_director_opening_prompt(session, state)
@@ -1137,11 +1662,6 @@ class DirectorRuntimeManagerMixin:
         elapsed_minutes, elapsed_percent, remaining_minutes = self._session_elapsed(session)
         if not prompt:
             prompt = f"目前適合執行 {action}，請自然延續直播對話，不要提到幕後流程。"
-        decision_episode_payload = (
-            decision.get("episode_plan")
-            if isinstance(decision.get("episode_plan"), dict)
-            else {}
-        )
         interrupt_state = (
             decision_episode_payload.get("interrupt_state")
             if isinstance(decision_episode_payload.get("interrupt_state"), dict)
@@ -1220,14 +1740,18 @@ class DirectorRuntimeManagerMixin:
                     + prompt[:3000]
                 )
         episode_character_records: list[dict[str, Any]] | None = None
-        if has_episode_plan and decision_episode_payload:
-            episode_character_records = self._memoria_client().list_characters()
-        episode_patch, episode_context_text, episode_topic_context = self._episode_plan_external_context_patch(
-            session,
-            state,
-            decision,
-            character_records=episode_character_records,
-        )
+        episode_patch: dict[str, Any] = {}
+        episode_context_text = ""
+        episode_topic_context = ""
+        if not is_audience_gap_turn:
+            if has_episode_plan and decision_episode_payload:
+                episode_character_records = self._memoria_client().list_characters()
+            episode_patch, episode_context_text, episode_topic_context = self._episode_plan_external_context_patch(
+                session,
+                state,
+                decision,
+                character_records=episode_character_records,
+            )
         if episode_context_text:
             context_parts.append(episode_context_text)
         allowed_turn_character_ids: list[str] = []
@@ -1279,7 +1803,7 @@ class DirectorRuntimeManagerMixin:
         presentation_mode = self._presentation_enabled(session)
         if not dialogue_expansion_enabled:
             group_turn_limit = 1
-        elif prefetch_only and presentation_mode:
+        elif (prefetch_only or prepare_only) and presentation_mode:
             group_turn_limit = 1
         elif presentation_mode:
             group_turn_limit = (
@@ -1347,6 +1871,11 @@ class DirectorRuntimeManagerMixin:
                 "group_turn_limit": group_turn_limit,
             },
         }
+        if action in {"closing_super_chat_thanks", "final_closing"}:
+            external_context["turn_control"] = {
+                "final_closing": True,
+                "source_action": action,
+            }
         if presentation_mode:
             external_context["summary"]["presentation_enabled"] = True
             external_context["context_text"] = "\n".join([
@@ -1396,9 +1925,9 @@ class DirectorRuntimeManagerMixin:
         interaction = self.storage.create_interaction(
             {
                 "session_id": session_id,
-                "source": "director_prefetch" if prefetch_only else "director",
-                "priority": 40 if prefetch_only else 50,
-                "status": "prefetching" if prefetch_only else "queued",
+                "source": source_name,
+                "priority": 45 if prepare_only else (40 if prefetch_only else 50),
+                "status": "preparing" if prepare_only else ("prefetching" if prefetch_only else "queued"),
                 "event_ids": audience_event_ids,
                 "memoria_session_id": target_session_id,
                 "character_ids": target_character_ids,
@@ -1406,14 +1935,30 @@ class DirectorRuntimeManagerMixin:
                 "metadata": {
                     "phase": self._interaction_phase_for_session(
                         session_id,
-                        source="director_prefetch" if prefetch_only else "director",
+                        source=source_name,
                         action=action,
                     ),
                     "decision": decision,
                     "prefetch_only": prefetch_only,
+                    "prepare_only": prepare_only,
                 },
             }
         )
+        if prefetch_only:
+            draft_target_session_id = self._prefetch_draft_memoria_session_id(
+                session_id,
+                str(interaction.get("job_id") or ""),
+            )
+            target_session_id = draft_target_session_id
+            interaction = self.storage.update_interaction(
+                interaction["job_id"],
+                memoria_session_id=draft_target_session_id,
+                metadata={
+                    "main_memoria_session_id": main_target_session_id,
+                    "draft_memoria_session_id": draft_target_session_id,
+                    "played_commit_status": "pending",
+                },
+            ) or interaction
         _director_timing_log(
             "send_interaction_created",
             session_id=session_id,
@@ -1421,7 +1966,7 @@ class DirectorRuntimeManagerMixin:
             elapsed_ms=round((time.perf_counter() - send_started) * 1000, 1),
         )
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
-        if not prefetch_only:
+        if not prefetch_only and not prepare_only:
             claim_started = time.perf_counter()
             claimed = await self._claim_interaction_for_execution(runtime, interaction)
             _director_timing_log(
@@ -1435,7 +1980,7 @@ class DirectorRuntimeManagerMixin:
                 return {"interaction": claimed or interaction, "memoria_result": {}}
             interaction = claimed
         cancel_event = threading.Event()
-        if not prefetch_only:
+        if not prefetch_only and not prepare_only:
             runtime.cancel_events[interaction["job_id"]] = cancel_event
         loop = asyncio.get_running_loop()
 
@@ -1447,12 +1992,12 @@ class DirectorRuntimeManagerMixin:
         after_memoria_task = None
 
         def on_stream_result(event: dict[str, Any]) -> None:
-            if prefetch_only:
+            if prefetch_only or prepare_only:
                 future = asyncio.run_coroutine_threadsafe(
                     self.prepare_stream_result(
                         session_id,
                         event,
-                        source="director_prefetch",
+                        source=source_name,
                         interaction_job_id=interaction["job_id"],
                     ),
                     loop,
@@ -1499,9 +2044,14 @@ class DirectorRuntimeManagerMixin:
                 result_message_id=result.get("message_id"),
             )
             result_session_id = str(result.get("session_id") or "")
-            if not prefetch_only and result_session_id and result_session_id != target_session_id:
+            if (
+                not prefetch_only
+                and not prepare_only
+                and result_session_id
+                and result_session_id != target_session_id
+            ):
                 self.storage.update_session_fields(session_id, target_memoria_session_id=result_session_id)
-            if after_memoria_callback and not prefetch_only:
+            if after_memoria_callback and not prefetch_only and not prepare_only:
                 maybe_callback_result = after_memoria_callback(result)
                 if asyncio.iscoroutine(maybe_callback_result):
                     after_memoria_task = asyncio.create_task(maybe_callback_result)
@@ -1529,8 +2079,10 @@ class DirectorRuntimeManagerMixin:
                 status="interrupted",
                 closure_text="先停在這裡，剛剛聊天室有新的問題，我們切過去看。",
                 completed_at=datetime.now().isoformat(),
-                metadata={"discarded": True},
+                metadata={"discarded": True, "prepare_only": bool(prepare_only)},
             )
+            if prepare_only:
+                return {"interaction": updated, "memoria_result": {}}
             await self._broadcast(session_id, {"type": "interaction_interrupted", "interaction": updated})
             return {"interaction": updated, "memoria_result": {}}
         except Exception as exc:
@@ -1556,8 +2108,11 @@ class DirectorRuntimeManagerMixin:
                     "discarded": was_interrupted,
                     "error": str(exc)[:500],
                     "normalized_reason": reason,
+                    "prepare_only": bool(prepare_only),
                 },
             )
+            if prepare_only:
+                return {"interaction": updated, "memoria_result": {}}
             await self._broadcast(
                 session_id,
                 {
@@ -1571,23 +2126,57 @@ class DirectorRuntimeManagerMixin:
         finally:
             runtime.cancel_events.pop(interaction["job_id"], None)
 
-        if prefetch_only:
+        if prefetch_only or prepare_only:
             prepared_clean = [
                 prepared for prepared in prepared_results
                 if isinstance(prepared, dict) and prepared.get("message")
             ]
-            updated = self.storage.update_interaction(
-                interaction["job_id"],
-                status="prefetched",
-                reply_text=str(result.get("reply") or ""),
-                memoria_session_id=str(result.get("session_id") or target_session_id),
-                completed_at=datetime.now().isoformat(),
-                metadata={
+            if prepare_only:
+                current_prepare = self.storage.get_interaction(interaction["job_id"]) or interaction
+                session_live = self._director_audience_prepare_session_live(runtime)
+                still_preparing = str(current_prepare.get("status") or "") == "preparing"
+                if not session_live or not still_preparing:
+                    reason = "session_not_running" if not session_live else "interaction_not_preparing"
+                    self._discard_prepared_items_for_interaction(session_id, interaction["job_id"], reason)
+                    updated = self.storage.update_interaction(
+                        interaction["job_id"],
+                        status="interrupted",
+                        reason=reason,
+                        completed_at=datetime.now().isoformat(),
+                        interrupted_at=datetime.now().isoformat(),
+                        metadata={
+                            "prepare_ready": False,
+                            "prepared_result_count": 0,
+                            "audience_prepare_completed_at": datetime.now().isoformat(),
+                            "audience_prepare_cancelled_reason": reason,
+                        },
+                    )
+                    return {
+                        "interaction": updated or current_prepare,
+                        "memoria_result": result,
+                        "prepared_results": [],
+                        "decision": decision,
+                        "base_state": state,
+                    }
+            update_fields: dict[str, Any] = {
+                "status": "prepared" if prepare_only else "prefetched",
+                "reply_text": str(result.get("reply") or ""),
+                "memoria_session_id": str(result.get("session_id") or target_session_id),
+                "metadata": {
                     "result_message_id": result.get("message_id"),
-                    "prefetch_ready": True,
+                    "prefetch_ready": bool(prefetch_only),
+                    "prepare_ready": bool(prepare_only),
                     "prepared_result_count": len(prepared_clean),
+                    "main_memoria_session_id": main_target_session_id if prefetch_only else "",
+                    "draft_memoria_session_id": draft_target_session_id if prefetch_only else "",
+                    "played_commit_status": "pending" if prefetch_only else "",
+                    "audience_prepare_started_at": audience_prepare_started_at,
+                    "audience_prepare_completed_at": datetime.now().isoformat() if prepare_only else "",
                 },
-            )
+            }
+            if prefetch_only:
+                update_fields["completed_at"] = datetime.now().isoformat()
+            updated = self.storage.update_interaction(interaction["job_id"], **update_fields)
             return {
                 "interaction": updated or interaction,
                 "memoria_result": result,

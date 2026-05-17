@@ -385,9 +385,9 @@ class YouTubeBridgeManager(
         *,
         source: str,
         interaction_job_id: str = "",
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         if not prepared_results:
-            return
+            return []
         session = self.storage.get_session(session_id)
         if not self._presentation_enabled(session):
             for prepared in prepared_results:
@@ -401,8 +401,9 @@ class YouTubeBridgeManager(
                             "source": source,
                         },
                     )
-            return
+            return []
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        presented_items: list[dict[str, Any]] = []
         async with runtime.presentation_sequence_condition:
             presentation_sequence = runtime.presentation_next_sequence
             runtime.presentation_next_sequence += 1
@@ -418,7 +419,7 @@ class YouTubeBridgeManager(
                     message = prepared.get("message") if isinstance(prepared.get("message"), dict) else {}
                     for item in prepared.get("items") or []:
                         if isinstance(item, dict):
-                            await self._present_prepared_item(
+                            presented = await self._present_prepared_item(
                                 session or {},
                                 message,
                                 item,
@@ -426,6 +427,8 @@ class YouTubeBridgeManager(
                                 interaction_job_id=interaction_job_id,
                                 runtime=runtime,
                             )
+                            if isinstance(presented, dict):
+                                presented_items.append(presented)
         finally:
             async with runtime.presentation_sequence_condition:
                 if runtime.presentation_present_sequence == presentation_sequence:
@@ -436,6 +439,7 @@ class YouTubeBridgeManager(
                 else:
                     runtime.presentation_skipped_sequences.add(presentation_sequence)
                 runtime.presentation_sequence_condition.notify_all()
+        return presented_items
 
     async def _prepare_presentation_item(
         self,
@@ -488,7 +492,11 @@ class YouTubeBridgeManager(
                 "error": str(exc)[:500],
             }
         item = self.storage.update_presentation_item(item["item_id"], **update_fields) or item
-        ready_phase = "item_prefetch_ready" if source == "director_prefetch" else "item_ready"
+        ready_phase = (
+            "item_prefetch_ready"
+            if source in {"director_prefetch", "director_audience_prepare"}
+            else "item_ready"
+        )
         await self._emit_presentation_debug(session_id, ready_phase, item, source=source)
         return item
 
@@ -501,7 +509,7 @@ class YouTubeBridgeManager(
         source: str,
         interaction_job_id: str,
         runtime: LiveRuntime,
-    ) -> None:
+    ) -> dict[str, Any]:
         session_id = str(session.get("session_id") or runtime.session_id)
         update_fields: dict[str, Any] = {
             "status": "presenting",
@@ -554,6 +562,7 @@ class YouTubeBridgeManager(
             await self._emit_presentation_debug(session_id, "ack_timeout", item, source=source)
         finally:
             runtime.presentation_ack_events.pop(item["item_id"], None)
+        item = self.storage.get_presentation_item(item["item_id"]) or item
         if item.get("status") != "skipped":
             chat_message = {
                 **message,
@@ -575,6 +584,7 @@ class YouTubeBridgeManager(
                 chat_message,
                 source=source,
             )
+        return item
 
     async def _synthesize_presentation_audio(
         self,

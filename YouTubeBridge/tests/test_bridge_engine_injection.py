@@ -1497,6 +1497,8 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
             "target_memoria_session_id": "mem-a",
             "character_ids": ["host-a", "analyst-b", "skeptic-c"],
             "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
             "auto_inject": True,
             "min_pending_events": 1,
             "max_pending_events": 5,
@@ -1520,19 +1522,35 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
         ready = asyncio.Event()
+        prepared: list[tuple[str, str, dict]] = []
 
         async def forbidden_inject(*_args, **_kwargs):
             raise AssertionError("generic inject_recent should not be called")
 
         async def capture_broadcast(_session_id, payload):
             emitted.append(payload)
-            if payload.get("type") == "director_audience_events_ready":
+            if payload.get("type") == "director_audience_gap_ready":
                 runtime.running = False
                 ready.set()
 
+        async def fake_prepare_next_audience_gap_turn(prepared_runtime, prepared_session, prepared_state, *, decision=None):
+            prepared.append((
+                prepared_runtime.session_id,
+                prepared_session["session_id"],
+                dict(prepared_state),
+            ))
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+            }
+
         monkeypatch.setattr(manager, "inject_recent", forbidden_inject)
         monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
-        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.0)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
         await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
 
@@ -1542,8 +1560,364 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
         assert ready_payload["source"] == "chat"
         assert ready_payload["count"] == 1
         assert ready_payload["interrupted_active"] is False
+        assert [(item[0], item[1]) for item in prepared] == [("live-a", "live-a")]
+        assert prepared[0][2]["metadata"]["audience_prepare_in_flight"] is True
+        gap_ready = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
+        assert gap_ready["interaction"]["job_id"] == "audience-gap-job"
+        assert gap_ready["event_ids"] == [event["id"]]
+        assert gap_ready["source"] == "chat"
         assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"] == ""
     finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_owned_auto_inject_loop_schedules_audience_prepare_without_blocking(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 5,
+            "inject_interval_seconds": 5,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "comment-background-prepare",
+            "message_type": "textMessageEvent",
+            "author_display_name": "星夜旅人",
+            "message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+        events_ready = asyncio.Event()
+        prepare_started = asyncio.Event()
+        release_prepare = asyncio.Event()
+        gap_ready = asyncio.Event()
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+            if payload.get("type") == "director_audience_events_ready":
+                events_ready.set()
+            if payload.get("type") == "director_audience_gap_ready":
+                gap_ready.set()
+
+        async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
+            prepare_started.set()
+            await release_prepare.wait()
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-background-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+            }
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
+
+        task = asyncio.create_task(manager._auto_inject_loop(runtime))
+        await asyncio.wait_for(events_ready.wait(), timeout=1)
+
+        ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_events_ready")
+        assert ready_payload["event_ids"] == [event["id"]]
+        assert prepare_started.is_set()
+        assert not gap_ready.is_set()
+
+        release_prepare.set()
+        await asyncio.wait_for(gap_ready.wait(), timeout=1)
+        gap_ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
+        assert gap_ready_payload["interaction"]["status"] == "prepared"
+        assert gap_ready_payload["event_ids"] == [event["id"]]
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_owned_auto_inject_background_prepare_skips_ready_after_session_stops(monkeypatch):
+    tmp_dir = _tmp_dir()
+    original_sleep = engine_injection.asyncio.sleep
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 5,
+            "inject_interval_seconds": 5,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "comment-stop-before-ready",
+            "message_type": "textMessageEvent",
+            "author_display_name": "星夜旅人",
+            "message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+        prepare_started = asyncio.Event()
+        release_prepare = asyncio.Event()
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+
+        async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
+            prepare_started.set()
+            await release_prepare.wait()
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-stopped-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+            }
+
+        async def stop_after_sleep(_seconds):
+            runtime.running = False
+            await original_sleep(0)
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
+        monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
+
+        await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
+        await asyncio.wait_for(prepare_started.wait(), timeout=1)
+
+        storage.update_session_fields("live-a", status="closing")
+        release_prepare.set()
+        for _ in range(20):
+            metadata = storage.get_director_state("live-a")["metadata"]
+            if metadata.get("audience_prepare_in_flight") is False:
+                break
+            await original_sleep(0.01)
+
+        assert any(
+            payload.get("type") == "director_audience_events_ready"
+            and payload.get("event_ids") == [event["id"]]
+            for payload in emitted
+        )
+        assert not any(payload.get("type") == "director_audience_gap_ready" for payload in emitted)
+        metadata = storage.get_director_state("live-a")["metadata"]
+        assert metadata["audience_prepare_in_flight"] is False
+        assert metadata["last_audience_prepare_error"] == "session_not_running"
+        assert metadata["audience_prepare_cancelled_reason"] == "session_not_running"
+        assert runtime.last_auto_inject_error == "session_not_running"
+    finally:
+        monkeypatch.setattr(engine_injection.asyncio, "sleep", original_sleep)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_owned_auto_inject_loop_does_not_broadcast_gap_ready_when_audience_prepare_fails(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 5,
+            "inject_interval_seconds": 5,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "comment-failed-prepare",
+            "message_type": "textMessageEvent",
+            "author_display_name": "星夜旅人",
+            "message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+        prepare_done = asyncio.Event()
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+
+        async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
+            prepare_done.set()
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-failed-job",
+                    "source": "director_audience_prepare",
+                    "status": "failed",
+                },
+            }
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
+
+        task = asyncio.create_task(manager._auto_inject_loop(runtime))
+        await asyncio.wait_for(prepare_done.wait(), timeout=1)
+        for _ in range(20):
+            metadata = storage.get_director_state("live-a")["metadata"]
+            if metadata.get("audience_prepare_in_flight") is False:
+                break
+            await asyncio.sleep(0.01)
+
+        assert any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
+        assert not any(payload.get("type") == "director_audience_gap_ready" for payload in emitted)
+        assert runtime.last_auto_inject_error == "audience_gap_prepare_failed:failed"
+        metadata = storage.get_director_state("live-a")["metadata"]
+        assert metadata["audience_prepare_in_flight"] is False
+        assert metadata["last_audience_prepare_error"] == "audience_gap_prepare_failed:failed"
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_director_owned_auto_inject_loop_skips_ready_broadcast_when_audience_prepare_row_exists(monkeypatch):
+    tmp_dir = _tmp_dir()
+    original_sleep = engine_injection.asyncio.sleep
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 5,
+            "inject_interval_seconds": 5,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "prepared",
+            "content": "已準備的 audience gap。",
+        })
+        storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "comment-duplicate-guard",
+            "message_type": "textMessageEvent",
+            "author_display_name": "星夜旅人",
+            "message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "想問一下對《怪獸8號》動畫的看法？",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        emitted: list[dict] = []
+
+        async def capture_broadcast(_session_id, payload):
+            emitted.append(payload)
+
+        async def forbidden_prepare(*_args, **_kwargs):
+            raise AssertionError("audience prepare should be guarded before scheduling")
+
+        async def stop_after_sleep(_seconds):
+            runtime.running = False
+            await original_sleep(0)
+
+        monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", forbidden_prepare)
+        monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
+
+        await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
+
+        assert not any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
+        assert not any(payload.get("type") == "director_audience_gap_ready" for payload in emitted)
+        assert runtime.last_auto_inject_at is None
+        assert runtime.last_auto_inject_error is None
+    finally:
+        monkeypatch.setattr(engine_injection.asyncio, "sleep", original_sleep)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
@@ -1567,6 +1941,8 @@ async def test_auto_inject_loop_does_not_broadcast_noop_for_hidden_super_chat(mo
             "target_memoria_session_id": "mem-a",
             "character_ids": ["host-a", "analyst-b", "skeptic-c"],
             "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
             "auto_inject": True,
             "min_pending_events": 1,
             "max_pending_events": 5,
@@ -1602,7 +1978,7 @@ async def test_auto_inject_loop_does_not_broadcast_noop_for_hidden_super_chat(mo
             await original_sleep(0)
 
         monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
-        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.0)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
         monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
 
         await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
@@ -1634,6 +2010,8 @@ async def test_director_owned_auto_inject_waits_while_presentation_is_active(mon
             "target_memoria_session_id": "mem-a",
             "character_ids": ["host-a", "analyst-b", "skeptic-c"],
             "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
             "auto_inject": True,
             "min_pending_events": 1,
             "max_pending_events": 5,
@@ -1672,7 +2050,7 @@ async def test_director_owned_auto_inject_waits_while_presentation_is_active(mon
             await original_sleep(0)
 
         monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
-        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.0)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
         monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
 
         await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
@@ -1735,7 +2113,7 @@ async def test_director_owned_auto_inject_respects_min_pending_for_normal_commen
             await original_sleep(0)
 
         monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
-        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.0)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
         monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
 
         await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
@@ -1748,9 +2126,8 @@ async def test_director_owned_auto_inject_respects_min_pending_for_normal_commen
 
 
 @pytest.mark.asyncio
-async def test_director_owned_auto_inject_blocks_equal_priority_super_chat_at_loop(monkeypatch):
+async def test_director_owned_auto_inject_broadcasts_equal_priority_super_chat_at_loop(monkeypatch):
     tmp_dir = _tmp_dir()
-    original_sleep = engine_injection.asyncio.sleep
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
         storage.upsert_connector({
@@ -1767,6 +2144,8 @@ async def test_director_owned_auto_inject_blocks_equal_priority_super_chat_at_lo
             "target_memoria_session_id": "mem-a",
             "character_ids": ["host-a", "analyst-b", "skeptic-c"],
             "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
             "auto_inject": True,
             "min_pending_events": 1,
             "max_pending_events": 5,
@@ -1801,32 +2180,60 @@ async def test_director_owned_auto_inject_blocks_equal_priority_super_chat_at_lo
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
+        prepared: list[tuple[str, str, dict]] = []
+        ready = asyncio.Event()
 
         async def capture_broadcast(_session_id, payload):
             emitted.append(payload)
+            if payload.get("type") == "director_audience_gap_ready":
+                runtime.running = False
+                ready.set()
 
-        async def stop_after_sleep(_seconds):
-            runtime.running = False
-            await original_sleep(0)
+        async def fake_prepare_next_audience_gap_turn(prepared_runtime, prepared_session, prepared_state, *, decision=None):
+            prepared.append((
+                prepared_runtime.session_id,
+                prepared_session["session_id"],
+                dict(prepared_state),
+            ))
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-sc-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+            }
 
         monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
-        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.0)
-        monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
-        await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
+        task = asyncio.create_task(manager._auto_inject_loop(runtime))
+        await asyncio.wait_for(ready.wait(), timeout=1)
 
-        assert not any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
-        assert runtime.last_auto_inject_at is None
+        assert ready.is_set()
+        ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_events_ready")
+        assert ready_payload["source"] == "super_chat"
+        assert ready_payload["count"] == 1
+        assert ready_payload["interrupted_active"] is False
+        assert [(item[0], item[1]) for item in prepared] == [("live-a", "live-a")]
+        assert prepared[0][2]["metadata"]["audience_prepare_in_flight"] is True
+        gap_ready = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
+        assert gap_ready["interaction"]["job_id"] == "audience-gap-sc-job"
+        assert gap_ready["event_ids"] == [ready_payload["event_ids"][0]]
+        assert gap_ready["source"] == "super_chat"
+        assert runtime.last_auto_inject_at
         assert runtime.last_sc_interrupt_at is None
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     finally:
-        monkeypatch.setattr(engine_injection.asyncio, "sleep", original_sleep)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
-async def test_director_owned_auto_inject_queued_equal_priority_super_chat_at_loop(monkeypatch):
+async def test_director_owned_auto_inject_broadcasts_queued_equal_priority_super_chat_at_loop(monkeypatch):
     tmp_dir = _tmp_dir()
-    original_sleep = engine_injection.asyncio.sleep
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
         storage.upsert_connector({
@@ -1843,6 +2250,8 @@ async def test_director_owned_auto_inject_queued_equal_priority_super_chat_at_lo
             "target_memoria_session_id": "mem-a",
             "character_ids": ["host-a", "analyst-b", "skeptic-c"],
             "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
             "auto_inject": True,
             "min_pending_events": 1,
             "max_pending_events": 5,
@@ -1877,25 +2286,48 @@ async def test_director_owned_auto_inject_queued_equal_priority_super_chat_at_lo
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
+        prepared: list[str] = []
+        ready = asyncio.Event()
 
         async def capture_broadcast(_session_id, payload):
             emitted.append(payload)
+            if payload.get("type") == "director_audience_gap_ready":
+                runtime.running = False
+                ready.set()
 
-        async def stop_after_sleep(_seconds):
-            runtime.running = False
-            await original_sleep(0)
+        async def fake_prepare_next_audience_gap_turn(prepared_runtime, prepared_session, prepared_state, *, decision=None):
+            prepared.append(prepared_runtime.session_id)
+            return {
+                "interaction": {
+                    "job_id": "audience-gap-queued-sc-job",
+                    "source": "director_audience_prepare",
+                    "status": "prepared",
+                },
+            }
 
         monkeypatch.setattr(manager, "_broadcast", capture_broadcast)
-        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.0)
-        monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
-        await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
+        task = asyncio.create_task(manager._auto_inject_loop(runtime))
+        await asyncio.wait_for(ready.wait(), timeout=1)
 
-        assert not any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
-        assert runtime.last_auto_inject_at is None
+        assert ready.is_set()
+        ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_events_ready")
+        assert ready_payload["source"] == "super_chat"
+        assert ready_payload["count"] == 1
+        assert ready_payload["interrupted_active"] is False
+        assert prepared == ["live-a"]
+        gap_ready = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
+        assert gap_ready["interaction"]["job_id"] == "audience-gap-queued-sc-job"
+        assert gap_ready["source"] == "super_chat"
+        assert runtime.last_auto_inject_at
         assert runtime.last_sc_interrupt_at is None
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     finally:
-        monkeypatch.setattr(engine_injection.asyncio, "sleep", original_sleep)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
@@ -2129,7 +2561,7 @@ async def test_director_owned_super_chat_handoff_does_not_interrupt_same_event_b
 
 
 @pytest.mark.asyncio
-async def test_director_owned_auto_inject_interrupts_running_interaction_for_visible_super_chat():
+async def test_director_owned_auto_inject_does_not_interrupt_running_interaction_for_visible_super_chat():
     tmp_dir = _tmp_dir()
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
@@ -2188,11 +2620,11 @@ async def test_director_owned_auto_inject_interrupts_running_interaction_for_vis
 
         assert result["selected_event_ids"] == [visible_sc["id"]]
         assert result["selected_source"] == "super_chat"
-        assert result["interrupted_active"] is True
-        assert runtime.last_sc_interrupt_at
-        interrupted = storage.get_interaction(active["job_id"])
-        assert interrupted["status"] == "interrupt_requested"
-        assert interrupted["reason"] == "higher_priority:super_chat"
+        assert result["interrupted_active"] is False
+        assert runtime.last_sc_interrupt_at is None
+        updated = storage.get_interaction(active["job_id"])
+        assert updated["status"] == "running"
+        assert updated["reason"] == ""
         assert storage.get_events_by_ids("live-a", [visible_sc["id"]])[0]["injected_at"] == ""
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

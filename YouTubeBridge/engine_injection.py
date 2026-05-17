@@ -160,28 +160,7 @@ class InjectionManagerMixin:
         selected_ids = [int(event["id"]) for event in selected if int(event.get("id") or 0)]
         selected_sc = [event for event in selected if str(event.get("priority_class") or "") == "super_chat"]
         selected_source = "super_chat" if selected_sc else ("chat" if selected else "none")
-        active = active if active is not None else self.storage.get_active_interaction(session_id)
         interrupted_active = False
-        incoming_priority = 0
-        if selected_sc:
-            max_tier = max(int(event.get("sc_tier", 0) or 0) for event in selected_sc)
-            incoming_priority = 320 if max_tier >= 3 else 260
-        same_director_batch_running = self._active_director_interaction_matches_events(
-            active,
-            action="reply_super_chat_batch",
-            event_ids=selected_ids,
-        )
-        if (
-            selected_sc
-            and active
-            and active.get("status") == "running"
-            and incoming_priority > int(active.get("priority", 100) or 100)
-            and self._sc_interrupt_allowed(runtime, session)
-            and not same_director_batch_running
-        ):
-            runtime.last_sc_interrupt_at = datetime.now().isoformat()
-            await self.interrupt_session(session_id, reason="higher_priority:super_chat")
-            interrupted_active = True
         return {
             "handled_by_director": True,
             "selected_event_ids": selected_ids,
@@ -236,6 +215,150 @@ class InjectionManagerMixin:
             "interrupted_active": bool(result.get("interrupted_active")),
         }
 
+    def _director_audience_prepare_blocked(
+        self,
+        session_id: str,
+        state: dict[str, Any] | None = None,
+    ) -> bool:
+        current_state = state or self.storage.get_director_state(session_id)
+        metadata = current_state.get("metadata") if isinstance(current_state.get("metadata"), dict) else {}
+        if metadata.get("audience_prepare_in_flight"):
+            return True
+        finder = getattr(self, "_audience_gap_interaction_by_status", None)
+        if callable(finder):
+            return bool(finder(session_id, {"preparing", "prepared", "presenting"}))
+        return False
+
+    def _mark_director_audience_prepare_in_flight(
+        self,
+        session_id: str,
+        *,
+        event_ids: list[int],
+        source: str,
+    ) -> dict[str, Any]:
+        return self.storage.update_director_state(
+            session_id,
+            metadata={
+                "audience_prepare_in_flight": True,
+                "latest_audience_prepare_event_ids": list(event_ids),
+                "latest_audience_prepare_source": source,
+                "last_audience_prepare_error": "",
+            },
+        )
+
+    def _mark_director_audience_prepare_finished(
+        self,
+        session_id: str,
+        *,
+        error: str = "",
+        interaction: dict[str, Any] | None = None,
+        cancelled_reason: str = "",
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "audience_prepare_in_flight": False,
+            "last_audience_prepare_error": error,
+        }
+        if cancelled_reason:
+            metadata["audience_prepare_cancelled_reason"] = cancelled_reason
+        if interaction:
+            metadata["latest_audience_gap_job_id"] = interaction.get("job_id", "")
+        return self.storage.update_director_state(session_id, metadata=metadata)
+
+    def _director_audience_prepare_session_live(self, runtime: LiveRuntime) -> bool:
+        stopped_statuses = {"closing", "stopped", "ended"}
+        if not runtime.running or str(runtime.status or "") in stopped_statuses:
+            return False
+        session = self.storage.get_session(runtime.session_id)
+        if not session or str(session.get("status") or "") in stopped_statuses:
+            return False
+        return True
+
+    async def _run_director_audience_gap_prepare_background(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        event_ids: list[int],
+        source: str,
+        decision: dict[str, Any] | None = None,
+    ) -> None:
+        session_id = runtime.session_id
+        try:
+            prepare_result = await self._prepare_next_audience_gap_turn(
+                runtime,
+                session,
+                state,
+                decision=decision,
+            )
+            interaction = (
+                prepare_result.get("interaction")
+                if isinstance(prepare_result, dict) and isinstance(prepare_result.get("interaction"), dict)
+                else None
+            )
+            status = str((interaction or {}).get("status") or "")
+            if not self._director_audience_prepare_session_live(runtime):
+                error = "session_not_running"
+                runtime.last_auto_inject_error = error
+                if interaction and str(interaction.get("status") or "") in {"preparing", "prepared"}:
+                    self._discard_prepared_items_for_interaction(session_id, interaction.get("job_id", ""), error)
+                    interaction = self.storage.update_interaction(
+                        interaction["job_id"],
+                        status="interrupted",
+                        reason=error,
+                        completed_at=datetime.now().isoformat(),
+                        interrupted_at=datetime.now().isoformat(),
+                        metadata={
+                            "prepare_ready": False,
+                            "audience_prepare_cancelled_reason": error,
+                        },
+                    ) or interaction
+                self._mark_director_audience_prepare_finished(
+                    session_id,
+                    error=error,
+                    interaction=interaction,
+                    cancelled_reason=error,
+                )
+                return
+            if status != "prepared":
+                error = f"audience_gap_prepare_failed:{status or 'none'}"
+                runtime.last_auto_inject_error = error
+                self._mark_director_audience_prepare_finished(
+                    session_id,
+                    error=error,
+                    interaction=interaction,
+                )
+                return
+            runtime.last_auto_inject_error = None
+            self._mark_director_audience_prepare_finished(session_id, interaction=interaction)
+            await self._broadcast(session_id, {
+                "type": "director_audience_gap_ready",
+                "interaction": interaction,
+                "event_ids": event_ids,
+                "source": source,
+            })
+        except asyncio.CancelledError:
+            error = "audience_gap_prepare_cancelled"
+            runtime.last_auto_inject_error = error
+            self._mark_director_audience_prepare_finished(
+                session_id,
+                error=error,
+                cancelled_reason=error,
+            )
+            raise
+        except Exception as exc:  # pragma: no cover - defensive background task guard
+            error = str(exc)
+            runtime.last_auto_inject_error = error
+            self._mark_director_audience_prepare_finished(session_id, error=error)
+            logger.exception("YouTube audience gap prepare error session_id=%s error=%s", session_id, error)
+
+    @staticmethod
+    def _consume_background_task_exception(task: asyncio.Task) -> None:
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return
+
     async def _auto_inject_loop(self, runtime: LiveRuntime) -> None:
         while runtime.running:
             session = self.storage.get_session(runtime.session_id)
@@ -285,34 +408,21 @@ class InjectionManagerMixin:
                         )
                         selected_event_ids = result.get("selected_event_ids", [])
                         selected_source = result.get("selected_source", "none")
-                        interrupted_active = bool(result.get("interrupted_active"))
-                        if not selected_event_ids and not interrupted_active:
+                        if not selected_event_ids:
                             await asyncio.sleep(sleep_seconds)
                             continue
-                        if selected_source == "super_chat" and active_interaction and not interrupted_active:
-                            selected_events = self.storage.get_events_by_ids(
-                                runtime.session_id,
-                                [int(event_id) for event_id in selected_event_ids],
-                                limit=len(selected_event_ids),
-                            )
-                            max_tier = max((int(event.get("sc_tier", 0) or 0) for event in selected_events), default=0)
-                            selected_priority = 320 if max_tier >= 3 else 260
-                            active_priority = int((active or {}).get("priority", 100) or 100)
-                            if selected_priority <= active_priority:
-                                await asyncio.sleep(sleep_seconds)
-                                continue
                         if selected_source != "super_chat" and len(selected_event_ids) < min_pending:
                             await asyncio.sleep(sleep_seconds)
                             continue
-                        runtime.last_auto_inject_at = datetime.now().isoformat()
-                        runtime.last_auto_inject_error = None
-                        await self._broadcast(runtime.session_id, {
-                            "type": "director_audience_events_ready",
-                            "event_ids": selected_event_ids,
-                            "source": selected_source,
-                            "count": len(selected_event_ids),
-                            "interrupted_active": interrupted_active,
-                        })
+                        scheduled = await self._schedule_audience_gap_prepare_if_needed(
+                            runtime,
+                            session,
+                            self.storage.get_director_state(runtime.session_id),
+                            trigger="auto_inject_loop",
+                        )
+                        if not scheduled:
+                            await asyncio.sleep(sleep_seconds)
+                            continue
                         await asyncio.sleep(sleep_seconds)
                         continue
                     selected = self._select_pending_events_for_injection(

@@ -92,6 +92,8 @@ async def run_group_chat_loop(
     discussion_mode = _discussion_mode_for_external_context(extra_session_ctx)
     live_hosting = _live_hosting_for_external_context(extra_session_ctx)
     live_episode_plan = _live_episode_plan_for_external_context(extra_session_ctx)
+    final_closing_hint = _final_closing_hint_for_external_context(extra_session_ctx)
+    current_turn_intent = _router_intent_for_external_context(extra_session_ctx)
 
     for turn_index in range(max_turns):
         if _group_loop_cancel_requested(cancel_event):
@@ -111,13 +113,17 @@ async def run_group_chat_loop(
             discussion_mode=discussion_mode,
             live_hosting=live_hosting,
             live_episode_plan=live_episode_plan,
+            final_closing_hint=final_closing_hint,
             current_turn_instruction=turn_instruction,
+            current_turn_intent=current_turn_intent,
             current_turn_start_index=current_turn_start_index,
         )
         if _group_loop_cancel_requested(cancel_event):
             break
 
         if not route.should_respond or not route.target_character_id:
+            if _is_youtube_live_director_router_intent(current_turn_intent):
+                break
             if turn_index == 0:
                 target_character_id = _fallback_first_turn_target(
                     participants,
@@ -338,6 +344,99 @@ def _live_episode_plan_for_external_context(extra_session_ctx: dict | None) -> d
         return None
     live_episode_plan = external_context.get("live_episode_plan")
     return live_episode_plan if isinstance(live_episode_plan, dict) and live_episode_plan else None
+
+
+def _final_closing_hint_for_external_context(extra_session_ctx: dict | None) -> bool:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return False
+    source = str(external_context.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return False
+    turn_control = external_context.get("turn_control")
+    if not isinstance(turn_control, dict):
+        return False
+    return turn_control.get("final_closing") is True
+
+
+def _router_intent_for_external_context(extra_session_ctx: dict | None) -> dict | None:
+    external_context = _youtube_live_director_external_context(extra_session_ctx)
+    if not external_context:
+        return None
+    summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
+    turn_control = (
+        external_context.get("turn_control")
+        if isinstance(external_context.get("turn_control"), dict)
+        else {}
+    )
+    raw_action = _first_non_empty(
+        external_context.get("raw_action"),
+        external_context.get("action"),
+        summary.get("raw_action"),
+        summary.get("action"),
+        turn_control.get("source_action"),
+    )
+    intent = {"source": "youtube_live_director"}
+    normalized_action = _normalize_youtube_live_router_action(raw_action)
+    if normalized_action:
+        intent["action"] = normalized_action
+    if raw_action:
+        intent["raw_action"] = raw_action
+    event_count = _first_non_empty(external_context.get("event_count"), summary.get("event_count"))
+    if event_count is not None:
+        try:
+            intent["event_count"] = int(event_count)
+        except (TypeError, ValueError):
+            pass
+    source_session_id = _first_non_empty(external_context.get("source_session_id"), summary.get("source_session_id"))
+    if source_session_id:
+        intent["source_session_id"] = source_session_id
+    current_topic = _first_non_empty(external_context.get("current_topic"), summary.get("current_topic"))
+    if current_topic:
+        intent["current_topic"] = current_topic
+    return intent
+
+
+def _youtube_live_director_external_context(extra_session_ctx: dict | None) -> dict | None:
+    if not isinstance(extra_session_ctx, dict):
+        return None
+    nested = extra_session_ctx.get("external_chat_context")
+    candidates = [nested, extra_session_ctx]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("source") or "").strip() == "youtube_live_director":
+            return candidate
+    return None
+
+
+def _normalize_youtube_live_router_action(raw_action: Any) -> str:
+    action = str(raw_action or "").strip()
+    if action == "reply_chat_batch":
+        return "audience_response"
+    if action == "reply_super_chat_batch":
+        return "super_chat_response"
+    return action
+
+
+def _is_youtube_live_director_router_intent(current_turn_intent: dict | None) -> bool:
+    return (
+        isinstance(current_turn_intent, dict)
+        and str(current_turn_intent.get("source") or "").strip() == "youtube_live_director"
+    )
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+            continue
+        return value
+    return None
 
 
 def _compact_prompt_list(value: Any, *, limit: int = 4) -> list[str]:

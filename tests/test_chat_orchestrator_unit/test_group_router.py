@@ -1,5 +1,6 @@
 """Group Router 單元測試。"""
 import json
+from pathlib import Path
 import re
 
 from core.chat_orchestrator.group_router import GROUP_ROUTER_SCHEMA, run_group_router
@@ -94,6 +95,66 @@ def test_explicit_mention_takes_priority_without_llm_call():
     assert result.target_character_id == "char-b"
     assert result.action == "explicit_user_request"
     assert router.called is False
+
+
+def test_human_mention_still_bypasses_without_director_intent():
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "stop",
+    })
+
+    result = run_group_router(
+        [{"role": "user", "content": "@角色B 你怎麼看？"}],
+        _chars(),
+        router,
+        discussion_mode="youtube_live",
+        current_turn_intent={"source": "viewer_chat", "action": "audience_response"},
+    )
+
+    assert result.should_respond is True
+    assert result.target_character_id == "char-b"
+    assert result.action == "explicit_user_request"
+    assert router.called is False
+
+
+def test_youtube_live_director_intent_sanitizes_original_request_and_disables_mention_bypass():
+    router = _Router({
+        "conversation_intent": "group_discussion",
+        "action": "new_speaker_add",
+        "target_character_id": "char-a",
+        "reason": "回應觀眾留言",
+    })
+    director_prose = "請簡短回應剛剛的聊天室留言，接著讓角色彼此補充並自然拉回「四月新番」。@角色B"
+
+    result = run_group_router(
+        [{"role": "user", "content": director_prose}],
+        _chars(),
+        router,
+        discussion_mode="youtube_live",
+        current_turn_intent={
+            "source": "youtube_live_director",
+            "action": "audience_response",
+            "event_count": 2,
+            "source_session_id": "live-a",
+            "current_topic": "四月新番",
+        },
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    turn_state = _extract_turn_state(prompt_text)
+    assert result.action == "new_speaker_add"
+    assert router.called is True
+    assert turn_state["original_user_request"] == "YouTube Live audience response turn"
+    assert turn_state["turn_intent"] == {
+        "source": "youtube_live_director",
+        "action": "audience_response",
+        "event_count": 2,
+        "source_session_id": "live-a",
+        "current_topic": "四月新番",
+    }
+    assert director_prose not in turn_state["original_user_request"]
 
 
 def test_router_can_stop_group_reply():
@@ -545,6 +606,43 @@ def test_youtube_live_group_closing_allows_unspoken_speaker_after_stop_no_new_va
         discussion_mode="youtube_live",
     )
 
+    assert result.should_respond is True
+    assert result.target_character_id == "char-b"
+    assert result.action == "new_speaker_reply_to_ai"
+    assert result.conversation_intent == "continue_group_discussion"
+
+
+def test_youtube_live_final_closing_hint_enables_group_closing_without_phrase_match():
+    router = _Router({
+        "conversation_intent": "single_response",
+        "action": "stop_no_new_value",
+        "target_character_id": None,
+        "reason": "白蓮已完成感謝，可可尚未發言但已無新增資訊需求",
+    })
+
+    result = run_group_router(
+        [
+            {"role": "user", "content": "直播即將收尾，請感謝本場 Super Chat 支持。"},
+            {
+                "role": "assistant",
+                "content": "感謝本場 Super Chat。小貓，妳也該收收心，準備向大家道別了。",
+                "character_id": "char-a",
+                "character_name": "角色A",
+            },
+        ],
+        _chars(),
+        router,
+        last_speaker_id="char-a",
+        honor_mentions=False,
+        bot_turn_index=1,
+        max_bot_turns=2,
+        discussion_mode="youtube_live",
+        final_closing_hint=True,
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    turn_state = _extract_turn_state(prompt_text)
+    assert turn_state["closing_mode"] == "group_closing"
     assert result.should_respond is True
     assert result.target_character_id == "char-b"
     assert result.action == "new_speaker_reply_to_ai"
@@ -1155,6 +1253,13 @@ def test_group_router_schema_uses_action_enum():
     assert "should_respond" not in GROUP_ROUTER_SCHEMA["properties"]
     assert GROUP_ROUTER_SCHEMA["additionalProperties"] is False
     assert "new_speaker_ack" in GROUP_ROUTER_SCHEMA["properties"]["action"]["enum"]
+
+
+def test_group_router_prompt_contract_mentions_turn_intent():
+    source = Path("prompts_default.json").read_text(encoding="utf-8")
+    assert "turn_intent" in source
+    assert "audience_response" in source
+    assert "super_chat_response" in source
 
 
 def _extract_turn_state(prompt_text: str) -> dict:

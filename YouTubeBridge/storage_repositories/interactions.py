@@ -178,6 +178,19 @@ class InteractionRepositoryMixin:
             ).fetchall()
         return [interaction for row in rows if (interaction := self._row_to_interaction(row))]
 
+    def list_audience_prepare_event_ids(self, session_id: str) -> set[int]:
+        covered: set[int] = set()
+        active_statuses = {"preparing", "prepared", "presenting", "completed"}
+        for interaction in self.list_interactions(session_id, limit=500):
+            if interaction.get("source") != "director_audience_prepare":
+                continue
+            if str(interaction.get("status") or "") not in active_statuses:
+                continue
+            for event_id in interaction.get("event_ids") or []:
+                if str(event_id).isdigit():
+                    covered.add(int(event_id))
+        return covered
+
     def _finalize_duplicate_running_rows(
         self,
         conn: sqlite3.Connection,
@@ -407,6 +420,8 @@ class InteractionRepositoryMixin:
                       'queued',
                       'running',
                       'presenting',
+                      'preparing',
+                      'prepared',
                       'prefetching',
                       'prefetched',
                       'interrupt_requested'

@@ -123,6 +123,22 @@ def _normalize_live_hosting(raw_hosting) -> dict:
     return normalized
 
 
+def _normalize_live_turn_control(raw_control) -> dict:
+    if not isinstance(raw_control, dict):
+        return {}
+    normalized = {}
+    if raw_control.get("final_closing") is True:
+        normalized["final_closing"] = True
+    source_action = re.sub(
+        r"[^A-Za-z0-9_.:-]",
+        "_",
+        str(raw_control.get("source_action") or "").strip(),
+    )[:80]
+    if source_action:
+        normalized["source_action"] = source_action
+    return normalized if normalized.get("final_closing") is True else {}
+
+
 def _normalize_live_episode_plan(raw_plan) -> dict:
     if not isinstance(raw_plan, dict):
         return {}
@@ -538,10 +554,12 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
     character_prompt_overrides = {}
     live_hosting = {}
     live_episode_plan = {}
+    turn_control = {}
     if source in YOUTUBE_LIVE_EXTERNAL_SOURCES and _body_declares_youtube_live_scope(body):
         character_prompt_overrides = _normalize_character_prompt_overrides(raw.get("character_prompt_overrides"))
         live_hosting = _normalize_live_hosting(raw.get("live_hosting"))
         live_episode_plan = _normalize_live_episode_plan(raw.get("live_episode_plan"))
+        turn_control = _normalize_live_turn_control(raw.get("turn_control"))
     for key in ("episode_plan_id", "episode_plan_turn_id", "episode_plan_mode"):
         value = raw_summary.get(key)
         if value is not None:
@@ -560,6 +578,8 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         context["live_hosting"] = live_hosting
     if live_episode_plan:
         context["live_episode_plan"] = live_episode_plan
+    if turn_control:
+        context["turn_control"] = turn_control
     return context, summary
 
 

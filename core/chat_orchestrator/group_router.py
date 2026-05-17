@@ -70,7 +70,9 @@ def run_group_router(
     discussion_mode: str = "default",
     live_hosting: dict | None = None,
     live_episode_plan: dict | None = None,
+    final_closing_hint: bool = False,
     current_turn_instruction: str = "",
+    current_turn_intent: dict | None = None,
     current_turn_start_index: int | None = None,
 ) -> GroupRouterResult:
     """根據近期群組上下文選出下一位 AI；無需接話時回傳 should_respond=False。"""
@@ -93,7 +95,21 @@ def run_group_router(
         return GroupRouterResult(False, None, "no participants", "stop_no_new_value")
 
     latest_user_text = str(current_turn_instruction or "").strip() or _latest_user_text(session_messages)
-    mentioned_id = _detect_mention(latest_user_text, participants) if honor_mentions else None
+    normalized_turn_intent = _normalize_turn_intent(current_turn_intent)
+    youtube_live_director_intent = _is_youtube_live_director_intent(
+        normalized_turn_intent,
+        discussion_mode=normalized_discussion_mode,
+    )
+    turn_original_user_request = (
+        _youtube_live_director_turn_label(normalized_turn_intent)
+        if youtube_live_director_intent
+        else latest_user_text
+    )
+    mentioned_id = (
+        _detect_mention(latest_user_text, participants)
+        if honor_mentions and not youtube_live_director_intent
+        else None
+    )
     if mentioned_id:
         return GroupRouterResult(True, mentioned_id, "explicit mention", "explicit_user_request")
 
@@ -124,6 +140,7 @@ def run_group_router(
         participants=participants,
         live_episode_plan=live_episode_plan_context,
         max_bot_turns=max_bot_turns,
+        final_closing_hint=final_closing_hint,
     )
 
     if len(participants) == 1:
@@ -134,6 +151,21 @@ def run_group_router(
             return GroupRouterResult(True, only_id, "single participant repeat", "repeat_speaker_reply_to_ai")
         return GroupRouterResult(True, only_id, "single participant", "new_speaker_ack")
 
+    turn_state = {
+        "original_user_request": turn_original_user_request,
+        "last_speaker": _participant_ref(last_speaker_id, participants),
+        "already_spoken_this_turn": already_spoken_refs,
+        "not_yet_spoken_this_turn": not_yet_spoken_refs,
+        "all_participants_already_spoke_this_turn": all_participants_spoke,
+        "recent_assistant_exchange_this_turn": recent_exchange,
+        "bot_turn_index": max(0, int(bot_turn_index or 0)),
+        "max_bot_turns": max_bot_turns,
+        "remaining_bot_turns_including_next": remaining_bot_turns,
+        "closing_mode": closing_mode,
+    }
+    if normalized_turn_intent is not None:
+        turn_state["turn_intent"] = normalized_turn_intent
+
     prompt = get_prompt_manager().get("group_router_system").format(
         participants_json=json.dumps(participants, ensure_ascii=False, indent=2),
         history_text=_format_previous_context(
@@ -143,18 +175,7 @@ def run_group_router(
             limit=3,
         ),
         turn_state_json=json.dumps(
-            {
-                "original_user_request": latest_user_text,
-                "last_speaker": _participant_ref(last_speaker_id, participants),
-                "already_spoken_this_turn": already_spoken_refs,
-                "not_yet_spoken_this_turn": not_yet_spoken_refs,
-                "all_participants_already_spoke_this_turn": all_participants_spoke,
-                "recent_assistant_exchange_this_turn": recent_exchange,
-                "bot_turn_index": max(0, int(bot_turn_index or 0)),
-                "max_bot_turns": max_bot_turns,
-                "remaining_bot_turns_including_next": remaining_bot_turns,
-                "closing_mode": closing_mode,
-            },
+            turn_state,
             ensure_ascii=False,
             indent=2,
         ),
@@ -231,6 +252,39 @@ def run_group_router(
 
 def _normalize_discussion_mode(value: str | None) -> str:
     return "youtube_live" if str(value or "").strip() == "youtube_live" else "default"
+
+
+def _normalize_turn_intent(value: dict | None) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    return dict(value)
+
+
+def _is_youtube_live_director_intent(turn_intent: dict | None, *, discussion_mode: str) -> bool:
+    if discussion_mode != "youtube_live" or not isinstance(turn_intent, dict):
+        return False
+    return str(turn_intent.get("source") or "").strip() == "youtube_live_director"
+
+
+def _youtube_live_director_turn_label(turn_intent: dict | None) -> str:
+    actions = [
+        str((turn_intent or {}).get(key) or "").strip()
+        for key in ("action", "source_action", "raw_action")
+    ]
+    normalized_actions = {action for action in actions if action}
+    if normalized_actions & {"reply_chat_batch", "audience_response"}:
+        return "YouTube Live audience response turn"
+    if normalized_actions & {"reply_super_chat_batch", "super_chat_response"}:
+        return "YouTube Live Super Chat response turn"
+    if any("final" in action or "closing" in action for action in normalized_actions):
+        if any("final" in action for action in normalized_actions):
+            return "YouTube Live final closing turn"
+        return "YouTube Live closing turn"
+    action = next((action for action in actions if action), "")
+    if action:
+        compact_action = "_".join(action.split())[:80]
+        return f"YouTube Live director turn: {compact_action}"
+    return "YouTube Live director turn"
 
 
 def _youtube_live_group_router_rules(live_hosting: dict | None = None) -> str:
@@ -509,8 +563,13 @@ def _closing_mode_for_turn(
     participants: list[dict],
     live_episode_plan: dict,
     max_bot_turns: int | None,
+    final_closing_hint: bool = False,
 ) -> str:
-    if not _is_final_closing_request(current_turn_instruction, live_episode_plan):
+    if not _is_final_closing_request(
+        current_turn_instruction,
+        live_episode_plan,
+        final_closing_hint=final_closing_hint,
+    ):
         return "none"
     if discussion_mode != "youtube_live" or len(participants) < 2:
         return "single_closing"
@@ -522,7 +581,14 @@ def _closing_mode_for_turn(
     return "group_closing"
 
 
-def _is_final_closing_request(current_turn_instruction: str, live_episode_plan: dict) -> bool:
+def _is_final_closing_request(
+    current_turn_instruction: str,
+    live_episode_plan: dict,
+    *,
+    final_closing_hint: bool = False,
+) -> bool:
+    if final_closing_hint:
+        return True
     if _live_episode_turn_type(live_episode_plan) == "final_closing":
         return True
     text = str(current_turn_instruction or "").strip()

@@ -432,6 +432,34 @@ class MemoriaClient:
         data = response.json()
         return data if isinstance(data, dict) else {}
 
+    def add_assistant_event(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        character_id: str | None = None,
+        character_name: str | None = None,
+        debug_info: dict[str, Any] | None = None,
+        extracted_entities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_auth()
+        response = self.session.post(
+            f"{self.base_url}/session/{session_id}/assistant-event",
+            json={
+                "content": content,
+                "character_id": character_id,
+                "character_name": character_name,
+                "debug_info": debug_info or {},
+                "extracted_entities": extracted_entities,
+            },
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"MemoriaCore assistant event failed: HTTP {response.status_code} {response.text[:500]}")
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
     def generate_prompt_json(
         self,
         *,

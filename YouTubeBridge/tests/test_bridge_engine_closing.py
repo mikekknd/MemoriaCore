@@ -409,6 +409,10 @@ async def test_duration_finalize_runs_closing_super_chat_thanks_before_ending():
         assert "片尾名單" in context_text
         assert "SC觀眾" in context_text
         assert "紅色斗內" in context_text
+        assert closing_call["external_context"]["turn_control"] == {
+            "final_closing": True,
+            "source_action": "closing_super_chat_thanks",
+        }
         assert "直播導播 action=closing_super_chat_thanks" not in closing_call["display_content"]
         director_state = storage.get_director_state("live-a")
         assert director_state["director_enabled"] is False

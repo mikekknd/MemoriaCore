@@ -150,6 +150,7 @@ class RuntimeLifecycleManagerMixin:
             runtime.last_error = None
             runtime.last_auto_inject_error = None
             runtime.running = True
+            runtime.audience_gap_prepare_task = None
             runtime.task = asyncio.create_task(self._poll_loop(runtime)) if runtime.mode == "youtube" else None
             runtime.inject_task = asyncio.create_task(self._auto_inject_loop(runtime))
             if session.get("auto_test_events_enabled"):
@@ -210,6 +211,12 @@ class RuntimeLifecycleManagerMixin:
                     await runtime.safety_task
                 except asyncio.CancelledError:
                     pass
+            if runtime and runtime.audience_gap_prepare_task:
+                runtime.audience_gap_prepare_task.cancel()
+                try:
+                    await runtime.audience_gap_prepare_task
+                except asyncio.CancelledError:
+                    pass
             if runtime:
                 runtime.status = "stopped"
                 runtime.task = None
@@ -218,6 +225,7 @@ class RuntimeLifecycleManagerMixin:
                 runtime.director_kickoff_task = None
                 runtime.test_event_task = None
                 runtime.safety_task = None
+                runtime.audience_gap_prepare_task = None
                 self.storage.update_director_state(session_id, status="stopped")
             self.storage.finalize_incomplete_interactions(
                 session_id,
@@ -306,4 +314,5 @@ class RuntimeLifecycleManagerMixin:
             await self._cancel_runtime_task(runtime, "inject_task")
         await self._cancel_runtime_task(runtime, "director_task")
         await self._cancel_runtime_task(runtime, "director_kickoff_task")
+        await self._cancel_runtime_task(runtime, "audience_gap_prepare_task")
         await self._cancel_runtime_task(runtime, "test_event_task")

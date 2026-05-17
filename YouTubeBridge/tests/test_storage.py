@@ -528,6 +528,52 @@ def test_prefetch_interaction_is_active_until_consumed():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_finalize_incomplete_interactions_clears_audience_gap_prepare_statuses():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a"],
+        })
+        preparing = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "status": "preparing",
+            "metadata": {"prepare_only": True},
+        })
+        prepared = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "status": "prepared",
+            "metadata": {"prepare_only": True},
+        })
+
+        finalized = storage.finalize_incomplete_interactions(
+            "live-a",
+            reason="test_cleanup",
+            metadata={"cleanup": True},
+        )
+
+        finalized_ids = {item["job_id"] for item in finalized}
+        assert {preparing["job_id"], prepared["job_id"]} <= finalized_ids
+        for job_id in finalized_ids:
+            interaction = storage.get_interaction(job_id)
+            assert interaction["status"] == "interrupted"
+            assert interaction["reason"] == "test_cleanup"
+            assert interaction["completed_at"]
+            assert interaction["metadata"]["cleanup"] is True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_single_connector_collapses_existing_connectors_and_sessions():
     tmp_dir = _tmp_dir()
     try:

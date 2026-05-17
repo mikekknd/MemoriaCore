@@ -162,6 +162,14 @@ class SessionSystemEventRequest(BaseModel):
     debug_info: dict[str, Any] = Field(default_factory=dict)
 
 
+class SessionAssistantEventRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+    character_id: Optional[str] = None
+    character_name: Optional[str] = None
+    debug_info: dict[str, Any] = Field(default_factory=dict)
+    extracted_entities: Optional[list[str]] = None
+
+
 class BlockUpdateRequest(BaseModel):
     new_overview: str
 
