@@ -186,6 +186,27 @@ class PresentationRepositoryMixin:
             ).fetchall()
         return [item for row in rows if (item := self._row_to_presentation_item(row))]
 
+    def list_unacked_failed_presentation_items(
+        self,
+        session_id: str,
+        *,
+        limit: int = 500,
+    ) -> list[dict]:
+        limit = max(1, min(int(limit or 500), 500))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM live_presentation_items
+                WHERE session_id = ?
+                  AND status = 'failed'
+                  AND COALESCE(acked_at, '') = ''
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [item for row in rows if (item := self._row_to_presentation_item(row))]
+
     def list_presented_messages(self, session_id: str, *, limit: int = 120) -> list[dict]:
         items = self.list_presentation_items(
             session_id,

@@ -68,6 +68,301 @@ class ClosingManagerMixin:
             lines.append(f"感謝 {author} 的 {amount_text}SC{suffix}")
         return lines
 
+    async def _drain_live_session_before_closing(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        timeout_seconds: float = 180.0,
+    ) -> dict[str, Any]:
+        runtime.graceful_closing_requested = True
+        runtime.accepting_audience_events = False
+        runtime.stop_after_current_turn = True
+        runtime.drain_started_at = datetime.now().isoformat()
+        if runtime.audience_preprocess_wake:
+            runtime.audience_preprocess_wake.set()
+
+        def ready_prepared_items() -> list[dict[str, Any]]:
+            finder = getattr(self, "_ready_prepared_items_for_session", None)
+            if callable(finder):
+                return finder(runtime.session_id)
+            return []
+
+        def pending_presentation_items() -> list[dict[str, Any]]:
+            presenting = self.storage.list_presentation_items(
+                runtime.session_id,
+                statuses={"presenting"},
+                limit=500,
+            )
+            failed_finder = getattr(self.storage, "list_unacked_failed_presentation_items", None)
+            if callable(failed_finder):
+                unacked_failed = failed_finder(runtime.session_id, limit=500)
+            else:
+                unacked_failed = [
+                    item
+                    for item in self.storage.list_presentation_items(
+                        runtime.session_id,
+                        statuses={"failed"},
+                        limit=500,
+                    )
+                    if not str(item.get("acked_at") or "").strip()
+                ]
+            return presenting + unacked_failed
+
+        def active_generation(active: dict[str, Any] | None, ready_items: list[dict[str, Any]]) -> dict[str, Any] | None:
+            if not active:
+                return None
+            ready_job_ids = {
+                str(item.get("interaction_job_id") or "")
+                for item in ready_items
+                if str(item.get("interaction_job_id") or "")
+            }
+            status = str(active.get("status") or "")
+            job_id = str(active.get("job_id") or "")
+            if status in {"prepared", "prefetched"} and job_id in ready_job_ids:
+                return None
+            return active
+
+        def has_ready_prefetch(ready_items: list[dict[str, Any]]) -> bool:
+            return any(
+                str((item.get("metadata") or {}).get("source") or "") == "director_prefetch"
+                for item in ready_items
+            )
+
+        def ready_item_block_reason(item: dict[str, Any]) -> str:
+            source = str((item.get("metadata") or {}).get("source") or "")
+            job_id = str(item.get("interaction_job_id") or "")
+            if not job_id:
+                return "closing_drain_missing_ready_interaction"
+            interaction = self.storage.get_interaction(job_id)
+            if not interaction:
+                return "closing_drain_missing_ready_interaction"
+            status = str(interaction.get("status") or "")
+            expected_status = {
+                "director_audience_prepare": "prepared",
+                "director_prefetch": "prefetched",
+            }.get(source)
+            if expected_status and status != expected_status:
+                return f"closing_drain_invalid_ready_interaction_status:{status or 'missing'}"
+            return ""
+
+        def classify_ready_items(ready_items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], str]]]:
+            valid: list[dict[str, Any]] = []
+            blocked: list[tuple[dict[str, Any], str]] = []
+            for item in ready_items:
+                reason = ready_item_block_reason(item)
+                if reason:
+                    blocked.append((item, reason))
+                else:
+                    valid.append(item)
+            return valid, blocked
+
+        def blocked_result(
+            blocked_items: list[tuple[dict[str, Any], str]],
+            *,
+            active_blocker: dict[str, Any] | None,
+            presenting: list[dict[str, Any]],
+            ready_prepared_count: int,
+        ) -> dict[str, Any]:
+            reasons: list[str] = []
+            for item, reason in blocked_items:
+                if reason not in reasons:
+                    reasons.append(reason)
+                self.storage.update_presentation_item(
+                    item["item_id"],
+                    status="cancelled",
+                    error=reason,
+                )
+            return {
+                "status": "blocked",
+                "active_job_id": str((active_blocker or {}).get("job_id") or ""),
+                "presenting_count": len(presenting),
+                "ready_prepared_count": ready_prepared_count,
+                "blocked_ready_prepared_count": len(blocked_items),
+                "blocked_ready_reasons": reasons,
+            }
+
+        async def wait_remaining(awaitable) -> bool:
+            remaining = (deadline - datetime.now()).total_seconds()
+            if remaining <= 0:
+                awaitable.close()
+                return False
+            try:
+                await asyncio.wait_for(awaitable, timeout=max(0.01, remaining))
+            except asyncio.TimeoutError:
+                return False
+            return True
+
+        def timeout_result() -> dict[str, Any]:
+            active = self.storage.get_active_interaction(runtime.session_id)
+            ready_prepared = ready_prepared_items()
+            active_blocker = active_generation(active, ready_prepared)
+            deferred_count = sum(
+                1
+                for item in ready_prepared
+                if str(item.get("item_id") or "") in deferred_ready_item_ids
+            )
+            result = {
+                "status": "timeout",
+                "active_job_id": str((active_blocker or {}).get("job_id") or ""),
+                "presenting_count": len(pending_presentation_items()),
+                "ready_prepared_count": len(ready_prepared),
+            }
+            if deferred_count:
+                result["deferred_ready_prepared_count"] = deferred_count
+            return result
+
+        async def present_ready_prepared(ready_items: list[dict[str, Any]]) -> None:
+            if has_ready_prefetch(ready_items):
+                await self._present_ready_prefetch_for_closing_drain(runtime, session, ready_items)
+                return
+            state = self.storage.get_director_state(runtime.session_id)
+            await self._present_ready_audience_batch_after_turn(runtime, session, state)
+
+        deadline = datetime.now() + timedelta(seconds=max(0.01, timeout_seconds))
+        deferred_ready_item_ids: set[str] = set()
+        while True:
+            active = self.storage.get_active_interaction(runtime.session_id)
+            raw_ready_prepared = ready_prepared_items()
+            ready_prepared, blocked_ready = classify_ready_items(raw_ready_prepared)
+            active_blocker = active_generation(active, ready_prepared)
+            presenting = pending_presentation_items()
+            if blocked_ready and not ready_prepared and not active_blocker and not presenting:
+                return blocked_result(
+                    blocked_ready,
+                    active_blocker=active_blocker,
+                    presenting=presenting,
+                    ready_prepared_count=len(raw_ready_prepared),
+                )
+            if not active_blocker and not presenting and not ready_prepared:
+                return {
+                    "status": "drained",
+                    "active_job_id": "",
+                    "presenting_count": 0,
+                    "ready_prepared_count": 0,
+                }
+            if datetime.now() >= deadline:
+                return timeout_result()
+            if not active_blocker and ready_prepared and not presenting:
+                ready_ids_before = {
+                    str(item.get("item_id") or "")
+                    for item in ready_prepared
+                    if str(item.get("item_id") or "")
+                }
+                if ready_ids_before and ready_ids_before.issubset(deferred_ready_item_ids):
+                    remaining = (deadline - datetime.now()).total_seconds()
+                    await asyncio.sleep(max(0.01, min(0.5, remaining)))
+                    continue
+                if not await wait_remaining(present_ready_prepared(ready_prepared)):
+                    return timeout_result()
+                ready_ids_after = {
+                    str(item.get("item_id") or "")
+                    for item in ready_prepared_items()
+                    if str(item.get("item_id") or "")
+                }
+                if ready_ids_after == ready_ids_before:
+                    deferred_ready_item_ids.update(ready_ids_before)
+                    continue
+                continue
+            remaining = (deadline - datetime.now()).total_seconds()
+            await asyncio.sleep(max(0.01, min(0.5, remaining)))
+
+    async def _present_ready_prefetch_for_closing_drain(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        ready_items: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        job_ids: list[str] = []
+        for item in ready_items:
+            if str((item.get("metadata") or {}).get("source") or "") != "director_prefetch":
+                continue
+            job_id = str(item.get("interaction_job_id") or "")
+            if job_id and job_id not in job_ids:
+                job_ids.append(job_id)
+        for job_id in job_ids:
+            interaction = self.storage.get_interaction(job_id)
+            if not interaction:
+                continue
+            if str(interaction.get("source") or "") != "director_prefetch":
+                continue
+            if str(interaction.get("status") or "") != "prefetched":
+                continue
+            prepared_results = self._prepared_results_for_interaction(
+                runtime.session_id,
+                interaction,
+                require_complete=True,
+            )
+            if not prepared_results:
+                continue
+            if hasattr(self.storage, "update_interaction_if_status"):
+                started = self.storage.update_interaction_if_status(
+                    job_id,
+                    "prefetched",
+                    status="presenting",
+                )
+            else:
+                started = self.storage.update_interaction(job_id, status="presenting")
+            if not started or str(started.get("status") or "") != "presenting":
+                continue
+            await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
+            await self.present_prepared_stream_results(
+                runtime.session_id,
+                prepared_results,
+                source="director",
+                interaction_job_id=job_id,
+            )
+            visible_results = self._visible_prepared_results(session, prepared_results)
+            played_item_count = self._prepared_result_item_count(visible_results)
+            if played_item_count > 0 and callable(getattr(self, "_commit_prefetched_played_results", None)):
+                commit_result = self._commit_prefetched_played_results(
+                    session,
+                    started,
+                    visible_results,
+                    {
+                        "session_id": started.get("memoria_session_id") or "",
+                        "reply": started.get("reply_text") or "",
+                    },
+                )
+            else:
+                commit_result = {"status": "skipped", "reason": "no_played_items", "committed_count": 0}
+            interaction_metadata = {
+                "prefetch_consumed": True,
+                "prefetch_consumed_during_closing_drain": True,
+                "played_item_count": played_item_count,
+                "played_commit_status": str(commit_result.get("status") or "skipped"),
+                "played_commit_count": int(commit_result.get("committed_count") or 0),
+            }
+            if commit_result.get("error"):
+                interaction_metadata["played_commit_error"] = str(commit_result.get("error") or "")[:500]
+            if commit_result.get("reason"):
+                interaction_metadata["played_commit_reason"] = str(commit_result.get("reason") or "")
+            if hasattr(self.storage, "update_interaction_if_status"):
+                completed = self.storage.update_interaction_if_status(
+                    job_id,
+                    "presenting",
+                    status="completed",
+                    reply_text=str(started.get("reply_text") or ""),
+                    completed_at=datetime.now().isoformat(),
+                    metadata=interaction_metadata,
+                )
+            else:
+                completed = self.storage.update_interaction(
+                    job_id,
+                    status="completed",
+                    reply_text=str(started.get("reply_text") or ""),
+                    completed_at=datetime.now().isoformat(),
+                    metadata=interaction_metadata,
+                )
+            await self._broadcast(runtime.session_id, {
+                "type": "interaction_completed",
+                "interaction": completed or started,
+                "memoria_session_id": session.get("target_memoria_session_id") or "",
+                "source": "director",
+            })
+            return completed or started
+        return None
+
     @staticmethod
     def _is_main_phase_event(event: dict[str, Any]) -> bool:
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
@@ -139,6 +434,9 @@ class ClosingManagerMixin:
                 return
             started_at = datetime.now().isoformat()
             runtime.status = "closing"
+            runtime.graceful_closing_requested = True
+            runtime.accepting_audience_events = False
+            runtime.stop_after_current_turn = True
             self.storage.update_session_fields(
                 runtime.session_id,
                 status="closing",
@@ -162,8 +460,19 @@ class ClosingManagerMixin:
                     "message": "planned duration reached; starting graceful live closing",
                 },
             )
-            await self._wait_for_active_interaction_before_duration_closing(runtime)
-            duration_closing_result = await self._run_duration_closing_turn(runtime, session)
+            active_cleared = await self._wait_for_active_interaction_before_duration_closing(runtime)
+            drain_timeout_seconds = 180.0
+            if active_cleared:
+                duration_closing_result = await self._run_duration_closing_turn(runtime, session)
+            else:
+                duration_closing_result = {
+                    "status": "skipped",
+                    "reason": "active_wait_timeout",
+                }
+                drain_timeout_seconds = max(
+                    0.01,
+                    float(DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS),
+                )
             finalized = await self._finalize_live_session(
                 runtime,
                 self.storage.get_session(runtime.session_id) or session,
@@ -171,6 +480,7 @@ class ClosingManagerMixin:
                 closing_message="planned duration reached; closing live session",
                 ended_message="planned duration reached",
                 metadata={"duration_closing": duration_closing_result},
+                drain_timeout_seconds=drain_timeout_seconds,
             )
             try:
                 await self._run_auto_finalize_archive_callback(
@@ -240,6 +550,7 @@ class ClosingManagerMixin:
         closing_message: str,
         ended_message: str,
         metadata: dict[str, Any] | None = None,
+        drain_timeout_seconds: float = 180.0,
     ) -> dict[str, Any]:
         if runtime.status == "ended" and session.get("status") == "ended":
             director_metadata = self.storage.get_director_state(runtime.session_id).get("metadata") or {}
@@ -250,14 +561,17 @@ class ClosingManagerMixin:
                 "closing_safety_resolution": director_metadata.get("closing_safety_resolution"),
             }
         runtime.status = "closing"
-        runtime.running = False
+        runtime.graceful_closing_requested = True
+        runtime.accepting_audience_events = False
+        runtime.stop_after_current_turn = True
         self.storage.update_session_fields(
             runtime.session_id,
             status="closing",
             auto_inject=False,
             auto_test_events_enabled=False,
         )
-        await self._stop_runtime_background_tasks_for_closing(runtime)
+        await self._cancel_runtime_task(runtime, "task")
+        await self._cancel_runtime_task(runtime, "test_event_task")
         await self._broadcast(
             runtime.session_id,
             {
@@ -266,7 +580,17 @@ class ClosingManagerMixin:
                 "message": closing_message,
             },
         )
-        await self._interrupt_active_generation_for_closing(runtime)
+        drain_result = await self._drain_live_session_before_closing(
+            runtime,
+            session,
+            timeout_seconds=drain_timeout_seconds,
+        )
+        runtime.running = False
+        await self._cancel_runtime_task(runtime, "inject_task")
+        await self._cancel_runtime_task(runtime, "audience_preprocess_task")
+        await self._cancel_runtime_task(runtime, "audience_gap_prepare_task")
+        await self._cancel_runtime_task(runtime, "director_task")
+        await self._cancel_runtime_task(runtime, "director_kickoff_task")
         safety_closing_result = await self._resolve_pending_safety_for_closing(runtime.session_id)
         closing_result = None
         if session.get("auto_sc_thanks_on_finalize", True):
@@ -319,6 +643,7 @@ class ClosingManagerMixin:
             metadata={
                 **(metadata or {}),
                 "finalized_by": finalized_by,
+                "graceful_drain": drain_result,
                 "closing_super_chat_thanks": closing_result,
                 "final_closing": final_closing_result,
                 "closing_safety_resolution": safety_closing_result,
@@ -353,14 +678,14 @@ class ClosingManagerMixin:
             "closing_safety_resolution": safety_closing_result,
         }
 
-    async def _wait_for_active_interaction_before_duration_closing(self, runtime: LiveRuntime) -> None:
+    async def _wait_for_active_interaction_before_duration_closing(self, runtime: LiveRuntime) -> bool:
         last_job_id = ""
         wait_started_at = datetime.now()
         deadline = wait_started_at + timedelta(seconds=max(0.0, float(DURATION_CLOSING_ACTIVE_WAIT_TIMEOUT_SECONDS)))
         while runtime.running and runtime.status == "closing":
             active = self.storage.get_active_interaction(runtime.session_id)
             if not active:
-                return
+                return True
             now = datetime.now()
             job_id = str(active.get("job_id") or "")
             if now >= deadline:
@@ -375,11 +700,7 @@ class ClosingManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
-                await self._interrupt_active_generation_for_closing(
-                    runtime,
-                    timeout_seconds=DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS,
-                )
-                return
+                return False
             if job_id != last_job_id:
                 last_job_id = job_id
                 director_state = self.storage.update_director_state(
@@ -393,6 +714,7 @@ class ClosingManagerMixin:
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": director_state})
             await asyncio.sleep(max(0.01, float(DURATION_CLOSING_ACTIVE_WAIT_POLL_SECONDS)))
+        return False
 
     async def _run_duration_closing_turn(
         self,
