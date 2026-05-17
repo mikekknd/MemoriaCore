@@ -1232,7 +1232,7 @@ async def test_injected_episode_plan_comments_resume_next_planned_turn():
             "connector_id": "yt-main",
             "target_memoria_session_id": "mem-a",
             "character_ids": ["host-a", "analyst-b", "skeptic-c"],
-            "presentation_enabled": True,
+            "presentation_enabled": False,
         })
         plan = sample_plan()
         storage.upsert_live_episode_plan(plan)
@@ -1528,6 +1528,7 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
             "status": "active",
         })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: False)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
@@ -1582,6 +1583,75 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
 
 
 @pytest.mark.asyncio
+async def test_auto_inject_loop_preprocessing_wakes_worker_without_prepare_or_inject(monkeypatch):
+    tmp_dir = _tmp_dir()
+    original_sleep = engine_injection.asyncio.sleep
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b", "skeptic-c"],
+            "episode_plan_id": plan["plan_id"],
+            "status": "running",
+            "presentation_enabled": True,
+            "auto_inject": True,
+            "min_pending_events": 1,
+            "max_pending_events": 5,
+            "inject_interval_seconds": 5,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "comment-preprocess-wake",
+            "message_type": "textMessageEvent",
+            "author_display_name": "星夜旅人",
+            "message_text": "這段想補充一下",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "safe_message_text": "這段想補充一下",
+            "status": "active",
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        runtime.audience_preprocess_wake.clear()
+        manager._runtimes["live-a"] = runtime
+
+        async def forbidden_prepare(*_args, **_kwargs):
+            raise AssertionError("preprocessing auto loop must not call director-owned prepare")
+
+        async def forbidden_inject(*_args, **_kwargs):
+            raise AssertionError("preprocessing auto loop must not call legacy inject")
+
+        async def stop_after_sleep(_seconds):
+            runtime.running = False
+            await original_sleep(0)
+
+        monkeypatch.setattr(manager, "_prepare_director_owned_auto_inject", forbidden_prepare)
+        monkeypatch.setattr(manager, "inject_recent", forbidden_inject)
+        monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
+        monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
+
+        await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
+
+        assert runtime.audience_preprocess_wake.is_set()
+        assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"] == ""
+    finally:
+        monkeypatch.setattr(engine_injection.asyncio, "sleep", original_sleep)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_owned_auto_inject_loop_schedules_audience_prepare_without_blocking(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
@@ -1621,6 +1691,7 @@ async def test_director_owned_auto_inject_loop_schedules_audience_prepare_withou
             "status": "active",
         })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: False)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
@@ -1713,6 +1784,7 @@ async def test_director_owned_auto_inject_background_prepare_skips_ready_after_s
             "status": "active",
         })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: False)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
@@ -1809,6 +1881,7 @@ async def test_director_owned_auto_inject_loop_does_not_broadcast_gap_ready_when
             "status": "active",
         })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: False)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
@@ -2187,6 +2260,7 @@ async def test_director_owned_auto_inject_broadcasts_equal_priority_super_chat_a
             "status": "active",
         })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: False)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
@@ -2293,6 +2367,7 @@ async def test_director_owned_auto_inject_broadcasts_queued_equal_priority_super
             "status": "active",
         })
         manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeSafetyMemoriaClient)
+        monkeypatch.setattr(manager, "_audience_preprocessing_enabled", lambda _session: False)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
@@ -2819,3 +2894,269 @@ async def test_super_chat_enters_audience_queue_without_interrupting_active_plan
         assert result["selected_source"] == "super_chat"
         assert result["selected_event_ids"] == [event["id"]]
         assert storage.get_interaction(active["job_id"])["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_super_chat_routes_to_preprocessing_queue_when_enabled(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "episode_plan_id": plan["plan_id"],
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            metadata={"planned_state": initial_planned_state(plan)},
+        )
+        active = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "event_ids": [],
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "planned running",
+            "metadata": {},
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "sc-route-1",
+            "author_display_name": "SC viewer",
+            "message_text": "SC question",
+            "priority_class": "super_chat",
+            "amount_display_string": "NT$150",
+            "sc_tier": 3,
+            "status": "active",
+        })
+        storage.update_event_safety(
+            int(event["id"]),
+            status="completed",
+            label="clean",
+            safe_message_text="SC question",
+            safety_summary="clean",
+            reason="test",
+            confidence=1.0,
+        )
+        manager = YouTubeBridgeManager(storage)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        async def fail_interrupt(*_args, **_kwargs):
+            raise AssertionError("inject_recent must not interrupt in preprocessing mode")
+
+        monkeypatch.setattr(manager, "interrupt_session", fail_interrupt)
+        result = await manager.inject_recent(
+            "live-a",
+            event_ids=[event["id"]],
+            source="super_chat",
+            priority=320,
+        )
+
+        assert result["interaction"]["status"] == "queued_for_audience_preprocessing"
+        assert result["summary"]["event_ids"] == [event["id"]]
+        assert storage.get_interaction(active["job_id"])["status"] == "running"
+        assert runtime.audience_preprocess_wake.is_set()
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_preprocessing_does_not_queue_when_runtime_stopped():
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "episode_plan_id": plan["plan_id"],
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            metadata={"planned_state": initial_planned_state(plan)},
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "stopped-runtime-comment",
+            "author_display_name": "viewer",
+            "message_text": "runtime stopped question",
+            "priority_class": "chat",
+            "status": "active",
+        })
+        storage.update_event_safety(
+            int(event["id"]),
+            status="completed",
+            label="clean",
+            safe_message_text="runtime stopped question",
+            safety_summary="clean",
+            reason="test",
+            confidence=1.0,
+        )
+
+        class ReplyClient:
+            def chat_stream_sync(self, **kwargs):
+                return {
+                    "session_id": kwargs.get("session_id") or "mem-a",
+                    "message_id": 701,
+                    "reply": "handled by legacy inject",
+                }
+
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=ReplyClient)
+        runtime = LiveRuntime(session_id="live-a", running=False, status="stopped")
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager.inject_recent(
+            "live-a",
+            event_ids=[event["id"]],
+            source="manual_inject",
+            priority=200,
+        )
+
+        assert result["interaction"]["status"] != "queued_for_audience_preprocessing"
+        assert runtime.audience_preprocess_wake.is_set() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_status", ["closing", "ended"])
+async def test_inject_recent_preprocessing_preserves_closing_session_error(session_status):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": session_status,
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "episode_plan_id": plan["plan_id"],
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            metadata={"planned_state": initial_planned_state(plan)},
+        )
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": f"{session_status}-comment",
+            "author_display_name": "viewer",
+            "message_text": "closing question",
+            "priority_class": "chat",
+            "status": "active",
+        })
+        storage.update_event_safety(
+            int(event["id"]),
+            status="completed",
+            label="clean",
+            safe_message_text="closing question",
+            safety_summary="clean",
+            reason="test",
+            confidence=1.0,
+        )
+        manager = YouTubeBridgeManager(storage)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        with pytest.raises(ValueError, match="closing/ended"):
+            await manager.inject_recent(
+                "live-a",
+                event_ids=[event["id"]],
+                source="manual_inject",
+                priority=200,
+            )
+
+        assert runtime.audience_preprocess_wake.is_set() is False
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_preprocessing_requested_event_ids_drive_next_prepare_selection():
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        plan = sample_plan()
+        storage.upsert_live_episode_plan(plan)
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "episode_plan_id": plan["plan_id"],
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "max_pending_events": 1,
+        })
+        storage.update_director_state(
+            "live-a",
+            director_enabled=True,
+            metadata={"planned_state": initial_planned_state(plan)},
+        )
+        backlog = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "backlog-first",
+            "author_display_name": "viewer 1",
+            "message_text": "older backlog question",
+            "priority_class": "chat",
+            "status": "active",
+        })
+        target = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "target-second",
+            "author_display_name": "viewer 2",
+            "message_text": "target queued question?",
+            "priority_class": "chat",
+            "status": "active",
+        })
+        for event in (backlog, target):
+            storage.update_event_safety(
+                int(event["id"]),
+                status="completed",
+                label="clean",
+                safe_message_text=str(event["message_text"]),
+                safety_summary="clean",
+                reason="test",
+                confidence=1.0,
+            )
+        manager = YouTubeBridgeManager(storage)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager.inject_recent(
+            "live-a",
+            event_ids=[target["id"]],
+            source="manual_inject",
+            priority=200,
+        )
+        state = storage.get_director_state("live-a")
+        decision = manager._episode_plan_next_audience_prepare_decision(
+            storage.get_session("live-a"),
+            state,
+        )
+
+        assert result["interaction"]["status"] == "queued_for_audience_preprocessing"
+        assert state["metadata"]["audience_preprocess_requested_event_ids"] == [target["id"]]
+        assert decision["episode_plan"]["interrupt_state"]["source_event_ids"] == [target["id"]]

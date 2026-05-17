@@ -1150,6 +1150,47 @@ class EpisodePlanManagerMixin:
         normal.sort(key=lambda item: int(item.get("id", 0) or 0))
         return normal[:max_events]
 
+    def _episode_preprocess_requested_event_batch(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        raw_ids = metadata.get("audience_preprocess_requested_event_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return []
+        requested_ids: list[int] = []
+        for event_id in raw_ids:
+            try:
+                parsed = int(event_id)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0 and parsed not in requested_ids:
+                requested_ids.append(parsed)
+        if not requested_ids:
+            return []
+        event_by_id = {
+            int(event.get("id") or 0): event
+            for event in events
+            if int(event.get("id") or 0)
+        }
+        requested_events = [
+            event_by_id[event_id]
+            for event_id in requested_ids
+            if event_id in event_by_id
+        ]
+        if not requested_events:
+            self.storage.update_director_state(session["session_id"], metadata={
+                "audience_preprocess_requested_event_ids": [],
+                "audience_preprocess_requested_source": "",
+                "audience_preprocess_requested_at": "",
+                "audience_preprocess_request_cleared_at": datetime.now().isoformat(),
+                "audience_preprocess_request_clear_reason": "no_eligible_requested_events",
+            })
+            return []
+        return self._episode_select_audience_event_batch(session, requested_events)
+
     def _episode_audience_batch_block_reason(
         self,
         session: dict[str, Any],
@@ -1524,7 +1565,9 @@ class EpisodePlanManagerMixin:
                 for event in completed_events
                 if int(event.get("id") or 0) not in covered_ids
             ]
-        selected_events = self._episode_select_audience_event_batch(session, completed_events)
+        selected_events = self._episode_preprocess_requested_event_batch(session, state, completed_events)
+        if not selected_events:
+            selected_events = self._episode_select_audience_event_batch(session, completed_events)
         snapshot = self._episode_audience_backlog_snapshot(completed_events, selected_events)
         if not selected_events:
             return None

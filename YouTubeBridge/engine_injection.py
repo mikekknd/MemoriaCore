@@ -271,6 +271,9 @@ class InjectionManagerMixin:
                 "latest_audience_prepare_event_ids": list(event_ids),
                 "latest_audience_prepare_source": source,
                 "last_audience_prepare_error": "",
+                "audience_preprocess_requested_event_ids": [],
+                "audience_preprocess_requested_source": "",
+                "audience_preprocess_requested_at": "",
             },
         )
 
@@ -423,6 +426,11 @@ class InjectionManagerMixin:
                         active_interaction=active_interaction,
                     )
                     if active and active.get("status") == "presenting":
+                        await asyncio.sleep(sleep_seconds)
+                        continue
+                    if self._audience_preprocessing_enabled(session):
+                        if active_pending:
+                            runtime.audience_preprocess_wake.set()
                         await asyncio.sleep(sleep_seconds)
                         continue
                     if self._director_owns_auto_inject(session):
@@ -618,6 +626,50 @@ class InjectionManagerMixin:
         claim_timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        session = self.storage.get_session(session_id)
+        if (
+            session
+            and event_ids
+            and source in {"auto_inject", "super_chat", "manual_inject"}
+            and self._audience_preprocessing_accepts_events(runtime, session)
+        ):
+            injected_at = datetime.now().isoformat()
+            queued_event_ids = [int(event_id) for event_id in event_ids]
+            summary = {
+                "event_ids": queued_event_ids,
+                "source": source,
+                "queued": True,
+                "queued_for_audience_preprocessing": True,
+            }
+            interaction = {
+                "session_id": session_id,
+                "source": source,
+                "priority": priority,
+                "status": "queued_for_audience_preprocessing",
+                "event_ids": queued_event_ids,
+            }
+            self.storage.update_director_state(session_id, metadata={
+                "audience_preprocess_requested_event_ids": queued_event_ids,
+                "audience_preprocess_requested_source": source,
+                "audience_preprocess_requested_at": injected_at,
+            })
+            runtime.audience_preprocess_wake.set()
+            await self._broadcast(session_id, {
+                "type": "audience_preprocessing_queued",
+                "summary": summary,
+                "interaction": interaction,
+                "event_ids": queued_event_ids,
+                "source": source,
+                "priority": priority,
+                "queued_at": injected_at,
+            })
+            return {
+                "summary": summary,
+                "marked_injected": 0,
+                "memoria_result": {},
+                "interaction": interaction,
+                "injected_at": injected_at,
+            }
         active = self.storage.get_active_interaction(session_id)
         if active and active.get("status") == "running" and int(priority) > int(active.get("priority", 100)):
             await self.interrupt_session(session_id, reason=f"higher_priority:{source}")
