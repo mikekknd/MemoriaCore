@@ -962,6 +962,17 @@ def test_studio_keeps_event_stream_open_while_closing():
     assert '"直播收尾中，等待最後訊息完成。"' in refresh_body
 
 
+def test_studio_graceful_closing_does_not_route_status_to_presentation_interrupt():
+    source = Path("YouTubeBridge/static/ui/studio.js").read_text(encoding="utf-8")
+    interrupt_branch = source[source.index('if (payload.type === "interrupt_requested")'):]
+    interrupt_branch = interrupt_branch[:interrupt_branch.index('if (payload.type === "interaction_interrupted")')]
+    assert "handlePresentationInterrupt(payload)" in interrupt_branch
+    status_branch = source[source.index('if (payload.type === "status")'):]
+    status_branch = status_branch[:status_branch.index('if (payload.type === "presentation_debug"')]
+    assert "handlePresentationInterrupt" not in status_branch
+    assert "presentation/current/skip" not in status_branch
+
+
 def test_studio_renders_live_events_only_from_recent_aggregate_not_single_sse_or_system_event():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
 
