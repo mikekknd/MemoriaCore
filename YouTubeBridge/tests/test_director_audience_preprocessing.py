@@ -160,7 +160,9 @@ async def test_audience_gap_prepare_uses_main_session_without_injecting(monkeypa
         assert "直播輸出模式" not in external_context["context_text"]
         assert "本輪已安全過濾的聊天室留言內容" in external_context["context_text"]
         assert "觀眾A: 這一段可以補充一下嗎？" in external_context["context_text"]
-        assert external_context["context_text"].rstrip().endswith("請簡短回應上面的聊天室留言。")
+        assert "請承接上一句角色對話，保持口吻連貫地簡短回應上面的聊天室留言。" in external_context["context_text"]
+        assert "下一個預計話題方向：事件 Hook / hook：用具體事件開場" in external_context["context_text"]
+        assert external_context["context_text"].rstrip().endswith("只做銜接，不要提前完整展開下一段內容。")
         assert storage.get_session("live-a")["target_memoria_session_id"] == "mem-main"
         metadata = storage.get_director_state("live-a")["metadata"]
         assert "audience_sidecar_memoria_session_id" not in metadata

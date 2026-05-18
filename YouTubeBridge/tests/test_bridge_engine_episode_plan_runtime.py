@@ -404,7 +404,9 @@ async def test_episode_audience_interrupt_injects_selected_chat_into_memoria_con
         assert "本輪已安全過濾的聊天室留言內容" in external_context["context_text"]
         assert "<external_chat_context" not in external_context["context_text"]
         assert "星河旅人: 可可推薦《怪獸8號》嗎？" in external_context["context_text"]
-        assert external_context["context_text"].rstrip().endswith("請簡短回應上面的聊天室留言。")
+        assert "請承接上一句角色對話，保持口吻連貫地簡短回應上面的聊天室留言。" in external_context["context_text"]
+        assert "下一個預計話題方向：事件 Hook / hook：用具體事件開場" in external_context["context_text"]
+        assert external_context["context_text"].rstrip().endswith("只做銜接，不要提前完整展開下一段內容。")
         assert external_context["event_ids"] == [event["id"]]
         assert result["interaction"]["event_ids"] == [event["id"]]
         assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"]
