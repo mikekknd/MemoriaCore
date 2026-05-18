@@ -31,30 +31,13 @@ from bridge_engine_test_support import (
     ResolveLiveChatFailedClient,
     YouTubeBridgeManager,
     _mark_event_clean,
+    _next_queue_event,
     _tmp_dir,
     bridge_engine,
     normalize_message,
+    temp_storage,
 )
 import engine_closing
-
-
-@contextlib.contextmanager
-def temp_storage():
-    tmp_dir = _tmp_dir()
-    try:
-        yield BridgeStorage(tmp_dir / "youtube_live.db")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-async def _next_queue_event(queue: asyncio.Queue, event_type: str, *, timeout: float = 1.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        remaining = max(0.01, deadline - time.monotonic())
-        event = await asyncio.wait_for(queue.get(), timeout=remaining)
-        if event.get("type") == event_type:
-            return event
-    raise AssertionError(f"{event_type} was not received before timeout")
 
 
 @pytest.mark.asyncio

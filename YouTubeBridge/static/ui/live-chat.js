@@ -12,6 +12,7 @@ const state = {
   presentationPlaying: false,
   currentPresentationItem: null,
   currentAudio: null,
+  presentationAudioCache: new Map(),
   durationRefreshTimer: null,
   sessionTiming: null,
   startupRetryTimers: [],
@@ -445,6 +446,11 @@ function stopPresentationPlayback() {
     state.currentAudio.pause();
     state.currentAudio.src = "";
   }
+  state.presentationAudioCache.forEach((audio) => {
+    audio.pause();
+    audio.src = "";
+  });
+  state.presentationAudioCache.clear();
   state.presentationQueue = [];
   state.presentationPlaying = false;
   state.currentPresentationItem = null;
@@ -463,6 +469,25 @@ function handleInteractionInterrupt(payload = {}) {
 async function ackPresentationItem(item) {
   if (!item?.item_id || !state.sessionId) return;
   await apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`);
+}
+function cachePresentationAudio(item) {
+  const itemId = String(item?.item_id || "");
+  const audioUrl = String(item?.audio_url || "");
+  if (!itemId || !audioUrl || state.presentationAudioCache.has(itemId)) return;
+  const audio = new Audio(audioUrl);
+  audio.preload = "auto";
+  state.presentationAudioCache.set(itemId, audio);
+}
+function audioForPresentationItem(item) {
+  const itemId = String(item?.item_id || "");
+  const cached = itemId ? state.presentationAudioCache.get(itemId) : null;
+  if (cached) {
+    state.presentationAudioCache.delete(itemId);
+    return cached;
+  }
+  const audio = new Audio(item.audio_url || "");
+  audio.preload = "auto";
+  return audio;
 }
 function finishPresentationItem(item) {
   ackPresentationItem(item).catch(() => {});
@@ -483,7 +508,7 @@ function playPresentationItem() {
     finishPresentationItem(item);
     return;
   }
-  const audio = new Audio(audioUrl);
+  const audio = audioForPresentationItem(item);
   state.currentAudio = audio;
   audio.addEventListener("ended", () => finishPresentationItem(item), { once: true });
   audio.addEventListener("error", () => finishPresentationItem(item), { once: true });
@@ -496,6 +521,7 @@ function playPresentationItem() {
 }
 function enqueuePresentationItem(item) {
   if (!item?.item_id) return;
+  cachePresentationAudio(item);
   state.presentationQueue.push(item);
   playPresentationItem();
 }
@@ -562,6 +588,10 @@ function subscribe(sessionId) {
       if (payload.type === "interaction_interrupted") {
         scheduleInterruptRecoveryRefreshes();
         scheduleRefresh(0);
+        return;
+      }
+      if (payload.type === "presentation_item_preload" && payload.item) {
+        cachePresentationAudio(payload.item);
         return;
       }
       if (payload.type === "presentation_item_ready" && payload.item) {

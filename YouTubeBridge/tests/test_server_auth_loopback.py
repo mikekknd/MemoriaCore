@@ -78,13 +78,62 @@ def _assert_launcher_uses_runtime_log_dir(source: str, legacy_runtime_prefix: st
     assert ".foreground.log" in source or (".out.log" in source and ".err.log" in source)
     assert legacy_runtime_prefix not in source.lower()
 
-# Tests from this file were split into focused modules for server, launcher, route, and UI contracts.
-# Keep shared imports/helpers here only if a future compatibility shim needs them.
-# Current split targets:
-# - test_chat_preview_routes.py
-# - test_control_ui_static_contract.py
-# - test_episode_plan_routes.py
-# - test_launcher_contract.py
-# - test_server_auth_loopback.py
-# - test_session_routes.py
-# - test_topic_pack_routes.py
+# Split from test_server_auth.py: server, launcher, route, and UI contracts.
+
+def test_bridge_key_is_required_even_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("127.0.0.1"))
+
+    assert exc.value.status_code == 403
+
+
+def test_bridge_key_accepts_matching_loopback_header(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", key="secret"))
+
+
+def test_ui_config_bypasses_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/ui-config"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/ui-config"))
+
+    assert exc.value.status_code == 403
+
+
+def test_ui_assets_bypass_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/ui-assets/app.js"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/ui-assets/app.js"))
+
+    assert exc.value.status_code == 403
+
+
+def test_presentation_audio_bypasses_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/sessions/live-a/presentation/item-a/audio"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/sessions/live-a/presentation/item-a/audio"))
+
+    assert exc.value.status_code == 403
+
+
+def test_studio_avatar_assets_bypass_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_BRIDGE_API_KEY", "secret")
+
+    require_bridge_key(_request("127.0.0.1", path="/studio/avatar-assets/coco.png"))
+
+    with pytest.raises(HTTPException) as exc:
+        require_bridge_key(_request("203.0.113.10", path="/studio/avatar-assets/coco.png"))
+
+    assert exc.value.status_code == 403

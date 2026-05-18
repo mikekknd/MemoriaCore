@@ -1555,6 +1555,19 @@ class DirectorRuntimeManagerMixin:
         interaction = prefetch.get("interaction") if isinstance(prefetch.get("interaction"), dict) else {}
         return str(interaction.get("job_id") or "")
 
+    @classmethod
+    def _ready_prefetch_task_payload_job_id(cls, prefetch_task) -> str:
+        if not prefetch_task or not hasattr(prefetch_task, "done"):
+            return ""
+        try:
+            if not prefetch_task.done() or prefetch_task.cancelled():
+                return ""
+            return cls._prefetch_payload_job_id(prefetch_task.result())
+        except (asyncio.InvalidStateError, asyncio.CancelledError):
+            return ""
+        except Exception:
+            return ""
+
     @staticmethod
     async def _prefetch_task_ready_without_wait(prefetch_task) -> bool:
         if not prefetch_task or not hasattr(prefetch_task, "done"):
@@ -2014,6 +2027,29 @@ class DirectorRuntimeManagerMixin:
     ) -> dict[str, Any]:
         next_state = state
         audience_deferred_for_ready_prefetch = False
+        consumed_prefetch_task_ids: set[int] = set()
+        consumed_prefetch_job_ids: set[str] = set()
+
+        async def next_chain_prefetch_task(candidate, *, source: str):
+            candidate_job_id = self._prefetch_task_job_id(candidate) or self._ready_prefetch_task_payload_job_id(candidate)
+            if candidate is not None and (
+                id(candidate) in consumed_prefetch_task_ids
+                or bool(candidate_job_id and candidate_job_id in consumed_prefetch_job_ids)
+            ):
+                _director_timing_log(
+                    "prefetch_chain_reused_consumed_task",
+                    session_id=runtime.session_id,
+                    job_id=candidate_job_id,
+                    source=source,
+                )
+                if hasattr(candidate, "done") and candidate.done():
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        candidate.result()
+                else:
+                    await self._cancel_pending_prefetch_task(candidate)
+                return None, ""
+            return candidate, candidate_job_id
+
         async def present_ready_audience_batch():
             presented_state = await self._present_ready_audience_batch_after_turn(
                 runtime,
@@ -2044,7 +2080,10 @@ class DirectorRuntimeManagerMixin:
         else:
             next_state, audience_prefetch_task = await present_ready_audience_batch()
             if audience_prefetch_task is not None:
-                prefetch_task = audience_prefetch_task
+                prefetch_task, _ = await next_chain_prefetch_task(
+                    audience_prefetch_task,
+                    source="audience_gap_after_memoria_task",
+                )
         if runtime.stop_after_current_turn:
             expected_job_id = self._prefetch_task_job_id(prefetch_task)
             self._clear_timed_out_prefetch_interactions(
@@ -2063,31 +2102,42 @@ class DirectorRuntimeManagerMixin:
         timeout_seconds = self._prefetch_wait_timeout_seconds(session, next_state)
         consumed_count = 0
         while prefetch_task:
+            current_prefetch_task = prefetch_task
             prefetched = await self._await_prefetch_task_ready(
                 runtime,
-                prefetch_task,
+                current_prefetch_task,
                 timeout_seconds=timeout_seconds,
             )
             if prefetched is None:
                 next_state, audience_prefetch_task = await present_ready_audience_batch()
                 if audience_prefetch_task is not None:
-                    prefetch_task = audience_prefetch_task
+                    prefetch_task, _ = await next_chain_prefetch_task(
+                        audience_prefetch_task,
+                        source="audience_gap_after_memoria_task",
+                    )
+                    if prefetch_task is None:
+                        return next_state
                     continue
                 return next_state
             if runtime.stop_after_current_turn:
-                expected_job_id = self._prefetch_task_job_id(prefetch_task) or self._prefetch_payload_job_id(prefetched)
+                expected_job_id = self._prefetch_task_job_id(current_prefetch_task) or self._prefetch_payload_job_id(prefetched)
                 self._clear_timed_out_prefetch_interactions(
                     runtime,
                     reason="prefetch_stopped_after_current_turn",
                     expected_job_id=expected_job_id,
                 )
-                await self._cancel_pending_prefetch_task(prefetch_task)
+                await self._cancel_pending_prefetch_task(current_prefetch_task)
                 return next_state
             consumed = await self._consume_prefetched_episode_turn(runtime, session, prefetched)
             if not consumed or consumed.get("discarded"):
                 next_state, audience_prefetch_task = await present_ready_audience_batch()
                 if audience_prefetch_task is not None:
-                    prefetch_task = audience_prefetch_task
+                    prefetch_task, _ = await next_chain_prefetch_task(
+                        audience_prefetch_task,
+                        source="audience_gap_after_memoria_task",
+                    )
+                    if prefetch_task is None:
+                        return next_state
                     continue
                 return next_state
             next_state = await self._update_director_state_after_prefetch_consumed(
@@ -2099,11 +2149,17 @@ class DirectorRuntimeManagerMixin:
             )
             runtime.audience_preprocess_wake.set()
             consumed_count += 1
-            prefetch_task = consumed.get("after_memoria_task")
+            current_prefetch_job_id = self._prefetch_task_job_id(current_prefetch_task) or self._prefetch_payload_job_id(prefetched)
+            consumed_prefetch_task_ids.add(id(current_prefetch_task))
+            if current_prefetch_job_id:
+                consumed_prefetch_job_ids.add(current_prefetch_job_id)
+            prefetch_task, next_prefetch_job_id = await next_chain_prefetch_task(
+                consumed.get("after_memoria_task"),
+                source="after_memoria_task",
+            )
             next_prefetch_ready = await self._prefetch_task_ready_without_wait(prefetch_task)
             presented_deferred_audience = False
             if audience_deferred_for_ready_prefetch:
-                next_prefetch_job_id = self._prefetch_task_job_id(prefetch_task)
                 if (
                     not next_prefetch_ready
                     or self._ready_audience_should_precede_prefetch(
@@ -2115,7 +2171,11 @@ class DirectorRuntimeManagerMixin:
                     audience_deferred_for_ready_prefetch = False
                     presented_deferred_audience = True
                     if audience_prefetch_task is not None:
-                        prefetch_task = audience_prefetch_task
+                        prefetch_task, next_prefetch_job_id = await next_chain_prefetch_task(
+                            audience_prefetch_task,
+                            source="audience_gap_after_memoria_task",
+                        )
+                        next_prefetch_ready = await self._prefetch_task_ready_without_wait(prefetch_task)
             if next_prefetch_ready:
                 audience_deferred_for_ready_prefetch = True
             else:
@@ -2123,7 +2183,10 @@ class DirectorRuntimeManagerMixin:
                 if not presented_deferred_audience:
                     next_state, audience_prefetch_task = await present_ready_audience_batch()
                     if audience_prefetch_task is not None:
-                        prefetch_task = audience_prefetch_task
+                        prefetch_task, _ = await next_chain_prefetch_task(
+                            audience_prefetch_task,
+                            source="audience_gap_after_memoria_task",
+                        )
         return next_state
 
     async def _consume_prefetched_episode_chain(

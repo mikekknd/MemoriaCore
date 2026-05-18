@@ -258,6 +258,31 @@ class YouTubeBridgeManager(
             "status": item.get("status") or "",
         }
 
+    def _presentation_item_preload_public(self, item: dict[str, Any]) -> dict[str, Any]:
+        audio_url = ""
+        if item.get("audio_path"):
+            audio_url = (
+                f"/sessions/{item['session_id']}/presentation/"
+                f"{item['item_id']}/audio"
+            )
+        return {
+            "item_id": item.get("item_id"),
+            "audio_url": audio_url,
+            "audio_format": item.get("audio_format") or "wav",
+            "status": item.get("status") or "",
+        }
+
+    async def _broadcast_presentation_preload(self, session_id: str, item: dict[str, Any]) -> None:
+        if not item.get("audio_path"):
+            return
+        await self._broadcast(
+            session_id,
+            {
+                "type": "presentation_item_preload",
+                "item": self._presentation_item_preload_public(item),
+            },
+        )
+
     async def present_stream_result(
         self,
         session_id: str,
@@ -498,6 +523,7 @@ class YouTubeBridgeManager(
             else "item_ready"
         )
         await self._emit_presentation_debug(session_id, ready_phase, item, source=source)
+        await self._broadcast_presentation_preload(session_id, item)
         return item
 
     async def _present_prepared_item(

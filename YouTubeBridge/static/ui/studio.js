@@ -1972,6 +1972,10 @@ function subscribeSessionEvents(sessionId) {
         appendPresentationDebugLog(payload.event);
         return;
       }
+      if (payload.type === "presentation_item_preload" && payload.item) {
+        cachePresentationAudio(payload.item);
+        return;
+      }
       if (payload.type === "presentation_item_ready" && payload.item) {
         enqueuePresentationItem(payload.item);
         return;

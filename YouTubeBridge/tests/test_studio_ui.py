@@ -42,7 +42,7 @@ def test_studio_html_uses_external_assets_without_inline_code():
     studio_html = _studio_source()
 
     assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v28">' in studio_html
-    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v28"></script>' in studio_html
+    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v29"></script>' in studio_html
     assert "<style>" not in studio_html
     assert "<script>\n" not in studio_html
 
@@ -263,6 +263,8 @@ def test_studio_presentation_tts_player_helpers_are_wired():
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`, {' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {' in studio_js
     assert 'appendChatPreviewMessage(presentationItemToMessage(item), { prepend: true })' in studio_js
+    assert 'if (payload.type === "presentation_item_preload" && payload.item) {' in studio_js
+    assert "cachePresentationAudio(payload.item);" in studio_js
 
 
 def test_studio_presentation_debug_logs_backend_and_audio_blocked_events():
@@ -275,6 +277,8 @@ def test_studio_presentation_debug_logs_backend_and_audio_blocked_events():
     assert "function appendPresentationDebugLog(event)" in studio_js
     assert "function reportPresentationClientDebug(phase, item, details = {})" in studio_js
     assert 'if (payload.type === "presentation_debug" && payload.event) {' in subscribe_body
+    assert 'if (payload.type === "presentation_item_preload" && payload.item) {' in subscribe_body
+    assert subscribe_body.index('payload.type === "presentation_item_preload"') < subscribe_body.index('payload.type === "presentation_item_ready"')
     assert "appendPresentationDebugLog(payload.event);" in subscribe_body
     assert 'item_prefetch_ready: "預載完成，等待導播交付"' in studio_js
     assert 'reportPresentationClientDebug("audio_play_blocked", item, {' in studio_js
