@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import time
 
 import pytest
 
@@ -189,6 +190,62 @@ async def test_prepared_prefetch_broadcasts_audio_preload_without_revealing_text
             pass
         else:
             raise AssertionError("presentation_item_ready should not expose prepared text before playback")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_active_turn_does_not_preload_current_presentation_item():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 3,
+        })
+        storage.upsert_tts_profile({
+            "character_id": "char-a",
+            "ref_audio_path": "voice.wav",
+            "prompt_text": "參考文字。",
+        })
+        provider = FakeTTSProvider()
+        manager = YouTubeBridgeManager(storage, tts_provider_factory=lambda: provider)
+        queue = await manager.subscribe("live-a")
+
+        task = asyncio.create_task(manager.present_stream_result(
+            "live-a",
+            {
+                "message_id": "msg-active",
+                "reply": "目前這句直接播放。",
+                "character_id": "char-a",
+                "character_name": "可可",
+            },
+            source="director",
+            interaction_job_id="job-active",
+        ))
+
+        event_types = []
+        ready = None
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            event = await asyncio.wait_for(queue.get(), timeout=max(0.01, deadline - time.monotonic()))
+            event_types.append(event.get("type"))
+            if event.get("type") == "presentation_item_ready":
+                ready = event
+                break
+        assert ready is not None
+        assert "presentation_item_preload" not in event_types
+
+        await manager.ack_presentation_item("live-a", ready["item"]["item_id"])
+        await asyncio.wait_for(task, timeout=1)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -523,7 +523,8 @@ class YouTubeBridgeManager(
             else "item_ready"
         )
         await self._emit_presentation_debug(session_id, ready_phase, item, source=source)
-        await self._broadcast_presentation_preload(session_id, item)
+        if source in {"director_prefetch", "director_audience_prepare"}:
+            await self._broadcast_presentation_preload(session_id, item)
         return item
 
     async def _present_prepared_item(

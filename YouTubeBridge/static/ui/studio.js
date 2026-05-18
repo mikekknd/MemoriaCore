@@ -2079,6 +2079,13 @@ function phaseSummaryText(session) {
 
 function applySessionSnapshot(session) {
   const wasLive = state.live;
+  const presentationPlayerActive = Boolean(
+    state.currentPresentationItem
+    || state.currentAudio
+    || state.presentationPlaying
+    || state.audioUnlockRequired
+    || state.presentationQueue.length
+  );
   state.currentSession = session || null;
   state.sessionId = session?.session_id || "";
   state.detectedVideoId = session?.video_id || "";
@@ -2119,7 +2126,8 @@ function applySessionSnapshot(session) {
   updateSourceDetectionState();
   updateSummaryControls();
   applyStartButtonState();
-  if (wasLive && !state.live) {
+  const reachedTerminalSessionState = !state.live && !closing && !closingFailed;
+  if (reachedTerminalSessionState && (wasLive || presentationPlayerActive)) {
     resetPresentationPlayer({ statusText: "已停止" });
   }
 }

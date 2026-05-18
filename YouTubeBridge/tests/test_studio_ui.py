@@ -42,7 +42,7 @@ def test_studio_html_uses_external_assets_without_inline_code():
     studio_html = _studio_source()
 
     assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v28">' in studio_html
-    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v29"></script>' in studio_html
+    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v30"></script>' in studio_html
     assert "<style>" not in studio_html
     assert "<script>\n" not in studio_html
 
@@ -977,6 +977,19 @@ def test_studio_graceful_closing_does_not_route_status_to_presentation_interrupt
     assert "presentation/current/skip" not in status_branch
 
 
+def test_studio_graceful_closing_preserves_current_presentation_player():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    snapshot_body = studio_js[
+        studio_js.index("function applySessionSnapshot(session)"):
+        studio_js.index("function studioLiveSessionPayload", studio_js.index("function applySessionSnapshot(session)"))
+    ]
+
+    assert "const presentationPlayerActive =" in snapshot_body
+    assert "const reachedTerminalSessionState = !state.live && !closing && !closingFailed;" in snapshot_body
+    assert "if (reachedTerminalSessionState && (wasLive || presentationPlayerActive)) {" in snapshot_body
+    assert "if (wasLive && !state.live) {" not in snapshot_body
+
+
 def test_studio_renders_live_events_only_from_recent_aggregate_not_single_sse_or_system_event():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
 
@@ -1070,7 +1083,7 @@ def test_studio_presentation_tts_events_and_lifecycle_are_wired():
     session_body = studio_js[session_index:studio_js.index("function studioLiveSessionPayload", session_index)]
     assert "const wasLive = state.live;" in session_body
     assert 'resetPresentationPlayer({ statusText: "已停止" });' in session_body
-    stop_condition_index = session_body.index("if (wasLive && !state.live) {")
+    stop_condition_index = session_body.index("if (reachedTerminalSessionState && (wasLive || presentationPlayerActive)) {")
     stop_reset_index = session_body.index('resetPresentationPlayer({ statusText: "已停止" });')
     assert stop_condition_index < stop_reset_index
     stop_reset_branch = session_body[
