@@ -42,7 +42,7 @@ def test_studio_html_uses_external_assets_without_inline_code():
     studio_html = _studio_source()
 
     assert '<link rel="stylesheet" href="/ui-assets/studio.css?v=studio-v28">' in studio_html
-    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v30"></script>' in studio_html
+    assert '<script type="module" src="/ui-assets/studio.js?v=studio-v32"></script>' in studio_html
     assert "<style>" not in studio_html
     assert "<script>\n" not in studio_html
 
@@ -264,7 +264,7 @@ def test_studio_presentation_tts_player_helpers_are_wired():
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/current/skip`, {' in studio_js
     assert 'appendChatPreviewMessage(presentationItemToMessage(item), { prepend: true })' in studio_js
     assert 'if (payload.type === "presentation_item_preload" && payload.item) {' in studio_js
-    assert "cachePresentationAudio(payload.item);" in studio_js
+    assert "cachePresentationAudio(attachPresentationSseTiming(payload.item, payload));" in studio_js
 
 
 def test_studio_presentation_debug_logs_backend_and_audio_blocked_events():
@@ -289,6 +289,7 @@ def test_studio_presentation_debug_logs_backend_and_audio_blocked_events():
     assert "document_visibility: document.visibilityState" in studio_js
     assert "server_broadcast_at: payload._broadcast_at ||" in studio_js
     assert "server_sse_yield_at: payload._sse_yield_at ||" in studio_js
+    assert "server_sse_send_start_at: payload._sse_send_start_at ||" in studio_js
     assert "cachePresentationAudio(attachPresentationSseTiming(payload.item, payload));" in studio_js
     assert "enqueuePresentationItem(attachPresentationSseTiming(payload.item, payload));" in studio_js
     assert 'reportPresentationClientDebug("client_playback_timeline", item, {' in studio_js
@@ -1068,25 +1069,31 @@ def test_studio_presentation_tts_events_and_lifecycle_are_wired():
     subscribe_index = studio_js.index("function subscribeSessionEvents(sessionId)")
     subscribe_body = studio_js[subscribe_index:studio_js.index("function sessionIsRunning", subscribe_index)]
     assert 'if (payload.type === "presentation_item_ready" && payload.item) {' in subscribe_body
-    assert "enqueuePresentationItem(payload.item);" in subscribe_body
+    assert "enqueuePresentationItem(attachPresentationSseTiming(payload.item, payload));" in subscribe_body
     presentation_branch = subscribe_body[
         subscribe_body.index('if (payload.type === "presentation_item_ready" && payload.item) {'):
         subscribe_body.index('if (payload.type === "interrupt_requested") {')
     ]
-    assert "enqueuePresentationItem(payload.item);" in presentation_branch
+    assert "enqueuePresentationItem(attachPresentationSseTiming(payload.item, payload));" in presentation_branch
     assert "return;" in presentation_branch
-    assert presentation_branch.index("enqueuePresentationItem(payload.item);") < presentation_branch.index("return;")
+    assert presentation_branch.index("enqueuePresentationItem(attachPresentationSseTiming(payload.item, payload));") < presentation_branch.index("return;")
     assert 'if (payload.type === "interrupt_requested") {' in subscribe_body
     assert "handlePresentationInterrupt(payload)" in subscribe_body
     assert 'if (payload.type === "interaction_interrupted") {' in subscribe_body
     interrupted_branch = subscribe_body[
         subscribe_body.index('if (payload.type === "interaction_interrupted") {'):
-        subscribe_body.index('if (["interaction_completed", "super_chat_batch_injected"].includes(payload.type)) {')
+        subscribe_body.index('if (payload.type === "interaction_completed") {')
     ]
     assert 'appendLog("DEBUG", "互動已中斷，保留已顯示對話");' in interrupted_branch
     assert 'scheduleConversationRefresh("直播打斷");' not in interrupted_branch
     assert '["interaction_completed", "presentation_item_ready", "super_chat_batch_injected"]' not in subscribe_body
-    assert '["interaction_completed", "super_chat_batch_injected"]' in subscribe_body
+    completed_branch = subscribe_body[
+        subscribe_body.index('if (payload.type === "interaction_completed") {'):
+        subscribe_body.index('if (payload.type === "phase_finalize_completed") {')
+    ]
+    assert 'scheduleConversationRefresh("互動完成");' in completed_branch
+    assert "refreshConversation();" not in completed_branch
+    assert 'if (payload.type === "super_chat_batch_injected") {' in subscribe_body
 
     reset_index = studio_js.index("function resetConversationForNewSession()")
     reset_body = studio_js[reset_index:studio_js.index("function chatPreviewKind", reset_index)]

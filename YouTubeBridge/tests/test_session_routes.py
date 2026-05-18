@@ -94,6 +94,9 @@ def test_session_routes_expose_presentation_endpoints():
     assert '@router.post("/sessions/{session_id}/presentation/{item_id}/ack")' in source
     assert '@router.get("/sessions/{session_id}/presentation/{item_id}/audio")' in source
     assert '@router.post("/sessions/{session_id}/presentation/current/skip")' in source
+    assert "InstrumentedSseResponse" in source
+    assert "return InstrumentedSseResponse(" in source
+    assert "StreamingResponse(gen()" not in source
     assert '"_sse_yield_at": datetime.now().isoformat()' in source
     assert "list_presented_messages" in source
 

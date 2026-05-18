@@ -1239,6 +1239,7 @@ function attachPresentationSseTiming(item, payload) {
     event_received_wall_time: new Date().toISOString(),
     server_broadcast_at: payload._broadcast_at || "",
     server_sse_yield_at: payload._sse_yield_at || "",
+    server_sse_send_start_at: payload._sse_send_start_at || "",
     sse_type: payload.type || "",
     ...clientRuntimeSnapshot(),
   };
@@ -2166,6 +2167,10 @@ function subscribeSessionEvents(sessionId) {
         appendLog("DEBUG", "互動已中斷，保留已顯示對話");
         return;
       }
+      if (payload.type === "interaction_completed") {
+        scheduleConversationRefresh("互動完成");
+        return;
+      }
       if (payload.type === "phase_finalize_completed") {
         appendLog("INFO", "節目收尾流程已完成");
         refreshStudioSession();
@@ -2177,7 +2182,7 @@ function subscribeSessionEvents(sessionId) {
         refreshStudioSession();
         return;
       }
-      if (["interaction_completed", "super_chat_batch_injected"].includes(payload.type)) {
+      if (payload.type === "super_chat_batch_injected") {
         refreshConversation();
       }
     } catch (error) {

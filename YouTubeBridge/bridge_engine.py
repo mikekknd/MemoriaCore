@@ -1748,7 +1748,11 @@ class YouTubeBridgeManager(
         runtime = self._runtimes.get(session_id)
         if not runtime:
             return
-        timed_types = {"presentation_debug", "presentation_item_preload", "presentation_item_ready"}
+        timed_types = {
+            "presentation_debug",
+            "presentation_item_preload",
+            "presentation_item_ready",
+        }
         event_payload = (
             {**payload, "_broadcast_at": datetime.now().isoformat()}
             if payload.get("type") in timed_types

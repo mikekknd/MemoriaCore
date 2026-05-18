@@ -44,6 +44,10 @@ const LIVE_CHAT_REFRESH_TYPES = new Set([
   "closing_super_chat_thanks_completed",
   "status",
 ]);
+const PRESENTATION_REFRESH_SUPPRESSED_TYPES = new Set([
+  "interaction_completed",
+  "director_injected",
+]);
 const ASSISTANT_COLOR_PALETTE = [
   { color: "#0f766e", bg: "#ecfdf5" },
   { color: "#2563eb", bg: "#eff6ff" },
@@ -170,6 +174,7 @@ function attachPresentationSseTiming(item, payload) {
     event_received_wall_time: new Date().toISOString(),
     server_broadcast_at: payload._broadcast_at || "",
     server_sse_yield_at: payload._sse_yield_at || "",
+    server_sse_send_start_at: payload._sse_send_start_at || "",
     sse_type: payload.type || "",
     ...clientRuntimeSnapshot(),
   };
@@ -781,6 +786,7 @@ function subscribe(sessionId) {
         return;
       }
       if (LIVE_CHAT_REFRESH_TYPES.has(payload.type)) {
+        if (state.presentationEnabled && PRESENTATION_REFRESH_SUPPRESSED_TYPES.has(payload.type)) return;
         scheduleRefresh(0);
       }
     } catch {

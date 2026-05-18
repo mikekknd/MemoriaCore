@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 
 from episode_plan_character_binding import (
     EpisodePlanCharacterBindingError,
@@ -30,6 +30,7 @@ from server_presenters import (
     sanitize_interaction,
     sanitize_phase_pipeline_response,
 )
+from server_routes.sse_response import InstrumentedSseResponse
 from storage import DEFAULT_CONNECTOR_ID
 from youtube_client import extract_video_id
 
@@ -743,7 +744,7 @@ async def events_stream(session_id: str):
         finally:
             await manager.unsubscribe(session_id, queue)
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return InstrumentedSseResponse(gen(), log_context={"session_id": session_id})
 
 
 @router.get("/sessions/{session_id}/interactions")

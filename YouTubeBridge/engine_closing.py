@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import wave
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS = 1.0
 CLOSING_PRESENTATION_MIN_GRACE_SECONDS = 12.0
 CLOSING_PRESENTATION_MAX_GRACE_SECONDS = 45.0
 CLOSING_PRESENTATION_SECONDS_PER_CHAR = 0.32
+CLOSING_PRESENTATION_AUDIO_GRACE_MARGIN_SECONDS = 3.0
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -29,6 +32,26 @@ def _parse_iso(value: Any) -> datetime | None:
     try:
         return datetime.fromisoformat(text)
     except ValueError:
+        return None
+
+
+def _presentation_audio_duration_seconds(item: dict[str, Any]) -> float | None:
+    audio_path_text = str(item.get("audio_path") or "").strip()
+    if not audio_path_text:
+        return None
+    audio_format = str(item.get("audio_format") or "").strip().lower()
+    audio_path = Path(audio_path_text)
+    if not audio_path.is_absolute():
+        audio_path = PROJECT_ROOT / audio_path
+    if audio_path.suffix.lower() != ".wav" and audio_format != "wav":
+        return None
+    try:
+        with wave.open(str(audio_path), "rb") as wav:
+            frame_rate = wav.getframerate()
+            if frame_rate <= 0:
+                return None
+            return wav.getnframes() / float(frame_rate)
+    except (OSError, EOFError, wave.Error):
         return None
 
 
@@ -77,6 +100,7 @@ class ClosingManagerMixin:
         session: dict[str, Any],
         *,
         timeout_seconds: float = 180.0,
+        before_ready_presentation_callback=None,
     ) -> dict[str, Any]:
         runtime.graceful_closing_requested = True
         runtime.accepting_audience_events = False
@@ -88,7 +112,10 @@ class ClosingManagerMixin:
         def ready_prepared_items() -> list[dict[str, Any]]:
             finder = getattr(self, "_ready_prepared_items_for_session", None)
             if callable(finder):
-                return finder(runtime.session_id)
+                return [
+                    item for item in finder(runtime.session_id)
+                    if not self._is_final_closing_prefetch_item(item)
+                ]
             return []
 
         def pending_presentation_items() -> list[dict[str, Any]]:
@@ -112,12 +139,24 @@ class ClosingManagerMixin:
                 ]
             return presenting + unacked_failed
 
-        def closing_presentation_grace_seconds(item: dict[str, Any]) -> float:
+        def closing_presentation_grace(item: dict[str, Any]) -> tuple[float, float | None]:
+            audio_duration = _presentation_audio_duration_seconds(item)
+            if audio_duration is not None:
+                return (
+                    min(
+                        CLOSING_PRESENTATION_MAX_GRACE_SECONDS,
+                        max(0.01, audio_duration + CLOSING_PRESENTATION_AUDIO_GRACE_MARGIN_SECONDS),
+                    ),
+                    audio_duration,
+                )
             text_len = len(str(item.get("text") or ""))
             estimated = 4.0 + (text_len * CLOSING_PRESENTATION_SECONDS_PER_CHAR)
-            return min(
-                CLOSING_PRESENTATION_MAX_GRACE_SECONDS,
-                max(CLOSING_PRESENTATION_MIN_GRACE_SECONDS, estimated),
+            return (
+                min(
+                    CLOSING_PRESENTATION_MAX_GRACE_SECONDS,
+                    max(CLOSING_PRESENTATION_MIN_GRACE_SECONDS, estimated),
+                ),
+                None,
             )
 
         async def auto_ack_stale_presenting_items(presenting_items: list[dict[str, Any]]) -> int:
@@ -135,16 +174,20 @@ class ClosingManagerMixin:
                 if not presented_at:
                     continue
                 elapsed = (now - presented_at).total_seconds()
-                grace = closing_presentation_grace_seconds(item)
+                grace, audio_duration = closing_presentation_grace(item)
                 if elapsed < grace:
                     continue
+                metadata = {
+                    "closing_grace_auto_ack": True,
+                    "closing_grace_elapsed_seconds": round(elapsed, 3),
+                    "closing_grace_seconds": round(grace, 3),
+                    "closing_grace_source": "audio_duration" if audio_duration is not None else "text_estimate",
+                }
+                if audio_duration is not None:
+                    metadata["closing_audio_duration_seconds"] = round(audio_duration, 3)
                 self.storage.update_presentation_item(
                     item_id,
-                    metadata={
-                        "closing_grace_auto_ack": True,
-                        "closing_grace_elapsed_seconds": round(elapsed, 3),
-                        "closing_grace_seconds": round(grace, 3),
-                    },
+                    metadata=metadata,
                 )
                 updated = await self.ack_presentation_item(runtime.session_id, item_id)
                 if updated:
@@ -153,6 +196,8 @@ class ClosingManagerMixin:
 
         def active_generation(active: dict[str, Any] | None, ready_items: list[dict[str, Any]]) -> dict[str, Any] | None:
             if not active:
+                return None
+            if self._is_final_closing_prefetch_interaction(active):
                 return None
             ready_job_ids = {
                 str(item.get("interaction_job_id") or "")
@@ -261,6 +306,11 @@ class ClosingManagerMixin:
             state = self.storage.get_director_state(runtime.session_id)
             await self._present_ready_audience_batch_after_turn(runtime, session, state)
 
+        async def notify_before_ready_presentation(ready_items: list[dict[str, Any]]) -> None:
+            if not callable(before_ready_presentation_callback):
+                return
+            await before_ready_presentation_callback(list(ready_items))
+
         deadline = datetime.now() + timedelta(seconds=max(0.01, timeout_seconds))
         deferred_ready_item_ids: set[str] = set()
         while True:
@@ -301,6 +351,7 @@ class ClosingManagerMixin:
                     remaining = (deadline - datetime.now()).total_seconds()
                     await asyncio.sleep(max(0.01, min(0.5, remaining)))
                     continue
+                await notify_before_ready_presentation(ready_prepared)
                 if has_ready_prefetch(ready_prepared):
                     await present_ready_prepared(ready_prepared)
                 elif not await wait_remaining(present_ready_prepared(ready_prepared)):
@@ -630,10 +681,64 @@ class ClosingManagerMixin:
                 "message": closing_message,
             },
         )
+        closing_result = None
+        final_closing_prefetch: dict[str, Any] | None = None
+        no_sc_closing_result: dict[str, Any] | None = None
+        if session.get("auto_sc_thanks_on_finalize", True):
+            pending_super_chats_before_drain = self._list_unhandled_super_chats_for_closing(runtime.session_id, batch_size=500)
+            if not pending_super_chats_before_drain:
+                no_sc_closing_result = {
+                    "status": "skipped",
+                    "reason": "no_unhandled_super_chats",
+                    "super_chat_count": 0,
+                }
+                drain_visible_target = self._final_closing_pending_drain_visible_target(runtime.session_id)
+                final_closing_prefetch = self._start_final_closing_prefetch(
+                    runtime,
+                    self.storage.get_session(runtime.session_id) or session,
+                    closing_super_chat_thanks=no_sc_closing_result,
+                    visible_reply_target=drain_visible_target,
+                    reason="no_unhandled_super_chats_before_drain",
+                )
+        if final_closing_prefetch is not None:
+            await asyncio.sleep(0)
+
+        async def refresh_final_closing_prefetch_for_drain_target(_ready_items: list[dict[str, Any]]) -> None:
+            nonlocal final_closing_prefetch
+            if no_sc_closing_result is None:
+                return
+            visible_target = (
+                self._final_closing_pending_drain_visible_target(runtime.session_id)
+                or self._latest_visible_message_for_session(runtime.session_id)
+            )
+            target_signature = self._final_closing_visible_target_signature(visible_target)
+            if not target_signature:
+                return
+            if (
+                isinstance(final_closing_prefetch, dict)
+                and final_closing_prefetch.get("visible_target_signature") == target_signature
+            ):
+                return
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                final_closing_prefetch,
+                reason="final_closing_prefetch_superseded_by_drain_target",
+            )
+            final_closing_prefetch = self._start_final_closing_prefetch(
+                runtime,
+                self.storage.get_session(runtime.session_id) or session,
+                closing_super_chat_thanks=no_sc_closing_result,
+                visible_reply_target=visible_target,
+                reason="drain_target_changed",
+            )
+            if final_closing_prefetch is not None:
+                await asyncio.sleep(0)
+
         drain_result = await self._drain_live_session_before_closing(
             runtime,
             session,
             timeout_seconds=drain_timeout_seconds,
+            before_ready_presentation_callback=refresh_final_closing_prefetch_for_drain_target,
         )
         runtime.running = False
         await self._cancel_runtime_task(runtime, "inject_task")
@@ -642,7 +747,6 @@ class ClosingManagerMixin:
         await self._cancel_runtime_task(runtime, "director_task")
         await self._cancel_runtime_task(runtime, "director_kickoff_task")
         safety_closing_result = await self._resolve_pending_safety_for_closing(runtime.session_id)
-        closing_result = None
         if session.get("auto_sc_thanks_on_finalize", True):
             pending_super_chats = self._list_unhandled_super_chats_for_closing(runtime.session_id, batch_size=500)
             if not pending_super_chats:
@@ -654,7 +758,27 @@ class ClosingManagerMixin:
             else:
                 try:
                     if self._presentation_enabled(session):
-                        closing_result = await self.run_closing_super_chat_thanks(runtime.session_id)
+                        async def start_final_closing_prefetch_after_sc(memoria_result: dict[str, Any]) -> None:
+                            nonlocal final_closing_prefetch
+                            visible_target = self._final_closing_visible_target_from_reply(
+                                str((memoria_result or {}).get("reply") or ""),
+                                source="closing_super_chat_thanks",
+                            )
+                            final_closing_prefetch = self._start_final_closing_prefetch(
+                                runtime,
+                                self.storage.get_session(runtime.session_id) or session,
+                                closing_super_chat_thanks={
+                                    "status": "completed",
+                                    "super_chat_count": len(pending_super_chats),
+                                },
+                                visible_reply_target=visible_target,
+                                reason="after_closing_super_chat_thanks_memoria",
+                            )
+
+                        closing_result = await self.run_closing_super_chat_thanks(
+                            runtime.session_id,
+                            after_memoria_callback=start_final_closing_prefetch_after_sc,
+                        )
                     else:
                         closing_result = await asyncio.wait_for(
                             self.run_closing_super_chat_thanks(runtime.session_id),
@@ -668,11 +792,18 @@ class ClosingManagerMixin:
                 except Exception as exc:
                     logger.warning("closing super chat thanks failed session_id=%s error=%s", runtime.session_id, exc)
                     closing_result = {"status": "failed", "error": str(exc)[:500]}
-        final_closing_result = await self._run_final_closing_turn(
+        final_closing_result = await self._consume_final_closing_prefetch(
             runtime,
             self.storage.get_session(runtime.session_id) or session,
+            final_closing_prefetch,
             closing_super_chat_thanks=closing_result,
         )
+        if final_closing_result is None:
+            final_closing_result = await self._run_final_closing_turn(
+                runtime,
+                self.storage.get_session(runtime.session_id) or session,
+                closing_super_chat_thanks=closing_result,
+            )
         finalized_at = datetime.now().isoformat()
         runtime.status = "ended"
         self.storage.finalize_incomplete_interactions(
@@ -826,15 +957,105 @@ class ClosingManagerMixin:
                     latest_rank = rank
         return latest
 
-    async def _run_final_closing_turn(
+    @staticmethod
+    def _is_final_closing_prefetch_interaction(interaction: dict[str, Any] | None) -> bool:
+        if not isinstance(interaction, dict):
+            return False
+        if str(interaction.get("source") or "") != "director_prefetch":
+            return False
+        metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+        decision = metadata.get("decision") if isinstance(metadata.get("decision"), dict) else {}
+        return str(decision.get("action") or "") == "final_closing"
+
+    def _is_final_closing_prefetch_item(self, item: dict[str, Any] | None) -> bool:
+        if not isinstance(item, dict):
+            return False
+        job_id = str(item.get("interaction_job_id") or "")
+        if not job_id:
+            return False
+        return self._is_final_closing_prefetch_interaction(self.storage.get_interaction(job_id))
+
+    def _final_closing_visible_target_signature(self, target: dict[str, Any] | None) -> str:
+        if not isinstance(target, dict):
+            return ""
+        return self._single_line(target.get("content") or "")
+
+    def _latest_visible_target_signature(self, session_id: str) -> str:
+        return self._final_closing_visible_target_signature(
+            self._latest_visible_message_for_session(session_id)
+        )
+
+    def _final_closing_pending_drain_visible_target(self, session_id: str) -> dict[str, Any] | None:
+        items = self.storage.list_presentation_items(
+            session_id,
+            statuses={"presenting", "ready"},
+            limit=500,
+        )
+        candidates: list[tuple[int, int, dict[str, Any]]] = []
+        for item in items:
+            if self._is_final_closing_prefetch_item(item):
+                continue
+            text = self._single_line(item.get("text") or "")
+            if not text:
+                continue
+            status = str(item.get("status") or "")
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            source = str(metadata.get("source") or "")
+            if status == "ready" and source not in {"director_prefetch", "director_audience_prepare"}:
+                continue
+            status_rank = 0 if status == "presenting" else 1
+            candidates.append((status_rank, int(item.get("id") or 0), item))
+        if not candidates:
+            return None
+        _, _, item = max(candidates, key=lambda entry: (entry[0], entry[1]))
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        return {
+            "message_id": item.get("message_id") or item.get("item_id") or "closing_drain:latest",
+            "role": "assistant",
+            "content": self._single_line(item.get("text") or ""),
+            "timestamp": item.get("presented_at") or item.get("created_at") or datetime.now().isoformat(),
+            "character_id": item.get("character_id") or "",
+            "character_name": item.get("character_name") or "上一位角色",
+            "source": metadata.get("source") or "closing_drain",
+        }
+
+    @staticmethod
+    def _final_closing_sc_state_signature(closing_super_chat_thanks: dict[str, Any] | None) -> str:
+        if not isinstance(closing_super_chat_thanks, dict):
+            return ""
+        status = str(closing_super_chat_thanks.get("status") or "")
+        reason = str(closing_super_chat_thanks.get("reason") or "")
+        count = str(closing_super_chat_thanks.get("super_chat_count") or "")
+        return "|".join([status, reason, count])
+
+    def _final_closing_visible_target_from_reply(
+        self,
+        reply_text: str,
+        *,
+        source: str,
+    ) -> dict[str, Any] | None:
+        utterances = self._split_presentation_utterances(reply_text)
+        content = utterances[-1] if utterances else self._single_line(reply_text)
+        content = self._single_line(content)
+        if not content:
+            return None
+        return {
+            "message_id": f"{source}:latest",
+            "role": "assistant",
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+            "character_name": "SC 感謝" if source == "closing_super_chat_thanks" else "上一位角色",
+            "source": source,
+        }
+
+    def _build_final_closing_decision(
         self,
         runtime: LiveRuntime,
         session: dict[str, Any],
         *,
         closing_super_chat_thanks: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        if not session.get("target_memoria_session_id") or not session.get("character_ids"):
-            return {"status": "skipped", "reason": "missing_memoria_session_or_characters"}
+        visible_reply_target: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], str, str]:
         state = self.storage.get_director_state(runtime.session_id)
         topic = (
             str(state.get("current_topic") or "").strip()
@@ -853,16 +1074,18 @@ class ClosingManagerMixin:
                 "不要開新話題，不要再次要求觀眾回覆，不要重複前面已說過的收尾比喻。"
             ),
             "current_topic": topic[:200],
+            "group_turn_limit": 2,
         }
-        visible_reply_target = self._latest_visible_message_for_session(runtime.session_id)
-        if visible_reply_target:
+        target = visible_reply_target or self._latest_visible_message_for_session(runtime.session_id)
+        target_signature = self._final_closing_visible_target_signature(target)
+        if target:
             speaker = str(
-                visible_reply_target.get("character_name")
-                or visible_reply_target.get("role")
+                target.get("character_name")
+                or target.get("role")
                 or "上一位角色"
             ).strip()
-            content = str(visible_reply_target.get("content") or "").strip()
-            decision["visible_reply_target"] = visible_reply_target
+            content = str(target.get("content") or "").strip()
+            decision["visible_reply_target"] = target
             decision["prompt"] = (
                 decision["prompt"]
                 + "\n\n最後已顯示訊息："
@@ -871,6 +1094,270 @@ class ClosingManagerMixin:
                 + "若這句在提問或交接給下一位角色，請對這句完成自然收束。"
                 + "不要回到更早的問題重答。"
             )
+        return decision, target_signature, self._final_closing_sc_state_signature(closing_super_chat_thanks)
+
+    def _start_final_closing_prefetch(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        closing_super_chat_thanks: dict[str, Any] | None = None,
+        visible_reply_target: dict[str, Any] | None = None,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        if not self._presentation_enabled(session):
+            return None
+        if not session.get("target_memoria_session_id") or not session.get("character_ids"):
+            return None
+        state = self.storage.get_director_state(runtime.session_id)
+        decision, target_signature, sc_signature = self._build_final_closing_decision(
+            runtime,
+            session,
+            closing_super_chat_thanks=closing_super_chat_thanks,
+            visible_reply_target=visible_reply_target,
+        )
+        decision["final_closing_prefetch"] = True
+        task = asyncio.create_task(
+            self._send_director_turn(
+                session,
+                state,
+                decision,
+                prefetch_only=True,
+            )
+        )
+        return {
+            "task": task,
+            "visible_target_signature": target_signature,
+            "sc_state_signature": sc_signature,
+            "reason": reason,
+        }
+
+    def _final_closing_prefetch_payload_job_id(self, payload: dict[str, Any] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        interaction = payload.get("interaction") if isinstance(payload.get("interaction"), dict) else {}
+        return str(interaction.get("job_id") or "")
+
+    async def _cancel_final_closing_prefetch(
+        self,
+        runtime: LiveRuntime,
+        prefetch_context: dict[str, Any] | None,
+        *,
+        reason: str,
+    ) -> None:
+        if not isinstance(prefetch_context, dict):
+            return
+        task = prefetch_context.get("task")
+        payload: dict[str, Any] | None = None
+        job_id = self._prefetch_task_job_id(task) if task is not None else ""
+        if task is not None and hasattr(task, "done") and task.done() and not task.cancelled():
+            with contextlib.suppress(Exception):
+                payload = task.result()
+            job_id = job_id or self._final_closing_prefetch_payload_job_id(payload)
+        if job_id:
+            cancel_event = runtime.cancel_events.get(job_id)
+            if cancel_event:
+                cancel_event.set()
+            self._cancel_prepared_items_for_interaction(runtime.session_id, job_id, reason)
+            current = self.storage.get_interaction(job_id)
+            if current and str(current.get("status") or "") in {
+                "queued",
+                "running",
+                "presenting",
+                "prefetching",
+                "prefetched",
+                "interrupt_requested",
+            }:
+                self.storage.update_interaction(
+                    job_id,
+                    status="interrupted",
+                    reason=reason,
+                    completed_at=datetime.now().isoformat(),
+                    interrupted_at=datetime.now().isoformat(),
+                    metadata={
+                        "final_closing_prefetch_cancelled": True,
+                        "final_closing_prefetch_cancel_reason": reason,
+                    },
+                )
+        if task is not None and hasattr(task, "done") and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _consume_final_closing_prefetch(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        prefetch_context: dict[str, Any] | None,
+        *,
+        closing_super_chat_thanks: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(prefetch_context, dict):
+            return None
+        task = prefetch_context.get("task")
+        if task is None or not hasattr(task, "done"):
+            return None
+        if not task.done():
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_not_ready",
+            )
+            return None
+        if task.cancelled():
+            return None
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(
+                "final closing prefetch failed session_id=%s error=%s",
+                runtime.session_id,
+                exc,
+                exc_info=True,
+            )
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_failed",
+            )
+            return None
+        prefetch = task.result()
+        if not isinstance(prefetch, dict):
+            return None
+        if prefetch_context.get("sc_state_signature") != self._final_closing_sc_state_signature(closing_super_chat_thanks):
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_stale_sc_state",
+            )
+            return None
+        if prefetch_context.get("visible_target_signature") != self._latest_visible_target_signature(runtime.session_id):
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_stale_visible_target",
+            )
+            return None
+        interaction = prefetch.get("interaction") if isinstance(prefetch.get("interaction"), dict) else {}
+        job_id = str(interaction.get("job_id") or "")
+        current = self.storage.get_interaction(job_id) if job_id else None
+        if not current or not self._is_final_closing_prefetch_interaction(current):
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_invalid_interaction",
+            )
+            return None
+        if str(current.get("status") or "") != "prefetched":
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_not_prefetched",
+            )
+            return None
+        prepared_results = [
+            prepared for prepared in prefetch.get("prepared_results") or []
+            if isinstance(prepared, dict)
+        ]
+        if not prepared_results:
+            prepared_results = self._prepared_results_for_interaction(
+                runtime.session_id,
+                current,
+                require_complete=True,
+            )
+        if not prepared_results:
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_missing_prepared_items",
+            )
+            return None
+        if hasattr(self.storage, "update_interaction_if_status"):
+            started = self.storage.update_interaction_if_status(
+                job_id,
+                "prefetched",
+                status="presenting",
+            )
+        else:
+            started = self.storage.update_interaction(job_id, status="presenting")
+        if not started or str(started.get("status") or "") != "presenting":
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_presenting_claim_failed",
+            )
+            return None
+        await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
+        await self.present_prepared_stream_results(
+            runtime.session_id,
+            prepared_results,
+            source="director",
+            interaction_job_id=job_id,
+        )
+        visible_results = self._visible_prepared_results(session, prepared_results)
+        played_item_count = self._prepared_result_item_count(visible_results)
+        result = prefetch.get("memoria_result") if isinstance(prefetch.get("memoria_result"), dict) else {}
+        if hasattr(self.storage, "update_interaction_if_status"):
+            updated = self.storage.update_interaction_if_status(
+                job_id,
+                "presenting",
+                status="completed",
+                reply_text=str(result.get("reply") or started.get("reply_text") or ""),
+                completed_at=datetime.now().isoformat(),
+                metadata={
+                    "final_closing_prefetch_consumed": True,
+                    "played_item_count": played_item_count,
+                },
+            )
+        else:
+            updated = self.storage.update_interaction(
+                job_id,
+                status="completed",
+                reply_text=str(result.get("reply") or started.get("reply_text") or ""),
+                completed_at=datetime.now().isoformat(),
+                metadata={
+                    "final_closing_prefetch_consumed": True,
+                    "played_item_count": played_item_count,
+                },
+            )
+        if not updated or str(updated.get("status") or "") != "completed":
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_complete_failed",
+            )
+            return None
+        await self._broadcast(runtime.session_id, {
+            "type": "interaction_completed",
+            "interaction": updated,
+            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
+            "source": "director",
+        })
+        await self._broadcast(runtime.session_id, {
+            "type": "director_injected",
+            "interaction": updated,
+            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
+        })
+        return {
+            "status": str(updated.get("status") or "completed"),
+            "interaction": updated,
+            "prefetch_consumed": True,
+        }
+
+    async def _run_final_closing_turn(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        closing_super_chat_thanks: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not session.get("target_memoria_session_id") or not session.get("character_ids"):
+            return {"status": "skipped", "reason": "missing_memoria_session_or_characters"}
+        state = self.storage.get_director_state(runtime.session_id)
+        decision, _target_signature, _sc_signature = self._build_final_closing_decision(
+            runtime,
+            session,
+            closing_super_chat_thanks=closing_super_chat_thanks,
+        )
         try:
             result = await self._send_director_turn(session, state, decision)
             interaction = result.get("interaction") if isinstance(result, dict) else None
@@ -1093,7 +1580,12 @@ class ClosingManagerMixin:
             )
         return finalized or interrupted
 
-    async def run_closing_super_chat_thanks(self, session_id: str) -> dict[str, Any]:
+    async def run_closing_super_chat_thanks(
+        self,
+        session_id: str,
+        *,
+        after_memoria_callback=None,
+    ) -> dict[str, Any]:
         session = self.storage.get_session(session_id)
         if not session:
             raise ValueError("live session 不存在")
@@ -1119,7 +1611,17 @@ class ClosingManagerMixin:
             ),
             "current_topic": state.get("current_topic") or session.get("director_guidance") or "直播收尾",
         }
-        result = await self._send_director_turn(session, state, decision)
+        send_kwargs = {"after_memoria_callback": after_memoria_callback} if after_memoria_callback else {}
+        result = await self._send_director_turn(
+            session,
+            state,
+            decision,
+            **send_kwargs,
+        )
+        callback_task = result.get("after_memoria_task") if isinstance(result, dict) else None
+        if callback_task is not None:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await callback_task
         marked = self.storage.mark_super_chats_handled_in_closing(
             session_id,
             [int(event["id"]) for event in super_chats],

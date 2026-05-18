@@ -97,12 +97,14 @@ def test_bridge_server_uses_windows_selector_policy_before_uvicorn_import():
 def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     live_chat_html = _live_chat_source()
 
-    assert 'live-chat.js?v=audio-preload-v1' in live_chat_html
+    assert 'live-chat.js?v=opening-handoff-v1' in live_chat_html
     assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
+    assert "PRESENTATION_REFRESH_SUPPRESSED_TYPES" in live_chat_html
     assert '"chat_message"' in live_chat_html
     assert '"youtube_live_event"' in live_chat_html
     assert '"interaction_completed"' in live_chat_html
     assert '"director_injected"' in live_chat_html
+    assert "state.presentationEnabled && PRESENTATION_REFRESH_SUPPRESSED_TYPES.has(payload.type)" in live_chat_html
     assert "appendChatMessage(payload.message)" in live_chat_html
     assert "function ensureSubscription()" in live_chat_html
     assert "state.subscribedSessionId === state.sessionId" in live_chat_html
@@ -176,6 +178,7 @@ def test_live_chat_handles_presentation_queue_events():
     assert "client_playback_timeline" in live_chat_html
     assert "attachPresentationSseTiming" in live_chat_html
     assert "server_sse_yield_at" in live_chat_html
+    assert "server_sse_send_start_at" in live_chat_html
     assert "main_thread_max_lag_ms_since_last_presentation_sse" in live_chat_html
     assert "document_visibility: document.visibilityState" in live_chat_html
     assert 'recordPresentationClientTiming("audio_ended", item' in live_chat_html

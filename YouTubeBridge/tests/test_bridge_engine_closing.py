@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import threading
 import time
+import wave
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -342,6 +343,937 @@ async def test_final_closing_prefers_latest_visible_message_without_message_time
         assert captured["visible_reply_target"] == "較晚但沒有 timestamp 的最後內容。"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_live_session_ignores_final_closing_prefetch_as_active_blocker():
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "closing",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetching",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "final closing prefetch",
+            "metadata": {
+                "prefetch_only": True,
+                "decision": {"action": "final_closing"},
+            },
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+        result = await manager._drain_live_session_before_closing(
+            runtime,
+            storage.get_session("live-a"),
+            timeout_seconds=0.01,
+        )
+
+        assert result == {
+            "status": "drained",
+            "active_job_id": "",
+            "presenting_count": 0,
+            "ready_prepared_count": 0,
+        }
+
+
+def test_stale_prefetch_cleanup_preserves_dedicated_final_closing_prefetch():
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "closing",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        expected = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetched",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "planned prefetch",
+            "metadata": {"decision": {"action": "planned_turn"}},
+        })
+        final_closing = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetched",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "final closing prefetch",
+            "metadata": {
+                "prefetch_only": True,
+                "decision": {"action": "final_closing"},
+            },
+        })
+        stale_general = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetched",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "stale general prefetch",
+            "metadata": {"decision": {"action": "planned_turn"}},
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+        manager._finalize_stale_prefetched_prefetch_interactions(
+            runtime,
+            expected_job_id=expected["job_id"],
+            reason="prefetch_stopped_after_current_turn",
+        )
+
+        assert storage.get_interaction(final_closing["job_id"])["status"] == "prefetched"
+        stale = storage.get_interaction(stale_general["job_id"])
+        assert stale["status"] == "interrupted"
+        assert stale["reason"] == "stale_prefetch_stopped_after_current_turn"
+
+
+@pytest.mark.asyncio
+async def test_finalize_no_sc_consumes_ready_final_closing_prefetch(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "auto_sc_thanks_on_finalize": True,
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+        calls: list[tuple[str, bool]] = []
+
+        async def fake_send_director_turn(session_arg, state_arg, decision_arg, *, prefetch_only=False, **_kwargs):
+            calls.append((decision_arg["action"], bool(prefetch_only)))
+            assert decision_arg["action"] == "final_closing"
+            assert decision_arg["group_turn_limit"] == 2
+            if not prefetch_only:
+                raise AssertionError("ready final closing prefetch should be consumed instead of regenerating")
+            interaction = storage.create_interaction({
+                "session_id": "live-a",
+                "source": "director_prefetch",
+                "priority": 40,
+                "status": "prefetched",
+                "memoria_session_id": "mem-a",
+                "character_ids": ["char-a"],
+                "content": decision_arg["prompt"],
+                "reply_text": "預先準備好的正式收尾。",
+                "metadata": {
+                    "prefetch_only": True,
+                    "decision": decision_arg,
+                    "base_state": state_arg,
+                    "prefetch_ready": True,
+                },
+            })
+            item = storage.create_presentation_item({
+                "session_id": "live-a",
+                "interaction_job_id": interaction["job_id"],
+                "message_id": "final-prefetch:0",
+                "character_id": "char-a",
+                "character_name": "角色A",
+                "sequence_index": 0,
+                "text": "預先準備好的正式收尾。",
+                "status": "ready",
+                "audio_path": "final.wav",
+                "audio_format": "wav",
+                "metadata": {"source": "director_prefetch"},
+            })
+            return {
+                "interaction": interaction,
+                "memoria_result": {"session_id": "mem-a", "message_id": 77, "reply": "預先準備好的正式收尾。"},
+                "prepared_results": [{
+                    "message": {
+                        "message_id": "final-prefetch",
+                        "role": "assistant",
+                        "content": "預先準備好的正式收尾。",
+                        "character_id": "char-a",
+                        "character_name": "角色A",
+                    },
+                    "items": [item],
+                }],
+                "decision": decision_arg,
+                "base_state": state_arg,
+            }
+
+        async def fake_present_prepared(session_id, prepared_results, *, source, interaction_job_id=""):
+            assert session_id == "live-a"
+            assert source == "director"
+            played = []
+            for prepared in prepared_results:
+                for item in prepared.get("items") or []:
+                    played_item = storage.update_presentation_item(
+                        item["item_id"],
+                        status="played",
+                        presented_at=datetime.now().isoformat(),
+                        acked_at=datetime.now().isoformat(),
+                    )
+                    played.append(played_item)
+            return played
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        monkeypatch.setattr(manager, "present_prepared_stream_results", fake_present_prepared)
+
+        await manager._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="closing",
+            ended_message="ended",
+        )
+
+        assert calls == [("final_closing", True)]
+        interactions = storage.list_interactions("live-a")
+        assert interactions[0]["status"] == "completed"
+        assert interactions[0]["metadata"]["final_closing_prefetch_consumed"] is True
+        director_state = storage.get_director_state("live-a")
+        assert director_state["metadata"]["final_closing"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_finalize_cancels_unready_final_closing_prefetch_and_falls_back(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "auto_sc_thanks_on_finalize": True,
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        calls: list[tuple[str, bool]] = []
+        prefetch_started = asyncio.Event()
+
+        async def fake_send_director_turn(_session, _state, decision, *, prefetch_only=False, **_kwargs):
+            calls.append((decision["action"], bool(prefetch_only)))
+            if prefetch_only:
+                prefetch_started.set()
+                await asyncio.Event().wait()
+            return {"interaction": {"job_id": "sync-final", "status": "completed"}, "memoria_result": {}}
+
+        async def fake_drain(*_args, **_kwargs):
+            await asyncio.wait_for(prefetch_started.wait(), timeout=1.0)
+            return {"status": "drained"}
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        monkeypatch.setattr(manager, "_drain_live_session_before_closing", fake_drain)
+
+        await manager._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="closing",
+            ended_message="ended",
+        )
+
+        assert calls == [("final_closing", True), ("final_closing", False)]
+        director_state = storage.get_director_state("live-a")
+        assert director_state["metadata"]["final_closing"]["interaction"]["job_id"] == "sync-final"
+
+
+@pytest.mark.asyncio
+async def test_finalize_stale_final_closing_prefetch_falls_back_when_visible_target_changes(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "auto_sc_thanks_on_finalize": True,
+        })
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "completed",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "before",
+            "metadata": {
+                "visible_messages": [{
+                    "message_id": "before-msg",
+                    "role": "assistant",
+                    "content": "原本最後一句。",
+                    "timestamp": "2026-05-18T10:00:00",
+                    "character_id": "char-a",
+                    "character_name": "角色A",
+                }]
+            },
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        calls: list[tuple[str, bool]] = []
+
+        async def fake_send_director_turn(session_arg, state_arg, decision_arg, *, prefetch_only=False, **_kwargs):
+            calls.append((decision_arg["action"], bool(prefetch_only)))
+            if not prefetch_only:
+                return {"interaction": {"job_id": "sync-final", "status": "completed"}, "memoria_result": {}}
+            interaction = storage.create_interaction({
+                "session_id": "live-a",
+                "source": "director_prefetch",
+                "priority": 40,
+                "status": "prefetched",
+                "memoria_session_id": "mem-a",
+                "character_ids": ["char-a"],
+                "content": decision_arg["prompt"],
+                "reply_text": "預抓但已過期。",
+                "metadata": {
+                    "prefetch_only": True,
+                    "decision": decision_arg,
+                    "base_state": state_arg,
+                    "prefetch_ready": True,
+                },
+            })
+            item = storage.create_presentation_item({
+                "session_id": "live-a",
+                "interaction_job_id": interaction["job_id"],
+                "message_id": "stale-prefetch:0",
+                "character_id": "char-a",
+                "character_name": "角色A",
+                "sequence_index": 0,
+                "text": "預抓但已過期。",
+                "status": "ready",
+                "audio_path": "stale.wav",
+                "audio_format": "wav",
+                "metadata": {"source": "director_prefetch"},
+            })
+            return {
+                "interaction": interaction,
+                "memoria_result": {"session_id": "mem-a", "message_id": 78, "reply": "預抓但已過期。"},
+                "prepared_results": [{"message": {"message_id": "stale-prefetch", "content": "預抓但已過期。"}, "items": [item]}],
+                "decision": decision_arg,
+                "base_state": state_arg,
+            }
+
+        async def fake_drain(*_args, **_kwargs):
+            storage.create_interaction({
+                "session_id": "live-a",
+                "source": "director",
+                "priority": 50,
+                "status": "completed",
+                "memoria_session_id": "mem-a",
+                "character_ids": ["char-a"],
+                "content": "during drain",
+                "metadata": {
+                    "visible_messages": [{
+                        "message_id": "during-drain-msg",
+                        "role": "assistant",
+                        "content": "drain 期間出現的新最後一句。",
+                        "timestamp": "2026-05-18T10:00:10",
+                        "character_id": "char-a",
+                        "character_name": "角色A",
+                    }]
+                },
+            })
+            return {"status": "drained"}
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        monkeypatch.setattr(manager, "_drain_live_session_before_closing", fake_drain)
+
+        await manager._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="closing",
+            ended_message="ended",
+        )
+
+        assert calls == [("final_closing", True), ("final_closing", False)]
+        prefetched = [
+            interaction
+            for interaction in storage.list_interactions("live-a")
+            if interaction["source"] == "director_prefetch"
+        ][0]
+        assert prefetched["status"] == "interrupted"
+        assert prefetched["reason"] == "final_closing_prefetch_stale_visible_target"
+
+
+@pytest.mark.asyncio
+async def test_finalize_prefetch_targets_ready_item_that_drain_will_make_visible(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "auto_sc_thanks_on_finalize": True,
+        })
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "completed",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "before",
+            "metadata": {
+                "visible_messages": [{
+                    "message_id": "before-msg",
+                    "role": "assistant",
+                    "content": "目前最後一句。",
+                    "timestamp": "2026-05-18T10:00:00",
+                    "character_id": "char-a",
+                    "character_name": "角色A",
+                }]
+            },
+        })
+        planned = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetched",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "planned",
+            "reply_text": "drain 會先播的句子。drain 後最後一句。",
+            "metadata": {
+                "prefetch_only": True,
+                "decision": {"action": "continue_topic"},
+                "base_state": {"session_id": "live-a"},
+                "prefetch_ready": True,
+            },
+        })
+        storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": planned["job_id"],
+            "message_id": "planned:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "drain 會先播的句子。",
+            "status": "ready",
+            "audio_path": "planned-0.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": planned["job_id"],
+            "message_id": "planned:1",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 1,
+            "text": "drain 後最後一句。",
+            "status": "ready",
+            "audio_path": "planned-1.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+        calls: list[tuple[str, bool]] = []
+        prefetch_started = asyncio.Event()
+
+        async def fake_send_director_turn(session_arg, state_arg, decision_arg, *, prefetch_only=False, **_kwargs):
+            calls.append((decision_arg["action"], bool(prefetch_only)))
+            if not prefetch_only:
+                raise AssertionError("ready final closing prefetch should be consumed instead of regenerating")
+            prefetch_started.set()
+            assert "drain 後最後一句。" in decision_arg["prompt"]
+            assert "目前最後一句。" not in decision_arg["prompt"]
+            interaction = storage.create_interaction({
+                "session_id": "live-a",
+                "source": "director_prefetch",
+                "priority": 40,
+                "status": "prefetched",
+                "memoria_session_id": "mem-a",
+                "character_ids": ["char-a"],
+                "content": decision_arg["prompt"],
+                "reply_text": "承接 drain 後最後一句的正式收尾。",
+                "metadata": {
+                    "prefetch_only": True,
+                    "decision": decision_arg,
+                    "base_state": state_arg,
+                    "prefetch_ready": True,
+                },
+            })
+            item = storage.create_presentation_item({
+                "session_id": "live-a",
+                "interaction_job_id": interaction["job_id"],
+                "message_id": "final-prefetch:0",
+                "character_id": "char-a",
+                "character_name": "角色A",
+                "sequence_index": 0,
+                "text": "承接 drain 後最後一句的正式收尾。",
+                "status": "ready",
+                "audio_path": "final.wav",
+                "audio_format": "wav",
+                "metadata": {"source": "director_prefetch"},
+            })
+            return {
+                "interaction": interaction,
+                "memoria_result": {
+                    "session_id": "mem-a",
+                    "message_id": 90,
+                    "reply": "承接 drain 後最後一句的正式收尾。",
+                },
+                "prepared_results": [{
+                    "message": {"message_id": "final-prefetch", "content": "承接 drain 後最後一句的正式收尾。"},
+                    "items": [item],
+                }],
+                "decision": decision_arg,
+                "base_state": state_arg,
+            }
+
+        async def fake_drain(*_args, **_kwargs):
+            await asyncio.wait_for(prefetch_started.wait(), timeout=1.0)
+            storage.update_interaction(
+                planned["job_id"],
+                status="completed",
+                completed_at=datetime.now().isoformat(),
+                metadata={
+                    "visible_messages": [{
+                        "message_id": "planned:1",
+                        "role": "assistant",
+                        "content": "drain 後最後一句。",
+                        "timestamp": datetime.now().isoformat(),
+                        "character_id": "char-a",
+                        "character_name": "角色A",
+                    }],
+                    "prefetch_consumed_during_closing_drain": True,
+                },
+            )
+            return {"status": "drained"}
+
+        async def fake_present_prepared(_session_id, prepared_results, *, source, interaction_job_id=""):
+            played = []
+            for prepared in prepared_results:
+                for item in prepared.get("items") or []:
+                    played_item = storage.update_presentation_item(
+                        item["item_id"],
+                        status="played",
+                        presented_at=datetime.now().isoformat(),
+                        acked_at=datetime.now().isoformat(),
+                    )
+                    played.append(played_item)
+            return played
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        monkeypatch.setattr(manager, "_drain_live_session_before_closing", fake_drain)
+        monkeypatch.setattr(manager, "present_prepared_stream_results", fake_present_prepared)
+
+        await manager._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="closing",
+            ended_message="ended",
+        )
+
+        assert calls == [("final_closing", True)]
+        final_prefetch = [
+            interaction
+            for interaction in storage.list_interactions("live-a")
+            if (
+                interaction["source"] == "director_prefetch"
+                and (interaction.get("metadata") or {}).get("decision", {}).get("action") == "final_closing"
+            )
+        ][0]
+        assert final_prefetch["status"] == "completed"
+        assert final_prefetch["metadata"]["final_closing_prefetch_consumed"] is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_refreshes_final_closing_prefetch_when_drain_later_exposes_new_target(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "auto_sc_thanks_on_finalize": True,
+        })
+        storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "completed",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "before",
+            "metadata": {
+                "visible_messages": [{
+                    "message_id": "before-msg",
+                    "role": "assistant",
+                    "content": "目前最後一句。",
+                    "timestamp": "2026-05-18T10:00:00",
+                    "character_id": "char-a",
+                    "character_name": "角色A",
+                }]
+            },
+        })
+        planned = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 55,
+            "status": "running",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "planned",
+            "reply_text": "drain 稍後會播的第一句。drain 稍後的新最後一句。",
+            "metadata": {
+                "prefetch_only": True,
+                "decision": {"action": "planned_turn", "episode_plan": {"mode": "planned_turn"}},
+                "base_state": {"session_id": "live-a"},
+            },
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+        calls: list[str] = []
+        planned_ready_task = None
+
+        async def make_planned_ready():
+            await asyncio.sleep(0.02)
+            storage.update_interaction(
+                planned["job_id"],
+                status="prefetched",
+                metadata={"prefetch_ready": True},
+            )
+            storage.create_presentation_item({
+                "session_id": "live-a",
+                "interaction_job_id": planned["job_id"],
+                "message_id": "planned:0",
+                "character_id": "char-a",
+                "character_name": "角色A",
+                "sequence_index": 0,
+                "text": "drain 稍後會播的第一句。",
+                "status": "ready",
+                "audio_path": "planned-0.wav",
+                "audio_format": "wav",
+                "metadata": {"source": "director_prefetch"},
+            })
+            storage.create_presentation_item({
+                "session_id": "live-a",
+                "interaction_job_id": planned["job_id"],
+                "message_id": "planned:1",
+                "character_id": "char-a",
+                "character_name": "角色A",
+                "sequence_index": 1,
+                "text": "drain 稍後的新最後一句。",
+                "status": "ready",
+                "audio_path": "planned-1.wav",
+                "audio_format": "wav",
+                "metadata": {"source": "director_prefetch"},
+            })
+
+        async def fake_send_director_turn(session_arg, state_arg, decision_arg, *, prefetch_only=False, **_kwargs):
+            nonlocal planned_ready_task
+            assert decision_arg["action"] == "final_closing"
+            if not prefetch_only:
+                raise AssertionError("final closing should refresh and consume prefetch instead of regenerating")
+            prompt = decision_arg["prompt"]
+            calls.append(prompt)
+            if "目前最後一句。" in prompt:
+                planned_ready_task = asyncio.create_task(make_planned_ready())
+                reply_text = "承接舊 target 的正式收尾。"
+            elif "drain 稍後的新最後一句。" in prompt:
+                reply_text = "承接 drain 新最後一句的正式收尾。"
+            else:
+                raise AssertionError(f"unexpected final closing target prompt: {prompt}")
+            interaction = storage.create_interaction({
+                "session_id": "live-a",
+                "source": "director_prefetch",
+                "priority": 40,
+                "status": "prefetched",
+                "memoria_session_id": "mem-a",
+                "character_ids": ["char-a"],
+                "content": prompt,
+                "reply_text": reply_text,
+                "metadata": {
+                    "prefetch_only": True,
+                    "decision": decision_arg,
+                    "base_state": state_arg,
+                    "prefetch_ready": True,
+                },
+            })
+            item = storage.create_presentation_item({
+                "session_id": "live-a",
+                "interaction_job_id": interaction["job_id"],
+                "message_id": f"final-prefetch:{len(calls)}",
+                "character_id": "char-a",
+                "character_name": "角色A",
+                "sequence_index": 0,
+                "text": reply_text,
+                "status": "ready",
+                "audio_path": f"final-{len(calls)}.wav",
+                "audio_format": "wav",
+                "metadata": {"source": "director_prefetch"},
+            })
+            return {
+                "interaction": interaction,
+                "memoria_result": {"session_id": "mem-a", "message_id": 90 + len(calls), "reply": reply_text},
+                "prepared_results": [{
+                    "message": {"message_id": f"final-prefetch:{len(calls)}", "content": reply_text},
+                    "items": [item],
+                }],
+                "decision": decision_arg,
+                "base_state": state_arg,
+            }
+
+        async def fake_present_prepared(session_id, prepared_results, *, source, interaction_job_id=""):
+            assert session_id == "live-a"
+            played = []
+            for prepared in prepared_results:
+                for item in prepared.get("items") or []:
+                    played_item = storage.update_presentation_item(
+                        item["item_id"],
+                        status="played",
+                        presented_at=datetime.now().isoformat(),
+                        acked_at=datetime.now().isoformat(),
+                    )
+                    storage.append_interaction_visible_message(
+                        interaction_job_id,
+                        {
+                            "message_id": item.get("message_id"),
+                            "role": "assistant",
+                            "content": item.get("text") or "",
+                            "timestamp": datetime.now().isoformat(),
+                            "character_id": item.get("character_id"),
+                            "character_name": item.get("character_name"),
+                            "source": source,
+                        },
+                    )
+                    played.append(played_item)
+            return played
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        monkeypatch.setattr(manager, "present_prepared_stream_results", fake_present_prepared)
+
+        await manager._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="closing",
+            ended_message="ended",
+            drain_timeout_seconds=2.0,
+        )
+
+        if planned_ready_task is not None:
+            await planned_ready_task
+        assert len(calls) == 2
+        assert "目前最後一句。" in calls[0]
+        assert "drain 稍後的新最後一句。" in calls[1]
+        final_prefetches = [
+            interaction
+            for interaction in storage.list_interactions("live-a")
+            if (
+                interaction["source"] == "director_prefetch"
+                and (interaction.get("metadata") or {}).get("decision", {}).get("action") == "final_closing"
+            )
+        ]
+        superseded = [
+            interaction for interaction in final_prefetches
+            if interaction["reason"] == "final_closing_prefetch_superseded_by_drain_target"
+        ]
+        consumed = [
+            interaction for interaction in final_prefetches
+            if (interaction.get("metadata") or {}).get("final_closing_prefetch_consumed") is True
+        ]
+        assert superseded and superseded[0]["status"] == "interrupted"
+        assert consumed and consumed[0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_finalize_starts_final_closing_prefetch_during_sc_thanks_playback(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "auto_sc_thanks_on_finalize": True,
+        })
+        storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt",
+            "youtube_message_id": "sc-a",
+            "message_type": "superChatEvent",
+            "author_display_name": "SC觀眾",
+            "message_text": "最後支持一下。",
+            "amount_display_string": "NT$150",
+            "priority_class": "super_chat",
+            "safety_label": "clean",
+            "safe_text": "最後支持一下。",
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+        sc_playing = False
+        calls: list[tuple[str, bool]] = []
+
+        async def fake_send_director_turn(session_arg, state_arg, decision_arg, *, prefetch_only=False, after_memoria_callback=None, **_kwargs):
+            nonlocal sc_playing
+            calls.append((decision_arg["action"], bool(prefetch_only)))
+            if decision_arg["action"] == "closing_super_chat_thanks":
+                assert not prefetch_only
+                assert after_memoria_callback is not None
+                sc_result = {
+                    "session_id": "mem-a",
+                    "message_id": 80,
+                    "reply": "感謝 SC觀眾 的 SC。這份支持我們收到了。",
+                }
+                sc_playing = True
+                callback_result = after_memoria_callback(sc_result)
+                if asyncio.iscoroutine(callback_result):
+                    await callback_result
+                await asyncio.sleep(0.05)
+                storage.create_interaction({
+                    "session_id": "live-a",
+                    "source": "director",
+                    "priority": 50,
+                    "status": "completed",
+                    "memoria_session_id": "mem-a",
+                    "character_ids": ["char-a"],
+                    "content": "sc thanks",
+                    "metadata": {
+                        "visible_messages": [{
+                            "message_id": "sc-visible",
+                            "role": "assistant",
+                            "content": "這份支持我們收到了。",
+                            "timestamp": datetime.now().isoformat(),
+                            "character_id": "char-a",
+                            "character_name": "角色A",
+                        }]
+                    },
+                })
+                sc_playing = False
+                return {"interaction": {"job_id": "sc-thanks", "status": "completed"}, "memoria_result": sc_result}
+            assert decision_arg["action"] == "final_closing"
+            if prefetch_only:
+                assert sc_playing is True
+                assert "這份支持我們收到了。" in decision_arg["prompt"]
+                interaction = storage.create_interaction({
+                    "session_id": "live-a",
+                    "source": "director_prefetch",
+                    "priority": 40,
+                    "status": "prefetched",
+                    "memoria_session_id": "mem-a",
+                    "character_ids": ["char-a"],
+                    "content": decision_arg["prompt"],
+                    "reply_text": "承接 SC 感謝的正式收尾。",
+                    "metadata": {
+                        "prefetch_only": True,
+                        "decision": decision_arg,
+                        "base_state": state_arg,
+                        "prefetch_ready": True,
+                    },
+                })
+                item = storage.create_presentation_item({
+                    "session_id": "live-a",
+                    "interaction_job_id": interaction["job_id"],
+                    "message_id": "sc-final-prefetch:0",
+                    "character_id": "char-a",
+                    "character_name": "角色A",
+                    "sequence_index": 0,
+                    "text": "承接 SC 感謝的正式收尾。",
+                    "status": "ready",
+                    "audio_path": "sc-final.wav",
+                    "audio_format": "wav",
+                    "metadata": {"source": "director_prefetch"},
+                })
+                return {
+                    "interaction": interaction,
+                    "memoria_result": {"session_id": "mem-a", "message_id": 81, "reply": "承接 SC 感謝的正式收尾。"},
+                    "prepared_results": [{
+                        "message": {"message_id": "sc-final-prefetch", "content": "承接 SC 感謝的正式收尾。"},
+                        "items": [item],
+                    }],
+                    "decision": decision_arg,
+                    "base_state": state_arg,
+                }
+            raise AssertionError("SC path should consume final closing prefetch instead of regenerating")
+
+        async def fake_present_prepared(_session_id, prepared_results, *, source, interaction_job_id=""):
+            played = []
+            for prepared in prepared_results:
+                for item in prepared.get("items") or []:
+                    played_item = storage.update_presentation_item(
+                        item["item_id"],
+                        status="played",
+                        presented_at=datetime.now().isoformat(),
+                        acked_at=datetime.now().isoformat(),
+                    )
+                    played.append(played_item)
+            return played
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        monkeypatch.setattr(manager, "present_prepared_stream_results", fake_present_prepared)
+        monkeypatch.setattr(manager, "_drain_live_session_before_closing", AsyncMock(return_value={"status": "drained"}))
+
+        await manager._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="closing",
+            ended_message="ended",
+        )
+
+        assert calls == [
+            ("closing_super_chat_thanks", False),
+            ("final_closing", True),
+        ]
+        final_prefetch = [
+            interaction
+            for interaction in storage.list_interactions("live-a")
+            if interaction["source"] == "director_prefetch"
+        ][0]
+        assert final_prefetch["status"] == "completed"
+        assert final_prefetch["metadata"]["final_closing_prefetch_consumed"] is True
 
 
 @pytest.mark.asyncio
@@ -926,7 +1858,7 @@ async def test_finalize_presentation_closing_thanks_is_not_wrapped_in_generation
         manager = YouTubeBridgeManager(storage)
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
 
-        async def closing_thanks(_session_id: str):
+        async def closing_thanks(_session_id: str, **_kwargs):
             return {"status": "completed", "super_chat_count": 1}
 
         async def fail_if_wait_for_wraps_closing_thanks(awaitable, *, timeout=None):
@@ -1003,9 +1935,9 @@ async def test_duration_finalize_waits_for_active_generation_before_closing_than
         runtime.cancel_events[active["job_id"]] = cancel_event
         original_send = manager._send_director_turn
 
-        async def assert_no_active_before_closing(session_arg, state_arg, decision_arg):
+        async def assert_no_active_before_closing(session_arg, state_arg, decision_arg, **kwargs):
             assert storage.get_active_interaction("live-a") is None
-            return await original_send(session_arg, state_arg, decision_arg)
+            return await original_send(session_arg, state_arg, decision_arg, **kwargs)
 
         monkeypatch.setattr(manager, "_send_director_turn", assert_no_active_before_closing)
 
@@ -1426,6 +2358,66 @@ async def test_drain_live_session_auto_acks_stale_presenting_item_after_closing_
         assert updated["status"] == "played"
         assert updated["acked_at"]
         assert updated["metadata"]["closing_grace_auto_ack"] is True
+
+
+@pytest.mark.asyncio
+async def test_drain_live_session_auto_ack_uses_audio_duration_for_short_presenting_item():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "closing",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "presentation_ack_timeout_seconds": 120,
+        })
+        audio_path = tmp_dir / "short.wav"
+        sample_rate = 8000
+        duration_seconds = 2.5
+        with wave.open(str(audio_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(b"\0\0" * int(sample_rate * duration_seconds))
+        presented_at = (datetime.now() - timedelta(seconds=6)).isoformat()
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-presenting",
+            "message_id": "planned-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "狐火已燃，好戲開卷。",
+            "status": "presenting",
+            "audio_path": str(audio_path),
+            "audio_format": "wav",
+            "presented_at": presented_at,
+            "metadata": {"source": "director"},
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager._drain_live_session_before_closing(
+            runtime,
+            storage.get_session("live-a"),
+            timeout_seconds=0.2,
+        )
+
+        assert result["status"] == "drained"
+        updated = storage.get_presentation_item(item["item_id"])
+        assert updated["status"] == "played"
+        assert updated["metadata"]["closing_grace_auto_ack"] is True
+        assert updated["metadata"]["closing_grace_seconds"] < engine_closing.CLOSING_PRESENTATION_MIN_GRACE_SECONDS
+        assert updated["metadata"]["closing_audio_duration_seconds"] == pytest.approx(duration_seconds, abs=0.1)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio

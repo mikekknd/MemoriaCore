@@ -35,6 +35,12 @@ def _director_timing_log(event: str, **fields: Any) -> None:
 
 class DirectorRuntimeManagerMixin:
     _POST_PLAN_FREE_TALK_ACTIONS = {"post_plan_free_talk_topic", "post_plan_free_talk_natural"}
+    _PRESENTATION_CHAIN_PREFETCH_START_DELAY_SECONDS = 0.05
+
+    async def _yield_before_presentation_chain_prefetch(self) -> None:
+        # Let the just-sent presentation SSE frame move through the event loop
+        # before the next prefetch performs synchronous context setup.
+        await asyncio.sleep(self._PRESENTATION_CHAIN_PREFETCH_START_DELAY_SECONDS)
 
     def _audience_reply_next_planned_direction(
         self,
@@ -1451,6 +1457,7 @@ class DirectorRuntimeManagerMixin:
 
             async def run_next_prefetch():
                 try:
+                    await self._yield_before_presentation_chain_prefetch()
                     return await self._prefetch_next_presentation_turn(
                         runtime,
                         chained_session,
@@ -1903,6 +1910,10 @@ class DirectorRuntimeManagerMixin:
                 continue
             if str(interaction.get("status") or "") != "prefetched":
                 continue
+            metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+            decision = metadata.get("decision") if isinstance(metadata.get("decision"), dict) else {}
+            if str(decision.get("action") or "") == "final_closing":
+                continue
             cancel_event = runtime.cancel_events.get(job_id)
             if cancel_event:
                 cancel_event.set()
@@ -2349,6 +2360,7 @@ class DirectorRuntimeManagerMixin:
 
             async def run_next_prefetch():
                 try:
+                    await self._yield_before_presentation_chain_prefetch()
                     return await self._prefetch_next_presentation_turn(
                         runtime,
                         chained_session,

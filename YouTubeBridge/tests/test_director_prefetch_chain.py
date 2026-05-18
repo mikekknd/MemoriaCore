@@ -1065,6 +1065,7 @@ async def test_presentation_episode_plan_prefetches_next_planned_turn_before_cur
                 and storage.list_presentation_items("live-a")[1]["status"] == "ready"
             )
         )
+
         items = storage.list_presentation_items("live-a")
         assert [item["text"] for item in items] == ["第一企劃句。", "第二企劃句。"]
         assert items[1]["status"] == "ready"
@@ -1249,6 +1250,109 @@ async def test_presentation_prefetch_chain_continues_while_prefetched_turn_is_pl
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_prefetch_chain_yields_presentation_ready_before_next_context_work(monkeypatch):
+    tmp_dir = _tmp_dir()
+    consume_task = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+            "status": "running",
+        })
+        for character_id in ["host-a", "analyst-b"]:
+            storage.upsert_tts_profile({
+                "character_id": character_id,
+                "ref_audio_path": f"{character_id}.wav",
+                "prompt_text": "參考語音文字。",
+            })
+
+        class FakeTTSProvider:
+            def synthesize(self, text, profile):
+                return TTSResult(ok=True, audio_bytes=f"audio:{text}".encode("utf-8"), audio_format="wav")
+
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            tts_provider_factory=FakeTTSProvider,
+        )
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        queue = await manager.subscribe("live-a")
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "status": "prefetched",
+            "memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "content": "prefetched",
+            "metadata": {
+                "decision": {"action": "continue_topic", "episode_plan": {"mode": "planned_turn"}},
+                "base_state": {"metadata": {}},
+                "prefetch_only": True,
+            },
+        })
+        prepared = await manager.prepare_stream_result(
+            "live-a",
+            {
+                "message_id": "msg-prefetched",
+                "reply": "已預先準備的句子。",
+                "character_id": "host-a",
+                "character_name": "主持A",
+            },
+            source="director_prefetch",
+            interaction_job_id=interaction["job_id"],
+        )
+
+        prefetch_started = asyncio.Event()
+
+        async def blocking_next_prefetch(*_args, **_kwargs):
+            prefetch_started.set()
+            time.sleep(0.12)
+            return None
+
+        monkeypatch.setattr(manager, "_prefetch_next_presentation_turn", blocking_next_prefetch)
+        consume_task = asyncio.create_task(
+            manager._consume_prefetched_episode_turn(
+                runtime,
+                storage.get_session("live-a") or {},
+                {
+                    "interaction": interaction,
+                    "prepared_results": [prepared],
+                    "decision": {"action": "continue_topic", "episode_plan": {"mode": "planned_turn"}},
+                    "base_state": {"metadata": {}},
+                    "memoria_result": {"session_id": "mem-a"},
+                },
+            )
+        )
+
+        ready = await _next_queue_event(queue, "presentation_item_ready", timeout=1)
+        assert ready["item"]["text"] == "已預先準備的句子。"
+        assert not prefetch_started.is_set()
+
+        await manager.ack_presentation_item("live-a", ready["item"]["item_id"])
+        await asyncio.wait_for(prefetch_started.wait(), timeout=1)
+        await asyncio.wait_for(consume_task, timeout=1)
+    finally:
+        if consume_task and not consume_task.done():
+            consume_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await consume_task
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
