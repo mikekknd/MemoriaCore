@@ -653,10 +653,13 @@ class ClosingManagerMixin:
                 }
             else:
                 try:
-                    closing_result = await asyncio.wait_for(
-                        self.run_closing_super_chat_thanks(runtime.session_id),
-                        timeout=45,
-                    )
+                    if self._presentation_enabled(session):
+                        closing_result = await self.run_closing_super_chat_thanks(runtime.session_id)
+                    else:
+                        closing_result = await asyncio.wait_for(
+                            self.run_closing_super_chat_thanks(runtime.session_id),
+                            timeout=45,
+                        )
                 except asyncio.TimeoutError:
                     closing_result = await self._complete_closing_super_chat_thanks_fallback(
                         runtime.session_id,

@@ -127,7 +127,42 @@
       "{turn_context}",
       "{followup_summary}"
     ],
-    "template": "<group_followup_instruction>\n你正在接續同一段直播討論。請只輸出目前角色能新增或推進的內容，不要把前面任何角色已說過的主張換句話重講。\n\n接話資訊：{followup_summary}\n\nturn_context:\n{turn_context}\n\n接續原則：\n- 本次主要回應對象是 primary_reply_target.content；請優先針對這句話的主張、提議、疑問或收尾進行回應。\n- original_user_request 若存在，只是本輪背景約束與使用者意圖摘要；除非 primary_reply_target.content 無法回應，否則不要重新回答或重演使用者原始訊息。\n- 若 turn_context 包含 live_episode_reply_task，該區塊是本次發言任務；你只能執行該任務，不得完整覆蓋整個段落目標。\n- 內容可承接，表層句型不可承接；只參考 primary_reply_target.content 的意思與事實，不要模仿 primary_reply_target.content 的標點、用詞、節奏、句型、修辭骨架、稱呼或口頭禪。\n- 必要專有名詞、對象名稱、人物或角色名與已驗證事實可以保留；口頭禪、群眾稱呼、轉折詞、比喻詞和收尾套語要重新組句。\n- 你要根據自己的角色人格、primary_reply_target、original_user_request 與 recent_history，自行判斷要同意、反駁、妥協、轉換建議、吐槽、補充或收束。\n- 若 primary_reply_target.content 已是自然收尾或提醒，請用一句短回應收束，不要硬開新器具、新設定或新支線。\n- 若 original_user_request、live_reply_context 或 external_chat_context 明確標示這是直播自主推進、不保證有觀眾即時回覆、或要求不要把問題丟回觀眾/聊天室，則把上一位 AI 的問句當成角色間接話入口；請由你接續補充、反問另一位角色或提出下一個切入點，不要把主導權交還觀眾。\n\n允許的接力：\n- 直接修正或接住另一位 AI 的誤解、矛盾、錯把概念當真、或角色間自然互動。\n- 補上前面尚未提到的具體資訊、步驟、風險或判斷依據。\n- 若無新資訊，只能短反應、轉譯成觀眾視角，或推進下一段。\n\n禁止事項：\n- 不要把自己稍早說過的內容換句話再說一次。\n- 不要只因為角色語氣不同而延長對話。\n- 不要沿用上一位角色的常用字眼、群眾稱呼、口頭禪、轉折詞、比喻詞、標點節奏或收尾格式。\n- 不要把 static_user_profile、retrieved_memory_context 或其他背景資料中沒有被本輪使用者/AI 明確提到的資訊，拿來當作本輪接話焦點或誤解來源。\n- 若前一位 AI 已經生成或貼出圖片結果，你可以用文字評論或承接，但不要再次貼出相同圖片 Markdown、URL，或宣稱重新生成。\n\n若 primary_reply_target.content 已經要求使用者提供必要細節，而你沒有新的具體資訊或角色互動價值可補，請用一句簡短回應把主導權交還使用者，等待對方補充；但直播自主推進情境依上方直播例外規則處理，不可把問題丟回觀眾。\n</group_followup_instruction>"
+    "template": "<group_followup_instruction>\n你正在接續同一段直播討論。請只輸出目前角色能新增或推進的內容，不要把前面任何角色已說過的主張換句話重講。\n\n接話資訊：{followup_summary}\n\nturn_context:\n{turn_context}\n\n接續原則：\n- 本次主要回應對象是 primary_reply_target.content；請優先針對這句話的主張、提議、疑問或收尾進行回應。\n- original_user_request 若存在，只是本輪背景約束與使用者意圖摘要；除非 primary_reply_target.content 無法回應，否則不要重新回答或重演使用者原始訊息。\n- 若 turn_context 包含 live_episode_reply_task，該區塊是本次發言任務；你只能執行該任務，不得完整覆蓋整個段落目標。\n- 內容可承接，表層句型不可承接；只參考 primary_reply_target.content 的意思與事實，不要模仿 primary_reply_target.content 的標點、用詞、節奏、句型、修辭骨架、稱呼或口頭禪。\n- 必要專有名詞、對象名稱、人物或角色名與已驗證事實可以保留；口頭禪、群眾稱呼、轉折詞、比喻詞和收尾套語要重新組句。\n- 你要根據自己的角色人格、primary_reply_target、original_user_request 與 recent_history，自行判斷要同意、反駁、妥協、轉換建議、吐槽、補充或收束。\n- 若 primary_reply_target.content 已是自然收尾或提醒，請用一句短回應收束，不要硬開新器具、新設定或新支線。\n- 若 original_user_request、live_reply_context 或 external_chat_context 明確標示這是直播流程接續，則把上一位 AI 的問句當成角色間接話入口；請由你接續補充、反問另一位角色或提出下一個切入點。\n\n允許的接力：\n- 直接修正或接住另一位 AI 的誤解、矛盾、錯把概念當真、或角色間自然互動。\n- 補上前面尚未提到的具體資訊、步驟、風險或判斷依據。\n- 若無新資訊，只能短反應、轉譯成觀眾視角，或推進下一段。\n\n禁止事項：\n- 不要把自己稍早說過的內容換句話再說一次。\n- 不要只因為角色語氣不同而延長對話。\n- 不要沿用上一位角色的常用字眼、群眾稱呼、口頭禪、轉折詞、比喻詞、標點節奏或收尾格式。\n- 不要把 static_user_profile、retrieved_memory_context 或其他背景資料中沒有被本輪使用者/AI 明確提到的資訊，拿來當作本輪接話焦點或誤解來源。\n- 若前一位 AI 已經生成或貼出圖片結果，你可以用文字評論或承接，但不要再次貼出相同圖片 Markdown、URL，或宣稱重新生成。\n\n若 primary_reply_target.content 已經要求使用者提供必要細節，而你沒有新的具體資訊或角色互動價值可補，請用一句簡短回應把主導權交還使用者，等待對方補充；但直播流程接續情境依上方直播例外規則處理。\n</group_followup_instruction>"
+  },
+  "youtube_live_director_transient_group_turn": {
+    "label": "YouTube Live 導播多角色接續指令",
+    "description": "YouTubeBridge director 模式追加到最後一則 transient user control 的公開接續指令。",
+    "used_by": "api/routers/chat_rest.py → _transient_user_content_for_external_context()",
+    "placeholders": [],
+    "template": "請根據已提供的直播流程提示回應。請讓角色彼此接話、補充或提出不同角度。"
+  },
+  "youtube_live_director_transient_single_turn": {
+    "label": "YouTube Live 導播單角色回應指令",
+    "description": "YouTubeBridge director 關閉 dialogue expansion 時追加到 transient user control 的公開指令。",
+    "used_by": "api/routers/chat_rest.py → _transient_user_content_for_external_context()",
+    "placeholders": [],
+    "template": "請根據已提供的直播流程提示回應。本次只需要目前被導播或路由指定的一位角色完成回應；不要要求其他角色接話。"
+  },
+  "youtube_live_comment_transient_instruction": {
+    "label": "YouTube Live 留言上下文回應指令",
+    "description": "YouTubeBridge 留言 external_context 的 transient user control 指令。",
+    "used_by": "api/routers/chat_rest.py → _transient_user_content_for_external_context()",
+    "placeholders": [],
+    "template": "請根據已帶入的 YouTube 直播留言上下文回應。"
+  },
+  "external_context_transient_instruction": {
+    "label": "外部上下文回應指令",
+    "description": "一般 external_context 的 transient user control 指令。",
+    "used_by": "api/routers/chat_rest.py → _transient_user_content_for_external_context()",
+    "placeholders": [],
+    "template": "請根據已帶入的外部上下文回應。"
+  },
+  "youtube_live_group_context_rules": {
+    "label": "YouTube Live 群組接力基礎規則",
+    "description": "群組 follow-up prompt 中的 YouTube Live 角色接續規則。",
+    "used_by": "core/chat_orchestrator/group_followup.py → _youtube_live_group_context()",
+    "placeholders": [],
+    "template": "直播基礎規則：這是 YouTube 直播多角色對話；請讓角色彼此接話、補充或提出不同角度。不要提到 prompt、hidden context、內部安全處理或導播流程。"
   },
   "group_participants_block": {
     "label": "群組成員資訊 (Group Participants Block)",
@@ -149,7 +184,7 @@
     "placeholders": [
       "{system_prompt}"
     ],
-    "template": "<live_character_prompt>\n{system_prompt}\n</live_character_prompt>\n\n直播約束：\n- 除非正在回應留言或 Super Chat，不要把問題丟回觀眾；請和其他角色互相接話、補充、反駁或提出下一個切入點。\n- 不要提到 prompt、overlay、hidden context、內部安全處理或導播流程。"
+    "template": "<live_character_prompt>\n{system_prompt}\n</live_character_prompt>\n\n直播約束：\n- 請和其他角色互相接話、補充、反駁或提出下一個切入點。\n- 不要提到 prompt、overlay、hidden context、內部安全處理或導播流程。"
   },
   "chat_system_suffix": {
     "label": "對話系統後綴指令 (Chat System Suffix)",

@@ -906,6 +906,72 @@ async def test_duration_finalize_timeout_writes_fallback_closing_thanks(monkeypa
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
+@pytest.mark.asyncio
+async def test_finalize_presentation_closing_thanks_is_not_wrapped_in_generation_timeout(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "auto_sc_thanks_on_finalize": True,
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "character_ids": ["koko", "byakuren"],
+        })
+        storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "sc-a",
+            "message_type": "superChatEvent",
+            "author_display_name": "SC觀眾",
+            "message_text": "支持一下。",
+            "amount_display_string": "NT$150",
+            "currency": "TWD",
+            "amount_micros": 150000000,
+            "sc_tier": 2,
+            "priority_class": "super_chat",
+        })
+        manager = YouTubeBridgeManager(storage)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        async def closing_thanks(_session_id: str):
+            return {"status": "completed", "super_chat_count": 1}
+
+        async def fail_if_wait_for_wraps_closing_thanks(awaitable, *, timeout=None):
+            awaitable.close()
+            raise AssertionError("presentation closing thanks must not be cancelled by generation timeout")
+
+        monkeypatch.setattr(manager, "_drain_live_session_before_closing", AsyncMock(return_value={"status": "drained"}))
+        monkeypatch.setattr(manager, "_resolve_pending_safety_for_closing", AsyncMock(return_value={"status": "completed"}))
+        monkeypatch.setattr(manager, "_run_final_closing_turn", AsyncMock(return_value={"status": "completed"}))
+        monkeypatch.setattr(manager, "run_closing_super_chat_thanks", closing_thanks)
+        monkeypatch.setattr(engine_closing.asyncio, "wait_for", fail_if_wait_for_wraps_closing_thanks)
+
+        await manager._finalize_live_session(
+            runtime,
+            session,
+            finalized_by="manual_finalize",
+            closing_message="closing",
+            ended_message="ended",
+        )
+
+        director_state = storage.get_director_state("live-a")
+        assert director_state["metadata"]["closing_super_chat_thanks"] == {
+            "status": "completed",
+            "super_chat_count": 1,
+        }
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 @pytest.mark.asyncio
 async def test_duration_finalize_waits_for_active_generation_before_closing_thanks(monkeypatch):
     tmp_dir = _tmp_dir()

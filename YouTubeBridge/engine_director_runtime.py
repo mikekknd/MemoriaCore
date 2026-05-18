@@ -2114,7 +2114,7 @@ class DirectorRuntimeManagerMixin:
                     next_state, audience_prefetch_task = await present_ready_audience_batch()
                     audience_deferred_for_ready_prefetch = False
                     presented_deferred_audience = True
-                    if audience_prefetch_task is not None and prefetch_task is None:
+                    if audience_prefetch_task is not None:
                         prefetch_task = audience_prefetch_task
             if next_prefetch_ready:
                 audience_deferred_for_ready_prefetch = True
@@ -2122,7 +2122,7 @@ class DirectorRuntimeManagerMixin:
                 audience_deferred_for_ready_prefetch = False
                 if not presented_deferred_audience:
                     next_state, audience_prefetch_task = await present_ready_audience_batch()
-                    if audience_prefetch_task is not None and prefetch_task is None:
+                    if audience_prefetch_task is not None:
                         prefetch_task = audience_prefetch_task
         return next_state
 

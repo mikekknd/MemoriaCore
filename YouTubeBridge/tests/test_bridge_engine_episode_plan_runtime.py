@@ -979,7 +979,7 @@ def test_episode_plan_patch_does_not_inject_topic_pack_cards_for_evidence_turn(m
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_episode_plan_projection_contains_turn_evidence_brief_without_raw_factcards():
+def test_episode_plan_projection_contains_turn_facts_without_internal_evidence_boundaries():
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
         session = storage.get_session("live-a")
@@ -1011,11 +1011,11 @@ def test_episode_plan_projection_contains_turn_evidence_brief_without_raw_factca
         assert projection.count("可直接使用的事實：") == 1
         assert "可直接使用的事實：\n- 事件 A 在 2026-05-10 公開更新" in projection
         assert "- 公開來源只支援事件已更新，不支援推論它已經代表整個市場。" in projection
-        assert projection.count("來源邊界：") == 1
-        assert "來源邊界：\n- FactCards 與 sources.md 已被企劃層消化成本摘要" in projection
-        assert "- 沒有來源支撐的成因或排名推論不可自行補完。" in projection
-        assert "不得把查證責任推給角色" in projection
-        assert "不要在台詞中提到 FactCards、來源卡或自己正在查資料" in projection
+        assert "來源邊界：" not in projection
+        assert "FactCards 與 sources.md 已被企劃層消化成本摘要" not in projection
+        assert "沒有來源支撐的成因或排名推論不可自行補完" not in projection
+        assert "查證責任邊界" not in projection
+        assert "不要在台詞中提到 FactCards、來源卡或自己正在查資料" not in projection
         assert "evidence_brief:" not in projection
         assert "<topic_pack_fact_cards" not in projection
     finally:
@@ -1104,11 +1104,11 @@ def test_episode_plan_projection_contains_turn_contract_without_full_plan_json()
         assert "本輪目標：用具體事件開場" in projection
         assert "角色功能：host" in projection
         assert "交接功能：analyst" in projection
-        assert "最多句數：2" in projection
-        assert "證據需求：本輪需要導播規劃的查證邊界" in projection
-        assert "證據容量上限 3 個重點" in projection
+        assert "最多句數：2" not in projection
+        assert "證據需求：本輪需要導播規劃的查證邊界" not in projection
+        assert "證據容量上限 3 個重點" not in projection
         assert "查證線索：" not in projection
-        assert "必須涵蓋：事件名稱" in projection
+        assert "必須涵蓋：事件名稱" not in projection
         assert "plan_id:" not in projection
         assert "turn_contract:" not in projection
         assert "speaker_policy:" not in projection
@@ -1136,9 +1136,9 @@ def test_episode_plan_projection_uses_role_reply_budget_instead_of_suggested_rep
 
         assert "建議回覆數" not in projection
         assert "可以在此範圍內自然接話" not in projection
-        assert "本段最多 2 次角色發言" in projection
+        assert "本段最多 2 次角色發言" not in projection
         assert "本次角色任務：提出本輪核心資訊或主觀點" in projection
-        assert "若無新資訊，短收束並推進" in projection
+        assert "若無新資訊，短收束並推進" not in projection
         assert "第 1 位角色：提出主觀點或核心資訊" not in projection
         assert "第 2 位角色：只能在「承接反應、轉譯觀眾視角、補新角度、推進下一段」中選一種" not in projection
         assert "選項題直球規則：如果前一位角色提出 A/B、多條路線或多個問題選項" not in projection
@@ -1172,7 +1172,8 @@ def test_episode_plan_projection_scopes_question_when_audience_questions_disallo
             interrupt_state={},
         )
 
-        assert "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾" in projection
+        assert "輸出限制：最多句數" not in projection
+        assert "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾" not in projection
         assert "必須問句結尾：True；允許向觀眾提問：False" not in projection
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

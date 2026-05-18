@@ -577,11 +577,6 @@ class EpisodePlanManagerMixin:
             if isinstance(turn.get("forbidden_repetition"), dict)
             else {}
         )
-        required_entities = [
-            str(item).strip()
-            for item in evidence.get("required_entities") or []
-            if str(item).strip()
-        ]
         preferred_functions = [
             str(item).strip()
             for item in speaker.get("preferred_role_functions") or []
@@ -633,7 +628,6 @@ class EpisodePlanManagerMixin:
             *self._episode_recommendation_context_lines(plan, turn),
             *self._episode_stance_context_lines(turn),
             *self._episode_evidence_brief_context_lines(turn),
-            self._episode_output_context_line(output),
             "交接要求："
             f"{'需要' if bool(output.get('should_handoff')) else '不需要'}；"
             f"交接功能：{output.get('handoff_target_function') or '未指定'}",
@@ -646,15 +640,8 @@ class EpisodePlanManagerMixin:
                 f"{audience_context.get('instruction') or '目前沒有可用的真實聊天室留言或 Super Chat；禁止杜撰觀眾留言。'}"
                 "本輪請使用 fallback 目標，不要假裝已收到觀眾回應。"
             )
-        if max_cards > 0:
-            lines.append(
-                "證據需求：本輪需要導播規劃的查證邊界；"
-                f"證據容量上限 {max_cards} 個重點，只能作為事實依據，不是立場或段落策略。"
-            )
-        else:
+        if max_cards <= 0:
             lines.append("證據需求：本輪不使用外部話題卡；請依本輪目標與角色開場/收束要求回應。")
-        if required_entities:
-            lines.append("必須涵蓋：" + ", ".join(required_entities))
         handoff = turn.get("handoff") if isinstance(turn.get("handoff"), dict) else {}
         handoff_hint = str(handoff.get("next_turn_hint") or "").strip()
         if handoff_hint:
@@ -697,25 +684,6 @@ class EpisodePlanManagerMixin:
             lines.append("回復規則：本輪不是聊天室打斷，完成後依企劃段落節奏推進。")
         lines.append("</live_episode_turn_context>")
         return "\n".join(lines)
-
-    @staticmethod
-    def _episode_output_context_line(output: dict[str, Any]) -> str:
-        try:
-            max_sentences = int(output.get("max_sentences") or 2)
-        except (TypeError, ValueError):
-            max_sentences = 2
-        max_sentences = max(1, min(max_sentences, 8))
-        must_end_with_question = bool(output.get("must_end_with_question"))
-        allow_audience_question = bool(output.get("allow_audience_question"))
-        if must_end_with_question and allow_audience_question:
-            ending_rule = "結尾必須是可回應真實觀眾事件的問句。"
-        elif must_end_with_question:
-            ending_rule = "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾。"
-        elif allow_audience_question:
-            ending_rule = "可向觀眾提問，但只能在本輪正在回應真實留言或 Super Chat 時使用。"
-        else:
-            ending_rule = "不要求問句結尾；不得向觀眾提問。"
-        return f"輸出限制：最多句數：{max_sentences}；{ending_rule}"
 
     @staticmethod
     def _episode_claim_catalog(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -891,23 +859,11 @@ class EpisodePlanManagerMixin:
             for item in brief.get("facts_to_state") or []
             if str(item).strip()
         ]
-        boundaries = [
-            str(item).strip()
-            for item in brief.get("source_boundaries") or []
-            if str(item).strip()
-        ]
+        if not facts:
+            return []
         lines = ["企劃內嵌事實摘要："]
-        if facts:
-            lines.append("可直接使用的事實：")
-            lines.extend(f"- {fact}" for fact in facts[:6])
-        if boundaries:
-            lines.append("來源邊界：")
-            lines.extend(f"- {boundary}" for boundary in boundaries[:4])
-        if bool(brief.get("do_not_delegate_to_character")):
-            lines.append(
-                "查證責任邊界：上述摘要已由企劃層從來源工件整理完成；"
-                "不得把查證責任推給角色，不要在台詞中提到 FactCards、來源卡或自己正在查資料。"
-            )
+        lines.append("可直接使用的事實：")
+        lines.extend(f"- {fact}" for fact in facts[:6])
         return lines
 
     @staticmethod
@@ -940,18 +896,11 @@ class EpisodePlanManagerMixin:
 
     @staticmethod
     def _episode_dialogue_context_lines(dialogue_policy: dict[str, Any]) -> list[str]:
-        try:
-            max_replies = int(dialogue_policy.get("max_replies") or 1)
-        except (TypeError, ValueError):
-            max_replies = 1
-        max_replies = max(1, min(max_replies, 4))
         autonomy = str(dialogue_policy.get("autonomy") or "guided").strip() or "guided"
         lines = [
             "對話彈性：",
             f"自主度：{autonomy}",
-            f"本段最多 {max_replies} 次角色發言；這是硬上限，不是必須用完。",
             "本次角色任務：提出本輪核心資訊或主觀點；不得一次講完整段落。",
-            "接力煞車：若無新資訊，短收束並推進。",
         ]
         return lines
 

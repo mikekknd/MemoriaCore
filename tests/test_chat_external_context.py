@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import api.routers.chat_rest as chat_rest
+import core.chat_orchestrator.group_followup as group_followup_module
 from api.models.requests import ChatSyncRequest
 from api.routers.chat_rest import (
     _build_external_context_visible_event,
@@ -338,8 +340,7 @@ def test_youtube_live_director_control_dedupes_handling_hint_from_turn_instructi
         force_group=True,
         turn_instruction=(
             f"{handling_hint}\n\n"
-            "請根據已提供的直播流程提示回應。這是直播自主推進，不保證有觀眾即時回覆；"
-            "請讓角色彼此接話、補充或提出不同角度。"
+            "請根據已提供的直播流程提示回應。請讓角色彼此接話、補充或提出不同角度。"
         ),
     )
 
@@ -388,8 +389,7 @@ def test_youtube_live_director_can_suppress_external_turn_instruction_for_chat_r
         },
         force_group=True,
         turn_instruction=(
-            "請根據已提供的直播流程提示回應。這是直播自主推進，不保證有觀眾即時回覆；"
-            "請讓角色彼此接話、補充或提出不同角度。"
+            "請根據已提供的直播流程提示回應。請讓角色彼此接話、補充或提出不同角度。"
         ),
     )
 
@@ -950,11 +950,11 @@ def test_youtube_live_followup_prompt_uses_rest_normalized_live_episode_evidence
     assert "- 台灣平台 播出時間與海外投票不同步。" in instruction
     assert "- 觀眾補番成本 會受前季數量影響。" in instruction
     assert "超過 cap 應丟棄" not in instruction
-    assert "來源邊界：" in instruction
-    assert "- 只能說明海外 投票熱度，不是作品品質定論。" in instruction
-    assert "- 台灣平台資訊只能描述上架狀態。" in instruction
-    assert "- 續作季數只能作為補番門檻脈絡。" in instruction
-    assert "查證責任邊界：不得在台詞中提到來源卡、查資料或把查證責任交給角色。" in instruction
+    assert "來源邊界：" not in instruction
+    assert "只能說明海外 投票熱度，不是作品品質定論" not in instruction
+    assert "台灣平台資訊只能描述上架狀態" not in instruction
+    assert "續作季數只能作為補番門檻脈絡" not in instruction
+    assert "查證責任邊界" not in instruction
     assert "<live_episode_turn_context>" not in instruction
     assert "這段 raw director context 不應出現在 follow-up prompt" not in instruction
     assert "raw_cards" not in instruction
@@ -1121,9 +1121,26 @@ def test_youtube_live_director_transient_prompt_keeps_roles_talking_to_each_othe
         {"source": "youtube_live_director"},
     )
 
+    assert transient.endswith("請根據已提供的直播流程提示回應。請讓角色彼此接話、補充或提出不同角度。")
     assert "角色彼此" in transient
-    assert "不要把問題丟回觀眾" in transient
-    assert "回應留言" in transient
+    assert "不要把問題丟回觀眾" not in transient
+    assert "回應留言" not in transient
+
+
+def test_youtube_live_director_transient_prompt_uses_prompt_template(monkeypatch):
+    class _PromptStub:
+        def get(self, key: str) -> str:
+            assert key == "youtube_live_director_transient_group_turn"
+            return "模板化直播接續：角色彼此接話。"
+
+    monkeypatch.setattr(chat_rest, "get_prompt_manager", lambda: _PromptStub(), raising=False)
+
+    transient = _transient_user_content_for_external_context(
+        ChatSyncRequest(content="請自然延續直播。"),
+        {"source": "youtube_live_director"},
+    )
+
+    assert transient == "請自然延續直播。\n\n模板化直播接續：角色彼此接話。"
 
 
 def test_youtube_live_director_transient_prompt_respects_disabled_dialogue_expansion():
@@ -1139,7 +1156,7 @@ def test_youtube_live_director_transient_prompt_respects_disabled_dialogue_expan
 
     assert "角色彼此" not in transient
     assert "不要要求其他角色接話" in transient
-    assert "不要把問題丟回觀眾" in transient
+    assert "不要把問題丟回觀眾" not in transient
 
 
 def test_youtube_live_director_transient_prompt_includes_public_turn_instruction():
@@ -1179,9 +1196,10 @@ def test_group_followup_prompt_has_youtube_live_no_audience_handoff_exception():
     prompts = json.loads(Path("prompts_default.json").read_text(encoding="utf-8"))
     template = prompts["group_followup_user"]["template"]
 
-    assert "直播自主推進" in template
-    assert "不要把問題丟回觀眾" in template
-    assert "不可把問題丟回觀眾" in template
+    assert "直播流程接續" in template
+    assert "不保證有觀眾即時回覆" not in template
+    assert "不要把問題丟回觀眾" not in template
+    assert "不可把問題丟回觀眾" not in template
 
 
 def test_youtube_live_chat_system_suffix_contains_style_desync_rule():
@@ -1252,8 +1270,33 @@ def test_youtube_live_group_followup_instruction_includes_live_rules_block():
 
     assert "youtube_live_group_context:" in instruction
     assert "直播基礎規則" in instruction
-    assert "不要把問題丟回觀眾" in instruction
     assert "不要提到 prompt" in instruction
+
+
+def test_youtube_live_group_followup_instruction_uses_live_rules_template(monkeypatch):
+    class _PromptStub:
+        def get(self, key: str) -> str:
+            if key == "group_followup_user":
+                return "<group_followup_instruction>\n{turn_context}\n</group_followup_instruction>"
+            if key == "youtube_live_group_context_rules":
+                return "模板化直播規則：角色彼此接話。"
+            raise KeyError(key)
+
+    monkeypatch.setattr(group_followup_module, "get_prompt_manager", lambda: _PromptStub())
+
+    instruction = build_group_followup_instruction(
+        {
+            "user_prompt_original": "請自然延續直播。",
+            "last_character_name": "可可",
+            "last_reply": "大家最在意第 4 話的節奏吧？",
+            "conversation_intent": "continue_group_discussion",
+            "routing_action": "repeat_speaker_reply_to_ai",
+        },
+        "請自然延續直播。",
+        {"external_chat_context": {"source": "youtube_live_director"}},
+    )
+
+    assert "模板化直播規則：角色彼此接話。" in instruction
 
 
 def test_youtube_live_group_followup_instruction_includes_reply_task_block():
@@ -1353,10 +1396,10 @@ def test_youtube_live_episode_followup_uses_compact_live_reply_context():
     assert instruction.count("可直接使用的事實：") == 1
     assert "- Anime Corner Week 5 是海外社群週榜。" in instruction
     assert "Anime Corner Week 5 是海外社群週榜" in instruction
-    assert instruction.count("來源邊界：") == 1
-    assert "- 只能說明海外投票熱度，不是作品品質定論。" in instruction
-    assert "只能說明海外投票熱度" in instruction
-    assert "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾" in instruction
+    assert "來源邊界：" not in instruction
+    assert "只能說明海外投票熱度" not in instruction
+    assert "輸出限制：最多句數" not in instruction
+    assert "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾" not in instruction
     assert "original_user_request:" not in instruction
     assert "<live_episode_turn_context>" not in instruction
     assert "第 1 位角色：提出主觀點或核心資訊" not in instruction

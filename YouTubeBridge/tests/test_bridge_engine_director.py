@@ -160,7 +160,7 @@ async def test_director_turn_includes_episode_plan_context(monkeypatch):
         assert "直播互動規則：" not in context
         assert "段落：事件 Hook" not in context
         assert "本輪目標：用具體事件開場" in context
-        assert "最多句數：" in context
+        assert "最多句數：" not in context
         assert "<live_episode_director_context>" not in context
         assert "turn_contract:" not in context
         assert "plan_id:" not in context
@@ -410,7 +410,7 @@ async def test_planned_turn_external_context_has_episode_contract_only(monkeypat
         assert "<live_episode_turn_context>" in context
         assert "本輪目標：用具體事件開場" in context
         assert "角色功能：" in context
-        assert "最多句數：" in context
+        assert "最多句數：" not in context
         assert "<live_episode_director_context>" not in context
         assert "speaker_policy:" not in context
         assert "evidence_policy:" not in context
@@ -486,7 +486,7 @@ async def test_planned_turn_uses_dialogue_policy_group_turn_limit(monkeypatch):
             "turn_type": "analysis",
             "intent": "說明事件背後脈絡",
         }
-        assert "本段最多 3 次角色發言" in captured["external_context"]["context_text"]
+        assert "本段最多 3 次角色發言" not in captured["external_context"]["context_text"]
         assert "本次角色任務：提出本輪核心資訊或主觀點" in captured["external_context"]["context_text"]
         assert "第 2 位角色：只能在「承接反應、轉譯觀眾視角、補新角度、推進下一段」中選一種" not in captured["external_context"]["context_text"]
         assert "交接提示：交給分析角色補脈絡" in captured["external_context"]["context_text"]
@@ -3563,7 +3563,7 @@ async def test_director_dialogue_expansion_disabled_forces_single_planned_reply(
         assert external_context["summary"]["director_dialogue_expansion_enabled"] is False
         assert external_context["live_episode_plan"]["dialogue_policy"]["min_replies"] == 1
         assert external_context["live_episode_plan"]["dialogue_policy"]["max_replies"] == 1
-        assert "本段最多 1 次角色發言" in external_context["context_text"]
+        assert "本段最多 1 次角色發言" not in external_context["context_text"]
         assert "第 2 位角色" not in external_context["context_text"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -7294,6 +7294,83 @@ async def test_after_main_turn_sequence_chains_planned_prefetch_after_ready_audi
         assert "planned-consumed" in order
         assert order.index("planned-prefetched") < order.index("planned-consumed")
         assert storage.get_interaction(audience_interaction["job_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_after_main_turn_sequence_uses_audience_chain_task_instead_of_stale_prepare(monkeypatch):
+    with temp_storage() as storage:
+        manager = YouTubeBridgeManager(storage)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        session = {
+            "session_id": "live-a",
+            "presentation_enabled": True,
+            "prefetch_wait_timeout_seconds": 0.2,
+        }
+        state = {"session_id": "live-a", "metadata": {}}
+        stale_prepare_released = asyncio.Event()
+        order: list[str] = []
+
+        async def current_prefetch_task():
+            return {
+                "interaction": {"job_id": "current-planned-prefetch", "source": "director_prefetch"},
+                "prepared_results": [{"message": {"message_id": "current-msg"}, "items": []}],
+                "decision": {"action": "continue_topic", "episode_plan": {"mode": "planned_turn"}},
+                "base_state": state,
+            }
+
+        async def stale_prepare_task():
+            await stale_prepare_released.wait()
+            return {
+                "interaction": {"job_id": "stale-audience-prepare", "source": "director_audience_prepare"},
+                "prepared_results": [{"message": {"message_id": "audience-msg"}, "items": []}],
+            }
+
+        async def planned_prefetch_task():
+            return {
+                "interaction": {"job_id": "planned-after-audience", "source": "director_prefetch"},
+                "prepared_results": [{"message": {"message_id": "planned-msg"}, "items": []}],
+                "decision": {"action": "continue_topic", "episode_plan": {"mode": "planned_turn"}},
+                "base_state": state,
+            }
+
+        first_task = asyncio.create_task(current_prefetch_task())
+        old_task = asyncio.create_task(stale_prepare_task())
+        new_task = asyncio.create_task(planned_prefetch_task())
+        presented_once = False
+
+        async def fake_present_ready_audience(_runtime, _session, current_state):
+            nonlocal presented_once
+            if presented_once:
+                return current_state
+            presented_once = True
+            order.append("audience-presented")
+            stale_prepare_released.set()
+            runtime.audience_gap_after_memoria_task = new_task
+            return current_state
+
+        async def fake_consume(_runtime, _session, prefetched):
+            job_id = prefetched["interaction"]["job_id"]
+            order.append(f"consume:{job_id}")
+            if job_id == "current-planned-prefetch":
+                return {**prefetched, "interaction": prefetched["interaction"], "discarded": False, "after_memoria_task": old_task}
+            if job_id == "stale-audience-prepare":
+                return None
+            return {**prefetched, "interaction": prefetched["interaction"], "discarded": False}
+
+        async def fake_update(_runtime, _session, current_state, _consumed, **_kwargs):
+            return current_state
+
+        monkeypatch.setattr(manager, "_present_ready_audience_batch_after_turn", fake_present_ready_audience)
+        monkeypatch.setattr(manager, "_consume_prefetched_episode_turn", fake_consume)
+        monkeypatch.setattr(manager, "_update_director_state_after_prefetch_consumed", fake_update)
+
+        await manager._after_main_turn_sequence(runtime, session, state, first_task)
+
+        assert order == [
+            "consume:current-planned-prefetch",
+            "audience-presented",
+            "consume:planned-after-audience",
+        ]
 
 
 @pytest.mark.asyncio

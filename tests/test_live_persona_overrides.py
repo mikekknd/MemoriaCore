@@ -13,7 +13,7 @@ class _PromptManager:
             "youtube_live_persona_override_block": (
                 "<live_character_prompt>\n{system_prompt}\n</live_character_prompt>\n"
                 "\n"
-                "直播約束：\n- 除非正在回應留言或 Super Chat，不要把問題丟回觀眾。"
+                "直播約束：\n- 請和其他角色互相接話、補充、反駁或提出下一個切入點。"
             ),
             "group_participants_block": (
                 "group={group_name}; current={current_character_name}\n"
@@ -83,6 +83,8 @@ def test_youtube_live_persona_template_does_not_embed_reply_rules_block():
     assert "{reply_rules_block}" not in block["template"]
     assert "{reply_rules_block}" not in block["placeholders"]
     assert "<live_reply_rules>" not in block["template"]
+    assert "不要把問題丟回觀眾" not in block["template"]
+    assert "請和其他角色互相接話、補充、反駁或提出下一個切入點" in block["template"]
 
 
 def test_live_persona_prompt_omits_runtime_scope_and_opening_execution_rules():

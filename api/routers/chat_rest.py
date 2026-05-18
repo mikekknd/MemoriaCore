@@ -25,6 +25,7 @@ from api.routers.chat.execution import (
 from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 from api.routers.chat.group_loop import is_group_session, run_group_chat_loop
 from api.routers.chat.roster import normalize_character_ids
+from core.prompt_manager import get_prompt_manager
 from tools.minimax_image import generated_image_path
 
 
@@ -759,24 +760,19 @@ def _transient_user_content_for_external_context(body: ChatSyncRequest, external
             return ""
         public_turn_instruction = str(body.content or "").replace("\r", "\n").strip()
         if external_context.get("director_dialogue_expansion_enabled") is False:
-            base_instruction = (
-                "請根據已提供的直播流程提示回應。"
-                "這是直播自主推進，本次只需要目前被導播或路由指定的一位角色完成回應；"
-                "不要要求其他角色接話。"
-                "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+            base_instruction = get_prompt_manager().get(
+                "youtube_live_director_transient_single_turn"
             )
         else:
-            base_instruction = (
-                "請根據已提供的直播流程提示回應。"
-                "這是直播自主推進，不保證有觀眾即時回覆；請讓角色彼此接話、補充或提出不同角度。"
-                "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+            base_instruction = get_prompt_manager().get(
+                "youtube_live_director_transient_group_turn"
             )
         if public_turn_instruction:
             return f"{public_turn_instruction}\n\n{base_instruction}"
         return base_instruction
     if source == "youtube_live":
-        return "請根據已帶入的 YouTube 直播留言上下文回應。"
-    return "請根據已帶入的外部上下文回應。"
+        return get_prompt_manager().get("youtube_live_comment_transient_instruction")
+    return get_prompt_manager().get("external_context_transient_instruction")
 
 
 def _memory_write_policy_for_request(body: ChatSyncRequest, external_context: dict | None) -> str:
