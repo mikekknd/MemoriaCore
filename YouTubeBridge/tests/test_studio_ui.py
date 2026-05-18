@@ -281,6 +281,19 @@ def test_studio_presentation_debug_logs_backend_and_audio_blocked_events():
     assert subscribe_body.index('payload.type === "presentation_item_preload"') < subscribe_body.index('payload.type === "presentation_item_ready"')
     assert "appendPresentationDebugLog(payload.event);" in subscribe_body
     assert 'item_prefetch_ready: "預載完成，等待導播交付"' in studio_js
+    assert 'client_playback_timeline: "前端播放時間線"' in studio_js
+    assert "function recordPresentationClientTiming(phase, item, details = {})" in studio_js
+    assert "function attachPresentationSseTiming(item, payload)" in studio_js
+    assert "function startMainThreadProbe()" in studio_js
+    assert "main_thread_max_lag_ms_since_last_presentation_sse" in studio_js
+    assert "document_visibility: document.visibilityState" in studio_js
+    assert "server_broadcast_at: payload._broadcast_at ||" in studio_js
+    assert "server_sse_yield_at: payload._sse_yield_at ||" in studio_js
+    assert "cachePresentationAudio(attachPresentationSseTiming(payload.item, payload));" in studio_js
+    assert "enqueuePresentationItem(attachPresentationSseTiming(payload.item, payload));" in studio_js
+    assert 'reportPresentationClientDebug("client_playback_timeline", item, {' in studio_js
+    assert 'recordPresentationClientTiming("audio_ended", item' in studio_js
+    assert "ack_roundtrip_ms" in studio_js
     assert 'reportPresentationClientDebug("audio_play_blocked", item, {' in studio_js
     assert 'phase: "audio_play_blocked"' in studio_js
     assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/debug`, {' in studio_js

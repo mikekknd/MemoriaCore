@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const CHAT_PREVIEW_VISIBLE_LIMIT = 120;
+const MAIN_THREAD_PROBE_INTERVAL_MS = 250;
 
 const state = {
   live: false,
@@ -44,6 +45,10 @@ const state = {
   presentationAckInFlight: false,
   presentationAudioCache: new Map(),
   summaryLoading: false,
+  mainThreadProbeTimer: null,
+  mainThreadProbeExpectedAt: 0,
+  mainThreadLastLagMs: 0,
+  mainThreadMaxLagMs: 0,
 };
 
 const normalCommentSamples = [
@@ -1128,6 +1133,7 @@ const presentationDebugLabels = {
   ack_received: "收到 ACK",
   ack_timeout: "ACK 逾時",
   item_skipped: "跳過句子",
+  client_playback_timeline: "前端播放時間線",
   audio_play_blocked: "瀏覽器阻擋播放",
   audio_retry_blocked: "重試播放被阻擋",
 };
@@ -1160,6 +1166,83 @@ function reportPresentationClientDebug(phase, item, details = {}) {
     appendLog("WARN", `TTS Debug 回報失敗：${error.message || error}`);
     return null;
   });
+}
+
+function audioTimingSnapshot(audio) {
+  if (!audio) return {};
+  return {
+    audio_ready_state: audio.readyState,
+    audio_network_state: audio.networkState,
+    audio_current_time: Number.isFinite(audio.currentTime) ? Number(audio.currentTime.toFixed(3)) : null,
+    audio_duration: Number.isFinite(audio.duration) ? Number(audio.duration.toFixed(3)) : null,
+    audio_paused: Boolean(audio.paused),
+  };
+}
+
+function startMainThreadProbe() {
+  if (state.mainThreadProbeTimer) return;
+  state.mainThreadProbeExpectedAt = performance.now() + MAIN_THREAD_PROBE_INTERVAL_MS;
+  state.mainThreadProbeTimer = setInterval(() => {
+    const now = performance.now();
+    const lagMs = Math.max(0, now - state.mainThreadProbeExpectedAt);
+    state.mainThreadLastLagMs = Number(lagMs.toFixed(3));
+    state.mainThreadMaxLagMs = Math.max(state.mainThreadMaxLagMs, state.mainThreadLastLagMs);
+    state.mainThreadProbeExpectedAt = now + MAIN_THREAD_PROBE_INTERVAL_MS;
+  }, MAIN_THREAD_PROBE_INTERVAL_MS);
+}
+
+function clientRuntimeSnapshot() {
+  const now = performance.now();
+  const pendingLagMs = state.mainThreadProbeExpectedAt
+    ? Math.max(0, now - state.mainThreadProbeExpectedAt)
+    : 0;
+  const currentLagMs = Math.max(state.mainThreadLastLagMs || 0, pendingLagMs);
+  const maxLagMs = Math.max(state.mainThreadMaxLagMs || 0, currentLagMs);
+  state.mainThreadMaxLagMs = 0;
+  return {
+    document_visibility: document.visibilityState || "",
+    document_has_focus: typeof document.hasFocus === "function" ? document.hasFocus() : null,
+    main_thread_last_lag_ms: Number(currentLagMs.toFixed(3)),
+    main_thread_max_lag_ms_since_last_presentation_sse: Number(maxLagMs.toFixed(3)),
+  };
+}
+
+function recordPresentationClientTiming(phase, item, details = {}) {
+  if (!item) return;
+  if (!Array.isArray(item._clientTiming)) item._clientTiming = [];
+  item._clientTiming.push({
+    phase,
+    client_time_ms: Number(performance.now().toFixed(3)),
+    client_wall_time: new Date().toISOString(),
+    queue_length: state.presentationQueue.length,
+    current_item_id: state.currentPresentationItem?.item_id || "",
+    ...details,
+  });
+}
+
+function flushPresentationClientTiming(item, details = {}) {
+  if (!item || !Array.isArray(item._clientTiming) || item._clientTiming.length === 0) return;
+  const timeline = item._clientTiming.slice(-40);
+  item._clientTiming = [];
+  reportPresentationClientDebug("client_playback_timeline", item, {
+    timeline,
+    timeline_count: timeline.length,
+    performance_time_origin: Number(performance.timeOrigin.toFixed(3)),
+    ...details,
+  });
+}
+
+function attachPresentationSseTiming(item, payload) {
+  if (!item || !payload) return item;
+  item._sseTiming = {
+    event_received_time_ms: Number(performance.now().toFixed(3)),
+    event_received_wall_time: new Date().toISOString(),
+    server_broadcast_at: payload._broadcast_at || "",
+    server_sse_yield_at: payload._sse_yield_at || "",
+    sse_type: payload.type || "",
+    ...clientRuntimeSnapshot(),
+  };
+  return item;
 }
 
 function appendMessage(kind, name, role, text) {
@@ -1322,6 +1405,27 @@ function cachePresentationAudio(item) {
   if (!itemId || !audioUrl || state.presentationAudioCache.has(itemId)) return;
   const audio = new Audio(audioUrl);
   audio.preload = "auto";
+  recordPresentationClientTiming("preload_start", item, {
+    audio_url_present: true,
+    cache_size: state.presentationAudioCache.size,
+    ...(item._sseTiming || {}),
+    ...audioTimingSnapshot(audio),
+  });
+  audio.addEventListener("loadedmetadata", () => {
+    recordPresentationClientTiming("preload_loadedmetadata", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("canplay", () => {
+    recordPresentationClientTiming("preload_canplay", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("canplaythrough", () => {
+    recordPresentationClientTiming("preload_canplaythrough", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("error", () => {
+    recordPresentationClientTiming("preload_error", item, {
+      ...audioTimingSnapshot(audio),
+      error: audio.error?.message || String(audio.error?.code || "audio preload error"),
+    });
+  }, { once: true });
   state.presentationAudioCache.set(itemId, audio);
   appendLog("DEBUG", `已預載 TTS 音訊：${itemId}`);
 }
@@ -1331,23 +1435,44 @@ function audioForPresentationItem(item) {
   const cached = itemId ? state.presentationAudioCache.get(itemId) : null;
   if (cached) {
     state.presentationAudioCache.delete(itemId);
+    recordPresentationClientTiming("audio_cache_hit", item, audioTimingSnapshot(cached));
     return cached;
   }
   const audio = new Audio(item.audio_url || "");
   audio.preload = "auto";
+  recordPresentationClientTiming("audio_cache_miss", item, {
+    audio_url_present: Boolean(item.audio_url),
+    ...audioTimingSnapshot(audio),
+  });
   return audio;
 }
 
 async function ackPresentationItem(item) {
   if (!item?.item_id || !state.sessionId || state.presentationAckInFlight) return false;
   state.presentationAckInFlight = true;
+  const ackStartedAt = performance.now();
+  recordPresentationClientTiming("ack_start", item);
   try {
     await api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`, {
       method: "POST",
     });
+    recordPresentationClientTiming("ack_done", item, {
+      ack_roundtrip_ms: Number((performance.now() - ackStartedAt).toFixed(3)),
+    });
+    flushPresentationClientTiming(item, {
+      ack_ok: true,
+    });
     appendLog("DEBUG", `TTS 播放完成並 ACK：${item.item_id}`);
     return true;
   } catch (error) {
+    recordPresentationClientTiming("ack_failed", item, {
+      ack_roundtrip_ms: Number((performance.now() - ackStartedAt).toFixed(3)),
+      error: error?.message || String(error || "ack failed"),
+    });
+    flushPresentationClientTiming(item, {
+      ack_ok: false,
+      error: error?.message || String(error || "ack failed"),
+    });
     appendLog("WARN", `TTS ACK 失敗：${error.message || error}`);
     await refreshStudioSession();
     return false;
@@ -1367,6 +1492,7 @@ function isCurrentPresentationItem(item) {
 async function finishPresentationItem(item, reason = "ended") {
   if (!isCurrentPresentationItem(item)) return;
   if (state.presentationAckInFlight) return;
+  recordPresentationClientTiming("finish_start", item, { reason });
   state.presentationPlaying = true;
   state.audioUnlockRequired = false;
   setPresentationControls({ canSkip: false });
@@ -1403,6 +1529,7 @@ function playPresentationItem() {
 
   if (!item.audio_url) {
     appendLog("WARN", `TTS 音訊未產生，改以文字送出：${item.item_id}`);
+    recordPresentationClientTiming("text_fallback", item);
     finishPresentationItem(item, "text_fallback").catch((error) => {
       appendLog("WARN", `文字 fallback ACK 失敗：${error.message || error}`);
     });
@@ -1411,20 +1538,49 @@ function playPresentationItem() {
 
   const audio = audioForPresentationItem(item);
   state.currentAudio = audio;
+  audio.addEventListener("playing", () => {
+    if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_playing", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("waiting", () => {
+    if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_waiting", item, audioTimingSnapshot(audio));
+  });
   audio.addEventListener("ended", () => {
     if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_ended", item, audioTimingSnapshot(audio));
     finishPresentationItem(item, "ended").catch((error) => {
       appendLog("WARN", `TTS 完播處理失敗：${error.message || error}`);
     });
   }, { once: true });
   audio.addEventListener("error", () => {
     if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_error", item, {
+      ...audioTimingSnapshot(audio),
+      error: audio.error?.message || String(audio.error?.code || "audio error"),
+    });
     finishPresentationItem(item, "error").catch((error) => {
       appendLog("WARN", `TTS 錯誤處理失敗：${error.message || error}`);
     });
   }, { once: true });
-  audio.play().catch((error) => {
+  const playStartedAt = performance.now();
+  recordPresentationClientTiming("play_invoked", item, audioTimingSnapshot(audio));
+  audio.play().then(() => {
+    recordPresentationClientTiming("play_resolved", item, {
+      play_promise_ms: Number((performance.now() - playStartedAt).toFixed(3)),
+      ...audioTimingSnapshot(audio),
+    });
+  }).catch((error) => {
     if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("play_blocked", item, {
+      play_promise_ms: Number((performance.now() - playStartedAt).toFixed(3)),
+      error: error?.message || String(error || "audio.play() rejected"),
+      ...audioTimingSnapshot(audio),
+    });
+    flushPresentationClientTiming(item, {
+      ack_ok: false,
+      error: error?.message || String(error || "audio.play() rejected"),
+    });
     state.presentationPlaying = false;
     state.audioUnlockRequired = true;
     updatePresentationStatus("等待啟用聲音", "warn");
@@ -1441,6 +1597,11 @@ function playPresentationItem() {
 
 function enqueuePresentationItem(item) {
   if (!item?.item_id) return;
+  recordPresentationClientTiming("ready_received", item, {
+    queue_length_before_enqueue: state.presentationQueue.length,
+    audio_url_present: Boolean(item.audio_url),
+    ...(item._sseTiming || {}),
+  });
   cachePresentationAudio(item);
   state.presentationQueue.push(item);
   appendLog("DEBUG", `收到 TTS 句子：${item.item_id}`);
@@ -1456,9 +1617,23 @@ async function retryCurrentPresentationAudio() {
   updatePresentationStatus("播放中", "good");
   setPresentationControls({ canSkip: true });
   try {
+    const playStartedAt = performance.now();
+    recordPresentationClientTiming("retry_play_invoked", item, audioTimingSnapshot(audio));
     await audio.play();
+    recordPresentationClientTiming("retry_play_resolved", item, {
+      play_promise_ms: Number((performance.now() - playStartedAt).toFixed(3)),
+      ...audioTimingSnapshot(audio),
+    });
   } catch (error) {
     if (!isCurrentPresentationItem(item) || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("retry_play_blocked", item, {
+      error: error?.message || String(error || "audio.play() rejected"),
+      ...audioTimingSnapshot(audio),
+    });
+    flushPresentationClientTiming(item, {
+      ack_ok: false,
+      error: error?.message || String(error || "audio.play() rejected"),
+    });
     state.presentationPlaying = false;
     state.audioUnlockRequired = true;
     updatePresentationStatus("等待啟用聲音", "warn");
@@ -1951,6 +2126,7 @@ function scheduleConversationRefresh(source = "直播對話") {
 function subscribeSessionEvents(sessionId) {
   if (!sessionId) return;
   unsubscribeSessionEvents();
+  startMainThreadProbe();
   state.eventSource = new EventSource(`/sessions/${encodeURIComponent(sessionId)}/events`);
   state.eventSource.onopen = () => appendLog("INFO", "Live Session 即時事件已連線");
   state.eventSource.onmessage = (event) => {
@@ -1973,11 +2149,11 @@ function subscribeSessionEvents(sessionId) {
         return;
       }
       if (payload.type === "presentation_item_preload" && payload.item) {
-        cachePresentationAudio(payload.item);
+        cachePresentationAudio(attachPresentationSseTiming(payload.item, payload));
         return;
       }
       if (payload.type === "presentation_item_ready" && payload.item) {
-        enqueuePresentationItem(payload.item);
+        enqueuePresentationItem(attachPresentationSseTiming(payload.item, payload));
         return;
       }
       if (payload.type === "interrupt_requested") {

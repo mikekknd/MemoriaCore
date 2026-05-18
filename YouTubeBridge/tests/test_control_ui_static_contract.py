@@ -172,6 +172,14 @@ def test_live_chat_handles_presentation_queue_events():
     assert "audioForPresentationItem" in live_chat_html
     assert "playPresentationItem" in live_chat_html
     assert "ackPresentationItem" in live_chat_html
+    assert "reportPresentationClientDebug" in live_chat_html
+    assert "client_playback_timeline" in live_chat_html
+    assert "attachPresentationSseTiming" in live_chat_html
+    assert "server_sse_yield_at" in live_chat_html
+    assert "main_thread_max_lag_ms_since_last_presentation_sse" in live_chat_html
+    assert "document_visibility: document.visibilityState" in live_chat_html
+    assert 'recordPresentationClientTiming("audio_ended", item' in live_chat_html
+    assert "ack_roundtrip_ms" in live_chat_html
     assert "presentation/current/skip" in live_chat_html
     assert "audio.addEventListener(\"ended\"" in live_chat_html
 

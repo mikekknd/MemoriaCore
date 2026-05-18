@@ -731,6 +731,12 @@ async def events_stream(session_id: str):
             while True:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=20)
+                    if isinstance(payload, dict) and payload.get("type") in {
+                        "presentation_debug",
+                        "presentation_item_preload",
+                        "presentation_item_ready",
+                    }:
+                        payload = {**payload, "_sse_yield_at": datetime.now().isoformat()}
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"

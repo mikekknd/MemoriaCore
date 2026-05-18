@@ -22,7 +22,12 @@ const state = {
   characterColorMap: {},
   nextColorIndex: 0,
   nextMessageOrder: 0,
+  mainThreadProbeTimer: null,
+  mainThreadProbeExpectedAt: 0,
+  mainThreadLastLagMs: 0,
+  mainThreadMaxLagMs: 0,
 };
+const MAIN_THREAD_PROBE_INTERVAL_MS = 250;
 const LIVE_CHAT_REFRESH_TYPES = new Set([
   "chat_message",
   "youtube_live_event",
@@ -76,14 +81,99 @@ async function api(path) {
   if (!response.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : text || response.statusText);
   return data;
 }
-async function apiPost(path) {
+async function apiPost(path, body = undefined) {
   const headers = _bridgeKey ? { "X-Bridge-Key": _bridgeKey } : {};
-  const response = await fetch(path, { method: "POST", headers });
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const response = await fetch(path, {
+    method: "POST",
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   const text = await response.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!response.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : text || response.statusText);
   return data;
+}
+function audioTimingSnapshot(audio) {
+  if (!audio) return {};
+  return {
+    audio_ready_state: audio.readyState,
+    audio_network_state: audio.networkState,
+    audio_current_time: Number.isFinite(audio.currentTime) ? Number(audio.currentTime.toFixed(3)) : null,
+    audio_duration: Number.isFinite(audio.duration) ? Number(audio.duration.toFixed(3)) : null,
+    audio_paused: Boolean(audio.paused),
+  };
+}
+function startMainThreadProbe() {
+  if (state.mainThreadProbeTimer) return;
+  state.mainThreadProbeExpectedAt = performance.now() + MAIN_THREAD_PROBE_INTERVAL_MS;
+  state.mainThreadProbeTimer = setInterval(() => {
+    const now = performance.now();
+    const lagMs = Math.max(0, now - state.mainThreadProbeExpectedAt);
+    state.mainThreadLastLagMs = Number(lagMs.toFixed(3));
+    state.mainThreadMaxLagMs = Math.max(state.mainThreadMaxLagMs, state.mainThreadLastLagMs);
+    state.mainThreadProbeExpectedAt = now + MAIN_THREAD_PROBE_INTERVAL_MS;
+  }, MAIN_THREAD_PROBE_INTERVAL_MS);
+}
+function clientRuntimeSnapshot() {
+  const now = performance.now();
+  const pendingLagMs = state.mainThreadProbeExpectedAt
+    ? Math.max(0, now - state.mainThreadProbeExpectedAt)
+    : 0;
+  const currentLagMs = Math.max(state.mainThreadLastLagMs || 0, pendingLagMs);
+  const maxLagMs = Math.max(state.mainThreadMaxLagMs || 0, currentLagMs);
+  state.mainThreadMaxLagMs = 0;
+  return {
+    document_visibility: document.visibilityState || "",
+    document_has_focus: typeof document.hasFocus === "function" ? document.hasFocus() : null,
+    main_thread_last_lag_ms: Number(currentLagMs.toFixed(3)),
+    main_thread_max_lag_ms_since_last_presentation_sse: Number(maxLagMs.toFixed(3)),
+  };
+}
+function recordPresentationClientTiming(phase, item, details = {}) {
+  if (!item) return;
+  if (!Array.isArray(item._clientTiming)) item._clientTiming = [];
+  item._clientTiming.push({
+    phase,
+    client_time_ms: Number(performance.now().toFixed(3)),
+    client_wall_time: new Date().toISOString(),
+    queue_length: state.presentationQueue.length,
+    current_item_id: state.currentPresentationItem?.item_id || "",
+    ...details,
+  });
+}
+function reportPresentationClientDebug(phase, item, details = {}) {
+  if (!state.sessionId) return Promise.resolve(null);
+  return apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/debug`, {
+    phase,
+    item_id: item?.item_id || "",
+    status: item?.status || "",
+    details,
+  }).catch(() => null);
+}
+function flushPresentationClientTiming(item, details = {}) {
+  if (!item || !Array.isArray(item._clientTiming) || item._clientTiming.length === 0) return;
+  const timeline = item._clientTiming.slice(-40);
+  item._clientTiming = [];
+  reportPresentationClientDebug("client_playback_timeline", item, {
+    timeline,
+    timeline_count: timeline.length,
+    performance_time_origin: Number(performance.timeOrigin.toFixed(3)),
+    ...details,
+  });
+}
+function attachPresentationSseTiming(item, payload) {
+  if (!item || !payload) return item;
+  item._sseTiming = {
+    event_received_time_ms: Number(performance.now().toFixed(3)),
+    event_received_wall_time: new Date().toISOString(),
+    server_broadcast_at: payload._broadcast_at || "",
+    server_sse_yield_at: payload._sse_yield_at || "",
+    sse_type: payload.type || "",
+    ...clientRuntimeSnapshot(),
+  };
+  return item;
 }
 function roleLabel(message) {
   if (message.role === "assistant") return message.character_name || "AI";
@@ -468,7 +558,25 @@ function handleInteractionInterrupt(payload = {}) {
 }
 async function ackPresentationItem(item) {
   if (!item?.item_id || !state.sessionId) return;
-  await apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`);
+  const ackStartedAt = performance.now();
+  recordPresentationClientTiming("ack_start", item);
+  try {
+    await apiPost(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`);
+    recordPresentationClientTiming("ack_done", item, {
+      ack_roundtrip_ms: Number((performance.now() - ackStartedAt).toFixed(3)),
+    });
+    flushPresentationClientTiming(item, { ack_ok: true });
+  } catch (error) {
+    recordPresentationClientTiming("ack_failed", item, {
+      ack_roundtrip_ms: Number((performance.now() - ackStartedAt).toFixed(3)),
+      error: error?.message || String(error || "ack failed"),
+    });
+    flushPresentationClientTiming(item, {
+      ack_ok: false,
+      error: error?.message || String(error || "ack failed"),
+    });
+    throw error;
+  }
 }
 function cachePresentationAudio(item) {
   const itemId = String(item?.item_id || "");
@@ -476,6 +584,27 @@ function cachePresentationAudio(item) {
   if (!itemId || !audioUrl || state.presentationAudioCache.has(itemId)) return;
   const audio = new Audio(audioUrl);
   audio.preload = "auto";
+  recordPresentationClientTiming("preload_start", item, {
+    audio_url_present: true,
+    cache_size: state.presentationAudioCache.size,
+    ...(item._sseTiming || {}),
+    ...audioTimingSnapshot(audio),
+  });
+  audio.addEventListener("loadedmetadata", () => {
+    recordPresentationClientTiming("preload_loadedmetadata", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("canplay", () => {
+    recordPresentationClientTiming("preload_canplay", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("canplaythrough", () => {
+    recordPresentationClientTiming("preload_canplaythrough", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("error", () => {
+    recordPresentationClientTiming("preload_error", item, {
+      ...audioTimingSnapshot(audio),
+      error: audio.error?.message || String(audio.error?.code || "audio preload error"),
+    });
+  }, { once: true });
   state.presentationAudioCache.set(itemId, audio);
 }
 function audioForPresentationItem(item) {
@@ -483,13 +612,19 @@ function audioForPresentationItem(item) {
   const cached = itemId ? state.presentationAudioCache.get(itemId) : null;
   if (cached) {
     state.presentationAudioCache.delete(itemId);
+    recordPresentationClientTiming("audio_cache_hit", item, audioTimingSnapshot(cached));
     return cached;
   }
   const audio = new Audio(item.audio_url || "");
   audio.preload = "auto";
+  recordPresentationClientTiming("audio_cache_miss", item, {
+    audio_url_present: Boolean(item.audio_url),
+    ...audioTimingSnapshot(audio),
+  });
   return audio;
 }
 function finishPresentationItem(item) {
+  recordPresentationClientTiming("finish_start", item);
   ackPresentationItem(item).catch(() => {});
   state.presentationPlaying = false;
   state.currentPresentationItem = null;
@@ -505,14 +640,50 @@ function playPresentationItem() {
   appendChatMessage(presentationItemToMessage(item));
   const audioUrl = item.audio_url || "";
   if (!audioUrl) {
+    recordPresentationClientTiming("text_fallback", item);
     finishPresentationItem(item);
     return;
   }
   const audio = audioForPresentationItem(item);
   state.currentAudio = audio;
-  audio.addEventListener("ended", () => finishPresentationItem(item), { once: true });
-  audio.addEventListener("error", () => finishPresentationItem(item), { once: true });
-  audio.play().catch(() => {
+  audio.addEventListener("playing", () => {
+    if (state.currentPresentationItem !== item || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_playing", item, audioTimingSnapshot(audio));
+  }, { once: true });
+  audio.addEventListener("waiting", () => {
+    if (state.currentPresentationItem !== item || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_waiting", item, audioTimingSnapshot(audio));
+  });
+  audio.addEventListener("ended", () => {
+    if (state.currentPresentationItem !== item || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_ended", item, audioTimingSnapshot(audio));
+    finishPresentationItem(item);
+  }, { once: true });
+  audio.addEventListener("error", () => {
+    if (state.currentPresentationItem !== item || state.currentAudio !== audio) return;
+    recordPresentationClientTiming("audio_error", item, {
+      ...audioTimingSnapshot(audio),
+      error: audio.error?.message || String(audio.error?.code || "audio error"),
+    });
+    finishPresentationItem(item);
+  }, { once: true });
+  const playStartedAt = performance.now();
+  recordPresentationClientTiming("play_invoked", item, audioTimingSnapshot(audio));
+  audio.play().then(() => {
+    recordPresentationClientTiming("play_resolved", item, {
+      play_promise_ms: Number((performance.now() - playStartedAt).toFixed(3)),
+      ...audioTimingSnapshot(audio),
+    });
+  }).catch((error) => {
+    recordPresentationClientTiming("play_blocked", item, {
+      play_promise_ms: Number((performance.now() - playStartedAt).toFixed(3)),
+      error: error?.message || String(error || "audio.play() rejected"),
+      ...audioTimingSnapshot(audio),
+    });
+    flushPresentationClientTiming(item, {
+      ack_ok: false,
+      error: error?.message || String(error || "audio.play() rejected"),
+    });
     $("enableAudio").classList.remove("hidden");
     state.presentationQueue.unshift(item);
     state.presentationPlaying = false;
@@ -521,6 +692,11 @@ function playPresentationItem() {
 }
 function enqueuePresentationItem(item) {
   if (!item?.item_id) return;
+  recordPresentationClientTiming("ready_received", item, {
+    queue_length_before_enqueue: state.presentationQueue.length,
+    audio_url_present: Boolean(item.audio_url),
+    ...(item._sseTiming || {}),
+  });
   cachePresentationAudio(item);
   state.presentationQueue.push(item);
   playPresentationItem();
@@ -568,6 +744,7 @@ function stopHistoryRefresh() {
 function subscribe(sessionId) {
   if (state.eventSource) state.eventSource.close();
   if (!sessionId) return;
+  startMainThreadProbe();
   state.eventSource = new EventSource(`/sessions/${encodeURIComponent(sessionId)}/events`);
   state.eventSource.onopen = () => {
     stopFallbackRefresh();
@@ -591,11 +768,11 @@ function subscribe(sessionId) {
         return;
       }
       if (payload.type === "presentation_item_preload" && payload.item) {
-        cachePresentationAudio(payload.item);
+        cachePresentationAudio(attachPresentationSseTiming(payload.item, payload));
         return;
       }
       if (payload.type === "presentation_item_ready" && payload.item) {
-        enqueuePresentationItem(payload.item);
+        enqueuePresentationItem(attachPresentationSseTiming(payload.item, payload));
         return;
       }
       if (payload.type === "chat_message" && payload.message) {
