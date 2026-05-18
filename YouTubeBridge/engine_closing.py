@@ -17,6 +17,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DURATION_CLOSING_ACTIVE_WAIT_TIMEOUT_SECONDS = 180.0
 DURATION_CLOSING_ACTIVE_WAIT_POLL_SECONDS = 1.0
 DURATION_CLOSING_ACTIVE_INTERRUPT_TIMEOUT_SECONDS = 1.0
+CLOSING_PRESENTATION_MIN_GRACE_SECONDS = 12.0
+CLOSING_PRESENTATION_MAX_GRACE_SECONDS = 45.0
+CLOSING_PRESENTATION_SECONDS_PER_CHAR = 0.32
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -108,6 +111,45 @@ class ClosingManagerMixin:
                     if not str(item.get("acked_at") or "").strip()
                 ]
             return presenting + unacked_failed
+
+        def closing_presentation_grace_seconds(item: dict[str, Any]) -> float:
+            text_len = len(str(item.get("text") or ""))
+            estimated = 4.0 + (text_len * CLOSING_PRESENTATION_SECONDS_PER_CHAR)
+            return min(
+                CLOSING_PRESENTATION_MAX_GRACE_SECONDS,
+                max(CLOSING_PRESENTATION_MIN_GRACE_SECONDS, estimated),
+            )
+
+        async def auto_ack_stale_presenting_items(presenting_items: list[dict[str, Any]]) -> int:
+            now = datetime.now()
+            acked_count = 0
+            for item in presenting_items:
+                if str(item.get("status") or "") != "presenting":
+                    continue
+                if str(item.get("acked_at") or "").strip():
+                    continue
+                item_id = str(item.get("item_id") or "")
+                if not item_id:
+                    continue
+                presented_at = _parse_iso(item.get("presented_at"))
+                if not presented_at:
+                    continue
+                elapsed = (now - presented_at).total_seconds()
+                grace = closing_presentation_grace_seconds(item)
+                if elapsed < grace:
+                    continue
+                self.storage.update_presentation_item(
+                    item_id,
+                    metadata={
+                        "closing_grace_auto_ack": True,
+                        "closing_grace_elapsed_seconds": round(elapsed, 3),
+                        "closing_grace_seconds": round(grace, 3),
+                    },
+                )
+                updated = await self.ack_presentation_item(runtime.session_id, item_id)
+                if updated:
+                    acked_count += 1
+            return acked_count
 
         def active_generation(active: dict[str, Any] | None, ready_items: list[dict[str, Any]]) -> dict[str, Any] | None:
             if not active:
@@ -227,6 +269,12 @@ class ClosingManagerMixin:
             ready_prepared, blocked_ready = classify_ready_items(raw_ready_prepared)
             active_blocker = active_generation(active, ready_prepared)
             presenting = pending_presentation_items()
+            if presenting and await auto_ack_stale_presenting_items(presenting):
+                active = self.storage.get_active_interaction(runtime.session_id)
+                raw_ready_prepared = ready_prepared_items()
+                ready_prepared, blocked_ready = classify_ready_items(raw_ready_prepared)
+                active_blocker = active_generation(active, ready_prepared)
+                presenting = pending_presentation_items()
             if blocked_ready and not ready_prepared and not active_blocker and not presenting:
                 return blocked_result(
                     blocked_ready,
@@ -253,7 +301,9 @@ class ClosingManagerMixin:
                     remaining = (deadline - datetime.now()).total_seconds()
                     await asyncio.sleep(max(0.01, min(0.5, remaining)))
                     continue
-                if not await wait_remaining(present_ready_prepared(ready_prepared)):
+                if has_ready_prefetch(ready_prepared):
+                    await present_ready_prepared(ready_prepared)
+                elif not await wait_remaining(present_ready_prepared(ready_prepared)):
                     return timeout_result()
                 ready_ids_after = {
                     str(item.get("item_id") or "")
@@ -275,7 +325,8 @@ class ClosingManagerMixin:
     ) -> dict[str, Any] | None:
         job_ids: list[str] = []
         for item in ready_items:
-            if str((item.get("metadata") or {}).get("source") or "") != "director_prefetch":
+            item_source = str((item.get("metadata") or {}).get("source") or "")
+            if item_source not in {"director_prefetch", "director_audience_prepare"}:
                 continue
             job_id = str(item.get("interaction_job_id") or "")
             if job_id and job_id not in job_ids:
@@ -284,9 +335,11 @@ class ClosingManagerMixin:
             interaction = self.storage.get_interaction(job_id)
             if not interaction:
                 continue
-            if str(interaction.get("source") or "") != "director_prefetch":
+            interaction_source = str(interaction.get("source") or "")
+            if interaction_source not in {"director_prefetch", "director_audience_prepare"}:
                 continue
-            if str(interaction.get("status") or "") != "prefetched":
+            expected_status = "prepared" if interaction_source == "director_audience_prepare" else "prefetched"
+            if str(interaction.get("status") or "") != expected_status:
                 continue
             prepared_results = self._prepared_results_for_interaction(
                 runtime.session_id,
@@ -298,45 +351,42 @@ class ClosingManagerMixin:
             if hasattr(self.storage, "update_interaction_if_status"):
                 started = self.storage.update_interaction_if_status(
                     job_id,
-                    "prefetched",
+                    expected_status,
                     status="presenting",
                 )
             else:
                 started = self.storage.update_interaction(job_id, status="presenting")
             if not started or str(started.get("status") or "") != "presenting":
                 continue
+            is_audience_prepare = interaction_source == "director_audience_prepare"
+            presentation_source = "director_audience_gap" if is_audience_prepare else "director"
             await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
             await self.present_prepared_stream_results(
                 runtime.session_id,
                 prepared_results,
-                source="director",
+                source=presentation_source,
                 interaction_job_id=job_id,
             )
             visible_results = self._visible_prepared_results(session, prepared_results)
             played_item_count = self._prepared_result_item_count(visible_results)
-            if played_item_count > 0 and callable(getattr(self, "_commit_prefetched_played_results", None)):
-                commit_result = self._commit_prefetched_played_results(
-                    session,
-                    started,
-                    visible_results,
-                    {
-                        "session_id": started.get("memoria_session_id") or "",
-                        "reply": started.get("reply_text") or "",
-                    },
-                )
-            else:
-                commit_result = {"status": "skipped", "reason": "no_played_items", "committed_count": 0}
+            marked_injected = 0
+            if is_audience_prepare and played_item_count > 0:
+                event_ids: list[int] = []
+                for raw_event_id in started.get("event_ids") or []:
+                    try:
+                        event_id = int(raw_event_id)
+                    except (TypeError, ValueError):
+                        continue
+                    if event_id > 0:
+                        event_ids.append(event_id)
+                marked_injected = self.storage.mark_events_injected(runtime.session_id, event_ids) if event_ids else 0
             interaction_metadata = {
-                "prefetch_consumed": True,
+                "prefetch_consumed": not is_audience_prepare,
+                "audience_prepare_consumed": is_audience_prepare,
                 "prefetch_consumed_during_closing_drain": True,
                 "played_item_count": played_item_count,
-                "played_commit_status": str(commit_result.get("status") or "skipped"),
-                "played_commit_count": int(commit_result.get("committed_count") or 0),
+                "marked_injected": marked_injected,
             }
-            if commit_result.get("error"):
-                interaction_metadata["played_commit_error"] = str(commit_result.get("error") or "")[:500]
-            if commit_result.get("reason"):
-                interaction_metadata["played_commit_reason"] = str(commit_result.get("reason") or "")
             if hasattr(self.storage, "update_interaction_if_status"):
                 completed = self.storage.update_interaction_if_status(
                     job_id,
@@ -358,7 +408,7 @@ class ClosingManagerMixin:
                 "type": "interaction_completed",
                 "interaction": completed or started,
                 "memoria_session_id": session.get("target_memoria_session_id") or "",
-                "source": "director",
+                "source": presentation_source,
             })
             return completed or started
         return None

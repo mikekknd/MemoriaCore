@@ -1333,6 +1333,130 @@ async def test_drain_live_session_consumes_ready_prefetch_with_real_presentation
 
 
 @pytest.mark.asyncio
+async def test_drain_live_session_auto_acks_stale_presenting_item_after_closing_grace():
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "closing",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "presentation_ack_timeout_seconds": 120,
+        })
+        presented_at = (datetime.now() - timedelta(seconds=60)).isoformat()
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-presenting",
+            "message_id": "planned-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "收尾前已經送到前端的句子。",
+            "status": "presenting",
+            "audio_path": "planned.wav",
+            "audio_format": "wav",
+            "presented_at": presented_at,
+            "metadata": {"source": "director"},
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager._drain_live_session_before_closing(
+            runtime,
+            storage.get_session("live-a"),
+            timeout_seconds=0.2,
+        )
+
+        assert result["status"] == "drained"
+        updated = storage.get_presentation_item(item["item_id"])
+        assert updated["status"] == "played"
+        assert updated["acked_at"]
+        assert updated["metadata"]["closing_grace_auto_ack"] is True
+
+
+@pytest.mark.asyncio
+async def test_drain_live_session_does_not_cancel_started_ready_prefetch_when_deadline_passes(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "closing",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["char-a"],
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 55,
+            "status": "prefetched",
+            "event_ids": [],
+            "memoria_session_id": "mem-draft",
+            "character_ids": ["char-a"],
+            "content": "prefetched planned turn",
+            "reply_text": "收尾時也要把已經開始播放的 prefetch 播完。",
+            "metadata": {
+                "main_memoria_session_id": "mem-main",
+                "draft_memoria_session_id": "mem-draft",
+                "decision": {"action": "planned_turn", "episode_plan": {"mode": "planned_turn"}},
+            },
+        })
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": interaction["job_id"],
+            "message_id": "prefetch-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "收尾時也要把已經開始播放的 prefetch 播完。",
+            "status": "ready",
+            "audio_path": "prefetch.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+
+        class CommitOnlyMemoriaClient:
+            def add_assistant_event(self, **kwargs):
+                return {"ok": True, **kwargs}
+
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=CommitOnlyMemoriaClient)
+        manager._runtimes["live-a"] = runtime
+
+        async def slow_present(session_id, prepared_results, *, source, interaction_job_id=""):
+            await asyncio.sleep(0.08)
+            storage.update_presentation_item(
+                item["item_id"],
+                status="played",
+                presented_at=datetime.now().isoformat(),
+                acked_at=datetime.now().isoformat(),
+            )
+            return [storage.get_presentation_item(item["item_id"])]
+
+        monkeypatch.setattr(manager, "present_prepared_stream_results", slow_present)
+
+        result = await manager._drain_live_session_before_closing(
+            runtime,
+            storage.get_session("live-a"),
+            timeout_seconds=0.01,
+        )
+
+        assert result["status"] == "drained"
+        completed = storage.get_interaction(interaction["job_id"])
+        assert completed["status"] == "completed"
+        assert completed["metadata"]["prefetch_consumed_during_closing_drain"] is True
+
+
+@pytest.mark.asyncio
 async def test_drain_live_session_ignores_acked_failed_presentation_items():
     with temp_storage() as storage:
         storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})

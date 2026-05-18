@@ -1532,7 +1532,6 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
-        ready = asyncio.Event()
         prepared: list[tuple[str, str, dict]] = []
 
         async def forbidden_inject(*_args, **_kwargs):
@@ -1540,9 +1539,6 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
 
         async def capture_broadcast(_session_id, payload):
             emitted.append(payload)
-            if payload.get("type") == "director_audience_gap_ready":
-                runtime.running = False
-                ready.set()
 
         async def fake_prepare_next_audience_gap_turn(prepared_runtime, prepared_session, prepared_state, *, decision=None):
             prepared.append((
@@ -1563,20 +1559,17 @@ async def test_auto_inject_loop_hands_live_episode_plan_comments_to_director(mon
         monkeypatch.setattr(manager, "_auto_inject_delay", lambda *_args, **_kwargs: 0.01)
         monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
-        await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
+        task = asyncio.create_task(manager._auto_inject_loop(runtime))
+        await asyncio.sleep(0.05)
+        runtime.running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
-        assert ready.is_set()
-        ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_events_ready")
-        assert ready_payload["event_ids"] == [event["id"]]
-        assert ready_payload["source"] == "chat"
-        assert ready_payload["count"] == 1
-        assert ready_payload["interrupted_active"] is False
-        assert [(item[0], item[1]) for item in prepared] == [("live-a", "live-a")]
-        assert prepared[0][2]["metadata"]["audience_prepare_in_flight"] is True
-        gap_ready = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
-        assert gap_ready["interaction"]["job_id"] == "audience-gap-job"
-        assert gap_ready["event_ids"] == [event["id"]]
-        assert gap_ready["source"] == "chat"
+        assert runtime.audience_preprocess_wake.is_set()
+        assert prepared == []
+        assert all(payload.get("type") != "director_audience_events_ready" for payload in emitted)
+        assert all(payload.get("type") != "director_audience_gap_ready" for payload in emitted)
         assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"] == ""
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1695,17 +1688,11 @@ async def test_director_owned_auto_inject_loop_schedules_audience_prepare_withou
         runtime = LiveRuntime(session_id="live-a", running=True, status="running")
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
-        events_ready = asyncio.Event()
         prepare_started = asyncio.Event()
         release_prepare = asyncio.Event()
-        gap_ready = asyncio.Event()
 
         async def capture_broadcast(_session_id, payload):
             emitted.append(payload)
-            if payload.get("type") == "director_audience_events_ready":
-                events_ready.set()
-            if payload.get("type") == "director_audience_gap_ready":
-                gap_ready.set()
 
         async def fake_prepare_next_audience_gap_turn(_runtime, _session, _state, *, decision=None):
             prepare_started.set()
@@ -1723,22 +1710,18 @@ async def test_director_owned_auto_inject_loop_schedules_audience_prepare_withou
         monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
         task = asyncio.create_task(manager._auto_inject_loop(runtime))
-        await asyncio.wait_for(events_ready.wait(), timeout=1)
-
-        ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_events_ready")
-        assert ready_payload["event_ids"] == [event["id"]]
-        assert prepare_started.is_set()
-        assert not gap_ready.is_set()
-
-        release_prepare.set()
-        await asyncio.wait_for(gap_ready.wait(), timeout=1)
-        gap_ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
-        assert gap_ready_payload["interaction"]["status"] == "prepared"
-        assert gap_ready_payload["event_ids"] == [event["id"]]
+        await asyncio.sleep(0.05)
         runtime.running = False
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+        release_prepare.set()
+        assert runtime.audience_preprocess_wake.is_set()
+        assert not prepare_started.is_set()
+        assert all(payload.get("type") != "director_audience_events_ready" for payload in emitted)
+        assert all(payload.get("type") != "director_audience_gap_ready" for payload in emitted)
+        assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"] == ""
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1815,27 +1798,15 @@ async def test_director_owned_auto_inject_background_prepare_skips_ready_after_s
         monkeypatch.setattr(engine_injection.asyncio, "sleep", stop_after_sleep)
 
         await asyncio.wait_for(manager._auto_inject_loop(runtime), timeout=1)
-        await asyncio.wait_for(prepare_started.wait(), timeout=1)
-
-        storage.update_session_fields("live-a", status="closing")
         release_prepare.set()
-        for _ in range(20):
-            metadata = storage.get_director_state("live-a")["metadata"]
-            if metadata.get("audience_prepare_in_flight") is False:
-                break
-            await original_sleep(0.01)
 
-        assert any(
-            payload.get("type") == "director_audience_events_ready"
-            and payload.get("event_ids") == [event["id"]]
-            for payload in emitted
-        )
+        assert not prepare_started.is_set()
+        assert runtime.audience_preprocess_wake.is_set()
+        assert not any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
         assert not any(payload.get("type") == "director_audience_gap_ready" for payload in emitted)
         metadata = storage.get_director_state("live-a")["metadata"]
-        assert metadata["audience_prepare_in_flight"] is False
-        assert metadata["last_audience_prepare_error"] == "session_not_running"
-        assert metadata["audience_prepare_cancelled_reason"] == "session_not_running"
-        assert runtime.last_auto_inject_error == "session_not_running"
+        assert metadata.get("audience_prepare_in_flight") is not True
+        assert runtime.last_auto_inject_error is None
     finally:
         monkeypatch.setattr(engine_injection.asyncio, "sleep", original_sleep)
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1905,19 +1876,14 @@ async def test_director_owned_auto_inject_loop_does_not_broadcast_gap_ready_when
         monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
         task = asyncio.create_task(manager._auto_inject_loop(runtime))
-        await asyncio.wait_for(prepare_done.wait(), timeout=1)
-        for _ in range(20):
-            metadata = storage.get_director_state("live-a")["metadata"]
-            if metadata.get("audience_prepare_in_flight") is False:
-                break
-            await asyncio.sleep(0.01)
-
-        assert any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
+        await asyncio.sleep(0.05)
+        assert not prepare_done.is_set()
+        assert runtime.audience_preprocess_wake.is_set()
+        assert not any(payload.get("type") == "director_audience_events_ready" for payload in emitted)
         assert not any(payload.get("type") == "director_audience_gap_ready" for payload in emitted)
-        assert runtime.last_auto_inject_error == "audience_gap_prepare_failed:failed"
+        assert runtime.last_auto_inject_error is None
         metadata = storage.get_director_state("live-a")["metadata"]
-        assert metadata["audience_prepare_in_flight"] is False
-        assert metadata["last_audience_prepare_error"] == "audience_gap_prepare_failed:failed"
+        assert metadata.get("audience_prepare_in_flight") is not True
         runtime.running = False
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -2265,13 +2231,9 @@ async def test_director_owned_auto_inject_broadcasts_equal_priority_super_chat_a
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
         prepared: list[tuple[str, str, dict]] = []
-        ready = asyncio.Event()
 
         async def capture_broadcast(_session_id, payload):
             emitted.append(payload)
-            if payload.get("type") == "director_audience_gap_ready":
-                runtime.running = False
-                ready.set()
 
         async def fake_prepare_next_audience_gap_turn(prepared_runtime, prepared_session, prepared_state, *, decision=None):
             prepared.append((
@@ -2292,20 +2254,12 @@ async def test_director_owned_auto_inject_broadcasts_equal_priority_super_chat_a
         monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
         task = asyncio.create_task(manager._auto_inject_loop(runtime))
-        await asyncio.wait_for(ready.wait(), timeout=1)
-
-        assert ready.is_set()
-        ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_events_ready")
-        assert ready_payload["source"] == "super_chat"
-        assert ready_payload["count"] == 1
-        assert ready_payload["interrupted_active"] is False
-        assert [(item[0], item[1]) for item in prepared] == [("live-a", "live-a")]
-        assert prepared[0][2]["metadata"]["audience_prepare_in_flight"] is True
-        gap_ready = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
-        assert gap_ready["interaction"]["job_id"] == "audience-gap-sc-job"
-        assert gap_ready["event_ids"] == [ready_payload["event_ids"][0]]
-        assert gap_ready["source"] == "super_chat"
-        assert runtime.last_auto_inject_at
+        await asyncio.sleep(0.05)
+        assert runtime.audience_preprocess_wake.is_set()
+        assert prepared == []
+        assert all(payload.get("type") != "director_audience_events_ready" for payload in emitted)
+        assert all(payload.get("type") != "director_audience_gap_ready" for payload in emitted)
+        assert runtime.last_auto_inject_at is None
         assert runtime.last_sc_interrupt_at is None
         runtime.running = False
         task.cancel()
@@ -2372,13 +2326,9 @@ async def test_director_owned_auto_inject_broadcasts_queued_equal_priority_super
         manager._runtimes["live-a"] = runtime
         emitted: list[dict] = []
         prepared: list[str] = []
-        ready = asyncio.Event()
 
         async def capture_broadcast(_session_id, payload):
             emitted.append(payload)
-            if payload.get("type") == "director_audience_gap_ready":
-                runtime.running = False
-                ready.set()
 
         async def fake_prepare_next_audience_gap_turn(prepared_runtime, prepared_session, prepared_state, *, decision=None):
             prepared.append(prepared_runtime.session_id)
@@ -2395,18 +2345,12 @@ async def test_director_owned_auto_inject_broadcasts_queued_equal_priority_super
         monkeypatch.setattr(manager, "_prepare_next_audience_gap_turn", fake_prepare_next_audience_gap_turn)
 
         task = asyncio.create_task(manager._auto_inject_loop(runtime))
-        await asyncio.wait_for(ready.wait(), timeout=1)
-
-        assert ready.is_set()
-        ready_payload = next(payload for payload in emitted if payload.get("type") == "director_audience_events_ready")
-        assert ready_payload["source"] == "super_chat"
-        assert ready_payload["count"] == 1
-        assert ready_payload["interrupted_active"] is False
-        assert prepared == ["live-a"]
-        gap_ready = next(payload for payload in emitted if payload.get("type") == "director_audience_gap_ready")
-        assert gap_ready["interaction"]["job_id"] == "audience-gap-queued-sc-job"
-        assert gap_ready["source"] == "super_chat"
-        assert runtime.last_auto_inject_at
+        await asyncio.sleep(0.05)
+        assert runtime.audience_preprocess_wake.is_set()
+        assert prepared == []
+        assert all(payload.get("type") != "director_audience_events_ready" for payload in emitted)
+        assert all(payload.get("type") != "director_audience_gap_ready" for payload in emitted)
+        assert runtime.last_auto_inject_at is None
         assert runtime.last_sc_interrupt_at is None
         runtime.running = False
         task.cancel()

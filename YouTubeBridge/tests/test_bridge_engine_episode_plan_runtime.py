@@ -191,6 +191,87 @@ def test_audience_event_classifier_maps_super_chat_to_bounded_interrupt():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_audience_prepare_handles_optional_reactions_before_later_questions():
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        storage.update_session_fields("live-a", max_pending_events=5)
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        reaction = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "reaction-before-question",
+            "message_type": "textMessageEvent",
+            "author_display_name": "觀眾A",
+            "message_text": "這季畫面真的很讚！",
+            "safe_message_text": "這季畫面真的很讚！",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "status": "active",
+        })
+        question = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "question-after-reaction",
+            "message_type": "textMessageEvent",
+            "author_display_name": "觀眾B",
+            "message_text": "等一下可以多聊這部嗎？",
+            "safe_message_text": "等一下可以多聊這部嗎？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "status": "active",
+        })
+
+        decision = manager._episode_plan_next_audience_prepare_decision(session, state)
+
+        assert decision["action"] == "reply_chat_batch"
+        assert decision["episode_plan"]["mode"] == "audience_gap_prepare"
+        assert decision["episode_plan"]["event_action"] == "optional_ack"
+        assert decision["episode_plan"]["interrupt_state"]["source_event_ids"] == [
+            reaction["id"],
+            question["id"],
+        ]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_prepare_uses_safe_batch_even_when_intent_action_is_ignore(monkeypatch):
+    tmp_dir, storage, manager = _manager_with_bound_plan()
+    try:
+        session = storage.get_session("live-a")
+        state = storage.get_director_state("live-a")
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "safe-reaction-action-ignore",
+            "message_type": "textMessageEvent",
+            "author_display_name": "觀眾A",
+            "message_text": "這季畫面真的很讚！",
+            "safe_message_text": "這季畫面真的很讚！",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "status": "active",
+        })
+        monkeypatch.setattr(
+            manager,
+            "_classify_episode_audience_event",
+            lambda *_args, **_kwargs: {
+                "event_type": "reaction",
+                "action": "ignore",
+                "reason": "stubbed_intent_classifier",
+            },
+        )
+
+        decision = manager._episode_plan_next_audience_prepare_decision(session, state)
+
+        assert decision["action"] == "reply_chat_batch"
+        assert decision["episode_plan"]["mode"] == "audience_gap_prepare"
+        assert decision["episode_plan"]["event_action"] == "ignore"
+        assert decision["episode_plan"]["interrupt_state"]["source_event_ids"] == [event["id"]]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_episode_audience_interrupt_batches_normal_backlog_and_records_deferred_count():
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
@@ -314,11 +395,16 @@ async def test_episode_audience_interrupt_injects_selected_chat_into_memoria_con
 
         external_context = captured["external_context"]
         assert external_context["source"] == "youtube_live_director"
-        assert "直播流程 action=reply_chat_batch" in external_context["context_text"]
-        assert "處理提示：" in external_context["context_text"]
+        assert external_context["suppress_external_turn_instruction"] is True
+        assert "直播流程 action=reply_chat_batch" not in external_context["context_text"]
+        assert "直播進度：" not in external_context["context_text"]
+        assert "處理提示：" not in external_context["context_text"]
+        assert "觀眾查詢資料狀態" not in external_context["context_text"]
+        assert "直播輸出模式" not in external_context["context_text"]
         assert "本輪已安全過濾的聊天室留言內容" in external_context["context_text"]
         assert "<external_chat_context" not in external_context["context_text"]
         assert "星河旅人: 可可推薦《怪獸8號》嗎？" in external_context["context_text"]
+        assert external_context["context_text"].rstrip().endswith("請簡短回應上面的聊天室留言。")
         assert external_context["event_ids"] == [event["id"]]
         assert result["interaction"]["event_ids"] == [event["id"]]
         assert storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"]
@@ -510,7 +596,7 @@ def test_presentation_mode_super_chat_audience_gap_respects_gap_cooldown():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_audience_event_classifier_deescalates_hostile_without_mainline_change():
+def test_audience_event_classifier_marks_hostile_but_safety_gate_blocks_decision():
     tmp_dir, storage, manager = _manager_with_bound_plan()
     try:
         session = storage.get_session("live-a")
@@ -529,8 +615,7 @@ def test_audience_event_classifier_deescalates_hostile_without_mainline_change()
 
         assert result["event_type"] == "hostile"
         assert result["action"] == "ignore_or_deescalate"
-        assert decision["action"] == "reply_chat_batch"
-        assert decision["episode_plan"]["interrupt_state"]["return_segment_index"] == 0
+        assert decision is None
         assert planned_state["current_segment_index"] == 0
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

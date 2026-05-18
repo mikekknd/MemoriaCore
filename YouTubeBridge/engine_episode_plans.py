@@ -465,17 +465,10 @@ class EpisodePlanManagerMixin:
         batch_events: list[dict[str, Any]] | None = None,
         backlog_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        if not self._is_public_live_event_displayable(event):
+            return None
         classified = self._classify_episode_audience_event(plan, event)
         action = classified["action"]
-        if action == "ignore":
-            return None
-        if action not in {
-            "bounded_interrupt",
-            "verify_then_ack",
-            "ignore_or_soft_ack",
-            "ignore_or_deescalate",
-        }:
-            return None
         event_type = classified["event_type"]
         interrupt_state = self._interrupt_state_for_audience_event(
             plan,
@@ -1659,7 +1652,7 @@ class EpisodePlanManagerMixin:
                 "latest_backlog_snapshot": snapshot,
                 **preserved_interrupt_times,
             }
-        if mode in {"audience_interrupt", "audience_gap"}:
+        if mode in {"audience_interrupt", "audience_gap", "audience_gap_prepare"}:
             interrupt_state = (
                 payload.get("interrupt_state")
                 if isinstance(payload.get("interrupt_state"), dict)
@@ -1697,7 +1690,7 @@ class EpisodePlanManagerMixin:
                 "deferred_event_count": int(snapshot.get("deferred_event_count") or 0),
                 "latest_backlog_snapshot": snapshot,
             }
-            if mode == "audience_gap":
+            if mode in {"audience_gap", "audience_gap_prepare"}:
                 update["last_audience_gap_at"] = now
                 if interrupt_type == "super_chat":
                     update["last_sc_gap_at"] = now

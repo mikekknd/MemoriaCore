@@ -296,12 +296,18 @@ class InjectionManagerMixin:
         return self.storage.update_director_state(session_id, metadata=metadata)
 
     def _director_audience_prepare_session_live(self, runtime: LiveRuntime) -> bool:
-        stopped_statuses = {"closing", "stopped", "ended"}
-        if not runtime.running or str(runtime.status or "") in stopped_statuses:
+        blocked_statuses = {"stopped", "ended", "closing_failed"}
+        runtime_status = str(runtime.status or "").strip()
+        if not runtime.running or runtime_status in blocked_statuses:
             return False
         session = self.storage.get_session(runtime.session_id)
-        if not session or str(session.get("status") or "") in stopped_statuses:
+        if not session:
             return False
+        session_status = str(session.get("status") or "").strip()
+        if session_status in blocked_statuses:
+            return False
+        if runtime_status == "closing" or session_status == "closing":
+            return bool(runtime.graceful_closing_requested)
         return True
 
     async def _run_director_audience_gap_prepare_background(
@@ -450,15 +456,7 @@ class InjectionManagerMixin:
                         if selected_source != "super_chat" and len(selected_event_ids) < min_pending:
                             await asyncio.sleep(sleep_seconds)
                             continue
-                        scheduled = await self._schedule_audience_gap_prepare_if_needed(
-                            runtime,
-                            session,
-                            self.storage.get_director_state(runtime.session_id),
-                            trigger="auto_inject_loop",
-                        )
-                        if not scheduled:
-                            await asyncio.sleep(sleep_seconds)
-                            continue
+                        runtime.audience_preprocess_wake.set()
                         await asyncio.sleep(sleep_seconds)
                         continue
                     selected = self._select_pending_events_for_injection(

@@ -580,6 +580,17 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         context["live_episode_plan"] = live_episode_plan
     if turn_control:
         context["turn_control"] = turn_control
+    if source == "youtube_live_director" and raw.get("suppress_external_turn_instruction"):
+        context["suppress_external_turn_instruction"] = True
+    if source in YOUTUBE_LIVE_EXTERNAL_SOURCES and _body_declares_youtube_live_scope(body):
+        history_session_id = re.sub(
+            r"[^A-Za-z0-9_.:-]",
+            "_",
+            str(raw.get("conversation_history_session_id") or "").strip(),
+        )[:160]
+        if history_session_id:
+            context["conversation_history_session_id"] = history_session_id
+            summary["conversation_history_session_id"] = history_session_id
     return context, summary
 
 
@@ -744,6 +755,8 @@ def _transient_user_content_for_external_context(body: ChatSyncRequest, external
         return ""
     source = str(external_context.get("source") or "").strip()
     if source == "youtube_live_director":
+        if external_context.get("suppress_external_turn_instruction"):
+            return ""
         public_turn_instruction = str(body.content or "").replace("\r", "\n").strip()
         if external_context.get("director_dialogue_expansion_enabled") is False:
             base_instruction = (

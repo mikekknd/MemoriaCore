@@ -172,6 +172,99 @@ async def test_group_loop_uses_transient_turn_instruction_without_user_message(m
 
 
 @pytest.mark.asyncio
+async def test_group_loop_uses_external_history_without_persisting_it_to_draft(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-live-prefetch-draft",
+        messages=[],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions["sid-live-prefetch-draft"] = session
+
+    history_messages = [
+        {
+            "role": "assistant",
+            "content": "前一段主線內容。",
+            "character_id": "char-a",
+            "character_name": "可可",
+        },
+        {
+            "role": "assistant",
+            "content": "白蓮接續分析。",
+            "character_id": "char-b",
+            "character_name": "白蓮",
+        },
+    ]
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "可可" if character_id == "char-a" else "白蓮",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    captured_router_messages = []
+    captured_router_turn_start_indexes = []
+    captured_orchestration_messages = []
+    route_results = [
+        GroupRouterResult(True, "char-a", "continue", "new_speaker_add", "group_discussion"),
+        GroupRouterResult(False, None, "done"),
+    ]
+
+    def fake_group_router(messages, *_args, **kwargs):
+        captured_router_messages.append(list(messages))
+        captured_router_turn_start_indexes.append(kwargs.get("current_turn_start_index"))
+        return route_results.pop(0)
+
+    def fake_orchestration(messages, _last_entities, _user_prompt, _user_prefs, **kwargs):
+        captured_orchestration_messages.append(list(messages))
+        return (
+            "draft 只保存新回覆",
+            [],
+            {},
+            False,
+            None,
+            "內在想法",
+            None,
+            None,
+            None,
+            "",
+            [],
+            None,
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播自主推進",
+            user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            transient_user_content="請根據已提供的直播流程提示回應。",
+            history_messages=history_messages,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_router_messages[0] == history_messages
+    assert captured_router_turn_start_indexes[0] == len(history_messages)
+    assert captured_orchestration_messages[0] == history_messages
+    assert [m["content"] for m in session.messages] == ["draft 只保存新回覆"]
+
+
+@pytest.mark.asyncio
 async def test_group_loop_passes_youtube_live_discussion_mode_to_router(monkeypatch):
     from api.routers.chat import group_loop
 

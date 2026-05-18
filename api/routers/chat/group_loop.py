@@ -49,6 +49,7 @@ async def run_group_chat_loop(
     transient_user_content: str = "",
     max_turns_override: int | None = None,
     cancel_event: asyncio.Event | None = None,
+    history_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
@@ -75,7 +76,7 @@ async def run_group_chat_loop(
             pass
         max_turns = max(1, min(max_turns, MAX_GROUP_TURNS_HARD_LIMIT))
     turn_delay_seconds = _group_turn_delay_seconds(user_prefs)
-    working_messages = list(session.messages)
+    working_messages = list(history_messages or []) + list(session.messages)
     transient_user_content = str(transient_user_content or "").strip()
     turn_instruction = transient_user_content or user_prompt
     current_turn_start_index = len(working_messages)

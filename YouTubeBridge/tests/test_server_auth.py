@@ -255,7 +255,7 @@ def test_live_page_propagates_requested_session_id_to_live_chat_frame():
 def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
     live_chat_html = _live_chat_source()
 
-    assert 'live-chat.js?v=interrupt-recovery-v1' in live_chat_html
+    assert 'live-chat.js?v=closing-grace-v1' in live_chat_html
     assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
     assert '"chat_message"' in live_chat_html
     assert '"youtube_live_event"' in live_chat_html
@@ -282,11 +282,31 @@ def test_live_chat_recovers_after_interrupt_events():
     assert "interruptRecoveryTimers" in live_chat_html
     assert "function scheduleInterruptRecoveryRefreshes()" in live_chat_html
     assert "function handleInteractionInterrupt(payload = {})" in live_chat_html
-    assert 'payload.type === "interrupt_requested" || payload.type === "interaction_interrupted"' in live_chat_html
+    assert 'payload.type === "interrupt_requested"' in live_chat_html
+    assert 'payload.type === "interrupt_requested" || payload.type === "interaction_interrupted"' not in live_chat_html
+    interrupt_branch = live_chat_html[
+        live_chat_html.index('if (payload.type === "interrupt_requested")'):
+        live_chat_html.index('if (payload.type === "interaction_interrupted")')
+    ]
+    assert "handleInteractionInterrupt(payload)" in interrupt_branch
     assert "state.presentationQueue = []" in live_chat_html
     assert "state.currentAudio.pause()" in live_chat_html
     assert "presentation/current/skip" in live_chat_html
     assert "35000" in live_chat_html
+
+
+def test_live_chat_interaction_interrupted_preserves_current_audio():
+    live_chat_html = _live_chat_source()
+
+    interrupted_branch = live_chat_html[
+        live_chat_html.index('if (payload.type === "interaction_interrupted")'):
+        live_chat_html.index('if (payload.type === "presentation_item_ready"')
+    ]
+    assert "handleInteractionInterrupt" not in interrupted_branch
+    assert "stopPresentationPlayback" not in interrupted_branch
+    assert "presentation/current/skip" not in interrupted_branch
+    assert "scheduleInterruptRecoveryRefreshes()" in interrupted_branch
+    assert "scheduleRefresh(0)" in interrupted_branch
 
 
 def test_live_chat_renders_youtube_events_as_live_events_not_user_messages():

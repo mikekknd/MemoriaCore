@@ -204,6 +204,11 @@ def build_external_context_turn_control(
         session_ctx=session_ctx,
     ).strip()
     instruction = str(content or "").replace("\r", "\n").strip()
+    if (
+        str(ext.get("source") or "").strip() == "youtube_live_director"
+        and ext.get("suppress_external_turn_instruction")
+    ):
+        return prefix
     instruction = _dedupe_external_turn_instruction(instruction, ext)
     if instruction:
         source = str(ext.get("source") or "external").strip() or "external"

@@ -34,6 +34,25 @@ class PreparedChatExecution:
     include_speech: bool
     session_ctx: dict
     extra_session_ctx: dict | None
+    history_messages: list[dict]
+
+
+def _load_external_history_messages(session, external_context: dict | None) -> list[dict]:
+    if not isinstance(external_context, dict):
+        return []
+    if str(external_context.get("source") or "").strip() not in {"youtube_live", "youtube_live_director"}:
+        return []
+    history_session_id = str(external_context.get("conversation_history_session_id") or "").strip()
+    if not history_session_id or history_session_id == str(getattr(session, "session_id", "") or ""):
+        return []
+    storage = get_storage()
+    source_info = storage.get_session_info(history_session_id)
+    if not source_info:
+        return []
+    for key in ("user_id", "channel", "channel_uid", "channel_class", "persona_face"):
+        if str(source_info.get(key) or "") != str(getattr(session, key, "") or ""):
+            return []
+    return storage.load_conversation_messages(history_session_id)
 
 
 async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> PreparedChatExecution:
@@ -71,6 +90,7 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
     if memory_write_policy == "transient":
         session_ctx["memory_write_policy"] = "transient"
     extra_session_ctx = _build_extra_session_ctx(external_context, memory_write_policy)
+    history_messages = _load_external_history_messages(session, external_context)
 
     return PreparedChatExecution(
         body=body,
@@ -89,6 +109,7 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
         include_speech=include_speech,
         session_ctx=session_ctx,
         extra_session_ctx=extra_session_ctx,
+        history_messages=history_messages,
     )
 
 
@@ -211,6 +232,7 @@ async def _execute_group_chat_turns(prepared: PreparedChatExecution) -> ChatSync
             prepared.runtime_session,
             prepared.external_context,
         ),
+        history_messages=prepared.history_messages,
     )
     if not turns:
         return ChatSyncResponseDTO(
@@ -264,7 +286,7 @@ async def _execute_single_chat_turn(
     result = await asyncio.to_thread(
         prepared.orchestration_fn,
         chat_rest._messages_for_orchestration(
-            prepared.runtime_session.messages,
+            list(prepared.history_messages or []) + list(prepared.runtime_session.messages),
             prepared.body,
             prepared.external_context,
         ),

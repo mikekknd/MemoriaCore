@@ -555,8 +555,13 @@ function subscribe(sessionId) {
         scheduleRefresh(1000);
         return;
       }
-      if (payload.type === "interrupt_requested" || payload.type === "interaction_interrupted") {
+      if (payload.type === "interrupt_requested") {
         handleInteractionInterrupt(payload);
+        return;
+      }
+      if (payload.type === "interaction_interrupted") {
+        scheduleInterruptRecoveryRefreshes();
+        scheduleRefresh(0);
         return;
       }
       if (payload.type === "presentation_item_ready" && payload.item) {
