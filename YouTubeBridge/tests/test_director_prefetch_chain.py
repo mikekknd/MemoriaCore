@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -255,6 +256,168 @@ async def test_prefetch_only_presentation_items_are_debugged_as_waiting_not_play
         assert "item_ready" not in phases
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_consume_prefetched_episode_turn_uses_turn_pipeline_policy(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a", "analyst-b"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+            "status": "running",
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "sentinel_ready",
+            "memoria_session_id": "mem-main",
+            "content": "prefetched planned turn",
+            "metadata": {
+                "decision": {
+                    "action": "planned_turn",
+                    "episode_plan": {"mode": "planned_turn"},
+                },
+                "base_state": {"status": "running"},
+            },
+        })
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": interaction["job_id"],
+            "message_id": "prefetch-policy-msg:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 0,
+            "status": "ready",
+            "text": "prefetched planned turn",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        presented_sources = []
+
+        async def fake_present_prepared_stream_results(session_id, prepared_results, *, source, interaction_job_id):
+            presented_sources.append(source)
+            storage.update_presentation_item(item["item_id"], status="played", acked_at="now")
+
+        async def fake_prefetch_next_presentation_turn(*args, **kwargs):
+            return None
+
+        sentinel_policy = SimpleNamespace(
+            expected_status="sentinel_ready",
+            presentation_source="sentinel_director",
+            may_chain=True,
+            mark_audience_events_injected=False,
+            dedicated_closing=False,
+        )
+
+        monkeypatch.setattr(
+            "engine_director_runtime.prepared_turn_policy_for_interaction",
+            lambda current_interaction: sentinel_policy,
+        )
+        monkeypatch.setattr(manager, "present_prepared_stream_results", fake_present_prepared_stream_results)
+        monkeypatch.setattr(manager, "_prefetch_next_presentation_turn", fake_prefetch_next_presentation_turn)
+
+        result = await manager._consume_prefetched_episode_turn(runtime, session, {
+            "interaction": interaction,
+            "decision": {
+                "action": "planned_turn",
+                "episode_plan": {"mode": "planned_turn"},
+            },
+            "base_state": {"status": "running"},
+            "memoria_result": {"session_id": "mem-main", "reply": "prefetched planned turn"},
+            "prepared_results": [{
+                "message": {"content": "prefetched planned turn"},
+                "items": [item],
+            }],
+        })
+
+        assert result and result["discarded"] is False
+        assert presented_sources == ["sentinel_director"]
+        assert storage.get_interaction(interaction["job_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_consume_prefetched_episode_turn_refuses_dedicated_closing_policy(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["host-a"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "status": "running",
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetched",
+            "memoria_session_id": "mem-main",
+            "content": "final closing",
+            "metadata": {"decision": {"action": "final_closing"}},
+        })
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": interaction["job_id"],
+            "message_id": "closing-policy-msg:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 0,
+            "status": "ready",
+            "text": "final closing",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        dedicated_policy = SimpleNamespace(
+            expected_status="prefetched",
+            presentation_source="director_closing",
+            may_chain=False,
+            mark_audience_events_injected=False,
+            dedicated_closing=True,
+        )
+
+        async def unexpected_present(*args, **kwargs):
+            raise AssertionError("dedicated closing policy must not be consumed here")
+
+        monkeypatch.setattr(
+            "engine_director_runtime.prepared_turn_policy_for_interaction",
+            lambda current_interaction: dedicated_policy,
+        )
+        monkeypatch.setattr(manager, "present_prepared_stream_results", unexpected_present)
+
+        result = await manager._consume_prefetched_episode_turn(runtime, session, {
+            "interaction": interaction,
+            "memoria_result": {"session_id": "mem-main", "reply": "final closing"},
+            "prepared_results": [{
+                "message": {"content": "final closing"},
+                "items": [item],
+            }],
+        })
+
+        assert result is None
+        assert storage.get_interaction(interaction["job_id"])["status"] == "prefetched"
 
 
 @pytest.mark.asyncio

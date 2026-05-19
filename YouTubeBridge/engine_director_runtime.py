@@ -15,6 +15,7 @@ from typing import Any
 from bridge_runtime import LiveRuntime
 from free_talk_topics import load_free_talk_topic_library
 from memoria_client import GenerationInterrupted
+from turn_pipeline import prepared_turn_policy_for_interaction
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -2296,9 +2297,18 @@ class DirectorRuntimeManagerMixin:
             )
             return None
         current_interaction = self.storage.get_interaction(job_id) or interaction
-        interaction_source = str(current_interaction.get("source") or interaction.get("source") or "")
-        is_audience_prepare = interaction_source == "director_audience_prepare"
-        expected_ready_status = "prepared" if is_audience_prepare else "prefetched"
+        policy = prepared_turn_policy_for_interaction(current_interaction)
+        if policy is None or policy.dedicated_closing:
+            _director_timing_log(
+                "prefetch_consume_refused",
+                session_id=runtime.session_id,
+                job_id=job_id,
+                status=current_interaction.get("status"),
+                reason="unsupported_prepared_turn_policy",
+            )
+            return None
+        expected_ready_status = policy.expected_status
+        is_audience_prepare = policy.mark_audience_events_injected
         if str(current_interaction.get("status") or "") != expected_ready_status:
             _director_timing_log(
                 "prefetch_consume_refused",
@@ -2340,7 +2350,8 @@ class DirectorRuntimeManagerMixin:
         decision_payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
         decision_mode = str(decision_payload.get("mode") or "")
         should_chain_prefetch = (
-            bool(decision)
+            policy.may_chain
+            and bool(decision)
             and bool(base_state)
             and not runtime.stop_after_current_turn
             and not runtime.graceful_closing_requested
@@ -2387,7 +2398,7 @@ class DirectorRuntimeManagerMixin:
             )
             return None
         await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
-        presentation_source = "director_audience_gap" if is_audience_prepare else "director"
+        presentation_source = policy.presentation_source
         await self.present_prepared_stream_results(
             runtime.session_id,
             prepared_results,
