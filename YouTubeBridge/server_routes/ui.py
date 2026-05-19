@@ -71,15 +71,3 @@ async def bridge_ui():
 @router.get("/studio")
 async def bridge_studio():
     return FileResponse(os.path.join(STATIC_ROOT, "studio.html"))
-
-
-@router.get("/live/")
-@router.get("/live")
-async def bridge_live():
-    return FileResponse(os.path.join(STATIC_ROOT, "live.html"))
-
-
-@router.get("/live-chat/")
-@router.get("/live-chat")
-async def bridge_live_chat():
-    return FileResponse(os.path.join(STATIC_ROOT, "live_chat.html"))

@@ -378,8 +378,6 @@ ui_config = _route_handler(_ui_routes.ui_config)
 bridge_ui_asset = _route_handler(_ui_routes.bridge_ui_asset)
 bridge_ui = _route_handler(_ui_routes.bridge_ui)
 bridge_studio = _route_handler(_ui_routes.bridge_studio)
-bridge_live = _route_handler(_ui_routes.bridge_live)
-bridge_live_chat = _route_handler(_ui_routes.bridge_live_chat)
 
 list_connectors = _route_handler(_connectors_routes.list_connectors)
 upsert_connector = _route_handler(_connectors_routes.upsert_connector)

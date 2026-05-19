@@ -14,10 +14,6 @@ LOOPBACK_ONLY_PATHS = frozenset({
     "/ui",
     "/studio/",
     "/studio",
-    "/live/",
-    "/live",
-    "/live-chat/",
-    "/live-chat",
     "/ui-config",
 })
 UI_ASSET_PATH_RE = re.compile(r"^/ui-assets/.+$")
