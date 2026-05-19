@@ -54,6 +54,68 @@ def _episode_plan_characters() -> list[dict]:
 # Split from test_bridge_engine_director.py: director runtime behavior.
 
 @pytest.mark.asyncio
+async def test_opening_kickoff_handoff_uses_common_after_turn_chain(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "QA Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+            "status": "running",
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running", metadata={"episode_plan": {}})
+        manager = YouTubeBridgeManager(storage, youtube_client=LiveEndedClient())
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+
+        after_memoria_task = asyncio.create_task(asyncio.sleep(0, result=None))
+        seen = {}
+
+        async def fake_send_director_turn(sent_session, sent_state, decision, **kwargs):
+            seen["decision_action"] = decision["action"]
+            callback = kwargs.get("after_memoria_callback")
+            assert callback is not None
+            callback_result = await callback({"session_id": sent_session["target_memoria_session_id"]})
+            assert callback_result is None
+            return {"interaction": {"job_id": "opening-job"}, "after_memoria_task": after_memoria_task}
+
+        async def fake_after_main_turn_sequence(seen_runtime, seen_session, seen_state, prefetch_task, **kwargs):
+            seen["after_sequence_called"] = True
+            seen["prefetch_task"] = prefetch_task
+            seen["reset_opening_metadata"] = kwargs.get("reset_opening_metadata")
+            return seen_state
+
+        async def fake_prefetch_next_presentation_turn(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(manager, "_send_director_turn", fake_send_director_turn)
+        monkeypatch.setattr(manager, "_after_main_turn_sequence", fake_after_main_turn_sequence)
+        monkeypatch.setattr(manager, "_prefetch_next_presentation_turn", fake_prefetch_next_presentation_turn)
+        monkeypatch.setattr(manager, "_episode_plan_next_decision", lambda _session, _state: None)
+
+        try:
+            await manager._director_kickoff(runtime)
+        finally:
+            if not after_memoria_task.done():
+                after_memoria_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await after_memoria_task
+
+        assert seen["decision_action"] == "opening"
+        assert seen["after_sequence_called"] is True
+        assert seen["prefetch_task"] is after_memoria_task
+        assert seen["reset_opening_metadata"] is False
+
+
+@pytest.mark.asyncio
 async def test_presentation_director_prefetches_next_role_before_current_ack(monkeypatch):
     tmp_dir = _tmp_dir()
     task = None

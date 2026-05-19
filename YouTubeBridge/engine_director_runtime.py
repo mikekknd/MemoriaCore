@@ -420,6 +420,16 @@ class DirectorRuntimeManagerMixin:
                     )
                     await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
                     return
+                if self._presentation_enabled(session):
+                    await self._send_initial_turn_and_run_chain(
+                        runtime,
+                        session,
+                        state,
+                        episode_decision,
+                        status="episode_planned_turn",
+                        reset_opening_metadata=True,
+                    )
+                    return
                 episode_state = self.storage.update_director_state(
                     runtime.session_id,
                     status="episode_planned_turn",
@@ -431,23 +441,10 @@ class DirectorRuntimeManagerMixin:
                     },
                 )
                 await self._broadcast(runtime.session_id, {"type": "director_state", "director": episode_state})
-                prefetch_callback = None
-                if self._presentation_enabled(session):
-                    async def prefetch_callback(memoria_result=None):
-                        prefetch_session = self._session_with_memoria_result(session, memoria_result)
-                        return await self._prefetch_next_presentation_turn(
-                            runtime,
-                            prefetch_session,
-                            state,
-                            episode_decision,
-                            allow_audience=True,
-                        )
-                send_kwargs = {"after_memoria_callback": prefetch_callback} if prefetch_callback else {}
                 result = await self._send_director_turn(
                     session,
                     state,
                     episode_decision,
-                    **send_kwargs,
                 )
                 episode_mode = str((episode_decision.get("episode_plan") or {}).get("mode") or "")
                 next_state = self.storage.update_director_state(
@@ -481,54 +478,23 @@ class DirectorRuntimeManagerMixin:
                 )
                 return
             decision = self._director_opening_decision(session, state)
+            if self._presentation_enabled(session):
+                await self._send_initial_turn_and_run_chain(
+                    runtime,
+                    session,
+                    state,
+                    decision,
+                    status="opening",
+                    reset_opening_metadata=False,
+                )
+                return
             opening_state = self.storage.update_director_state(
                 runtime.session_id,
                 status="opening",
                 metadata={"opening_decision": decision},
             )
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": opening_state})
-            prefetch_callback = None
-            if self._presentation_enabled(session):
-                async def prefetch_callback(memoria_result=None):
-                    prefetch_session = self._session_with_memoria_result(session, memoria_result)
-                    return await self._prefetch_next_presentation_turn(
-                        runtime,
-                        prefetch_session,
-                        state,
-                        decision,
-                        allow_audience=True,
-                    )
-            send_kwargs = {"after_memoria_callback": prefetch_callback} if prefetch_callback else {}
-            result = await self._send_director_turn(session, state, decision, **send_kwargs)
-            if self._presentation_enabled(session):
-                next_state = self.storage.update_director_state(
-                    runtime.session_id,
-                    status="running",
-                    last_director_action_at=datetime.now().isoformat(),
-                    consecutive_ai_turns=int(state.get("consecutive_ai_turns", 0) or 0) + 1,
-                    current_topic=str(decision.get("current_topic") or state.get("current_topic") or ""),
-                    metadata={
-                        "last_decision": decision,
-                        "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
-                        "opening_decision": decision,
-                        "post_opening_decision": None,
-                        "chat_batches_since_anchor": 0,
-                        "segment_state": self._segment_state_after_turn(
-                            session,
-                            state,
-                            decision,
-                            self._segment_topic_entry_for_session(session),
-                        ),
-                    },
-                )
-                await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
-                await self._after_main_turn_sequence(
-                    runtime,
-                    session,
-                    next_state,
-                    result.get("after_memoria_task"),
-                )
-                return
+            result = await self._send_director_turn(session, state, decision)
             final_decision = decision
             final_result = result
             sent_turns = 1
@@ -585,6 +551,94 @@ class DirectorRuntimeManagerMixin:
             state = self.storage.update_director_state(runtime.session_id, status="error", metadata={"last_error": str(exc)})
             await self._broadcast(runtime.session_id, {"type": "director_state", "director": state})
             await self._broadcast(runtime.session_id, {"type": "director_error", "message": str(exc)})
+
+    async def _send_initial_turn_and_run_chain(
+        self,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        decision: dict[str, Any],
+        *,
+        status: str,
+        reset_opening_metadata: bool,
+    ) -> dict[str, Any]:
+        turn_metadata: dict[str, Any] = {"last_decision": decision}
+        if reset_opening_metadata:
+            turn_metadata.update({
+                "opening_decision": None,
+                "post_opening_decision": None,
+                "segment_state": {},
+            })
+        else:
+            turn_metadata["opening_decision"] = decision
+        turn_state = self.storage.update_director_state(
+            runtime.session_id,
+            status=status,
+            metadata=turn_metadata,
+        )
+        await self._broadcast(runtime.session_id, {"type": "director_state", "director": turn_state})
+
+        async def prefetch_callback(memoria_result=None):
+            prefetch_session = self._session_with_memoria_result(session, memoria_result)
+            return await self._prefetch_next_presentation_turn(
+                runtime,
+                prefetch_session,
+                state,
+                decision,
+                allow_audience=True,
+            )
+
+        result = await self._send_director_turn(
+            session,
+            state,
+            decision,
+            after_memoria_callback=prefetch_callback,
+        )
+        episode_mode = str((decision.get("episode_plan") or {}).get("mode") or "")
+        metadata = {
+            "last_decision": decision,
+            "last_result_job_id": result.get("interaction", {}).get("job_id", ""),
+            "chat_batches_since_anchor": 0,
+        }
+        if reset_opening_metadata:
+            metadata.update({
+                "opening_decision": None,
+                "post_opening_decision": None,
+                "segment_state": {},
+                **self._episode_metadata_after_turn(session, state, decision),
+            })
+        else:
+            metadata.update({
+                "opening_decision": decision,
+                "post_opening_decision": None,
+                "segment_state": self._segment_state_after_turn(
+                    session,
+                    state,
+                    decision,
+                    self._segment_topic_entry_for_session(session),
+                ),
+            })
+        next_state = self.storage.update_director_state(
+            runtime.session_id,
+            status="running",
+            last_director_action_at=datetime.now().isoformat(),
+            consecutive_ai_turns=(
+                0
+                if episode_mode == "planned_turn"
+                else int(state.get("consecutive_ai_turns", 0) or 0) + 1
+            ),
+            current_topic=str(decision.get("current_topic") or state.get("current_topic") or ""),
+            metadata=metadata,
+        )
+        await self._broadcast(runtime.session_id, {"type": "director_state", "director": next_state})
+        runtime.audience_preprocess_wake.set()
+        return await self._after_main_turn_sequence(
+            runtime,
+            session,
+            next_state,
+            result.get("after_memoria_task"),
+            reset_opening_metadata=reset_opening_metadata,
+        )
 
     async def _director_loop(self, runtime: LiveRuntime) -> None:
         while runtime.running:
