@@ -1,7 +1,5 @@
 import importlib.util
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,17 +60,6 @@ def _control_ui_source() -> str:
     return "\n".join(parts)
 
 
-def _live_chat_source() -> str:
-    static_root = Path(server_module.STATIC_ROOT)
-    ui_root = static_root / "ui"
-    parts = [(static_root / "live_chat.html").read_text(encoding="utf-8")]
-    for name in ("live-chat.css", "live-chat.js"):
-        path = ui_root / name
-        if path.exists():
-            parts.append(path.read_text(encoding="utf-8"))
-    return "\n".join(parts)
-
-
 def _assert_launcher_uses_runtime_log_dir(source: str, legacy_runtime_prefix: str) -> None:
     assert r"runtime\log" in source
     assert ".foreground.log" in source or (".out.log" in source and ".err.log" in source)
@@ -126,6 +113,17 @@ def test_presentation_audio_bypasses_key_only_for_loopback(monkeypatch):
         require_bridge_key(_request("203.0.113.10", path="/sessions/live-a/presentation/item-a/audio"))
 
     assert exc.value.status_code == 403
+
+
+def test_legacy_live_chat_pages_are_not_loopback_only_exceptions():
+    from server_security import LOOPBACK_ONLY_PATHS
+
+    assert "/live" not in LOOPBACK_ONLY_PATHS
+    assert "/live/" not in LOOPBACK_ONLY_PATHS
+    assert "/live-chat" not in LOOPBACK_ONLY_PATHS
+    assert "/live-chat/" not in LOOPBACK_ONLY_PATHS
+    assert "/studio" in LOOPBACK_ONLY_PATHS
+    assert "/studio/" in LOOPBACK_ONLY_PATHS
 
 
 def test_studio_avatar_assets_bypass_key_only_for_loopback(monkeypatch):

@@ -1,7 +1,5 @@
 import importlib.util
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,38 +60,25 @@ def _control_ui_source() -> str:
     return "\n".join(parts)
 
 
-def _live_chat_source() -> str:
-    static_root = Path(server_module.STATIC_ROOT)
-    ui_root = static_root / "ui"
-    parts = [(static_root / "live_chat.html").read_text(encoding="utf-8")]
-    for name in ("live-chat.css", "live-chat.js"):
-        path = ui_root / name
-        if path.exists():
-            parts.append(path.read_text(encoding="utf-8"))
-    return "\n".join(parts)
-
-
 def _assert_launcher_uses_runtime_log_dir(source: str, legacy_runtime_prefix: str) -> None:
     assert r"runtime\log" in source
     assert ".foreground.log" in source or (".out.log" in source and ".err.log" in source)
     assert legacy_runtime_prefix not in source.lower()
 
-# Split from test_server_auth.py: server, launcher, route, and UI contracts.
-
-def test_live_page_propagates_requested_session_id_to_live_chat_frame():
-    live_html = (Path(server_module.STATIC_ROOT) / "live.html").read_text(encoding="utf-8")
-
-    assert 'id="liveChatFrame"' in live_html
-    assert "URLSearchParams(location.search)" in live_html
-    assert "session_id" in live_html
-
-
-def test_session_routes_expose_presentation_endpoints():
+def test_session_routes_keep_backend_presentation_endpoints_for_studio():
     source = (BRIDGE_ROOT / "server_routes" / "sessions.py").read_text(encoding="utf-8")
 
     assert '@router.post("/sessions/{session_id}/presentation/{item_id}/ack")' in source
     assert '@router.get("/sessions/{session_id}/presentation/{item_id}/audio")' in source
     assert '@router.post("/sessions/{session_id}/presentation/current/skip")' in source
+    assert 'api(`/sessions/${encodeURIComponent(state.sessionId)}/presentation/${encodeURIComponent(item.item_id)}/ack`, {' in (
+        Path(server_module.UI_ASSETS_ROOT) / "studio.js"
+    ).read_text(encoding="utf-8")
+
+
+def test_session_routes_expose_instrumented_sse_and_presented_messages():
+    source = (BRIDGE_ROOT / "server_routes" / "sessions.py").read_text(encoding="utf-8")
+
     assert "InstrumentedSseResponse" in source
     assert "return InstrumentedSseResponse(" in source
     assert "StreamingResponse(gen()" not in source

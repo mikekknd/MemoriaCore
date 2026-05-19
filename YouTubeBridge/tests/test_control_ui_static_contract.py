@@ -1,7 +1,5 @@
 import importlib.util
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,29 +60,19 @@ def _control_ui_source() -> str:
     return "\n".join(parts)
 
 
-def _live_chat_source() -> str:
-    static_root = Path(server_module.STATIC_ROOT)
-    ui_root = static_root / "ui"
-    parts = [(static_root / "live_chat.html").read_text(encoding="utf-8")]
-    for name in ("live-chat.css", "live-chat.js"):
-        path = ui_root / name
-        if path.exists():
-            parts.append(path.read_text(encoding="utf-8"))
-    return "\n".join(parts)
-
-
 def _assert_launcher_uses_runtime_log_dir(source: str, legacy_runtime_prefix: str) -> None:
     assert r"runtime\log" in source
     assert ".foreground.log" in source or (".out.log" in source and ".err.log" in source)
     assert legacy_runtime_prefix not in source.lower()
 
-# Split from test_server_auth.py: server, launcher, route, and UI contracts.
-
-def test_live_page_static_files_are_registered():
+def test_legacy_live_chat_static_files_are_removed():
     static_root = Path(server_module.STATIC_ROOT)
+    ui_root = static_root / "ui"
 
-    assert (static_root / "live.html").exists()
-    assert (static_root / "live_chat.html").exists()
+    assert not (static_root / "live.html").exists()
+    assert not (static_root / "live_chat.html").exists()
+    assert not (ui_root / "live-chat.js").exists()
+    assert not (ui_root / "live-chat.css").exists()
 
 
 def test_bridge_server_uses_windows_selector_policy_before_uvicorn_import():
@@ -92,179 +80,6 @@ def test_bridge_server_uses_windows_selector_policy_before_uvicorn_import():
 
     assert "WindowsSelectorEventLoopPolicy" in source
     assert source.index("WindowsSelectorEventLoopPolicy") < source.index("import uvicorn")
-
-
-def test_live_chat_uses_immediate_sse_refresh_for_chat_payloads():
-    live_chat_html = _live_chat_source()
-
-    assert 'live-chat.js?v=opening-handoff-v1' in live_chat_html
-    assert "LIVE_CHAT_REFRESH_TYPES" in live_chat_html
-    assert "PRESENTATION_REFRESH_SUPPRESSED_TYPES" in live_chat_html
-    assert '"chat_message"' in live_chat_html
-    assert '"youtube_live_event"' in live_chat_html
-    assert '"interaction_completed"' in live_chat_html
-    assert '"director_injected"' in live_chat_html
-    assert "state.presentationEnabled && PRESENTATION_REFRESH_SUPPRESSED_TYPES.has(payload.type)" in live_chat_html
-    assert "appendChatMessage(payload.message)" in live_chat_html
-    assert "function ensureSubscription()" in live_chat_html
-    assert "state.subscribedSessionId === state.sessionId" in live_chat_html
-    assert "presentationEnabled" in live_chat_html
-    assert "state.presentationEnabled = !!selected.presentation_enabled" in live_chat_html
-    assert "if (state.presentationEnabled) return;" in live_chat_html
-    assert live_chat_html.index("ensureSubscription();") < live_chat_html.index(
-        'api(`/sessions/${encodeURIComponent(state.sessionId)}/chat-preview?limit=120`)'
-    )
-    assert "const liveEventMessages = state.presentationEnabled ? [] : state.liveEventMessages" in live_chat_html
-    assert "state.displayMessages, liveEventMessages, data.messages || []" in live_chat_html
-    assert '${message.role || "message"}:${messageId}' in live_chat_html
-    assert "scheduleRefresh(0)" in live_chat_html
-
-
-def test_live_chat_recovers_after_interrupt_events():
-    live_chat_html = _live_chat_source()
-
-    assert "interruptRecoveryTimers" in live_chat_html
-    assert "function scheduleInterruptRecoveryRefreshes()" in live_chat_html
-    assert "function handleInteractionInterrupt(payload = {})" in live_chat_html
-    assert 'payload.type === "interrupt_requested"' in live_chat_html
-    assert 'payload.type === "interrupt_requested" || payload.type === "interaction_interrupted"' not in live_chat_html
-    interrupt_branch = live_chat_html[
-        live_chat_html.index('if (payload.type === "interrupt_requested")'):
-        live_chat_html.index('if (payload.type === "interaction_interrupted")')
-    ]
-    assert "handleInteractionInterrupt(payload)" in interrupt_branch
-    assert "state.presentationQueue = []" in live_chat_html
-    assert "state.currentAudio.pause()" in live_chat_html
-    assert "presentation/current/skip" in live_chat_html
-    assert "35000" in live_chat_html
-
-
-def test_live_chat_interaction_interrupted_preserves_current_audio():
-    live_chat_html = _live_chat_source()
-
-    interrupted_branch = live_chat_html[
-        live_chat_html.index('if (payload.type === "interaction_interrupted")'):
-        live_chat_html.index('if (payload.type === "presentation_item_ready"')
-    ]
-    assert "handleInteractionInterrupt" not in interrupted_branch
-    assert "stopPresentationPlayback" not in interrupted_branch
-    assert "presentation/current/skip" not in interrupted_branch
-    assert "scheduleInterruptRecoveryRefreshes()" in interrupted_branch
-    assert "scheduleRefresh(0)" in interrupted_branch
-
-
-def test_live_chat_renders_youtube_events_as_live_events_not_user_messages():
-    live_chat_html = _live_chat_source()
-
-    assert 'if (message.role === "system_event" && message.source === "youtube_live_event") return "直播留言";' in live_chat_html
-    event_mapper = live_chat_html[
-        live_chat_html.index("function liveEventToMessage"):
-        live_chat_html.index("function assignMessageOrder")
-    ]
-    assert 'role: "system_event",' in event_mapper
-    assert 'role: "user",' not in event_mapper
-
-
-def test_live_chat_handles_presentation_queue_events():
-    live_chat_html = _live_chat_source()
-
-    assert '"presentation_item_preload"' in live_chat_html
-    assert '"presentation_item_ready"' in live_chat_html
-    assert "cachePresentationAudio" in live_chat_html
-    assert "audioForPresentationItem" in live_chat_html
-    assert "playPresentationItem" in live_chat_html
-    assert "ackPresentationItem" in live_chat_html
-    assert "reportPresentationClientDebug" in live_chat_html
-    assert "client_playback_timeline" in live_chat_html
-    assert "attachPresentationSseTiming" in live_chat_html
-    assert "server_sse_yield_at" in live_chat_html
-    assert "server_sse_send_start_at" in live_chat_html
-    assert "main_thread_max_lag_ms_since_last_presentation_sse" in live_chat_html
-    assert "document_visibility: document.visibilityState" in live_chat_html
-    assert 'recordPresentationClientTiming("audio_ended", item' in live_chat_html
-    assert "ack_roundtrip_ms" in live_chat_html
-    assert "presentation/current/skip" in live_chat_html
-    assert "audio.addEventListener(\"ended\"" in live_chat_html
-
-
-def test_live_chat_missing_timestamp_uses_stable_fallback_order(tmp_path):
-    if not shutil.which("node"):
-        pytest.skip("node is required for live-chat.js behavior test")
-    static_root = Path(server_module.STATIC_ROOT)
-    source = (static_root / "ui" / "live-chat.js").read_text(encoding="utf-8")
-    helper_source = source[:source.index("function visibleMessages")]
-    script = tmp_path / "live_chat_order_test.mjs"
-    script.write_text(
-        helper_source
-        + """
-const mixed = mergeMessages(
-  [{ message_id: 1, role: "assistant", content: "有時間", timestamp: "2026-05-10T12:00:00" }],
-  [{ message_id: 2, role: "assistant", content: "空時間", timestamp: "" }],
-);
-const mixedOrder = mixed.map((message) => message.content).join("|");
-if (mixedOrder !== "有時間|空時間") {
-  throw new Error(`missing timestamp sorted as oldest: ${mixedOrder}`);
-}
-
-const numericFallback = mergeMessages(
-  [{ message_id: 2, role: "assistant", content: "二號", timestamp: "" }],
-  [{ message_id: 10, role: "assistant", content: "十號", timestamp: "" }],
-);
-const numericOrder = numericFallback.map((message) => message.content).join("|");
-if (numericOrder !== "二號|十號") {
-  throw new Error(`numeric message_id fallback sorted lexically: ${numericOrder}`);
-}
-""",
-        encoding="utf-8",
-    )
-    result = subprocess.run(
-        ["node", str(script)],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_live_chat_polls_memoria_history_while_sse_is_connected():
-    live_chat_html = _live_chat_source()
-
-    assert "historyRefreshTimer" in live_chat_html
-    assert "function startHistoryRefresh()" in live_chat_html
-    assert "startHistoryRefresh();" in live_chat_html
-    assert "setInterval(async () => {" in live_chat_html
-    assert "await refreshChat({ silent: true })" in live_chat_html
-
-
-def test_live_chat_assigns_stable_assistant_bubble_colors():
-    live_chat_html = _live_chat_source()
-
-    assert "ASSISTANT_COLOR_CLASSES" in live_chat_html
-    assert "characterColorMap" in live_chat_html
-    assert "function setCharacterColorMap(characterIds)" in live_chat_html
-    assert "function characterColorClass(message)" in live_chat_html
-    assert "state.characterColorMap[colorKey]" in live_chat_html
-    assert "setCharacterColorMap(selected.character_ids || [])" in live_chat_html
-    assert "style=\"--character-color:" in live_chat_html
-    assert ".msg.assistant.character-color-0" in live_chat_html
-    assert ".msg.assistant.character-color-5" in live_chat_html
-
-
-def test_live_chat_shows_elapsed_and_target_duration():
-    live_chat_html = _live_chat_source()
-
-    assert 'id="durationBadge"' in live_chat_html
-    assert "durationRefreshTimer" in live_chat_html
-    assert "function formatDuration(seconds)" in live_chat_html
-    assert "function updateDurationBadge()" in live_chat_html
-    assert "function startDurationRefresh()" in live_chat_html
-    assert "selected.started_at || selected.created_at" in live_chat_html
-    assert "selected.planned_duration_minutes" in live_chat_html
-    assert "已直播" in live_chat_html
-    assert "目標" in live_chat_html
 
 
 def test_control_ui_loads_external_css_and_module_script():

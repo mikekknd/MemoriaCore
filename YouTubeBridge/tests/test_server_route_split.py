@@ -55,10 +55,6 @@ def test_split_routes_keep_existing_public_paths():
         "/episode-plans",
         "/episode-plans/sync-local",
         "/episode-plans/{plan_id}/characters",
-        "/live",
-        "/live/",
-        "/live-chat",
-        "/live-chat/",
         "/connectors",
         "/connectors/{connector_id}",
         "/sessions",
@@ -83,6 +79,17 @@ def test_split_routes_keep_existing_public_paths():
         "/memoria/config",
     }
     assert expected <= paths
+
+
+def test_legacy_live_chat_routes_are_not_registered():
+    paths = _route_paths()
+
+    assert "/live" not in paths
+    assert "/live/" not in paths
+    assert "/live-chat" not in paths
+    assert "/live-chat/" not in paths
+    assert "/studio" in paths
+    assert "/studio/" in paths
 
 
 def test_phase_pipeline_routes_are_registered():
