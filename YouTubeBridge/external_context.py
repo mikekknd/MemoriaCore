@@ -1,4 +1,4 @@
-"""External context builder Module for YouTubeBridge live injection."""
+"""YouTubeBridge 直播注入用外部上下文組裝模組。"""
 from __future__ import annotations
 
 from typing import Any, Callable

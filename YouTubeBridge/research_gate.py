@@ -1,4 +1,4 @@
-"""Research Gate Module for YouTubeBridge live context."""
+"""YouTubeBridge 直播上下文用 Research Gate 模組。"""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ logger = logging.getLogger("youtube_bridge")
 
 class ResearchSearchAdapter(Protocol):
     def search(self, query: str) -> Any:
-        """Return raw search result data for a Research Gate query."""
+        """回傳 Research Gate 查詢的原始搜尋結果。"""
 
 
 class TavilyResearchSearchAdapter:

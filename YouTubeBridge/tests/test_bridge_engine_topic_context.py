@@ -116,6 +116,37 @@ def test_external_context_builder_builds_payload_with_query_resolution():
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
+def test_build_external_context_uses_latest_manager_query_context_callback(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt-main", "display_name": "YouTube Main", "api_key": "key", "enabled": True})
+        storage.upsert_session({"session_id": "live-a", "connector_id": "yt-main", "video_id": "video-a", "live_chat_id": "chat-a"})
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_text": "四月新番有哪些作品可以聊？",
+            "author_display_name": "觀眾A",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeEmbeddingMemoriaClient)
+
+        monkeypatch.setattr(
+            manager,
+            "_live_query_context_for_events",
+            lambda _session, _events, _lines: ("PATCHED_CONTEXT", {"research_status": "patched"}),
+        )
+
+        payload, summary = manager.build_external_context("live-a")
+
+        assert "PATCHED_CONTEXT" in payload["context_text"]
+        assert summary["query_resolution"]["research_status"] == "patched"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_build_external_context_retrieves_relevant_topic_pack_fact_cards():
     tmp_dir = _tmp_dir()
     try:

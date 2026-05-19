@@ -103,19 +103,28 @@ class YouTubeBridgeManager(
             storage=self.storage,
             runtime_lookup=lambda session_id: self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id)),
             runtime_getter=lambda session_id: self._runtimes.get(session_id),
-            topic_pack_context_text=self._topic_pack_context_text,
-            record_topic_pack_usage=self._record_topic_pack_usage,
-            index_topic_pack_entry=self.index_topic_pack_entry,
+            topic_pack_context_text=lambda entries: self._topic_pack_context_text(entries),
+            record_topic_pack_usage=lambda session_id, entries, query_text, source: self._record_topic_pack_usage(
+                session_id,
+                entries,
+                query_text,
+                source,
+            ),
+            index_topic_pack_entry=lambda entry_id: self.index_topic_pack_entry(entry_id),
             search_adapter=TavilyResearchSearchAdapter(),
         )
         self._external_context_builder = ExternalContextBuilder(
             storage=self.storage,
-            event_line=self._event_line,
-            visible_event=self._visible_event,
-            is_public_live_event_displayable=self._is_public_live_event_displayable,
-            query_context_for_events=self._live_query_context_for_events,
-            presentation_enabled=self._presentation_enabled,
-            attach_live_persona_overrides=self._attach_live_persona_overrides,
+            event_line=lambda event: self._event_line(event),
+            visible_event=lambda event: self._visible_event(event),
+            is_public_live_event_displayable=lambda event: self._is_public_live_event_displayable(event),
+            query_context_for_events=lambda session, events, lines: self._live_query_context_for_events(
+                session,
+                events,
+                lines,
+            ),
+            presentation_enabled=lambda session: self._presentation_enabled(session),
+            attach_live_persona_overrides=lambda session, payload: self._attach_live_persona_overrides(session, payload),
         )
 
     def _memoria_client(self):
@@ -1335,7 +1344,6 @@ class YouTubeBridgeManager(
 
     def _completed_audience_research_context(self, session_id: str, query_text: str) -> tuple[str, str]:
         return self._research_gate.completed_context(session_id, query_text)
-
 
     @classmethod
     def _research_gate_usage_status(
