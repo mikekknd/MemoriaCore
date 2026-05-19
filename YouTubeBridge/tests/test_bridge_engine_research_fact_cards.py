@@ -56,28 +56,75 @@ def test_research_gate_module_can_be_constructed_with_manager_adapters():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_research_gate_request_sync_is_side_effect_free_shell():
+def test_research_gate_module_request_sync_creates_research_fact_card():
     from research_gate import ResearchGateModule
 
-    class NoSideEffectStorage:
-        def __getattr__(self, name):
-            raise AssertionError(f"storage method called: {name}")
+    class FakeSearchAdapter:
+        def search(self, query: str):
+            assert query == "最新一話聲優陣容"
+            return {
+                "results": [
+                    {
+                        "title": "官方聲優陣容公告",
+                        "url": "https://example.test/cast",
+                        "content": "官方公告列出主役聲優與配角聲優，社群討論集中在聲線變化。",
+                    }
+                ]
+            }
+
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt-main", "display_name": "YouTube Main", "api_key": "key", "enabled": True})
+        storage.upsert_session({"session_id": "live-a", "connector_id": "yt-main", "video_id": "video-a", "live_chat_id": "chat-a", "research_enabled": True})
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        module = ResearchGateModule(
+            storage=storage,
+            runtime_lookup=lambda session_id: LiveRuntime(session_id=session_id),
+            topic_pack_context_text=lambda entries: "\n".join(str(entry["body"]) for entry in entries),
+            record_topic_pack_usage=lambda *_args, **_kwargs: None,
+            index_topic_pack_entry=lambda _entry_id: None,
+            search_adapter=FakeSearchAdapter(),
+        )
+
+        result = module.request_sync("live-a", "最新一話聲優陣容", pack_id=pack["id"], enforce_cooldown=True)
+
+        assert result["status"] == "completed_with_results"
+        assert result["entry"]["source_type"] == "research_gate"
+        assert result["research"]["result_entry_id"] == result["entry"]["id"]
+        assert "官方公告列出主役聲優" in result["entry"]["body"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_research_gate_request_sync_does_not_search_when_research_disabled():
+    from research_gate import ResearchGateModule
 
     class NoSideEffectSearchAdapter:
         def search(self, query: str):
             raise AssertionError("search adapter should not be called")
 
-    module = ResearchGateModule(
-        storage=NoSideEffectStorage(),
-        runtime_lookup=lambda session_id: LiveRuntime(session_id=session_id),
-        topic_pack_context_text=lambda entries: "",
-        record_topic_pack_usage=lambda session_id, entries, source, reason: None,
-        index_topic_pack_entry=lambda entry_id: None,
-        search_adapter=NoSideEffectSearchAdapter(),
-    )
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt-main", "display_name": "YouTube Main", "api_key": "key", "enabled": True})
+        storage.upsert_session({"session_id": "live-a", "connector_id": "yt-main", "video_id": "video-a", "live_chat_id": "chat-a", "research_enabled": False})
+        module = ResearchGateModule(
+            storage=storage,
+            runtime_lookup=lambda session_id: LiveRuntime(session_id=session_id),
+            topic_pack_context_text=lambda entries: "",
+            record_topic_pack_usage=lambda session_id, entries, source, reason: None,
+            index_topic_pack_entry=lambda entry_id: None,
+            search_adapter=NoSideEffectSearchAdapter(),
+        )
 
-    with pytest.raises(NotImplementedError, match="implemented in Task 2"):
-        module.request_sync("live-a", "最新一話聲優陣容")
+        with pytest.raises(ValueError, match="未啟用 Research Gate"):
+            module.request_sync("live-a", "最新一話聲優陣容")
+
+        assert storage.list_research_requests("live-a") == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_audience_question_queues_research_gate_without_blocking_injection(monkeypatch):
@@ -478,6 +525,47 @@ def test_audience_research_worker_records_completed_status(monkeypatch):
         jobs = state["metadata"]["audience_query_research"]
         assert jobs["voice-cast"]["status"] == "completed_with_results"
         assert jobs["voice-cast"]["in_progress"] is False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def test_audience_research_worker_cleanup_does_not_create_missing_runtime(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        assert "live-a" not in manager._runtimes
+
+        def fake_research_request_sync(session_id: str, query: str, *, pack_id: int | None = None, enforce_cooldown: bool = True):
+            return {
+                "status": "completed_with_results",
+                "entry": {"id": 0, "pack_id": 0},
+                "record": {"status": "completed_with_results"},
+                "embedding": None,
+            }
+
+        monkeypatch.setattr(manager, "_research_request_sync", fake_research_request_sync, raising=False)
+
+        manager._run_audience_research_worker(
+            "live-a",
+            "voice-cast",
+            "最新一話的聲優陣容有什麼看點？",
+            pack_id=None,
+        )
+
+        assert "live-a" not in manager._runtimes
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
