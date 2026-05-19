@@ -24,13 +24,13 @@
    - **Solution:** Extract a kickoff Adapter that calls the same "send and run after-turn chain" helper used by normal planned turns.
    - **Benefits:** Opening to first planned turn gets the same prefetch and audience ordering semantics as the rest of the show.
 
-3. **Presentation Player Adapter**
-   - **Files:** `YouTubeBridge/static/ui/studio.js`, `YouTubeBridge/static/ui/live-chat.js`
-   - **Problem:** Two front-end files implement queue, preload, play, debug, and ACK logic independently.
-   - **Solution:** Move shared player behavior into a single browser-side Adapter and let studio/live-chat configure only UI hooks.
-   - **Benefits:** Playback timing fixes gain locality. This is valuable, but should follow the backend pipeline consolidation because the current repeated regressions are mostly backend turn policy.
+3. **Studio Presentation Player Locality**
+   - **Files:** `YouTubeBridge/static/ui/studio.js`
+   - **Problem:** Presentation playback now has one supported browser surface: Studio. Older plans assumed a second browser playback adapter would keep sharing queue, preload, play, debug, and ACK logic, but that surface has been removed.
+   - **Solution:** Keep Presentation Player behavior local to Studio unless a second supported browser surface is intentionally introduced later. Future playback timing fixes should improve the Studio implementation directly.
+   - **Benefits:** Playback timing fixes keep locality without rebuilding a legacy adapter target.
 
-This plan implements candidates 1 and 2 first. Candidate 3 should be a separate plan after backend turn semantics stabilize.
+This plan implements candidates 1 and 2 first. Candidate 3 is now a boundary note for future Studio-only playback work, not a shared browser-adapter extraction task.
 
 ---
 
