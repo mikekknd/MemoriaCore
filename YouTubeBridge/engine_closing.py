@@ -11,6 +11,7 @@ from typing import Any
 
 from bridge_contracts import SAFETY_CLASSIFIER_BATCH_LIMIT
 from bridge_runtime import LiveRuntime
+from turn_pipeline import prepared_turn_policy_for_interaction
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -212,6 +213,14 @@ class ClosingManagerMixin:
             }
             status = str(active.get("status") or "")
             job_id = str(active.get("job_id") or "")
+            policy = prepared_turn_policy_for_interaction(active)
+            if (
+                policy is not None
+                and not policy.dedicated_closing
+                and status == policy.expected_status
+                and job_id in ready_job_ids
+            ):
+                return None
             if status in {"prepared", "prefetched"} and job_id in ready_job_ids:
                 return None
             return active
@@ -223,7 +232,6 @@ class ClosingManagerMixin:
             )
 
         def ready_item_block_reason(item: dict[str, Any]) -> str:
-            source = str((item.get("metadata") or {}).get("source") or "")
             job_id = str(item.get("interaction_job_id") or "")
             if not job_id:
                 return "closing_drain_missing_ready_interaction"
@@ -231,11 +239,10 @@ class ClosingManagerMixin:
             if not interaction:
                 return "closing_drain_missing_ready_interaction"
             status = str(interaction.get("status") or "")
-            expected_status = {
-                "director_audience_prepare": "prepared",
-                "director_prefetch": "prefetched",
-            }.get(source)
-            if expected_status and status != expected_status:
+            policy = prepared_turn_policy_for_interaction(interaction)
+            if policy is None or policy.dedicated_closing:
+                return "closing_drain_unsupported_ready_interaction"
+            if status != policy.expected_status:
                 return f"closing_drain_invalid_ready_interaction_status:{status or 'missing'}"
             return ""
 
@@ -395,10 +402,10 @@ class ClosingManagerMixin:
             interaction = self.storage.get_interaction(job_id)
             if not interaction:
                 continue
-            interaction_source = str(interaction.get("source") or "")
-            if interaction_source not in {"director_prefetch", "director_audience_prepare"}:
+            policy = prepared_turn_policy_for_interaction(interaction)
+            if policy is None or policy.dedicated_closing:
                 continue
-            expected_status = "prepared" if interaction_source == "director_audience_prepare" else "prefetched"
+            expected_status = policy.expected_status
             if str(interaction.get("status") or "") != expected_status:
                 continue
             prepared_results = self._prepared_results_for_interaction(
@@ -418,8 +425,8 @@ class ClosingManagerMixin:
                 started = self.storage.update_interaction(job_id, status="presenting")
             if not started or str(started.get("status") or "") != "presenting":
                 continue
-            is_audience_prepare = interaction_source == "director_audience_prepare"
-            presentation_source = "director_audience_gap" if is_audience_prepare else "director"
+            is_audience_prepare = policy.mark_audience_events_injected
+            presentation_source = policy.presentation_source
             await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
             await self.present_prepared_stream_results(
                 runtime.session_id,

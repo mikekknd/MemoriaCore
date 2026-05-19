@@ -2793,6 +2793,87 @@ async def test_drain_live_session_consumes_ready_prefetch_with_real_presentation
 
 
 @pytest.mark.asyncio
+async def test_closing_drain_uses_turn_pipeline_policy_for_ready_prefetch(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        session = storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "running",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-main",
+            "character_ids": ["char-a"],
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 55,
+            "status": "policy_ready",
+            "event_ids": [],
+            "memoria_session_id": "mem-draft",
+            "character_ids": ["char-a"],
+            "content": "ready planned during drain",
+            "reply_text": "ready planned during drain",
+            "metadata": {
+                "decision": {"action": "planned_turn", "episode_plan": {"mode": "planned_turn"}},
+            },
+        })
+        item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": interaction["job_id"],
+            "message_id": "prefetch-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "ready planned during drain",
+            "status": "ready",
+            "audio_path": "prefetch.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        presented_sources: list[str] = []
+
+        def fake_policy(interaction_arg):
+            assert interaction_arg["job_id"] == interaction["job_id"]
+            return type("SentinelPolicy", (), {
+                "expected_status": "policy_ready",
+                "presentation_source": "sentinel_director",
+                "may_chain": True,
+                "mark_audience_events_injected": False,
+                "dedicated_closing": False,
+            })()
+
+        async def fake_present_prepared_stream_results(session_id, prepared_results, *, source, interaction_job_id):
+            presented_sources.append(source)
+            assert session_id == "live-a"
+            assert interaction_job_id == interaction["job_id"]
+            assert prepared_results
+            storage.update_presentation_item(
+                item["item_id"],
+                status="played",
+                presented_at=datetime.now().isoformat(),
+                acked_at=datetime.now().isoformat(),
+            )
+
+        monkeypatch.setattr(engine_closing, "prepared_turn_policy_for_interaction", fake_policy, raising=False)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        monkeypatch.setattr(manager, "present_prepared_stream_results", fake_present_prepared_stream_results)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        result = await manager._drain_live_session_before_closing(runtime, session, timeout_seconds=1)
+
+        assert result["status"] == "drained"
+        assert presented_sources == ["sentinel_director"]
+        completed = storage.get_interaction(interaction["job_id"])
+        assert completed["status"] == "completed"
+        assert completed["metadata"]["prefetch_consumed_during_closing_drain"] is True
+
+
+@pytest.mark.asyncio
 async def test_drain_live_session_auto_acks_stale_presenting_item_after_closing_grace():
     with temp_storage() as storage:
         storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
