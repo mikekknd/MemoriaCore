@@ -102,6 +102,20 @@ def test_bridge_launchers_write_process_logs_under_runtime_log():
         _assert_launcher_uses_runtime_log_dir(source, r"runtime\youtube_bridge")
 
 
+def test_bridge_launchers_point_operators_to_studio_not_legacy_live_page():
+    start_script = (BRIDGE_ROOT / "start.bat").read_text(encoding="utf-8")
+    hot_reload_script = (BRIDGE_ROOT / "start_hot_reload.bat").read_text(encoding="utf-8")
+
+    assert "Studio UI" in start_script
+    assert "http://localhost:%API_PORT%/studio/" in start_script
+    assert "http://127.0.0.1:%API_PORT%/studio/" in hot_reload_script
+    assert "Open the Studio UI after the server reports that it is running." in start_script
+    deleted_adapter_terms = ("/live/", "/live-chat/", "live_chat.html", "live-chat.js", "live-chat.css")
+    for source in (start_script, hot_reload_script):
+        for term in deleted_adapter_terms:
+            assert term not in source
+
+
 def test_memoriacore_launchers_write_process_logs_under_runtime_log():
     root = BRIDGE_ROOT.parent
     scripts = [

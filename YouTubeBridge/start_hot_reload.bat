@@ -21,7 +21,7 @@ if exist "%PARENT_VENV%" (
 
 echo ============================================
 echo   YouTubeBridge API hot reload
-echo   URL: http://127.0.0.1:%API_PORT%/live/
+echo   URL: http://127.0.0.1:%API_PORT%/studio/
 echo ============================================
 echo.
 
