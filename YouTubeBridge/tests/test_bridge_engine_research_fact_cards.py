@@ -127,6 +127,79 @@ def test_research_gate_request_sync_does_not_search_when_research_disabled():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_manager_reuses_completed_audience_research_context_after_module_extraction():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt-main", "display_name": "YouTube Main", "api_key": "key", "enabled": True})
+        storage.upsert_session({"session_id": "live-a", "connector_id": "yt-main", "video_id": "video-a", "live_chat_id": "chat-a", "research_enabled": True})
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "最新一話聲優陣容",
+            "body": "summary: 官方公告列出主役聲優與配角聲優。",
+            "source_type": "research_gate",
+            "tags": ["research_gate"],
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        query = "最新一話的聲優陣容有什麼看點？"
+        query_key = manager._audience_query_key("live-a", query)
+        manager._update_audience_research_job("live-a", query_key, {
+            "status": "completed_with_results",
+            "in_progress": False,
+            "query": query,
+            "pack_id": pack["id"],
+            "entry_id": entry["id"],
+        })
+
+        context, status = manager._completed_audience_research_context("live-a", query)
+
+        assert status == "completed_with_results"
+        assert "官方公告列出主役聲優" in context
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_manager_live_query_context_delegates_to_research_gate_module(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        session = {
+            "session_id": "live-a",
+            "director_guidance": "",
+            "research_enabled": True,
+        }
+        event = {
+            "message_text": "最新一話的聲優陣容有什麼看點？",
+            "author_display_name": "觀眾A",
+        }
+
+        def fake_live_query_context_for_events(**kwargs):
+            assert kwargs["session"] is session
+            assert kwargs["events"] == [event]
+            assert kwargs["lines"] == ["- 觀眾A: 最新一話的聲優陣容有什麼看點？"]
+            return "MODULE_CONTEXT", {"research_status": "module_used"}
+
+        monkeypatch.setattr(
+            manager._research_gate,
+            "live_query_context_for_events",
+            fake_live_query_context_for_events,
+            raising=False,
+        )
+
+        context, resolution = manager._live_query_context_for_events(
+            session,
+            [event],
+            ["- 觀眾A: 最新一話的聲優陣容有什麼看點？"],
+        )
+
+        assert context == "MODULE_CONTEXT"
+        assert resolution == {"research_status": "module_used"}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_audience_question_queues_research_gate_without_blocking_injection(monkeypatch):
     tmp_dir = _tmp_dir()
     try:

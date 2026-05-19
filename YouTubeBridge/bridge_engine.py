@@ -1077,85 +1077,38 @@ class YouTubeBridgeManager(
         events: list[dict[str, Any]],
         lines: list[str],
     ) -> tuple[str, dict[str, Any]]:
-        session_id = str(session.get("session_id") or "")
-        query_intent = self._audience_query_intent_from_events(events)
-        query_text = str(query_intent.get("sanitized_query") or "").strip()
-        resolution: dict[str, Any] = {
-            "query": query_text,
-            "query_intent": query_intent,
-            "local_answerable": False,
-            "local_entry_count": 0,
-            "local_rejected_by_topic_count": 0,
-            "local_top_similarity": None,
-            "research_status": "not_needed" if not query_text else "not_attempted",
-            "research_error": "",
-        }
-        base_query = "\n".join([*lines, str(session.get("director_guidance") or "")])
-        if not query_text:
-            context = self._topic_pack_sequence_context_for_session(
+        return self._research_gate.live_query_context_for_events(
+            session=session,
+            events=events,
+            lines=lines,
+            audience_query_intent_from_events=self._audience_query_intent_from_events,
+            topic_pack_sequence_context_for_session=lambda session_id, base_query: self._topic_pack_sequence_context_for_session(
                 session_id,
                 base_query,
                 usage_source="external_context",
-            )
-            return context, resolution
-
-        entries, search_status = self._topic_pack_entries_for_query(
-            session_id,
-            query_text,
-            limit=6,
-            min_score=AUDIENCE_QUERY_FACT_CARD_MIN_SCORE,
-            allow_fallback=False,
-        )
-        resolution["local_entry_count"] = len(entries)
-        resolution["local_top_similarity"] = search_status.get("top_similarity")
-        query_terms = self._audience_query_topic_terms(query_text)
-        topic_matched_entries = entries
-        if query_terms:
-            topic_matched_entries = [
-                entry for entry in entries
-                if self._topic_pack_entry_matches_query_terms(entry, query_terms)
-            ]
-            resolution["local_rejected_by_topic_count"] = max(0, len(entries) - len(topic_matched_entries))
-        if self._topic_pack_entries_can_answer(topic_matched_entries, query_text=query_text):
-            resolution["local_answerable"] = True
-            resolution["research_status"] = "not_needed"
-            context_entries = self._topic_graph_context_entries_for_hits(
+            ),
+            topic_pack_entries_for_query=lambda session_id, query_text: self._topic_pack_entries_for_query(
                 session_id,
-                topic_matched_entries[:1],
+                query_text,
+                limit=6,
+                min_score=AUDIENCE_QUERY_FACT_CARD_MIN_SCORE,
+                allow_fallback=False,
+            ),
+            audience_query_topic_terms=self._audience_query_topic_terms,
+            topic_pack_entry_matches_query_terms=self._topic_pack_entry_matches_query_terms,
+            topic_pack_entries_can_answer=lambda entries, query_text: self._topic_pack_entries_can_answer(
+                entries,
+                query_text=query_text,
+            ),
+            topic_graph_context_entries_for_hits=lambda session_id, entries, query_text: self._topic_graph_context_entries_for_hits(
+                session_id,
+                entries,
                 query_text,
                 "external_context",
                 max_entries=4,
-            )
-            return self._topic_pack_context_text(context_entries), resolution
-
-        if not session.get("research_enabled"):
-            resolution["research_status"] = "disabled"
-            return "", resolution
-        if not query_intent.get("needs_external_search") or not query_intent.get("safe_search_allowed"):
-            resolution["research_status"] = "not_allowed"
-            return "", resolution
-
-        completed_context, completed_status = self._completed_audience_research_context(session_id, query_text)
-        if completed_context:
-            resolution["research_status"] = completed_status or "completed"
-            return completed_context, resolution
-
-        worker = self._ensure_audience_research_worker(
-            session,
-            query_text,
-            pack_id=self._first_session_topic_pack_id(session_id),
+            ),
+            ensure_audience_worker=self._ensure_audience_research_worker,
         )
-        resolution["research_status"] = str(worker.get("status") or "queued")
-        if worker.get("error"):
-            resolution["research_error"] = str(worker.get("error") or "")[:300]
-        if resolution["research_status"] in {"queued", "running"}:
-            resolution["fallback_reason"] = "research_incomplete"
-            return (
-                "觀眾查詢資料狀態：相關查證仍在背景處理；"
-                "本輪只能根據已知直播脈絡安全回應，不得宣稱已查到最新資料或具體排名。",
-                resolution,
-            )
-        return "", resolution
 
     @staticmethod
     def _topic_pack_entries_can_answer(entries: list[dict[str, Any]], *, query_text: str = "") -> bool:

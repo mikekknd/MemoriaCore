@@ -141,6 +141,86 @@ class ResearchGateModule:
         self._record_topic_pack_usage(session_id, [entry], query_text, "external_context")
         return self._topic_pack_context_text([entry]), status
 
+    def live_query_context_for_events(
+        self,
+        *,
+        session: dict[str, Any],
+        events: list[dict[str, Any]],
+        lines: list[str],
+        audience_query_intent_from_events: Callable[[list[dict[str, Any]]], dict[str, Any]],
+        topic_pack_sequence_context_for_session: Callable[[str, str], str],
+        topic_pack_entries_for_query: Callable[[str, str], tuple[list[dict[str, Any]], dict[str, Any]]],
+        audience_query_topic_terms: Callable[[str], list[str]],
+        topic_pack_entry_matches_query_terms: Callable[[dict[str, Any], list[str]], bool],
+        topic_pack_entries_can_answer: Callable[[list[dict[str, Any]], str], bool],
+        topic_graph_context_entries_for_hits: Callable[[str, list[dict[str, Any]], str], list[dict[str, Any]]],
+        ensure_audience_worker: Callable[..., dict[str, Any]] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        session_id = str(session.get("session_id") or "")
+        query_intent = audience_query_intent_from_events(events)
+        query_text = str(query_intent.get("sanitized_query") or "").strip()
+        resolution: dict[str, Any] = {
+            "query": query_text,
+            "query_intent": query_intent,
+            "local_answerable": False,
+            "local_entry_count": 0,
+            "local_rejected_by_topic_count": 0,
+            "local_top_similarity": None,
+            "research_status": "not_needed" if not query_text else "not_attempted",
+            "research_error": "",
+        }
+        base_query = "\n".join([*lines, str(session.get("director_guidance") or "")])
+        if not query_text:
+            context = topic_pack_sequence_context_for_session(session_id, base_query)
+            return context, resolution
+
+        entries, search_status = topic_pack_entries_for_query(session_id, query_text)
+        resolution["local_entry_count"] = len(entries)
+        resolution["local_top_similarity"] = search_status.get("top_similarity")
+        query_terms = audience_query_topic_terms(query_text)
+        topic_matched_entries = entries
+        if query_terms:
+            topic_matched_entries = [
+                entry for entry in entries
+                if topic_pack_entry_matches_query_terms(entry, query_terms)
+            ]
+            resolution["local_rejected_by_topic_count"] = max(0, len(entries) - len(topic_matched_entries))
+        if topic_pack_entries_can_answer(topic_matched_entries, query_text):
+            resolution["local_answerable"] = True
+            resolution["research_status"] = "not_needed"
+            context_entries = topic_graph_context_entries_for_hits(session_id, topic_matched_entries[:1], query_text)
+            return self._topic_pack_context_text(context_entries), resolution
+
+        if not session.get("research_enabled"):
+            resolution["research_status"] = "disabled"
+            return "", resolution
+        if not query_intent.get("needs_external_search") or not query_intent.get("safe_search_allowed"):
+            resolution["research_status"] = "not_allowed"
+            return "", resolution
+
+        completed_context, completed_status = self.completed_context(session_id, query_text)
+        if completed_context:
+            resolution["research_status"] = completed_status or "completed"
+            return completed_context, resolution
+
+        ensure_worker = ensure_audience_worker or self.ensure_audience_worker
+        worker = ensure_worker(
+            session,
+            query_text,
+            pack_id=self.first_session_topic_pack_id(session_id),
+        )
+        resolution["research_status"] = str(worker.get("status") or "queued")
+        if worker.get("error"):
+            resolution["research_error"] = str(worker.get("error") or "")[:300]
+        if resolution["research_status"] in {"queued", "running"}:
+            resolution["fallback_reason"] = "research_incomplete"
+            return (
+                "觀眾查詢資料狀態：相關查證仍在背景處理；"
+                "本輪只能根據已知直播脈絡安全回應，不得宣稱已查到最新資料或具體排名。",
+                resolution,
+            )
+        return "", resolution
+
     @staticmethod
     def audience_query_key(session_id: str, query_text: str) -> str:
         return uuid.uuid5(uuid.NAMESPACE_URL, f"youtube-live:{session_id}:{query_text}").hex
