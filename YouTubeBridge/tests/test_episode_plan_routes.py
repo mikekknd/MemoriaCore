@@ -62,17 +62,6 @@ def _control_ui_source() -> str:
     return "\n".join(parts)
 
 
-def _live_chat_source() -> str:
-    static_root = Path(server_module.STATIC_ROOT)
-    ui_root = static_root / "ui"
-    parts = [(static_root / "live_chat.html").read_text(encoding="utf-8")]
-    for name in ("live-chat.css", "live-chat.js"):
-        path = ui_root / name
-        if path.exists():
-            parts.append(path.read_text(encoding="utf-8"))
-    return "\n".join(parts)
-
-
 def _assert_launcher_uses_runtime_log_dir(source: str, legacy_runtime_prefix: str) -> None:
     assert r"runtime\log" in source
     assert ".foreground.log" in source or (".out.log" in source and ".err.log" in source)

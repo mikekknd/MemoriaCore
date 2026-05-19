@@ -1126,6 +1126,20 @@ def test_studio_presentation_tts_events_and_lifecycle_are_wired():
     assert "skipCurrentPresentation()" in skip_handler
 
 
+def test_studio_is_the_only_browser_presentation_player_surface():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    static_root = Path(server_module.STATIC_ROOT)
+    ui_root = static_root / "ui"
+
+    assert "function resetPresentationPlayer(" in studio_js
+    assert "function playPresentationItem(" in studio_js
+    assert "async function ackPresentationItem(item)" in studio_js
+    assert "async function skipCurrentPresentation()" in studio_js
+    assert 'if (payload.type === "presentation_item_ready" && payload.item) {' in studio_js
+    assert not (static_root / "live_chat.html").exists()
+    assert not (ui_root / "live-chat.js").exists()
+
+
 def test_studio_route_is_loopback_only():
     from server_security import LOOPBACK_ONLY_PATHS
 
