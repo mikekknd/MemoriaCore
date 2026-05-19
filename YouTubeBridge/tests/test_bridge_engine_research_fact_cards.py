@@ -34,6 +34,52 @@ from bridge_engine_test_support import (
 )
 
 
+def test_research_gate_module_can_be_constructed_with_manager_adapters():
+    from research_gate import ResearchGateModule, TavilyResearchSearchAdapter
+
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+
+        module = ResearchGateModule(
+            storage=storage,
+            runtime_lookup=lambda session_id: manager._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id)),
+            topic_pack_context_text=manager._topic_pack_context_text,
+            record_topic_pack_usage=manager._record_topic_pack_usage,
+            index_topic_pack_entry=manager.index_topic_pack_entry,
+            search_adapter=TavilyResearchSearchAdapter(),
+        )
+
+        assert module.storage is storage
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_research_gate_request_sync_is_side_effect_free_shell():
+    from research_gate import ResearchGateModule
+
+    class NoSideEffectStorage:
+        def __getattr__(self, name):
+            raise AssertionError(f"storage method called: {name}")
+
+    class NoSideEffectSearchAdapter:
+        def search(self, query: str):
+            raise AssertionError("search adapter should not be called")
+
+    module = ResearchGateModule(
+        storage=NoSideEffectStorage(),
+        runtime_lookup=lambda session_id: LiveRuntime(session_id=session_id),
+        topic_pack_context_text=lambda entries: "",
+        record_topic_pack_usage=lambda session_id, entries, source, reason: None,
+        index_topic_pack_entry=lambda entry_id: None,
+        search_adapter=NoSideEffectSearchAdapter(),
+    )
+
+    with pytest.raises(NotImplementedError, match="implemented in Task 2"):
+        module.request_sync("live-a", "最新一話聲優陣容")
+
+
 def test_audience_question_queues_research_gate_without_blocking_injection(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
