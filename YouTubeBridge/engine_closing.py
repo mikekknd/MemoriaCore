@@ -1497,7 +1497,15 @@ class ClosingManagerMixin:
                 reason="closing_super_chat_prefetch_invalid_interaction",
             )
             return None
-        if str(current.get("status") or "") != "prefetched":
+        policy = prepared_turn_policy_for_interaction(current)
+        if policy is None or not policy.dedicated_closing:
+            await self._cancel_closing_super_chat_prefetch(
+                runtime,
+                prefetch_context,
+                reason="closing_super_chat_prefetch_invalid_policy",
+            )
+            return None
+        if str(current.get("status") or "") != policy.expected_status:
             await self._cancel_closing_super_chat_prefetch(
                 runtime,
                 prefetch_context,
@@ -1524,7 +1532,7 @@ class ClosingManagerMixin:
         if hasattr(self.storage, "update_interaction_if_status"):
             started = self.storage.update_interaction_if_status(
                 job_id,
-                "prefetched",
+                policy.expected_status,
                 status="presenting",
             )
         else:
@@ -1547,7 +1555,7 @@ class ClosingManagerMixin:
         await self.present_prepared_stream_results(
             runtime.session_id,
             prepared_results,
-            source="director",
+            source=policy.presentation_source,
             interaction_job_id=job_id,
         )
         if callback_task is not None:
@@ -1589,7 +1597,7 @@ class ClosingManagerMixin:
             "type": "interaction_completed",
             "interaction": updated,
             "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
-            "source": "director",
+            "source": policy.presentation_source,
         })
         await self._broadcast(runtime.session_id, {
             "type": "director_injected",
@@ -1677,7 +1685,15 @@ class ClosingManagerMixin:
                 reason="final_closing_prefetch_invalid_interaction",
             )
             return None
-        if str(current.get("status") or "") != "prefetched":
+        policy = prepared_turn_policy_for_interaction(current)
+        if policy is None or not policy.dedicated_closing:
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason="final_closing_prefetch_invalid_policy",
+            )
+            return None
+        if str(current.get("status") or "") != policy.expected_status:
             await self._cancel_final_closing_prefetch(
                 runtime,
                 prefetch_context,
@@ -1704,7 +1720,7 @@ class ClosingManagerMixin:
         if hasattr(self.storage, "update_interaction_if_status"):
             started = self.storage.update_interaction_if_status(
                 job_id,
-                "prefetched",
+                policy.expected_status,
                 status="presenting",
             )
         else:
@@ -1720,7 +1736,7 @@ class ClosingManagerMixin:
         await self.present_prepared_stream_results(
             runtime.session_id,
             prepared_results,
-            source="director",
+            source=policy.presentation_source,
             interaction_job_id=job_id,
         )
         visible_results = self._visible_prepared_results(session, prepared_results)
@@ -1760,7 +1776,7 @@ class ClosingManagerMixin:
             "type": "interaction_completed",
             "interaction": updated,
             "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
-            "source": "director",
+            "source": policy.presentation_source,
         })
         await self._broadcast(runtime.session_id, {
             "type": "director_injected",
