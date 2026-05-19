@@ -1912,7 +1912,7 @@ class DirectorRuntimeManagerMixin:
                 continue
             metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
             decision = metadata.get("decision") if isinstance(metadata.get("decision"), dict) else {}
-            if str(decision.get("action") or "") == "final_closing":
+            if str(decision.get("action") or "") in {"final_closing", "closing_super_chat_thanks"}:
                 continue
             cancel_event = runtime.cancel_events.get(job_id)
             if cancel_event:
@@ -2560,7 +2560,8 @@ class DirectorRuntimeManagerMixin:
         audience_visible_events: list[dict[str, Any]] = []
         if is_audience_reply_action and audience_event_ids:
             try:
-                audience_context, audience_summary = self.build_external_context(
+                audience_context, audience_summary = await asyncio.to_thread(
+                    self.build_external_context,
                     session_id,
                     event_ids=audience_event_ids,
                     max_events=len(audience_event_ids),

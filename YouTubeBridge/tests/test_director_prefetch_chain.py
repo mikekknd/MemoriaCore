@@ -1357,6 +1357,101 @@ async def test_prefetch_chain_yields_presentation_ready_before_next_context_work
 
 
 @pytest.mark.asyncio
+async def test_audience_context_build_does_not_block_event_loop_during_prefetch(monkeypatch):
+    tmp_dir = _tmp_dir()
+    task = None
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "display_name": "Plan Live",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a", "analyst-b"],
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "presentation_ack_timeout_seconds": 5,
+            "status": "running",
+        })
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "yt-1",
+            "message_type": "textMessageEvent",
+            "author_display_name": "觀眾",
+            "message_text": "這季怪獸8號討論度很高是因為聲優嗎？",
+            "status": "active",
+            "safety_label": "clean",
+            "safety_status": "completed",
+            "safe_message_text": "這季怪獸8號討論度很高是因為聲優嗎？",
+        })
+
+        class FastClient:
+            def chat_stream_sync(self, **kwargs):
+                kwargs["on_result"]({
+                    "message_id": "msg-audience",
+                    "reply": "觀眾留言回應。",
+                    "character_id": "host-a",
+                    "character_name": "主持A",
+                })
+                return {"session_id": "mem-a", "message_id": 1, "reply": "觀眾留言回應。"}
+
+        manager = YouTubeBridgeManager(
+            storage,
+            youtube_client=LiveEndedClient(),
+            memoria_client_factory=FastClient,
+        )
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+
+        def slow_build_external_context(*_args, **_kwargs):
+            time.sleep(0.12)
+            return (
+                {
+                    "context_text": "觀眾: 這季怪獸8號討論度很高是因為聲優嗎？",
+                    "visible_events": [],
+                },
+                {"event_ids": [event["id"]], "event_count": 1},
+            )
+
+        monkeypatch.setattr(manager, "build_external_context", slow_build_external_context)
+        decision = {
+            "action": "reply_chat_batch",
+            "prompt": "觀眾: 這季怪獸8號討論度很高是因為聲優嗎？",
+            "episode_plan": {
+                "mode": "audience_gap_prepare",
+                "interrupt_state": {"source_event_ids": [event["id"]]},
+            },
+        }
+        task = asyncio.create_task(
+            manager._send_director_turn(
+                storage.get_session("live-a") or {},
+                {"metadata": {}},
+                decision,
+                prepare_only=True,
+                prepare_source="director_audience_prepare",
+            )
+        )
+        marker_started = time.perf_counter()
+        await asyncio.sleep(0.02)
+        marker_elapsed = time.perf_counter() - marker_started
+
+        assert marker_elapsed < 0.08
+        await asyncio.wait_for(task, timeout=1)
+    finally:
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_director_loop_waits_for_in_flight_prefetch_before_next_plan_turn(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
