@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from api.session_manager import SessionState, session_manager
-from core.chat_orchestrator.dataclasses import GroupRouterResult, SharedToolState
+from core.chat_orchestrator.dataclasses import GroupRouterResult, OrchestrationResult, SharedToolState
 
 
 @pytest.mark.asyncio
@@ -80,6 +80,62 @@ async def test_group_loop_passes_target_character_id(monkeypatch):
     assert turns[-1]["is_final"] is True
     assert session.messages[-2]["character_id"] == "char-a"
     assert session.messages[-1]["character_id"] == "char-b"
+
+
+@pytest.mark.asyncio
+async def test_group_loop_discards_invalid_structured_generation_without_context(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-discard",
+        messages=[{"role": "user", "content": "請收尾"}],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions["sid-discard"] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    def fake_group_router(*args, **kwargs):
+        return GroupRouterResult(True, "char-a", "first", "new_speaker_add", "group_discussion")
+
+    def fake_orchestration(*args, **kwargs):
+        result = OrchestrationResult(
+            reply_text="",
+            retrieval_context={"generation_discarded": True},
+            generation_discarded=True,
+            discard_reason="retry_still_invalid_json",
+        )
+        return result
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="請收尾",
+            user_prefs={"group_chat_max_bot_turns": 2, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert turns == []
+    assert session.messages == [{"role": "user", "content": "請收尾"}]
 
 
 @pytest.mark.asyncio

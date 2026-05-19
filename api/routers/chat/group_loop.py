@@ -218,6 +218,21 @@ async def run_group_chat_loop(
         if _group_loop_cancel_requested(cancel_event):
             break
 
+        if getattr(result, "generation_discarded", False):
+            from core.system_logger import SystemLogger
+            SystemLogger.log_error(
+                "GroupChatLoop",
+                "structured output retry failed; discarded assistant turn without writing context.",
+                details={
+                    "session_id": session.session_id,
+                    "turn_index": turn_index,
+                    "character_id": target_character_id,
+                    "discard_reason": getattr(result, "discard_reason", ""),
+                    "retrieval_context": getattr(result, "retrieval_context", {}),
+                },
+            )
+            break
+
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
             inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
             tool_state_export = _unpack_orchestration_result(result)

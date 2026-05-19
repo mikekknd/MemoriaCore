@@ -1,5 +1,6 @@
 from core.llm_gateway import ILLMProvider, LLMRouter, OllamaProvider
 import json
+import pytest
 
 
 class _FakeProvider(ILLMProvider):
@@ -250,6 +251,55 @@ def test_non_json_retry_regenerates_when_structured_response_is_truncated(monkey
     assert captured["details"]["retry_reason"] == "truncated_or_malformed_json"
     assert "原封不動" not in captured["details"]["retry_warning"]
     assert truncated_response not in provider.messages_per_call[1][-1]["content"]
+
+
+def test_non_json_retry_discards_when_regenerated_response_is_still_invalid(monkeypatch):
+    captured_errors = []
+
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_prompt",
+        lambda *args, **kwargs: "call-structured",
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_llm_response",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.llm_gateway.SystemLogger.log_error",
+        lambda context, message, details=None: captured_errors.append(
+            {"context": context, "message": message, "details": details or {}}
+        ),
+    )
+
+    class AlwaysBrokenProvider(_FakeProvider):
+        def generate_chat(self, *args, **kwargs):
+            self.calls += 1
+            self.messages_per_call.append(args[0])
+            self.max_tokens_per_call.append(kwargs.get("max_tokens"))
+            return '{\n  "internal_thought": "又停在半截', []
+
+    provider = AlwaysBrokenProvider()
+    router = LLMRouter()
+    router.register_route("chat", provider, "fake-model")
+
+    with pytest.raises(RuntimeError, match="structured output retry failed"):
+        router.generate(
+            "chat",
+            [
+                {"role": "system", "content": "請輸出 chat schema JSON"},
+                {"role": "user", "content": "接續直播"},
+            ],
+            response_format={"type": "object"},
+            log_context={"session_mode": "group", "group_name": "YouTube Live"},
+        )
+
+    assert provider.calls == 2
+    assert len(captured_errors) == 2
+    assert captured_errors[-1]["context"] == "LLMRouter/chat"
+    assert captured_errors[-1]["details"]["retry_strategy"] == "discard"
+    assert captured_errors[-1]["details"]["retry_reason"] == "retry_still_invalid_json"
+    assert captured_errors[-1]["details"]["llm_call_id"] == "call-structured"
+    assert captured_errors[-1]["details"]["second_response_preview"].startswith("{")
 
 
 def test_generate_preserves_separate_group_assistant_history_before_provider(monkeypatch):

@@ -488,6 +488,26 @@ def run_dual_layer_orchestration(
             persona_result = _parse_persona_response(raw_res, log_context=log_context)
 
     reply_text = persona_result.reply_text
+    if persona_result.generation_discarded:
+        retrieval_ctx["generation_discarded"] = True
+        retrieval_ctx["generation_discard_reason"] = persona_result.discard_reason
+        retrieval_ctx["perf_timing"] = main_timer.summary()
+        return OrchestrationResult(
+            reply_text="",
+            new_entities=[],
+            retrieval_context=retrieval_ctx,
+            topic_shifted=False,
+            pipeline_data=None,
+            inner_thought=None,
+            status_metrics=None,
+            tone=None,
+            speech=None,
+            thinking_speech=thinking_speech,
+            cited_uids=[],
+            tool_state_export=SharedToolState(executed=False),
+            generation_discarded=True,
+            discard_reason=persona_result.discard_reason,
+        )
     if tool_context:
         from tools.minimax_image import append_generated_images, strip_generated_images
         if reusing_shared_tool_state:

@@ -10,6 +10,7 @@ import re
 
 from core.system_logger import SystemLogger
 from core.chat_orchestrator.dataclasses import ToolContext, PersonaResult
+from core.llm_gateway import StructuredOutputValidationError
 from core.xml_prompt import format_tool_context_xml
 from core.opening_penalty import OpeningPenaltyPlan, get_opening_penalty_manager
 
@@ -117,6 +118,23 @@ def run_persona_agent(
             log_context=log_context,
             logit_bias=(opening_penalty_plan.logit_bias if opening_penalty_plan else None),
         )
+    except StructuredOutputValidationError as e:
+        SystemLogger.log_error(
+            "PersonaAgent",
+            f"structured output discarded: {e}",
+            details={
+                "generation_discarded": True,
+                "discard_reason": e.retry_reason,
+                "llm_call_id": e.llm_call_id,
+                "response_preview": e.response_preview,
+                "log_context": log_context or {},
+            },
+        )
+        return None, PersonaResult(
+            reply_text="",
+            generation_discarded=True,
+            discard_reason=e.retry_reason,
+        )
     except Exception as e:
         SystemLogger.log_error("PersonaAgent", f"{type(e).__name__}: {e}")
         return None, PersonaResult(reply_text=f"生成錯誤: {e}")
@@ -145,6 +163,23 @@ def run_persona_agent(
                     response_format=chat_schema,
                     log_context=log_context,
                     logit_bias=opening_penalty_plan.logit_bias,
+                )
+            except StructuredOutputValidationError as e:
+                SystemLogger.log_error(
+                    "PersonaAgent",
+                    f"opening penalty retry structured output discarded: {e}",
+                    details={
+                        "generation_discarded": True,
+                        "discard_reason": e.retry_reason,
+                        "llm_call_id": e.llm_call_id,
+                        "response_preview": e.response_preview,
+                        "log_context": log_context or {},
+                    },
+                )
+                return None, PersonaResult(
+                    reply_text="",
+                    generation_discarded=True,
+                    discard_reason=e.retry_reason,
                 )
             except Exception as e:
                 SystemLogger.log_error("PersonaAgent", f"Opening penalty retry failed: {type(e).__name__}: {e}")

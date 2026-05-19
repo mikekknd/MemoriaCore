@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from core.chat_orchestrator.persona_agent import run_persona_agent, _parse_persona_response
 from core.chat_orchestrator.dataclasses import ToolContext, PersonaResult
+from core.llm_gateway import StructuredOutputValidationError
 from core.opening_penalty import OpeningPenaltyPlan
 
 
@@ -141,6 +142,39 @@ class TestRunPersonaAgent:
         assert raw is None
         assert err is not None
         assert "錯誤" in err.reply_text or "生成錯誤" in err.reply_text
+
+    def test_structured_output_retry_failure_returns_discarded_result(
+        self, sample_api_messages, sample_chat_schema
+    ):
+        """結構化輸出重試後仍失敗時，Persona Agent 應要求丟棄本次生成。"""
+        from tests.mock_llm import MockRouter
+        router = MockRouter()
+
+        def raise_structured_error(*args, **kwargs):
+            raise StructuredOutputValidationError(
+                "structured output retry failed",
+                task_key="chat",
+                model="fake-model",
+                retry_reason="retry_still_invalid_json",
+                response_preview='{\n  "internal_thought": "半截',
+                llm_call_id="call-1",
+            )
+
+        router.generate = raise_structured_error
+
+        raw, err = run_persona_agent(
+            user_prompt="你好",
+            api_messages=sample_api_messages,
+            tool_context=None,
+            chat_schema=sample_chat_schema,
+            router=router,
+        )
+
+        assert raw is None
+        assert err is not None
+        assert err.reply_text == ""
+        assert err.generation_discarded is True
+        assert err.discard_reason == "retry_still_invalid_json"
 
     def test_schema_passed_to_router(self, mock_router, sample_api_messages, sample_chat_schema):
         """chat_schema 應被傳入 router.generate"""

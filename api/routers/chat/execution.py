@@ -132,6 +132,19 @@ async def persist_single_turn_result(
 ) -> dict:
     from api.routers import chat_rest
 
+    if getattr(result, "generation_discarded", False):
+        from core.system_logger import SystemLogger
+        SystemLogger.log_error(
+            "ChatExecution",
+            "structured output retry failed; discarded assistant turn without writing context.",
+            details={
+                "session_id": prepared.session_id,
+                "discard_reason": getattr(result, "discard_reason", ""),
+                "retrieval_context": getattr(result, "retrieval_context", {}),
+            },
+        )
+        raise RuntimeError("structured generation discarded after invalid retry")
+
     reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
         inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
         _tool_state_export = chat_rest._unpack_orchestration_result(result)

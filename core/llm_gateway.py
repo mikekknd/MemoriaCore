@@ -16,6 +16,27 @@ _tokenizer = None
 CHAT_JSON_MAX_TOKENS = 768
 YOUTUBE_SAFETY_JSON_MAX_TOKENS = 4096
 
+
+class StructuredOutputValidationError(RuntimeError):
+    """結構化輸出重試後仍無法解析，呼叫端應丟棄本次生成。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        task_key: str,
+        model: str,
+        retry_reason: str,
+        response_preview: str,
+        llm_call_id: str | None = None,
+    ):
+        super().__init__(message)
+        self.task_key = task_key
+        self.model = model
+        self.retry_reason = retry_reason
+        self.response_preview = response_preview
+        self.llm_call_id = llm_call_id
+
 def get_bge_m3_onnx_instance():
     global _onnx_session, _tokenizer
     if _onnx_session is None:
@@ -811,6 +832,33 @@ class LLMRouter:
                 max_tokens=max_tokens,
                 logit_bias=logit_bias,
             )
+            normalized_retry_json = self._normalize_json_response_text(response_text)
+            if normalized_retry_json is not None:
+                response_text = normalized_retry_json
+            else:
+                SystemLogger.log_error(
+                    f"LLMRouter/{task_key}",
+                    "結構化輸出重試後仍不是合法 JSON，丟棄本次生成。",
+                    details={
+                        "model": route["model"],
+                        "temperature": max(temperature * 0.5, 0.1),
+                        "retry_strategy": "discard",
+                        "retry_reason": "retry_still_invalid_json",
+                        "previous_retry_reason": retry_reason,
+                        "max_tokens": max_tokens,
+                        "llm_call_id": llm_call_id,
+                        "second_response_preview": response_text[:1000],
+                        "log_context": log_context or {},
+                    },
+                )
+                raise StructuredOutputValidationError(
+                    "structured output retry failed: regenerated response is still invalid JSON",
+                    task_key=task_key,
+                    model=route["model"],
+                    retry_reason="retry_still_invalid_json",
+                    response_preview=response_text[:1000],
+                    llm_call_id=llm_call_id,
+                )
 
         SystemLogger.log_llm_response(task_key, route["model"], response_text, llm_call_id=llm_call_id)
         return response_text

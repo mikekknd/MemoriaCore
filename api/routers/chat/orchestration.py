@@ -36,6 +36,7 @@ from core.chat_orchestrator.group_context import (
 from core.chat_orchestrator.group_followup import inject_group_followup_instruction
 from core.chat_orchestrator.live_persona import resolve_live_persona_prompt
 from core.chat_orchestrator.persona_agent import _sanitize_group_reply
+from core.llm_gateway import StructuredOutputValidationError
 from core.opening_penalty import get_opening_penalty_manager
 from api.routers.chat.timer import StepTimer
 from api.routers.chat.pipeline import PipelineContext
@@ -405,6 +406,38 @@ def _run_chat_orchestration(
                         logit_bias=opening_penalty_plan.logit_bias,
                     )
 
+        except StructuredOutputValidationError as e:
+            from core.system_logger import SystemLogger
+            SystemLogger.log_error(
+                "ChatGeneration",
+                f"structured output discarded: {e}",
+                details={
+                    "generation_discarded": True,
+                    "discard_reason": e.retry_reason,
+                    "llm_call_id": e.llm_call_id,
+                    "response_preview": e.response_preview,
+                    "log_context": log_context or {},
+                },
+            )
+            retrieval_ctx["generation_discarded"] = True
+            retrieval_ctx["generation_discard_reason"] = e.retry_reason
+            retrieval_ctx["perf_timing"] = timer.summary()
+            return OrchestrationResult(
+                reply_text="",
+                new_entities=[],
+                retrieval_context=retrieval_ctx,
+                topic_shifted=False,
+                pipeline_data=None,
+                inner_thought=None,
+                status_metrics=None,
+                tone=None,
+                speech=None,
+                thinking_speech="",
+                cited_uids=[],
+                tool_state_export=SharedToolState(executed=False),
+                generation_discarded=True,
+                discard_reason=e.retry_reason,
+            )
         except Exception as e:
             from core.system_logger import SystemLogger
             SystemLogger.log_error("ChatGeneration", f"{type(e).__name__}: {e}")
