@@ -1032,7 +1032,7 @@ async def test_closing_helper_cancels_audience_gap_prepare_task():
 
 
 @pytest.mark.asyncio
-async def test_audience_gap_prepare_does_not_become_prepared_after_session_closing(monkeypatch):
+async def test_audience_gap_prepare_becomes_drainable_after_session_enters_closing(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
         storage = BridgeStorage(tmp_dir / "youtube_live.db")
@@ -1071,7 +1071,7 @@ async def test_audience_gap_prepare_does_not_become_prepared_after_session_closi
             def chat_stream_sync(self, **kwargs):
                 kwargs["on_result"]({
                     "message_id": "prepare-msg-1",
-                    "reply": "這句不應變成 ready prepared output。",
+                    "reply": "這句應該保留給 closing drain 播完。",
                     "character_id": "host-a",
                     "character_name": "主持A",
                 })
@@ -1079,7 +1079,7 @@ async def test_audience_gap_prepare_does_not_become_prepared_after_session_closi
                 return {
                     "session_id": "audience-sidecar",
                     "message_id": "prepare-result-1",
-                    "reply": "這句不應變成 ready prepared output。",
+                    "reply": "這句應該保留給 closing drain 播完。",
                 }
 
         monkeypatch.setattr("bridge_engine.MemoriaClient", ClosingDuringPrepareClient)
@@ -1096,10 +1096,11 @@ async def test_audience_gap_prepare_does_not_become_prepared_after_session_closi
         )
 
         interaction = storage.get_interaction(result["interaction"]["job_id"])
-        assert interaction["status"] == "interrupted"
-        assert interaction["metadata"]["prepare_ready"] is False
-        assert interaction["metadata"]["audience_prepare_cancelled_reason"] == "session_not_running"
-        assert storage.list_presentation_items("live-a", statuses={"ready"}, limit=10) == []
+        ready_items = storage.list_presentation_items("live-a", statuses={"ready"}, limit=10)
+        assert interaction["status"] == "prepared"
+        assert interaction["metadata"]["prepare_ready"] is True
+        assert interaction["metadata"].get("audience_prepare_cancelled_reason", "") == ""
+        assert [item["text"] for item in ready_items] == ["這句應該保留給 closing drain 播完。"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2521,6 +2522,201 @@ def test_ready_prepared_items_for_session_reports_ready_prefetch_and_audience_wi
         ]
         assert storage.get_presentation_item(audience_item["item_id"])["status"] == "ready"
         assert storage.get_presentation_item(prefetch_item["item_id"])["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_audience_gap_after_consumed_planned_prefetch_starts_next_planned_prefetch(monkeypatch):
+    with temp_storage() as storage:
+        manager = YouTubeBridgeManager(storage)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        session = {
+            "session_id": "live-a",
+            "presentation_enabled": True,
+            "target_memoria_session_id": "mem-main",
+        }
+        state = {
+            "session_id": "live-a",
+            "status": "running",
+            "metadata": {},
+        }
+
+        planned_interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 40,
+            "status": "prefetched",
+            "memoria_session_id": "mem-main",
+            "metadata": {
+                "decision": {
+                    "action": "continue_topic",
+                    "episode_plan": {"mode": "planned_turn", "turn_id": "seg_01_turn_01"},
+                },
+                "base_state": state,
+                "prefetch_ready": True,
+            },
+        })
+        planned_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": planned_interaction["job_id"],
+            "message_id": "planned-msg:0",
+            "character_id": "host-a",
+            "character_name": "主持A",
+            "sequence_index": 0,
+            "text": "planned line",
+            "status": "ready",
+            "audio_path": "planned.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        audience_event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "audience-after-consumed-planned-prefetch",
+            "message_type": "textMessageEvent",
+            "author_display_name": "觀眾A",
+            "message_text": "這邊可以補充嗎？",
+            "safe_message_text": "這邊可以補充嗎？",
+            "safety_status": "completed",
+            "safety_label": "clean",
+            "status": "active",
+        })
+        audience_decision = {
+            "action": "reply_chat_batch",
+            "episode_plan": {
+                "mode": "audience_gap_prepare",
+                "interrupt_state": {"source_event_ids": [audience_event["id"]]},
+            },
+        }
+        audience_interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "prepared",
+            "event_ids": [audience_event["id"]],
+            "memoria_session_id": "mem-main",
+            "metadata": {
+                "decision": audience_decision,
+                "base_state": state,
+                "main_memoria_session_id": "mem-main",
+                "prepare_ready": True,
+            },
+        })
+        storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": audience_interaction["job_id"],
+            "message_id": "audience-msg:0",
+            "character_id": "cohost-a",
+            "character_name": "可可",
+            "sequence_index": 0,
+            "text": "audience bridge line",
+            "status": "ready",
+            "audio_path": "audience.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+
+        order: list[str] = []
+
+        async def fake_present(session_id, prepared_results, **kwargs):
+            source = kwargs.get("source")
+            if source == "director_audience_gap":
+                order.append("present:director_audience_gap:presenting")
+                await asyncio.sleep(0)
+            else:
+                order.append(f"present:{source}")
+            for prepared in prepared_results:
+                for item in prepared.get("items") or []:
+                    storage.update_presentation_item(
+                        item["item_id"],
+                        status="played",
+                        acked_at="2026-05-20T00:00:00",
+                    )
+            if source == "director_audience_gap":
+                order.append("present:director_audience_gap:completed")
+            return []
+
+        async def fake_prefetch(_runtime, prefetch_session, prefetch_state, decision, *, allow_audience):
+            order.append("prefetch:next-planned")
+            assert allow_audience is False
+            assert prefetch_session["target_memoria_session_id"] == "mem-main"
+            assert decision["action"] == "reply_chat_batch"
+            assert decision["episode_plan"]["mode"] == "audience_gap_prepare"
+            next_interaction = storage.create_interaction({
+                "session_id": "live-a",
+                "source": "director_prefetch",
+                "priority": 40,
+                "status": "prefetched",
+                "memoria_session_id": "mem-main",
+                "metadata": {
+                    "decision": {
+                        "action": "continue_topic",
+                        "episode_plan": {"mode": "planned_turn", "turn_id": "seg_01_turn_02"},
+                    },
+                    "base_state": prefetch_state,
+                    "prefetch_ready": True,
+                },
+            })
+            return {
+                "interaction": next_interaction,
+                "memoria_result": {"session_id": "mem-main", "reply": "next planned"},
+                "prepared_results": [],
+                "decision": next_interaction["metadata"]["decision"],
+                "base_state": prefetch_state,
+            }
+
+        async def fake_update_state(_runtime, _session, current_state, _consumed, **_kwargs):
+            return current_state
+
+        async def fake_consume_prefetched(_runtime, _session, prefetched):
+            await manager.present_prepared_stream_results(
+                _runtime.session_id,
+                prefetched["prepared_results"],
+                source="director",
+                interaction_job_id=prefetched["interaction"]["job_id"],
+            )
+            storage.update_interaction(
+                prefetched["interaction"]["job_id"],
+                status="completed",
+                metadata={"prefetch_consumed": True},
+            )
+            return {
+                **prefetched,
+                "interaction": storage.get_interaction(prefetched["interaction"]["job_id"]),
+                "discarded": False,
+                "after_memoria_task": None,
+            }
+
+        monkeypatch.setattr(manager, "present_prepared_stream_results", fake_present)
+        monkeypatch.setattr(manager, "_prefetch_next_presentation_turn", fake_prefetch)
+        monkeypatch.setattr(manager, "_consume_prefetched_episode_turn", fake_consume_prefetched)
+        monkeypatch.setattr(manager, "_update_director_state_after_prefetch_consumed", fake_update_state)
+
+        async def first_prefetch_task():
+            return {
+                "interaction": planned_interaction,
+                "memoria_result": {"session_id": "mem-main", "reply": "planned line"},
+                "prepared_results": [{
+                    "message": {"message_id": "planned-msg", "content": "planned line"},
+                    "items": [planned_item],
+                }],
+                "decision": planned_interaction["metadata"]["decision"],
+                "base_state": state,
+            }
+
+        await manager._after_main_turn_sequence(
+            runtime,
+            session,
+            state,
+            asyncio.create_task(first_prefetch_task()),
+        )
+
+        assert order == [
+            "present:director",
+            "present:director_audience_gap:presenting",
+            "prefetch:next-planned",
+            "present:director_audience_gap:completed",
+        ]
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,12 @@ from typing import Any
 
 from bridge_contracts import SAFETY_CLASSIFIER_BATCH_LIMIT
 from bridge_runtime import LiveRuntime
-from turn_pipeline import prepared_turn_policy_for_interaction
+from turn_pipeline import (
+    PreparedTurnConsumeOptions,
+    PreparedTurnPayload,
+    consume_prepared_turn,
+    prepared_turn_policy_for_interaction,
+)
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -53,6 +58,127 @@ def _presentation_audio_duration_seconds(item: dict[str, Any]) -> float | None:
                 return None
             return wav.getnframes() / float(frame_rate)
     except (OSError, EOFError, wave.Error):
+        return None
+
+
+class _ClosingPreparedTurnAdapter:
+    def __init__(
+        self,
+        manager: Any,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        extra_completion_metadata: dict[str, Any] | None = None,
+        before_present_callback=None,
+    ) -> None:
+        self.manager = manager
+        self.runtime = runtime
+        self.session = session
+        self.extra_completion_metadata = dict(extra_completion_metadata or {})
+        self.before_present_callback = before_present_callback
+        self.callback_task: asyncio.Task | None = None
+
+    def get_interaction(self, job_id: str) -> dict[str, Any] | None:
+        return self.manager.storage.get_interaction(job_id)
+
+    def prepared_results_for_interaction(
+        self,
+        interaction: dict[str, Any],
+        *,
+        require_complete: bool,
+    ) -> list[dict[str, Any]]:
+        return self.manager._prepared_results_for_interaction(
+            self.runtime.session_id,
+            interaction,
+            require_complete=require_complete,
+        )
+
+    def claim_interaction(self, job_id: str, expected_status: str) -> dict[str, Any] | None:
+        if hasattr(self.manager.storage, "update_interaction_if_status"):
+            return self.manager.storage.update_interaction_if_status(
+                job_id,
+                expected_status,
+                status="presenting",
+            )
+        return self.manager.storage.update_interaction(job_id, status="presenting")
+
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        await self.manager._broadcast(self.runtime.session_id, payload)
+
+    async def present_prepared_results(
+        self,
+        prepared_results: list[dict[str, Any]],
+        *,
+        source: str,
+        interaction_job_id: str,
+    ) -> Any:
+        if self.before_present_callback is not None and self.callback_task is None:
+            maybe_callback_result = self.before_present_callback()
+            if asyncio.iscoroutine(maybe_callback_result):
+                self.callback_task = asyncio.create_task(maybe_callback_result)
+        return await self.manager.present_prepared_stream_results(
+            self.runtime.session_id,
+            prepared_results,
+            source=source,
+            interaction_job_id=interaction_job_id,
+        )
+
+    def visible_prepared_results(
+        self,
+        prepared_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return self.manager._visible_prepared_results(self.session, prepared_results)
+
+    def prepared_result_item_count(self, prepared_results: list[dict[str, Any]]) -> int:
+        return self.manager._prepared_result_item_count(prepared_results)
+
+    def mark_audience_events_injected(self, interaction: dict[str, Any]) -> int:
+        event_ids: list[int] = []
+        for raw_event_id in interaction.get("event_ids") or []:
+            try:
+                event_id = int(raw_event_id)
+            except (TypeError, ValueError):
+                continue
+            if event_id > 0:
+                event_ids.append(event_id)
+        return (
+            self.manager.storage.mark_events_injected(self.runtime.session_id, event_ids)
+            if event_ids
+            else 0
+        )
+
+    def complete_interaction(
+        self,
+        job_id: str,
+        *,
+        reply_text: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if self.extra_completion_metadata:
+            metadata = {**metadata, **self.extra_completion_metadata}
+        if hasattr(self.manager.storage, "update_interaction_if_status"):
+            return self.manager.storage.update_interaction_if_status(
+                job_id,
+                "presenting",
+                status="completed",
+                reply_text=reply_text,
+                completed_at=datetime.now().isoformat(),
+                metadata=metadata,
+            )
+        return self.manager.storage.update_interaction(
+            job_id,
+            status="completed",
+            reply_text=reply_text,
+            completed_at=datetime.now().isoformat(),
+            metadata=metadata,
+        )
+
+    async def schedule_followup_prefetch(
+        self,
+        payload: PreparedTurnPayload,
+        *,
+        allow_audience: bool,
+    ) -> None:
         return None
 
 
@@ -324,6 +450,18 @@ class ClosingManagerMixin:
                 return
             await before_ready_presentation_callback(list(ready_items))
 
+        last_notified_visible_signature = self._latest_visible_target_signature(runtime.session_id)
+
+        async def notify_visible_target_change() -> None:
+            nonlocal last_notified_visible_signature
+            if not callable(before_ready_presentation_callback):
+                return
+            current_signature = self._latest_visible_target_signature(runtime.session_id)
+            if not current_signature or current_signature == last_notified_visible_signature:
+                return
+            last_notified_visible_signature = current_signature
+            await before_ready_presentation_callback([])
+
         deadline = datetime.now() + timedelta(seconds=max(0.01, timeout_seconds))
         deferred_ready_item_ids: set[str] = set()
         while True:
@@ -338,6 +476,7 @@ class ClosingManagerMixin:
                 ready_prepared, blocked_ready = classify_ready_items(raw_ready_prepared)
                 active_blocker = active_generation(active, ready_prepared)
                 presenting = pending_presentation_items()
+            await notify_visible_target_change()
             if blocked_ready and not ready_prepared and not active_blocker and not presenting:
                 return blocked_result(
                     blocked_ready,
@@ -415,70 +554,87 @@ class ClosingManagerMixin:
             )
             if not prepared_results:
                 continue
-            if hasattr(self.storage, "update_interaction_if_status"):
-                started = self.storage.update_interaction_if_status(
-                    job_id,
-                    expected_status,
-                    status="presenting",
-                )
-            else:
-                started = self.storage.update_interaction(job_id, status="presenting")
-            if not started or str(started.get("status") or "") != "presenting":
-                continue
-            is_audience_prepare = policy.mark_audience_events_injected
-            presentation_source = policy.presentation_source
-            await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
-            await self.present_prepared_stream_results(
-                runtime.session_id,
-                prepared_results,
-                source=presentation_source,
-                interaction_job_id=job_id,
+            metadata = interaction.get("metadata") if isinstance(interaction.get("metadata"), dict) else {}
+            payload = PreparedTurnPayload(
+                interaction=interaction,
+                memoria_result={
+                    "session_id": interaction.get("memoria_session_id") or session.get("target_memoria_session_id") or "",
+                    "reply": interaction.get("reply_text") or "",
+                },
+                prepared_results=prepared_results,
+                decision=metadata.get("decision") if isinstance(metadata.get("decision"), dict) else {},
+                base_state=metadata.get("base_state") if isinstance(metadata.get("base_state"), dict) else {},
             )
-            visible_results = self._visible_prepared_results(session, prepared_results)
-            played_item_count = self._prepared_result_item_count(visible_results)
-            marked_injected = 0
-            if is_audience_prepare and played_item_count > 0:
-                event_ids: list[int] = []
-                for raw_event_id in started.get("event_ids") or []:
-                    try:
-                        event_id = int(raw_event_id)
-                    except (TypeError, ValueError):
-                        continue
-                    if event_id > 0:
-                        event_ids.append(event_id)
-                marked_injected = self.storage.mark_events_injected(runtime.session_id, event_ids) if event_ids else 0
-            interaction_metadata = {
-                "prefetch_consumed": not is_audience_prepare,
-                "audience_prepare_consumed": is_audience_prepare,
-                "prefetch_consumed_during_closing_drain": True,
-                "played_item_count": played_item_count,
-                "marked_injected": marked_injected,
-            }
-            if hasattr(self.storage, "update_interaction_if_status"):
-                completed = self.storage.update_interaction_if_status(
+            is_audience_prepare = policy.mark_audience_events_injected
+            adapter = _ClosingPreparedTurnAdapter(
+                self,
+                runtime,
+                session,
+                extra_completion_metadata={"prefetch_consumed_during_closing_drain": True},
+            )
+            consume_result = await consume_prepared_turn(
+                adapter,
+                payload,
+                PreparedTurnConsumeOptions(
+                    session_id=runtime.session_id,
+                    allow_followup_prefetch=False,
+                    expected_dedicated_closing=False,
+                    require_complete_prepared_items=True,
+                    completion_metadata_key=(
+                        "audience_prepare_consumed"
+                        if is_audience_prepare
+                        else "prefetch_consumed"
+                    ),
+                    started_event_type="interaction_started",
+                    completed_event_type="interaction_completed",
+                ),
+            )
+            if not consume_result.consumed:
+                await self._cleanup_closing_drain_consume_failure(
+                    runtime,
                     job_id,
-                    "presenting",
-                    status="completed",
-                    reply_text=str(started.get("reply_text") or ""),
-                    completed_at=datetime.now().isoformat(),
-                    metadata=interaction_metadata,
+                    reason=f"closing_drain_consume_{consume_result.reason}",
                 )
-            else:
-                completed = self.storage.update_interaction(
-                    job_id,
-                    status="completed",
-                    reply_text=str(started.get("reply_text") or ""),
-                    completed_at=datetime.now().isoformat(),
-                    metadata=interaction_metadata,
-                )
+                continue
+            completed = consume_result.interaction
             await self._broadcast(runtime.session_id, {
-                "type": "interaction_completed",
-                "interaction": completed or started,
-                "memoria_session_id": session.get("target_memoria_session_id") or "",
-                "source": presentation_source,
+                "type": "director_injected",
+                "interaction": completed,
+                "memoria_session_id": payload.memoria_result.get("session_id") or session.get("target_memoria_session_id") or "",
             })
-            return completed or started
+            return {
+                "status": str((completed or {}).get("status") or "completed"),
+                "interaction": completed,
+                "prefetch_consumed": True,
+            }
         return None
+
+    async def _cleanup_closing_drain_consume_failure(
+        self,
+        runtime: LiveRuntime,
+        job_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        if not job_id:
+            return
+        current = self.storage.get_interaction(job_id)
+        if not current:
+            return
+        if str(current.get("status") or "") != "presenting":
+            return
+        self._cancel_prepared_items_for_interaction(runtime.session_id, job_id, reason)
+        self.storage.update_interaction(
+            job_id,
+            status="interrupted",
+            reason=reason,
+            completed_at=datetime.now().isoformat(),
+            interrupted_at=datetime.now().isoformat(),
+            metadata={
+                "closing_drain_consume_cancelled": True,
+                "closing_drain_consume_cancel_reason": reason,
+            },
+        )
 
     @staticmethod
     def _is_main_phase_event(event: dict[str, Any]) -> bool:
@@ -703,9 +859,14 @@ class ClosingManagerMixin:
         no_sc_closing_result: dict[str, Any] | None = None
         pending_super_chats_before_drain: list[dict[str, Any]] = []
         pending_safety_before_drain = False
+        safety_closing_task: asyncio.Task | None = None
         if session.get("auto_sc_thanks_on_finalize", True):
             pending_super_chats_before_drain = self._list_unhandled_super_chats_for_closing(runtime.session_id, batch_size=500)
             pending_safety_before_drain = bool(self.storage.list_events_pending_safety(runtime.session_id, limit=1))
+            if pending_safety_before_drain:
+                safety_closing_task = asyncio.create_task(
+                    self._resolve_pending_safety_for_closing(runtime.session_id)
+                )
             if not pending_super_chats_before_drain:
                 no_sc_closing_result = {
                     "status": "skipped",
@@ -714,23 +875,31 @@ class ClosingManagerMixin:
                 }
                 if not self._has_active_closing_drain_audience_prepare(runtime.session_id):
                     drain_visible_target = self._final_closing_pending_drain_visible_target(runtime.session_id)
-                    final_closing_prefetch = self._start_final_closing_prefetch(
-                        runtime,
-                        self.storage.get_session(runtime.session_id) or session,
-                        closing_super_chat_thanks=no_sc_closing_result,
-                        visible_reply_target=drain_visible_target,
-                        reason="no_unhandled_super_chats_before_drain",
-                    )
+                    if not self._should_defer_closing_prefetch_until_drain_target(
+                        runtime.session_id,
+                        drain_visible_target,
+                    ):
+                        final_closing_prefetch = self._start_final_closing_prefetch(
+                            runtime,
+                            self.storage.get_session(runtime.session_id) or session,
+                            closing_super_chat_thanks=no_sc_closing_result,
+                            visible_reply_target=drain_visible_target,
+                            reason="no_unhandled_super_chats_before_drain",
+                        )
             elif (
                 self._presentation_enabled(session)
-                and not pending_safety_before_drain
+                and not self._events_have_pending_safety(pending_super_chats_before_drain)
                 and not self._has_active_closing_drain_audience_prepare(runtime.session_id)
             ):
+                pending_drain_visible_target = self._final_closing_pending_drain_visible_target(runtime.session_id)
                 drain_visible_target = (
-                    self._final_closing_pending_drain_visible_target(runtime.session_id)
+                    pending_drain_visible_target
                     or self._latest_visible_message_for_session(runtime.session_id)
                 )
-                if drain_visible_target:
+                if drain_visible_target and not self._should_defer_closing_prefetch_until_drain_target(
+                    runtime.session_id,
+                    pending_drain_visible_target,
+                ):
                     closing_super_chat_prefetch = self._start_closing_super_chat_prefetch(
                         runtime,
                         self.storage.get_session(runtime.session_id) or session,
@@ -744,7 +913,7 @@ class ClosingManagerMixin:
             await asyncio.sleep(0)
 
         async def refresh_final_closing_prefetch_for_drain_target(_ready_items: list[dict[str, Any]]) -> None:
-            nonlocal final_closing_prefetch, closing_super_chat_prefetch
+            nonlocal final_closing_prefetch, closing_super_chat_prefetch, pending_super_chats_before_drain
             visible_target = (
                 self._final_closing_pending_drain_visible_target(runtime.session_id)
                 or self._latest_visible_message_for_session(runtime.session_id)
@@ -775,19 +944,31 @@ class ClosingManagerMixin:
                 return
             if (
                 pending_super_chats_before_drain
-                and not pending_safety_before_drain
                 and self._presentation_enabled(session)
             ):
+                pending_super_chats_before_drain = self._list_unhandled_super_chats_for_closing(
+                    runtime.session_id,
+                    batch_size=500,
+                )
+                if self._events_have_pending_safety(pending_super_chats_before_drain):
+                    return
                 if (
                     isinstance(closing_super_chat_prefetch, dict)
                     and closing_super_chat_prefetch.get("visible_target_signature") == target_signature
                 ):
-                    return
-                await self._cancel_closing_super_chat_prefetch(
-                    runtime,
-                    closing_super_chat_prefetch,
-                    reason="closing_super_chat_prefetch_superseded_by_drain_target",
-                )
+                    if not self._prefetch_context_task_failed(closing_super_chat_prefetch):
+                        return
+                    await self._cancel_closing_super_chat_prefetch(
+                        runtime,
+                        closing_super_chat_prefetch,
+                        reason="closing_super_chat_prefetch_failed_during_drain",
+                    )
+                else:
+                    await self._cancel_closing_super_chat_prefetch(
+                        runtime,
+                        closing_super_chat_prefetch,
+                        reason="closing_super_chat_prefetch_superseded_by_drain_target",
+                    )
                 closing_super_chat_prefetch = self._start_closing_super_chat_prefetch(
                     runtime,
                     self.storage.get_session(runtime.session_id) or session,
@@ -810,7 +991,19 @@ class ClosingManagerMixin:
         await self._cancel_runtime_task(runtime, "audience_gap_prepare_task")
         await self._cancel_runtime_task(runtime, "director_task")
         await self._cancel_runtime_task(runtime, "director_kickoff_task")
-        safety_closing_result = await self._resolve_pending_safety_for_closing(runtime.session_id)
+        if safety_closing_task is not None:
+            try:
+                safety_closing_result = await safety_closing_task
+            except Exception as exc:
+                logger.warning(
+                    "closing safety resolution failed session_id=%s error=%s",
+                    runtime.session_id,
+                    exc,
+                    exc_info=True,
+                )
+                safety_closing_result = {"status": "failed", "error": str(exc)[:300]}
+        else:
+            safety_closing_result = await self._resolve_pending_safety_for_closing(runtime.session_id)
         if session.get("auto_sc_thanks_on_finalize", True):
             pending_super_chats = self._list_unhandled_super_chats_for_closing(runtime.session_id, batch_size=500)
             if not pending_super_chats:
@@ -1083,6 +1276,27 @@ class ClosingManagerMixin:
                 return True
         return False
 
+    def _should_defer_closing_prefetch_until_drain_target(
+        self,
+        session_id: str,
+        pending_drain_visible_target: dict[str, Any] | None,
+    ) -> bool:
+        if pending_drain_visible_target:
+            return False
+        active = self.storage.get_active_interaction(session_id)
+        if not isinstance(active, dict):
+            return False
+        if (
+            self._is_final_closing_prefetch_interaction(active)
+            or self._is_closing_super_chat_prefetch_interaction(active)
+        ):
+            return False
+        policy = prepared_turn_policy_for_interaction(active)
+        if policy is not None and policy.dedicated_closing:
+            return False
+        status = str(active.get("status") or "")
+        return status not in {"completed", "interrupted", "discarded", "failed"}
+
     def _final_closing_visible_target_signature(self, target: dict[str, Any] | None) -> str:
         if not isinstance(target, dict):
             return ""
@@ -1168,6 +1382,19 @@ class ClosingManagerMixin:
                 ])
             )
         return "\n".join(parts)
+
+    @staticmethod
+    def _events_have_pending_safety(events: list[dict[str, Any]]) -> bool:
+        pending_statuses = {"", "pending", "failed_retryable"}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if not str(event.get("message_text") or "").strip():
+                continue
+            safety_status = str(event.get("safety_status") or "").strip()
+            if safety_status in pending_statuses:
+                return True
+        return False
 
     def _build_closing_super_chat_thanks_decision(
         self,
@@ -1334,6 +1561,22 @@ class ClosingManagerMixin:
             "reason": reason,
         }
 
+    @staticmethod
+    def _prefetch_context_task_failed(prefetch_context: dict[str, Any] | None) -> bool:
+        if not isinstance(prefetch_context, dict):
+            return False
+        task = prefetch_context.get("task")
+        if task is None or not hasattr(task, "done"):
+            return False
+        if not task.done():
+            return False
+        if task.cancelled():
+            return True
+        try:
+            return task.exception() is not None
+        except (asyncio.CancelledError, asyncio.InvalidStateError):
+            return True
+
     def _final_closing_prefetch_payload_job_id(self, payload: dict[str, Any] | None) -> str:
         if not isinstance(payload, dict):
             return ""
@@ -1497,21 +1740,6 @@ class ClosingManagerMixin:
                 reason="closing_super_chat_prefetch_invalid_interaction",
             )
             return None
-        policy = prepared_turn_policy_for_interaction(current)
-        if policy is None or not policy.dedicated_closing:
-            await self._cancel_closing_super_chat_prefetch(
-                runtime,
-                prefetch_context,
-                reason="closing_super_chat_prefetch_invalid_policy",
-            )
-            return None
-        if str(current.get("status") or "") != policy.expected_status:
-            await self._cancel_closing_super_chat_prefetch(
-                runtime,
-                prefetch_context,
-                reason="closing_super_chat_prefetch_not_prefetched",
-            )
-            return None
         prepared_results = [
             prepared for prepared in prefetch.get("prepared_results") or []
             if isinstance(prepared, dict)
@@ -1529,76 +1757,77 @@ class ClosingManagerMixin:
                 reason="closing_super_chat_prefetch_missing_prepared_items",
             )
             return None
-        if hasattr(self.storage, "update_interaction_if_status"):
-            started = self.storage.update_interaction_if_status(
-                job_id,
-                policy.expected_status,
-                status="presenting",
-            )
-        else:
-            started = self.storage.update_interaction(job_id, status="presenting")
-        if not started or str(started.get("status") or "") != "presenting":
-            await self._cancel_closing_super_chat_prefetch(
-                runtime,
-                prefetch_context,
-                reason="closing_super_chat_prefetch_presenting_claim_failed",
-            )
-            return None
-        await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
-
-        callback_task = None
         result = prefetch.get("memoria_result") if isinstance(prefetch.get("memoria_result"), dict) else {}
-        if after_memoria_callback:
-            maybe_callback_result = after_memoria_callback(result)
-            if asyncio.iscoroutine(maybe_callback_result):
-                callback_task = asyncio.create_task(maybe_callback_result)
-        await self.present_prepared_stream_results(
-            runtime.session_id,
-            prepared_results,
-            source=policy.presentation_source,
-            interaction_job_id=job_id,
+        current_metadata = current.get("metadata") if isinstance(current.get("metadata"), dict) else {}
+        payload = PreparedTurnPayload(
+            interaction=current,
+            memoria_result=result,
+            prepared_results=prepared_results,
+            decision=prefetch.get("decision")
+            if isinstance(prefetch.get("decision"), dict)
+            else current_metadata.get("decision")
+            if isinstance(current_metadata.get("decision"), dict)
+            else {},
+            base_state=prefetch.get("base_state")
+            if isinstance(prefetch.get("base_state"), dict)
+            else current_metadata.get("base_state")
+            if isinstance(current_metadata.get("base_state"), dict)
+            else {},
         )
-        if callback_task is not None:
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await callback_task
-        visible_results = self._visible_prepared_results(session, prepared_results)
-        played_item_count = self._prepared_result_item_count(visible_results)
-        if hasattr(self.storage, "update_interaction_if_status"):
-            updated = self.storage.update_interaction_if_status(
-                job_id,
-                "presenting",
-                status="completed",
-                reply_text=str(result.get("reply") or started.get("reply_text") or ""),
-                completed_at=datetime.now().isoformat(),
-                metadata={
-                    "closing_super_chat_prefetch_consumed": True,
-                    "played_item_count": played_item_count,
-                },
+
+        def start_after_memoria_callback():
+            if not after_memoria_callback:
+                return None
+            return after_memoria_callback(result)
+
+        adapter = _ClosingPreparedTurnAdapter(
+            self,
+            runtime,
+            session,
+            before_present_callback=start_after_memoria_callback,
+        )
+        try:
+            consume_result = await consume_prepared_turn(
+                adapter,
+                payload,
+                PreparedTurnConsumeOptions(
+                    session_id=runtime.session_id,
+                    allow_followup_prefetch=False,
+                    expected_dedicated_closing=True,
+                    require_complete_prepared_items=True,
+                    completion_metadata_key="closing_super_chat_prefetch_consumed",
+                    started_event_type="interaction_started",
+                    completed_event_type="interaction_completed",
+                ),
             )
-        else:
-            updated = self.storage.update_interaction(
+        except Exception as exc:
+            logger.warning(
+                "closing super chat prefetch consume failed session_id=%s job_id=%s error=%s",
+                runtime.session_id,
                 job_id,
-                status="completed",
-                reply_text=str(result.get("reply") or started.get("reply_text") or ""),
-                completed_at=datetime.now().isoformat(),
-                metadata={
-                    "closing_super_chat_prefetch_consumed": True,
-                    "played_item_count": played_item_count,
-                },
+                exc,
+                exc_info=True,
             )
-        if not updated or str(updated.get("status") or "") != "completed":
+            if adapter.callback_task is not None:
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await adapter.callback_task
             await self._cancel_closing_super_chat_prefetch(
                 runtime,
                 prefetch_context,
-                reason="closing_super_chat_prefetch_complete_failed",
+                reason="closing_super_chat_prefetch_consume_failed",
             )
             return None
-        await self._broadcast(runtime.session_id, {
-            "type": "interaction_completed",
-            "interaction": updated,
-            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
-            "source": policy.presentation_source,
-        })
+        if not consume_result.consumed:
+            await self._cancel_closing_super_chat_prefetch(
+                runtime,
+                prefetch_context,
+                reason=f"closing_super_chat_prefetch_{consume_result.reason}",
+            )
+            return None
+        if adapter.callback_task is not None:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await adapter.callback_task
+        updated = consume_result.interaction
         await self._broadcast(runtime.session_id, {
             "type": "director_injected",
             "interaction": updated,
@@ -1685,21 +1914,6 @@ class ClosingManagerMixin:
                 reason="final_closing_prefetch_invalid_interaction",
             )
             return None
-        policy = prepared_turn_policy_for_interaction(current)
-        if policy is None or not policy.dedicated_closing:
-            await self._cancel_final_closing_prefetch(
-                runtime,
-                prefetch_context,
-                reason="final_closing_prefetch_invalid_policy",
-            )
-            return None
-        if str(current.get("status") or "") != policy.expected_status:
-            await self._cancel_final_closing_prefetch(
-                runtime,
-                prefetch_context,
-                reason="final_closing_prefetch_not_prefetched",
-            )
-            return None
         prepared_results = [
             prepared for prepared in prefetch.get("prepared_results") or []
             if isinstance(prepared, dict)
@@ -1717,67 +1931,60 @@ class ClosingManagerMixin:
                 reason="final_closing_prefetch_missing_prepared_items",
             )
             return None
-        if hasattr(self.storage, "update_interaction_if_status"):
-            started = self.storage.update_interaction_if_status(
-                job_id,
-                policy.expected_status,
-                status="presenting",
-            )
-        else:
-            started = self.storage.update_interaction(job_id, status="presenting")
-        if not started or str(started.get("status") or "") != "presenting":
-            await self._cancel_final_closing_prefetch(
-                runtime,
-                prefetch_context,
-                reason="final_closing_prefetch_presenting_claim_failed",
-            )
-            return None
-        await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
-        await self.present_prepared_stream_results(
-            runtime.session_id,
-            prepared_results,
-            source=policy.presentation_source,
-            interaction_job_id=job_id,
-        )
-        visible_results = self._visible_prepared_results(session, prepared_results)
-        played_item_count = self._prepared_result_item_count(visible_results)
         result = prefetch.get("memoria_result") if isinstance(prefetch.get("memoria_result"), dict) else {}
-        if hasattr(self.storage, "update_interaction_if_status"):
-            updated = self.storage.update_interaction_if_status(
-                job_id,
-                "presenting",
-                status="completed",
-                reply_text=str(result.get("reply") or started.get("reply_text") or ""),
-                completed_at=datetime.now().isoformat(),
-                metadata={
-                    "final_closing_prefetch_consumed": True,
-                    "played_item_count": played_item_count,
-                },
+        current_metadata = current.get("metadata") if isinstance(current.get("metadata"), dict) else {}
+        payload = PreparedTurnPayload(
+            interaction=current,
+            memoria_result=result,
+            prepared_results=prepared_results,
+            decision=prefetch.get("decision")
+            if isinstance(prefetch.get("decision"), dict)
+            else current_metadata.get("decision")
+            if isinstance(current_metadata.get("decision"), dict)
+            else {},
+            base_state=prefetch.get("base_state")
+            if isinstance(prefetch.get("base_state"), dict)
+            else current_metadata.get("base_state")
+            if isinstance(current_metadata.get("base_state"), dict)
+            else {},
+        )
+        adapter = _ClosingPreparedTurnAdapter(self, runtime, session)
+        try:
+            consume_result = await consume_prepared_turn(
+                adapter,
+                payload,
+                PreparedTurnConsumeOptions(
+                    session_id=runtime.session_id,
+                    allow_followup_prefetch=False,
+                    expected_dedicated_closing=True,
+                    require_complete_prepared_items=True,
+                    completion_metadata_key="final_closing_prefetch_consumed",
+                    started_event_type="interaction_started",
+                    completed_event_type="interaction_completed",
+                ),
             )
-        else:
-            updated = self.storage.update_interaction(
+        except Exception as exc:
+            logger.warning(
+                "final closing prefetch consume failed session_id=%s job_id=%s error=%s",
+                runtime.session_id,
                 job_id,
-                status="completed",
-                reply_text=str(result.get("reply") or started.get("reply_text") or ""),
-                completed_at=datetime.now().isoformat(),
-                metadata={
-                    "final_closing_prefetch_consumed": True,
-                    "played_item_count": played_item_count,
-                },
+                exc,
+                exc_info=True,
             )
-        if not updated or str(updated.get("status") or "") != "completed":
             await self._cancel_final_closing_prefetch(
                 runtime,
                 prefetch_context,
-                reason="final_closing_prefetch_complete_failed",
+                reason="final_closing_prefetch_consume_failed",
             )
             return None
-        await self._broadcast(runtime.session_id, {
-            "type": "interaction_completed",
-            "interaction": updated,
-            "memoria_session_id": result.get("session_id") or session.get("target_memoria_session_id") or "",
-            "source": policy.presentation_source,
-        })
+        if not consume_result.consumed:
+            await self._cancel_final_closing_prefetch(
+                runtime,
+                prefetch_context,
+                reason=f"final_closing_prefetch_{consume_result.reason}",
+            )
+            return None
+        updated = consume_result.interaction
         await self._broadcast(runtime.session_id, {
             "type": "director_injected",
             "interaction": updated,

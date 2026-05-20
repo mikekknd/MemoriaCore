@@ -307,7 +307,7 @@ class InjectionManagerMixin:
         if session_status in blocked_statuses:
             return False
         if runtime_status == "closing" or session_status == "closing":
-            return bool(runtime.graceful_closing_requested)
+            return True
         return True
 
     async def _run_director_audience_gap_prepare_background(

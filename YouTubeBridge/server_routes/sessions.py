@@ -593,6 +593,9 @@ def _mark_phase_finalize_closing(session_id: str) -> None:
     if runtime is not None:
         runtime.status = "closing"
         runtime.running = True
+        runtime.graceful_closing_requested = True
+        runtime.accepting_audience_events = False
+        runtime.stop_after_current_turn = True
 
 
 def _mark_phase_finalize_failed(session_id: str) -> None:

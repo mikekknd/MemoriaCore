@@ -459,7 +459,14 @@ async def test_finalize_phase_background_marks_closing_and_dedupes_running_task(
     class FakeManager:
         def __init__(self):
             self._runtimes = {
-                "session-a": SimpleNamespace(session_id="session-a", running=True, status="running")
+                "session-a": SimpleNamespace(
+                    session_id="session-a",
+                    running=True,
+                    status="running",
+                    graceful_closing_requested=False,
+                    accepting_audience_events=True,
+                    stop_after_current_turn=False,
+                )
             }
 
         def get_status(self, session_id: str):
@@ -500,6 +507,12 @@ async def test_finalize_phase_background_marks_closing_and_dedupes_running_task(
     assert first["runtime_status"]["status"] == "closing"
     assert second["runtime_status"]["status"] == "closing"
     assert fake_storage.get_session("session-a")["status"] == "closing"
+    runtime = fake_manager._runtimes["session-a"]
+    assert runtime.running is True
+    assert runtime.status == "closing"
+    assert runtime.graceful_closing_requested is True
+    assert runtime.accepting_audience_events is False
+    assert runtime.stop_after_current_turn is True
     assert calls == [("session-a", "operator")]
 
     release.set()

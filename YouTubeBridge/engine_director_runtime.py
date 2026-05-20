@@ -15,7 +15,12 @@ from typing import Any
 from bridge_runtime import LiveRuntime
 from free_talk_topics import load_free_talk_topic_library
 from memoria_client import GenerationInterrupted
-from turn_pipeline import prepared_turn_policy_for_interaction
+from turn_pipeline import (
+    PreparedTurnConsumeOptions,
+    PreparedTurnPayload,
+    consume_prepared_turn,
+    prepared_turn_followup_skip_reason,
+)
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -32,6 +37,169 @@ def _director_timing_log(event: str, **fields: Any) -> None:
     except Exception:
         message = str(payload)
     logger.warning("DIRECTOR_TIMING %s", message)
+
+
+class _DirectorPreparedTurnAdapter:
+    def __init__(
+        self,
+        manager: Any,
+        runtime: LiveRuntime,
+        session: dict[str, Any],
+        *,
+        followup_allow_audience: bool = False,
+        delay_before_followup: bool = True,
+        extra_completion_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.manager = manager
+        self.runtime = runtime
+        self.session = session
+        self.followup_allow_audience = followup_allow_audience
+        self.delay_before_followup = delay_before_followup
+        self.extra_completion_metadata = dict(extra_completion_metadata or {})
+        self.after_memoria_task: Any = None
+
+    def get_interaction(self, job_id: str) -> dict[str, Any] | None:
+        return self.manager.storage.get_interaction(job_id)
+
+    def prepared_results_for_interaction(
+        self,
+        interaction: dict[str, Any],
+        *,
+        require_complete: bool,
+    ) -> list[dict[str, Any]]:
+        return self.manager._prepared_results_for_interaction(
+            self.runtime.session_id,
+            interaction,
+            require_complete=require_complete,
+        )
+
+    def claim_interaction(self, job_id: str, expected_status: str) -> dict[str, Any] | None:
+        if hasattr(self.manager.storage, "update_interaction_if_status"):
+            return self.manager.storage.update_interaction_if_status(
+                job_id,
+                expected_status,
+                status="presenting",
+            )
+        return self.manager.storage.update_interaction(job_id, status="presenting")
+
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        await self.manager._broadcast(self.runtime.session_id, payload)
+
+    async def present_prepared_results(
+        self,
+        prepared_results: list[dict[str, Any]],
+        *,
+        source: str,
+        interaction_job_id: str,
+    ) -> Any:
+        return await self.manager.present_prepared_stream_results(
+            self.runtime.session_id,
+            prepared_results,
+            source=source,
+            interaction_job_id=interaction_job_id,
+        )
+
+    def visible_prepared_results(
+        self,
+        prepared_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return self.manager._visible_prepared_results(self.session, prepared_results)
+
+    def prepared_result_item_count(self, prepared_results: list[dict[str, Any]]) -> int:
+        return self.manager._prepared_result_item_count(prepared_results)
+
+    def mark_audience_events_injected(self, interaction: dict[str, Any]) -> int:
+        event_ids: list[int] = []
+        for raw_event_id in interaction.get("event_ids") or []:
+            try:
+                event_id = int(raw_event_id)
+            except (TypeError, ValueError):
+                continue
+            if event_id > 0:
+                event_ids.append(event_id)
+        return (
+            self.manager.storage.mark_events_injected(self.runtime.session_id, event_ids)
+            if event_ids
+            else 0
+        )
+
+    def complete_interaction(
+        self,
+        job_id: str,
+        *,
+        reply_text: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if self.extra_completion_metadata:
+            metadata = {**metadata, **self.extra_completion_metadata}
+        if metadata.get("audience_prepare_consumed") is True:
+            metadata = dict(metadata)
+            metadata["audience_gap_presented"] = int(metadata.get("played_item_count") or 0) > 0
+        if hasattr(self.manager.storage, "update_interaction_if_status"):
+            return self.manager.storage.update_interaction_if_status(
+                job_id,
+                "presenting",
+                status="completed",
+                reply_text=reply_text,
+                completed_at=datetime.now().isoformat(),
+                metadata=metadata,
+            )
+        return self.manager.storage.update_interaction(
+            job_id,
+            status="completed",
+            reply_text=reply_text,
+            completed_at=datetime.now().isoformat(),
+            metadata=metadata,
+        )
+
+    async def schedule_followup_prefetch(
+        self,
+        payload: PreparedTurnPayload,
+        *,
+        allow_audience: bool,
+    ) -> Any:
+        if self.after_memoria_task is not None:
+            return self.after_memoria_task
+        metadata = (
+            payload.interaction.get("metadata")
+            if isinstance(payload.interaction.get("metadata"), dict)
+            else {}
+        )
+        chained_session = dict(self.session)
+        main_session_id = str(
+            metadata.get("main_memoria_session_id")
+            or self.session.get("target_memoria_session_id")
+            or ""
+        )
+        if main_session_id:
+            chained_session["target_memoria_session_id"] = main_session_id
+        _director_timing_log(
+            "prefetch_chain_scheduled",
+            session_id=self.runtime.session_id,
+            job_id=payload.interaction.get("job_id"),
+            source=payload.interaction.get("source"),
+        )
+        self.runtime.director_prefetch_in_flight += 1
+
+        async def run_next_prefetch():
+            try:
+                if self.delay_before_followup:
+                    await self.manager._yield_before_presentation_chain_prefetch()
+                return await self.manager._prefetch_next_presentation_turn(
+                    self.runtime,
+                    chained_session,
+                    payload.base_state,
+                    payload.decision,
+                    allow_audience=allow_audience,
+                )
+            finally:
+                self.runtime.director_prefetch_in_flight = max(
+                    0,
+                    self.runtime.director_prefetch_in_flight - 1,
+                )
+
+        self.after_memoria_task = asyncio.create_task(run_next_prefetch())
+        return self.after_memoria_task
 
 
 class DirectorRuntimeManagerMixin:
@@ -1470,14 +1638,9 @@ class DirectorRuntimeManagerMixin:
                 reason="audience_gap_missing_prepared_items",
                 completed_at=datetime.now().isoformat(),
             )
-        started = self.storage.update_interaction(
-            interaction["job_id"],
-            status="presenting",
-        ) or interaction
-        next_prefetch_task = None
         interaction_metadata = (
-            started.get("metadata")
-            if isinstance(started.get("metadata"), dict)
+            interaction.get("metadata")
+            if isinstance(interaction.get("metadata"), dict)
             else {}
         )
         decision = (
@@ -1485,93 +1648,109 @@ class DirectorRuntimeManagerMixin:
             if isinstance(interaction_metadata.get("decision"), dict)
             else {}
         )
-        should_chain_prefetch = (
-            chain_next_prefetch
-            and bool(decision)
-            and bool(state)
-            and runtime.director_prefetch_in_flight <= 0
-            and not runtime.stop_after_current_turn
-            and not runtime.graceful_closing_requested
+        metadata_base_state = (
+            interaction_metadata.get("base_state")
+            if isinstance(interaction_metadata.get("base_state"), dict)
+            else {}
         )
-        if should_chain_prefetch:
-            chained_session = dict(session)
-            main_session_id = str(
-                interaction_metadata.get("main_memoria_session_id")
-                or session.get("target_memoria_session_id")
-                or ""
+        caller_base_state = state if isinstance(state, dict) else {}
+
+        def usable_director_state(candidate: dict[str, Any]) -> dict[str, Any]:
+            if not isinstance(candidate, dict) or not candidate:
+                return {}
+            metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+            status = str(candidate.get("status") or "").strip()
+            if status == "stopped" and not metadata:
+                return {}
+            return candidate
+
+        payload_base_state = usable_director_state(metadata_base_state)
+        base_state_source = "interaction" if payload_base_state else ""
+        if not payload_base_state:
+            payload_base_state = usable_director_state(caller_base_state)
+            base_state_source = "caller" if payload_base_state else ""
+        if not payload_base_state:
+            payload_base_state = usable_director_state(
+                self.storage.get_director_state(runtime.session_id) or {}
             )
-            if main_session_id:
-                chained_session["target_memoria_session_id"] = main_session_id
+            base_state_source = "storage" if payload_base_state else ""
+        skip_reason = prepared_turn_followup_skip_reason(
+            requested=chain_next_prefetch,
+            has_decision=bool(decision),
+            has_base_state=bool(payload_base_state),
+            runtime_stopping=bool(runtime.stop_after_current_turn),
+            graceful_closing=bool(runtime.graceful_closing_requested),
+            prefetch_in_flight=runtime.director_prefetch_in_flight > 0,
+        )
+        if skip_reason and skip_reason != "not_requested":
             _director_timing_log(
-                "prefetch_chain_scheduled",
+                "audience_gap_followup_prefetch_skipped",
                 session_id=runtime.session_id,
                 job_id=interaction.get("job_id"),
-                source="director_audience_prepare",
+                reason=skip_reason,
             )
-            runtime.director_prefetch_in_flight += 1
-
-            async def run_next_prefetch():
-                try:
-                    await self._yield_before_presentation_chain_prefetch()
-                    return await self._prefetch_next_presentation_turn(
-                        runtime,
-                        chained_session,
-                        state,
-                        decision,
-                        allow_audience=False,
-                    )
-                finally:
-                    runtime.director_prefetch_in_flight = max(
-                        0,
-                        runtime.director_prefetch_in_flight - 1,
-                    )
-
-            next_prefetch_task = asyncio.create_task(run_next_prefetch())
-        await self._broadcast(
-            runtime.session_id,
-            {"type": "director_audience_gap_presenting", "interaction": started},
-        )
-        await self.present_prepared_stream_results(
-            runtime.session_id,
-            prepared_results,
-            source="director_audience_gap",
-            interaction_job_id=interaction["job_id"],
-        )
-        visible_results = self._visible_prepared_results(session, prepared_results)
-        played_item_count = self._prepared_result_item_count(visible_results)
-        marked = (
-            self.storage.mark_events_injected(runtime.session_id, event_ids)
-            if played_item_count > 0
-            else 0
-        )
-        completed = self.storage.update_interaction(
-            interaction["job_id"],
-            status="completed",
-            completed_at=datetime.now().isoformat(),
-            metadata={
-                "audience_gap_presented": played_item_count > 0,
-                "marked_injected": marked,
-                "played_item_count": played_item_count,
+        should_chain_prefetch = not skip_reason
+        payload = PreparedTurnPayload(
+            interaction=interaction,
+            memoria_result={
+                "session_id": interaction.get("memoria_session_id") or "",
+                "reply": interaction.get("reply_text") or "",
             },
-        ) or started
+            prepared_results=prepared_results,
+            decision=decision,
+            base_state=payload_base_state,
+        )
+        adapter = _DirectorPreparedTurnAdapter(
+            self,
+            runtime,
+            session,
+            followup_allow_audience=False,
+            delay_before_followup=False,
+            extra_completion_metadata=(
+                {
+                    "base_state": payload_base_state,
+                    "audience_prepare_base_state_source": base_state_source,
+                }
+                if payload_base_state
+                else {}
+            ),
+        )
+        consume_result = await consume_prepared_turn(
+            adapter,
+            payload,
+            PreparedTurnConsumeOptions(
+                session_id=runtime.session_id,
+                allow_followup_prefetch=should_chain_prefetch,
+                followup_allow_audience=False,
+                expected_dedicated_closing=False,
+                completion_metadata_key="audience_prepare_consumed",
+                started_event_type="director_audience_gap_presenting",
+                completed_event_type="director_audience_gap_presented",
+            ),
+        )
+        if not consume_result.consumed:
+            await self._cancel_pending_prefetch_task(adapter.after_memoria_task)
+            _director_timing_log(
+                "audience_gap_present_refused",
+                session_id=runtime.session_id,
+                job_id=interaction.get("job_id"),
+                reason=consume_result.reason,
+            )
+            return None
         latest_state = self.storage.get_director_state(runtime.session_id) or state
         metadata = dict(
             latest_state.get("metadata")
             if isinstance(latest_state.get("metadata"), dict)
             else {}
         )
-        if played_item_count > 0:
+        if consume_result.played_item_count > 0:
             metadata["last_audience_gap_presented_at"] = datetime.now().isoformat()
-        if decision and played_item_count > 0:
+        if decision and consume_result.played_item_count > 0:
             metadata.update(self._episode_metadata_after_turn(session, latest_state or state, decision))
         self.storage.update_director_state(runtime.session_id, status="running", metadata=metadata)
-        await self._broadcast(
-            runtime.session_id,
-            {"type": "director_audience_gap_presented", "interaction": completed},
-        )
-        response = dict(completed)
-        if next_prefetch_task is not None:
-            response["after_memoria_task"] = next_prefetch_task
+        response = dict(consume_result.interaction or interaction)
+        if consume_result.after_memoria_task is not None:
+            response["after_memoria_task"] = consume_result.after_memoria_task
         return response
 
     async def _present_ready_audience_batch_after_turn(
@@ -1579,6 +1758,8 @@ class DirectorRuntimeManagerMixin:
         runtime: LiveRuntime,
         session: dict[str, Any],
         state: dict[str, Any],
+        *,
+        chain_next_prefetch: bool = True,
     ) -> dict[str, Any]:
         next_state = state
         runtime.audience_gap_after_memoria_task = None
@@ -1586,7 +1767,7 @@ class DirectorRuntimeManagerMixin:
             runtime,
             session,
             next_state,
-            chain_next_prefetch=True,
+            chain_next_prefetch=chain_next_prefetch,
         )
         if presented:
             maybe_task = presented.get("after_memoria_task") if isinstance(presented, dict) else None
@@ -1671,11 +1852,35 @@ class DirectorRuntimeManagerMixin:
         try:
             if not prefetch_task.done() or prefetch_task.cancelled():
                 return ""
-            return cls._prefetch_payload_job_id(prefetch_task.result())
+            result = prefetch_task.result()
+            if not cls._prefetch_task_result_has_payload(result):
+                return ""
+            return cls._prefetch_payload_job_id(result)
         except (asyncio.InvalidStateError, asyncio.CancelledError):
             return ""
         except Exception:
             return ""
+
+    @staticmethod
+    def _ready_prefetch_task_payload_source(prefetch_task) -> str:
+        if not prefetch_task or not hasattr(prefetch_task, "done"):
+            return ""
+        try:
+            if not prefetch_task.done() or prefetch_task.cancelled():
+                return ""
+            result = prefetch_task.result()
+            if not isinstance(result, dict):
+                return ""
+            interaction = result.get("interaction") if isinstance(result.get("interaction"), dict) else {}
+            return str(interaction.get("source") or "")
+        except (asyncio.InvalidStateError, asyncio.CancelledError):
+            return ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _prefetch_task_result_has_payload(result: Any) -> bool:
+        return result is not None
 
     @staticmethod
     async def _prefetch_task_ready_without_wait(prefetch_task) -> bool:
@@ -1683,9 +1888,43 @@ class DirectorRuntimeManagerMixin:
             return False
         try:
             if prefetch_task.done():
+                if prefetch_task.cancelled():
+                    return False
+                if prefetch_task.exception() is None and not DirectorRuntimeManagerMixin._prefetch_task_result_has_payload(prefetch_task.result()):
+                    return False
                 return True
             await asyncio.sleep(0)
-            return bool(prefetch_task.done())
+            if not prefetch_task.done() or prefetch_task.cancelled():
+                return False
+            if prefetch_task.exception() is None and not DirectorRuntimeManagerMixin._prefetch_task_result_has_payload(prefetch_task.result()):
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _prefetch_task_finished_without_payload(prefetch_task) -> bool:
+        if not prefetch_task or not hasattr(prefetch_task, "done"):
+            return False
+        try:
+            return bool(
+                prefetch_task.done()
+                and not prefetch_task.cancelled()
+                and prefetch_task.exception() is None
+                and not DirectorRuntimeManagerMixin._prefetch_task_result_has_payload(prefetch_task.result())
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _prefetch_task_finished_with_empty_prepared_results(prefetch_task) -> bool:
+        if not prefetch_task or not hasattr(prefetch_task, "done"):
+            return False
+        try:
+            if prefetch_task.cancelled() or prefetch_task.exception() is not None:
+                return False
+            result = prefetch_task.result()
+            return isinstance(result, dict) and "prepared_results" in result and not result.get("prepared_results")
         except Exception:
             return False
 
@@ -2142,9 +2381,16 @@ class DirectorRuntimeManagerMixin:
         audience_deferred_for_ready_prefetch = False
         consumed_prefetch_task_ids: set[int] = set()
         consumed_prefetch_job_ids: set[str] = set()
+        consumed_count = 0
 
         async def next_chain_prefetch_task(candidate, *, source: str):
             candidate_job_id = self._prefetch_task_job_id(candidate) or self._ready_prefetch_task_payload_job_id(candidate)
+            if candidate is not None and hasattr(candidate, "done") and candidate.done():
+                try:
+                    if not candidate.cancelled() and candidate.exception() is None and candidate.result() is None:
+                        return None, ""
+                except asyncio.InvalidStateError:
+                    pass
             if candidate is not None and (
                 id(candidate) in consumed_prefetch_task_ids
                 or bool(candidate_job_id and candidate_job_id in consumed_prefetch_job_ids)
@@ -2164,26 +2410,47 @@ class DirectorRuntimeManagerMixin:
             return candidate, candidate_job_id
 
         async def present_ready_audience_batch():
-            presented_state = await self._present_ready_audience_batch_after_turn(
-                runtime,
-                session,
-                next_state,
+            nonlocal prefetch_task
+            if self._prefetch_task_finished_without_payload(prefetch_task):
+                prefetch_task = None
+            current_prefetch_source = self._ready_prefetch_task_payload_source(prefetch_task)
+            chain_next_prefetch = (
+                prefetch_task is None
+                or current_prefetch_source == "director_audience_prepare"
             )
+            presenter = self._present_ready_audience_batch_after_turn
+            presenter_signature = inspect.signature(presenter)
+            if "chain_next_prefetch" in presenter_signature.parameters:
+                presented_state = await presenter(
+                    runtime,
+                    session,
+                    next_state,
+                    chain_next_prefetch=chain_next_prefetch,
+                )
+            else:
+                presented_state = await presenter(runtime, session, next_state)
             audience_prefetch_task = runtime.audience_gap_after_memoria_task
             runtime.audience_gap_after_memoria_task = None
-            if (
-                audience_prefetch_task is not None
-                and await self._prefetch_task_ready_without_wait(audience_prefetch_task)
-            ):
-                try:
-                    if (
-                        not audience_prefetch_task.cancelled()
-                        and audience_prefetch_task.exception() is None
-                        and audience_prefetch_task.result() is None
-                    ):
-                        audience_prefetch_task = None
-                except asyncio.InvalidStateError:
-                    pass
+            if audience_prefetch_task is not None:
+                audience_prefetch_ready = await self._prefetch_task_ready_without_wait(audience_prefetch_task)
+                if (
+                    self._prefetch_task_finished_without_payload(audience_prefetch_task)
+                    or (
+                        consumed_count > 0
+                        and self._prefetch_task_finished_with_empty_prepared_results(audience_prefetch_task)
+                    )
+                ):
+                    audience_prefetch_task = None
+                elif audience_prefetch_ready:
+                    try:
+                        if (
+                            not audience_prefetch_task.cancelled()
+                            and audience_prefetch_task.exception() is None
+                            and audience_prefetch_task.result() is None
+                        ):
+                            audience_prefetch_task = None
+                    except asyncio.InvalidStateError:
+                        pass
             return presented_state, audience_prefetch_task
 
         if runtime.stop_after_current_turn:
@@ -2213,7 +2480,6 @@ class DirectorRuntimeManagerMixin:
             )
             return next_state
         timeout_seconds = self._prefetch_wait_timeout_seconds(session, next_state)
-        consumed_count = 0
         while prefetch_task:
             current_prefetch_task = prefetch_task
             prefetched = await self._await_prefetch_task_ready(
@@ -2271,6 +2537,9 @@ class DirectorRuntimeManagerMixin:
                 source="after_memoria_task",
             )
             next_prefetch_ready = await self._prefetch_task_ready_without_wait(prefetch_task)
+            if not next_prefetch_ready and self._prefetch_task_finished_without_payload(prefetch_task):
+                prefetch_task = None
+                next_prefetch_job_id = ""
             presented_deferred_audience = False
             if audience_deferred_for_ready_prefetch:
                 if (
@@ -2289,6 +2558,9 @@ class DirectorRuntimeManagerMixin:
                             source="audience_gap_after_memoria_task",
                         )
                         next_prefetch_ready = await self._prefetch_task_ready_without_wait(prefetch_task)
+                        if not next_prefetch_ready and self._prefetch_task_finished_without_payload(prefetch_task):
+                            prefetch_task = None
+                            next_prefetch_job_id = ""
             if next_prefetch_ready:
                 audience_deferred_for_ready_prefetch = True
             else:
@@ -2351,172 +2623,73 @@ class DirectorRuntimeManagerMixin:
             )
             return None
         current_interaction = self.storage.get_interaction(job_id) or interaction
-        policy = prepared_turn_policy_for_interaction(current_interaction)
-        if policy is None or policy.dedicated_closing:
-            _director_timing_log(
-                "prefetch_consume_refused",
-                session_id=runtime.session_id,
-                job_id=job_id,
-                status=current_interaction.get("status"),
-                reason="unsupported_prepared_turn_policy",
-            )
-            return None
-        expected_ready_status = policy.expected_status
-        is_audience_prepare = policy.mark_audience_events_injected
-        if str(current_interaction.get("status") or "") != expected_ready_status:
-            _director_timing_log(
-                "prefetch_consume_refused",
-                session_id=runtime.session_id,
-                job_id=job_id,
-                status=current_interaction.get("status"),
-                reason=f"status_not_{expected_ready_status}",
-            )
-            return None
-        interaction = current_interaction
         _director_timing_log(
             "prefetch_consume_start",
             session_id=runtime.session_id,
             job_id=job_id,
             prepared_result_count=len(prepared_results),
         )
-        if hasattr(self.storage, "update_interaction_if_status"):
-            started = self.storage.update_interaction_if_status(
-                job_id,
-                expected_ready_status,
-                status="presenting",
-            )
-        else:
-            started = self.storage.update_interaction(job_id, status="presenting")
-        if not started or str(started.get("status") or "") != "presenting":
-            _director_timing_log(
-                "prefetch_consume_refused",
-                session_id=runtime.session_id,
-                job_id=job_id,
-                status=(started or {}).get("status"),
-                reason="presenting_claim_failed",
-            )
-            return None
         result = prefetch.get("memoria_result") if isinstance(prefetch.get("memoria_result"), dict) else {}
         result_session_id = str(result.get("session_id") or "")
-        next_prefetch_task = None
         decision = prefetch.get("decision") if isinstance(prefetch.get("decision"), dict) else {}
         base_state = prefetch.get("base_state") if isinstance(prefetch.get("base_state"), dict) else {}
         decision_payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
         decision_mode = str(decision_payload.get("mode") or "")
-        should_chain_prefetch = (
-            policy.may_chain
-            and bool(decision)
+        allow_followup_prefetch = (
+            bool(decision)
             and bool(base_state)
             and not runtime.stop_after_current_turn
             and not runtime.graceful_closing_requested
         )
-        if should_chain_prefetch:
-            chained_session = dict(session)
-            metadata = started.get("metadata") if isinstance(started.get("metadata"), dict) else {}
-            main_session_id = str(metadata.get("main_memoria_session_id") or session.get("target_memoria_session_id") or "")
-            if main_session_id:
-                chained_session["target_memoria_session_id"] = main_session_id
-            _director_timing_log(
-                "prefetch_chain_scheduled",
+        payload = PreparedTurnPayload(
+            interaction=current_interaction,
+            memoria_result=result,
+            prepared_results=prepared_results,
+            decision=decision,
+            base_state=base_state,
+        )
+        adapter = _DirectorPreparedTurnAdapter(
+            self,
+            runtime,
+            session,
+            followup_allow_audience=(decision_mode == "planned_turn"),
+        )
+        consume_result = await consume_prepared_turn(
+            adapter,
+            payload,
+            PreparedTurnConsumeOptions(
                 session_id=runtime.session_id,
-                job_id=job_id,
-            )
-            runtime.director_prefetch_in_flight += 1
-
-            async def run_next_prefetch():
-                try:
-                    await self._yield_before_presentation_chain_prefetch()
-                    return await self._prefetch_next_presentation_turn(
-                        runtime,
-                        chained_session,
-                        base_state,
-                        decision,
-                        allow_audience=(decision_mode == "planned_turn"),
-                    )
-                finally:
-                    runtime.director_prefetch_in_flight = max(
-                        0,
-                        runtime.director_prefetch_in_flight - 1,
-                    )
-
-            next_prefetch_task = asyncio.create_task(run_next_prefetch())
-        current_before_present = self.storage.get_interaction(job_id) or started
-        if str(current_before_present.get("status") or "") != "presenting":
-            await self._cancel_pending_prefetch_task(next_prefetch_task)
+                allow_followup_prefetch=allow_followup_prefetch,
+                followup_allow_audience=(decision_mode == "planned_turn"),
+                expected_dedicated_closing=False,
+                completion_metadata_key="prefetch_consumed",
+                started_event_type="interaction_started",
+                completed_event_type="interaction_completed",
+            ),
+        )
+        if not consume_result.consumed:
+            await self._cancel_pending_prefetch_task(adapter.after_memoria_task)
             _director_timing_log(
                 "prefetch_consume_refused",
                 session_id=runtime.session_id,
                 job_id=job_id,
-                status=current_before_present.get("status"),
-                reason="not_presenting_before_playback",
+                status=(consume_result.interaction or {}).get("status"),
+                reason=consume_result.reason,
             )
             return None
-        await self._broadcast(runtime.session_id, {"type": "interaction_started", "interaction": started})
-        presentation_source = policy.presentation_source
-        await self.present_prepared_stream_results(
-            runtime.session_id,
-            prepared_results,
-            source=presentation_source,
-            interaction_job_id=job_id,
-        )
-        visible_results = self._visible_prepared_results(session, prepared_results)
-        played_item_count = self._prepared_result_item_count(visible_results)
-        marked_injected = 0
-        if is_audience_prepare and played_item_count > 0:
-            event_ids: list[int] = []
-            for raw_event_id in started.get("event_ids") or []:
-                try:
-                    event_id = int(raw_event_id)
-                except (TypeError, ValueError):
-                    continue
-                if event_id > 0:
-                    event_ids.append(event_id)
-            marked_injected = self.storage.mark_events_injected(runtime.session_id, event_ids) if event_ids else 0
-        interaction_metadata = {
-            "prefetch_consumed": not is_audience_prepare,
-            "audience_prepare_consumed": is_audience_prepare,
-            "played_item_count": played_item_count,
-            "marked_injected": marked_injected,
-        }
-        if hasattr(self.storage, "update_interaction_if_status"):
-            updated = self.storage.update_interaction_if_status(
-                job_id,
-                "presenting",
-                status="completed",
-                reply_text=str(result.get("reply") or ""),
-                completed_at=datetime.now().isoformat(),
-                metadata=interaction_metadata,
-            )
-        else:
-            updated = self.storage.update_interaction(
-                job_id,
-                status="completed",
-                reply_text=str(result.get("reply") or ""),
-                completed_at=datetime.now().isoformat(),
-                metadata=interaction_metadata,
-            )
-        if not updated or str(updated.get("status") or "") != "completed":
-            await self._cancel_pending_prefetch_task(next_prefetch_task)
-            return {**prefetch, "interaction": updated or started, "discarded": True}
         _director_timing_log(
             "prefetch_consume_done",
             session_id=runtime.session_id,
             job_id=job_id,
         )
         await self._broadcast(runtime.session_id, {
-            "type": "interaction_completed",
-            "interaction": updated,
-            "memoria_session_id": result_session_id or session.get("target_memoria_session_id") or "",
-            "source": presentation_source,
-        })
-        await self._broadcast(runtime.session_id, {
             "type": "director_injected",
-            "interaction": updated,
+            "interaction": consume_result.interaction,
             "memoria_session_id": result_session_id or session.get("target_memoria_session_id") or "",
         })
-        response = {**prefetch, "interaction": updated, "discarded": False}
-        if next_prefetch_task is not None:
-            response["after_memoria_task"] = next_prefetch_task
+        response = {**prefetch, "interaction": consume_result.interaction, "discarded": False}
+        if consume_result.after_memoria_task is not None:
+            response["after_memoria_task"] = consume_result.after_memoria_task
         return response
 
     async def _prepare_stream_result_if_interaction_active(
