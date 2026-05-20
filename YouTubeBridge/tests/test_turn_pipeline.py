@@ -9,6 +9,7 @@ if str(BRIDGE_ROOT) not in sys.path:
 from turn_pipeline import (
     PreparedTurnPolicy,
     PreparedTurnConsumeOptions,
+    PreparedTurnFollowupGate,
     PreparedTurnPayload,
     consume_prepared_turn,
     prepared_turn_policy_for_interaction,
@@ -155,7 +156,7 @@ def _payload(interaction, *, decision=None, base_state=None, prepared_results=No
         or [{"message": {"content": "reply text"}, "items": [{"item_id": "item-1"}]}],
         decision=decision
         or {"action": "continue_topic", "episode_plan": {"mode": "planned_turn"}},
-        base_state=base_state or {"status": "running"},
+        base_state={"status": "running"} if base_state is None else base_state,
     )
 
 
@@ -227,6 +228,113 @@ def test_consume_prepared_turn_schedules_followup_before_presenting():
 
     assert result.after_memoria_task == "followup-task"
     assert adapter.events.index("schedule:True") < adapter.events.index("present:director")
+
+
+def test_consume_prepared_turn_reports_prefetch_in_flight_followup_skip():
+    interaction = {
+        "job_id": "prefetch-skip-flight",
+        "source": "director_prefetch",
+        "status": "prefetched",
+        "metadata": {"decision": {"action": "continue_topic"}},
+    }
+    payload = _payload(interaction)
+    adapter = FakePreparedTurnAdapter(interaction, payload.prepared_results)
+
+    result = asyncio.run(
+        consume_prepared_turn(
+            adapter,
+            payload,
+            PreparedTurnConsumeOptions(
+                session_id="live-a",
+                followup_gate=PreparedTurnFollowupGate(
+                    requested=True,
+                    runtime_stopping=False,
+                    graceful_closing=False,
+                    prefetch_in_flight=True,
+                ),
+            ),
+        )
+    )
+
+    assert result.consumed is True
+    assert result.after_memoria_task is None
+    assert result.followup_skip_reason == "prefetch_in_flight"
+    assert adapter.followup_calls == []
+    assert "schedule:True" not in adapter.events
+
+
+def test_consume_prepared_turn_reports_missing_base_state_followup_skip():
+    interaction = {
+        "job_id": "prefetch-skip-base",
+        "source": "director_prefetch",
+        "status": "prefetched",
+        "metadata": {"decision": {"action": "continue_topic"}},
+    }
+    payload = _payload(interaction, base_state={})
+    adapter = FakePreparedTurnAdapter(interaction, payload.prepared_results)
+
+    result = asyncio.run(
+        consume_prepared_turn(
+            adapter,
+            payload,
+            PreparedTurnConsumeOptions(
+                session_id="live-a",
+                followup_gate=PreparedTurnFollowupGate(
+                    requested=True,
+                    runtime_stopping=False,
+                    graceful_closing=False,
+                    prefetch_in_flight=False,
+                ),
+            ),
+        )
+    )
+
+    assert result.consumed is True
+    assert result.after_memoria_task is None
+    assert result.followup_skip_reason == "missing_base_state"
+    assert adapter.followup_calls == []
+
+
+def test_consume_prepared_turn_reports_missing_decision_followup_skip():
+    interaction = {
+        "job_id": "prefetch-skip-decision",
+        "source": "director_prefetch",
+        "status": "prefetched",
+        "metadata": {},
+    }
+    prepared_results = [
+        {"message": {"content": "reply text"}, "items": [{"item_id": "item-1"}]}
+    ]
+    payload = PreparedTurnPayload(
+        interaction=interaction,
+        memoria_result={"session_id": "mem-main", "reply": "reply text"},
+        prepared_results=prepared_results,
+        decision={},
+        base_state={"status": "running"},
+    )
+    adapter = FakePreparedTurnAdapter(interaction, payload.prepared_results)
+
+    result = asyncio.run(
+        consume_prepared_turn(
+            adapter,
+            payload,
+            PreparedTurnConsumeOptions(
+                session_id="live-a",
+                followup_gate=PreparedTurnFollowupGate(
+                    requested=True,
+                    runtime_stopping=False,
+                    graceful_closing=False,
+                    prefetch_in_flight=False,
+                ),
+            ),
+        )
+    )
+
+    assert result.consumed is True
+    assert result.after_memoria_task is None
+    assert result.followup_skip_reason == "missing_decision"
+    assert adapter.followup_calls == []
+    assert "schedule:True" not in adapter.events
 
 
 def test_consume_prepared_turn_policy_may_chain_false_blocks_non_audience_followup(monkeypatch):
@@ -502,3 +610,30 @@ def test_consume_prepared_turn_refuses_final_closing_when_not_expected():
     assert result.interaction["status"] == "prefetched"
     assert adapter.events == []
     assert adapter.followup_calls == []
+
+
+def test_consume_prepared_turn_refuses_non_dedicated_when_dedicated_expected():
+    interaction = {
+        "job_id": "closing-policy-guard",
+        "source": "director_prefetch",
+        "status": "prefetched",
+        "metadata": {"decision": {"action": "continue_topic"}},
+    }
+    payload = _payload(interaction)
+    adapter = FakePreparedTurnAdapter(interaction, payload.prepared_results)
+
+    result = asyncio.run(
+        consume_prepared_turn(
+            adapter,
+            payload,
+            PreparedTurnConsumeOptions(
+                session_id="live-a",
+                expected_dedicated_closing=True,
+                completion_metadata_key="final_closing_prefetch_consumed",
+            ),
+        )
+    )
+
+    assert result.consumed is False
+    assert result.reason == "dedicated_closing_expected"
+    assert adapter.events == []

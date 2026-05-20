@@ -11,6 +11,7 @@ from typing import Any
 
 from bridge_contracts import SAFETY_CLASSIFIER_BATCH_LIMIT
 from bridge_runtime import LiveRuntime
+from engine_prepared_turn_adapters import ClosingPreparedTurnAdapter
 from turn_pipeline import (
     PreparedTurnConsumeOptions,
     PreparedTurnPayload,
@@ -58,127 +59,6 @@ def _presentation_audio_duration_seconds(item: dict[str, Any]) -> float | None:
                 return None
             return wav.getnframes() / float(frame_rate)
     except (OSError, EOFError, wave.Error):
-        return None
-
-
-class _ClosingPreparedTurnAdapter:
-    def __init__(
-        self,
-        manager: Any,
-        runtime: LiveRuntime,
-        session: dict[str, Any],
-        *,
-        extra_completion_metadata: dict[str, Any] | None = None,
-        before_present_callback=None,
-    ) -> None:
-        self.manager = manager
-        self.runtime = runtime
-        self.session = session
-        self.extra_completion_metadata = dict(extra_completion_metadata or {})
-        self.before_present_callback = before_present_callback
-        self.callback_task: asyncio.Task | None = None
-
-    def get_interaction(self, job_id: str) -> dict[str, Any] | None:
-        return self.manager.storage.get_interaction(job_id)
-
-    def prepared_results_for_interaction(
-        self,
-        interaction: dict[str, Any],
-        *,
-        require_complete: bool,
-    ) -> list[dict[str, Any]]:
-        return self.manager._prepared_results_for_interaction(
-            self.runtime.session_id,
-            interaction,
-            require_complete=require_complete,
-        )
-
-    def claim_interaction(self, job_id: str, expected_status: str) -> dict[str, Any] | None:
-        if hasattr(self.manager.storage, "update_interaction_if_status"):
-            return self.manager.storage.update_interaction_if_status(
-                job_id,
-                expected_status,
-                status="presenting",
-            )
-        return self.manager.storage.update_interaction(job_id, status="presenting")
-
-    async def broadcast(self, payload: dict[str, Any]) -> None:
-        await self.manager._broadcast(self.runtime.session_id, payload)
-
-    async def present_prepared_results(
-        self,
-        prepared_results: list[dict[str, Any]],
-        *,
-        source: str,
-        interaction_job_id: str,
-    ) -> Any:
-        if self.before_present_callback is not None and self.callback_task is None:
-            maybe_callback_result = self.before_present_callback()
-            if asyncio.iscoroutine(maybe_callback_result):
-                self.callback_task = asyncio.create_task(maybe_callback_result)
-        return await self.manager.present_prepared_stream_results(
-            self.runtime.session_id,
-            prepared_results,
-            source=source,
-            interaction_job_id=interaction_job_id,
-        )
-
-    def visible_prepared_results(
-        self,
-        prepared_results: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        return self.manager._visible_prepared_results(self.session, prepared_results)
-
-    def prepared_result_item_count(self, prepared_results: list[dict[str, Any]]) -> int:
-        return self.manager._prepared_result_item_count(prepared_results)
-
-    def mark_audience_events_injected(self, interaction: dict[str, Any]) -> int:
-        event_ids: list[int] = []
-        for raw_event_id in interaction.get("event_ids") or []:
-            try:
-                event_id = int(raw_event_id)
-            except (TypeError, ValueError):
-                continue
-            if event_id > 0:
-                event_ids.append(event_id)
-        return (
-            self.manager.storage.mark_events_injected(self.runtime.session_id, event_ids)
-            if event_ids
-            else 0
-        )
-
-    def complete_interaction(
-        self,
-        job_id: str,
-        *,
-        reply_text: str,
-        metadata: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if self.extra_completion_metadata:
-            metadata = {**metadata, **self.extra_completion_metadata}
-        if hasattr(self.manager.storage, "update_interaction_if_status"):
-            return self.manager.storage.update_interaction_if_status(
-                job_id,
-                "presenting",
-                status="completed",
-                reply_text=reply_text,
-                completed_at=datetime.now().isoformat(),
-                metadata=metadata,
-            )
-        return self.manager.storage.update_interaction(
-            job_id,
-            status="completed",
-            reply_text=reply_text,
-            completed_at=datetime.now().isoformat(),
-            metadata=metadata,
-        )
-
-    async def schedule_followup_prefetch(
-        self,
-        payload: PreparedTurnPayload,
-        *,
-        allow_audience: bool,
-    ) -> None:
         return None
 
 
@@ -566,7 +446,7 @@ class ClosingManagerMixin:
                 base_state=metadata.get("base_state") if isinstance(metadata.get("base_state"), dict) else {},
             )
             is_audience_prepare = policy.mark_audience_events_injected
-            adapter = _ClosingPreparedTurnAdapter(
+            adapter = ClosingPreparedTurnAdapter(
                 self,
                 runtime,
                 session,
@@ -1780,7 +1660,7 @@ class ClosingManagerMixin:
                 return None
             return after_memoria_callback(result)
 
-        adapter = _ClosingPreparedTurnAdapter(
+        adapter = ClosingPreparedTurnAdapter(
             self,
             runtime,
             session,
@@ -1948,7 +1828,7 @@ class ClosingManagerMixin:
             if isinstance(current_metadata.get("base_state"), dict)
             else {},
         )
-        adapter = _ClosingPreparedTurnAdapter(self, runtime, session)
+        adapter = ClosingPreparedTurnAdapter(self, runtime, session)
         try:
             consume_result = await consume_prepared_turn(
                 adapter,

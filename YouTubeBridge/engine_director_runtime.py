@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from bridge_runtime import LiveRuntime
+from engine_prepared_turn_adapters import DirectorPreparedTurnAdapter
 from free_talk_topics import load_free_talk_topic_library
 from memoria_client import GenerationInterrupted
 from turn_pipeline import (
     PreparedTurnConsumeOptions,
+    PreparedTurnFollowupGate,
     PreparedTurnPayload,
     consume_prepared_turn,
-    prepared_turn_followup_skip_reason,
 )
 
 
@@ -37,169 +38,6 @@ def _director_timing_log(event: str, **fields: Any) -> None:
     except Exception:
         message = str(payload)
     logger.warning("DIRECTOR_TIMING %s", message)
-
-
-class _DirectorPreparedTurnAdapter:
-    def __init__(
-        self,
-        manager: Any,
-        runtime: LiveRuntime,
-        session: dict[str, Any],
-        *,
-        followup_allow_audience: bool = False,
-        delay_before_followup: bool = True,
-        extra_completion_metadata: dict[str, Any] | None = None,
-    ) -> None:
-        self.manager = manager
-        self.runtime = runtime
-        self.session = session
-        self.followup_allow_audience = followup_allow_audience
-        self.delay_before_followup = delay_before_followup
-        self.extra_completion_metadata = dict(extra_completion_metadata or {})
-        self.after_memoria_task: Any = None
-
-    def get_interaction(self, job_id: str) -> dict[str, Any] | None:
-        return self.manager.storage.get_interaction(job_id)
-
-    def prepared_results_for_interaction(
-        self,
-        interaction: dict[str, Any],
-        *,
-        require_complete: bool,
-    ) -> list[dict[str, Any]]:
-        return self.manager._prepared_results_for_interaction(
-            self.runtime.session_id,
-            interaction,
-            require_complete=require_complete,
-        )
-
-    def claim_interaction(self, job_id: str, expected_status: str) -> dict[str, Any] | None:
-        if hasattr(self.manager.storage, "update_interaction_if_status"):
-            return self.manager.storage.update_interaction_if_status(
-                job_id,
-                expected_status,
-                status="presenting",
-            )
-        return self.manager.storage.update_interaction(job_id, status="presenting")
-
-    async def broadcast(self, payload: dict[str, Any]) -> None:
-        await self.manager._broadcast(self.runtime.session_id, payload)
-
-    async def present_prepared_results(
-        self,
-        prepared_results: list[dict[str, Any]],
-        *,
-        source: str,
-        interaction_job_id: str,
-    ) -> Any:
-        return await self.manager.present_prepared_stream_results(
-            self.runtime.session_id,
-            prepared_results,
-            source=source,
-            interaction_job_id=interaction_job_id,
-        )
-
-    def visible_prepared_results(
-        self,
-        prepared_results: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        return self.manager._visible_prepared_results(self.session, prepared_results)
-
-    def prepared_result_item_count(self, prepared_results: list[dict[str, Any]]) -> int:
-        return self.manager._prepared_result_item_count(prepared_results)
-
-    def mark_audience_events_injected(self, interaction: dict[str, Any]) -> int:
-        event_ids: list[int] = []
-        for raw_event_id in interaction.get("event_ids") or []:
-            try:
-                event_id = int(raw_event_id)
-            except (TypeError, ValueError):
-                continue
-            if event_id > 0:
-                event_ids.append(event_id)
-        return (
-            self.manager.storage.mark_events_injected(self.runtime.session_id, event_ids)
-            if event_ids
-            else 0
-        )
-
-    def complete_interaction(
-        self,
-        job_id: str,
-        *,
-        reply_text: str,
-        metadata: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if self.extra_completion_metadata:
-            metadata = {**metadata, **self.extra_completion_metadata}
-        if metadata.get("audience_prepare_consumed") is True:
-            metadata = dict(metadata)
-            metadata["audience_gap_presented"] = int(metadata.get("played_item_count") or 0) > 0
-        if hasattr(self.manager.storage, "update_interaction_if_status"):
-            return self.manager.storage.update_interaction_if_status(
-                job_id,
-                "presenting",
-                status="completed",
-                reply_text=reply_text,
-                completed_at=datetime.now().isoformat(),
-                metadata=metadata,
-            )
-        return self.manager.storage.update_interaction(
-            job_id,
-            status="completed",
-            reply_text=reply_text,
-            completed_at=datetime.now().isoformat(),
-            metadata=metadata,
-        )
-
-    async def schedule_followup_prefetch(
-        self,
-        payload: PreparedTurnPayload,
-        *,
-        allow_audience: bool,
-    ) -> Any:
-        if self.after_memoria_task is not None:
-            return self.after_memoria_task
-        metadata = (
-            payload.interaction.get("metadata")
-            if isinstance(payload.interaction.get("metadata"), dict)
-            else {}
-        )
-        chained_session = dict(self.session)
-        main_session_id = str(
-            metadata.get("main_memoria_session_id")
-            or self.session.get("target_memoria_session_id")
-            or ""
-        )
-        if main_session_id:
-            chained_session["target_memoria_session_id"] = main_session_id
-        _director_timing_log(
-            "prefetch_chain_scheduled",
-            session_id=self.runtime.session_id,
-            job_id=payload.interaction.get("job_id"),
-            source=payload.interaction.get("source"),
-        )
-        self.runtime.director_prefetch_in_flight += 1
-
-        async def run_next_prefetch():
-            try:
-                if self.delay_before_followup:
-                    await self.manager._yield_before_presentation_chain_prefetch()
-                return await self.manager._prefetch_next_presentation_turn(
-                    self.runtime,
-                    chained_session,
-                    payload.base_state,
-                    payload.decision,
-                    allow_audience=allow_audience,
-                )
-            finally:
-                self.runtime.director_prefetch_in_flight = max(
-                    0,
-                    self.runtime.director_prefetch_in_flight - 1,
-                )
-
-        self.after_memoria_task = asyncio.create_task(run_next_prefetch())
-        return self.after_memoria_task
 
 
 class DirectorRuntimeManagerMixin:
@@ -1674,22 +1512,6 @@ class DirectorRuntimeManagerMixin:
                 self.storage.get_director_state(runtime.session_id) or {}
             )
             base_state_source = "storage" if payload_base_state else ""
-        skip_reason = prepared_turn_followup_skip_reason(
-            requested=chain_next_prefetch,
-            has_decision=bool(decision),
-            has_base_state=bool(payload_base_state),
-            runtime_stopping=bool(runtime.stop_after_current_turn),
-            graceful_closing=bool(runtime.graceful_closing_requested),
-            prefetch_in_flight=runtime.director_prefetch_in_flight > 0,
-        )
-        if skip_reason and skip_reason != "not_requested":
-            _director_timing_log(
-                "audience_gap_followup_prefetch_skipped",
-                session_id=runtime.session_id,
-                job_id=interaction.get("job_id"),
-                reason=skip_reason,
-            )
-        should_chain_prefetch = not skip_reason
         payload = PreparedTurnPayload(
             interaction=interaction,
             memoria_result={
@@ -1700,11 +1522,10 @@ class DirectorRuntimeManagerMixin:
             decision=decision,
             base_state=payload_base_state,
         )
-        adapter = _DirectorPreparedTurnAdapter(
+        adapter = DirectorPreparedTurnAdapter(
             self,
             runtime,
             session,
-            followup_allow_audience=False,
             delay_before_followup=False,
             extra_completion_metadata=(
                 {
@@ -1714,13 +1535,19 @@ class DirectorRuntimeManagerMixin:
                 if payload_base_state
                 else {}
             ),
+            timing_log=_director_timing_log,
         )
         consume_result = await consume_prepared_turn(
             adapter,
             payload,
             PreparedTurnConsumeOptions(
                 session_id=runtime.session_id,
-                allow_followup_prefetch=should_chain_prefetch,
+                followup_gate=PreparedTurnFollowupGate(
+                    requested=chain_next_prefetch,
+                    runtime_stopping=bool(runtime.stop_after_current_turn),
+                    graceful_closing=bool(runtime.graceful_closing_requested),
+                    prefetch_in_flight=runtime.director_prefetch_in_flight > 0,
+                ),
                 followup_allow_audience=False,
                 expected_dedicated_closing=False,
                 completion_metadata_key="audience_prepare_consumed",
@@ -1737,6 +1564,16 @@ class DirectorRuntimeManagerMixin:
                 reason=consume_result.reason,
             )
             return None
+        if (
+            consume_result.followup_skip_reason
+            and consume_result.followup_skip_reason != "not_requested"
+        ):
+            _director_timing_log(
+                "audience_gap_followup_prefetch_skipped",
+                session_id=runtime.session_id,
+                job_id=interaction.get("job_id"),
+                reason=consume_result.followup_skip_reason,
+            )
         latest_state = self.storage.get_director_state(runtime.session_id) or state
         metadata = dict(
             latest_state.get("metadata")
@@ -2635,11 +2472,11 @@ class DirectorRuntimeManagerMixin:
         base_state = prefetch.get("base_state") if isinstance(prefetch.get("base_state"), dict) else {}
         decision_payload = decision.get("episode_plan") if isinstance(decision.get("episode_plan"), dict) else {}
         decision_mode = str(decision_payload.get("mode") or "")
-        allow_followup_prefetch = (
-            bool(decision)
-            and bool(base_state)
-            and not runtime.stop_after_current_turn
-            and not runtime.graceful_closing_requested
+        followup_gate = PreparedTurnFollowupGate(
+            requested=True,
+            runtime_stopping=bool(runtime.stop_after_current_turn),
+            graceful_closing=bool(runtime.graceful_closing_requested),
+            prefetch_in_flight=False,
         )
         payload = PreparedTurnPayload(
             interaction=current_interaction,
@@ -2648,18 +2485,18 @@ class DirectorRuntimeManagerMixin:
             decision=decision,
             base_state=base_state,
         )
-        adapter = _DirectorPreparedTurnAdapter(
+        adapter = DirectorPreparedTurnAdapter(
             self,
             runtime,
             session,
-            followup_allow_audience=(decision_mode == "planned_turn"),
+            timing_log=_director_timing_log,
         )
         consume_result = await consume_prepared_turn(
             adapter,
             payload,
             PreparedTurnConsumeOptions(
                 session_id=runtime.session_id,
-                allow_followup_prefetch=allow_followup_prefetch,
+                followup_gate=followup_gate,
                 followup_allow_audience=(decision_mode == "planned_turn"),
                 expected_dedicated_closing=False,
                 completion_metadata_key="prefetch_consumed",

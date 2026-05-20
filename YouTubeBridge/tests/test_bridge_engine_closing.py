@@ -3995,6 +3995,9 @@ async def test_closing_drain_uses_turn_pipeline_policy_for_ready_prefetch(monkey
         assert consume_calls[0].expected_dedicated_closing is False
         assert consume_calls[0].allow_followup_prefetch is False
         assert consume_calls[0].completion_metadata_key == "prefetch_consumed"
+        assert consume_calls[0].started_event_type == "interaction_started"
+        assert consume_calls[0].completed_event_type == "interaction_completed"
+        assert consume_calls[0].require_complete_prepared_items is True
         assert presented_sources == ["sentinel_director"]
         completed = storage.get_interaction(interaction["job_id"])
         assert completed["status"] == "completed"

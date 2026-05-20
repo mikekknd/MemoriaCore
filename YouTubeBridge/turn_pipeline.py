@@ -24,10 +24,19 @@ class PreparedTurnPayload:
 
 
 @dataclass(frozen=True)
+class PreparedTurnFollowupGate:
+    requested: bool = False
+    runtime_stopping: bool = False
+    graceful_closing: bool = False
+    prefetch_in_flight: bool = False
+
+
+@dataclass(frozen=True)
 class PreparedTurnConsumeOptions:
     session_id: str
     allow_followup_prefetch: bool = False
     followup_allow_audience: bool = False
+    followup_gate: PreparedTurnFollowupGate | None = None
     expected_dedicated_closing: bool = False
     require_complete_prepared_items: bool = True
     completion_metadata_key: str = "prepared_turn_consumed"
@@ -44,6 +53,7 @@ class PreparedTurnConsumeResult:
     after_memoria_task: Any = None
     played_item_count: int = 0
     marked_injected: int = 0
+    followup_skip_reason: str = "not_requested"
 
 
 def prepared_turn_followup_skip_reason(
@@ -202,6 +212,37 @@ def _reply_text_from_payload(payload: PreparedTurnPayload) -> str:
     return ""
 
 
+def _followup_skip_reason_for_consume(
+    *,
+    options: PreparedTurnConsumeOptions,
+    payload: PreparedTurnPayload,
+    policy: PreparedTurnPolicy,
+) -> str:
+    if options.followup_gate is not None:
+        requested = options.followup_gate.requested
+        runtime_stopping = options.followup_gate.runtime_stopping
+        graceful_closing = options.followup_gate.graceful_closing
+        prefetch_in_flight = options.followup_gate.prefetch_in_flight
+    else:
+        requested = options.allow_followup_prefetch
+        runtime_stopping = False
+        graceful_closing = False
+        prefetch_in_flight = False
+    reason = prepared_turn_followup_skip_reason(
+        requested=requested,
+        has_decision=bool(payload.decision),
+        has_base_state=bool(payload.base_state),
+        runtime_stopping=runtime_stopping,
+        graceful_closing=graceful_closing,
+        prefetch_in_flight=prefetch_in_flight,
+    )
+    if reason:
+        return reason
+    if not (policy.may_chain or policy.mark_audience_events_injected):
+        return "policy_disallows_followup"
+    return ""
+
+
 async def consume_prepared_turn(
     adapter: PreparedTurnConsumeAdapter,
     payload: PreparedTurnPayload,
@@ -256,13 +297,12 @@ async def consume_prepared_turn(
     )
 
     after_memoria_task = None
-    can_schedule_followup = (
-        options.allow_followup_prefetch
-        and bool(claimed_payload.decision)
-        and bool(claimed_payload.base_state)
-        and (policy.may_chain or policy.mark_audience_events_injected)
+    followup_skip_reason = _followup_skip_reason_for_consume(
+        options=options,
+        payload=claimed_payload,
+        policy=policy,
     )
-    if can_schedule_followup:
+    if not followup_skip_reason:
         followup_allow_audience = (
             False
             if policy.mark_audience_events_injected
@@ -328,4 +368,5 @@ async def consume_prepared_turn(
         after_memoria_task=after_memoria_task,
         played_item_count=played_item_count,
         marked_injected=marked_injected,
+        followup_skip_reason=followup_skip_reason,
     )
