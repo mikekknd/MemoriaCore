@@ -539,6 +539,14 @@ class YouTubeBridgeManager(
                     "audio_format": tts_result.audio_format or item.get("audio_format") or "wav",
                     "error": tts_result.error,
                 })
+        except asyncio.CancelledError:
+            cancelled_item = self.storage.update_presentation_item(
+                item["item_id"],
+                status="cancelled",
+                error="presentation_prepare_cancelled",
+            ) or item
+            await self._emit_presentation_debug(session_id, "item_cancelled", cancelled_item, source=source)
+            raise
         except Exception as exc:
             update_fields = {
                 "status": "ready",

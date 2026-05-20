@@ -2866,6 +2866,111 @@ def test_prefetch_wait_timeout_default_is_ten_seconds():
 
 
 @pytest.mark.asyncio
+async def test_audience_prepare_wait_timeout_keeps_background_task_alive():
+    with temp_storage() as storage:
+        manager = YouTubeBridgeManager(storage)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "preparing",
+            "metadata": {"prepare_only": True},
+        })
+        release = asyncio.Event()
+
+        async def slow_audience_prepare():
+            await release.wait()
+            return {"interaction": interaction, "prepared_results": []}
+
+        task = asyncio.create_task(slow_audience_prepare())
+        setattr(task, "director_prefetch_job_id", interaction["job_id"])
+        try:
+            result = await manager._await_prefetch_task_ready(
+                runtime,
+                task,
+                timeout_seconds=0.01,
+            )
+
+            assert result is None
+            assert task.cancelled() is False
+            assert task.done() is False
+            assert storage.get_interaction(interaction["job_id"])["status"] == "preparing"
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+
+@pytest.mark.asyncio
+async def test_cancelled_presentation_prepare_marks_item_cancelled():
+    with temp_storage() as storage:
+        storage.upsert_connector({
+            "connector_id": "yt",
+            "display_name": "YouTube",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+        })
+        storage.upsert_tts_profile({
+            "character_id": "host-a",
+            "enabled": True,
+            "ref_audio_path": "host-a.wav",
+            "prompt_text": "參考語音文字。",
+        })
+        started = threading.Event()
+        release = threading.Event()
+
+        class BlockingTTSProvider:
+            def synthesize(self, text, profile):
+                started.set()
+                release.wait(timeout=2)
+                return TTSResult(ok=True, audio_bytes=b"audio", audio_format="wav")
+
+        manager = YouTubeBridgeManager(storage, tts_provider_factory=BlockingTTSProvider)
+        runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+        manager._runtimes["live-a"] = runtime
+        task = asyncio.create_task(manager._prepare_presentation_item(
+            storage.get_session("live-a") or {},
+            {
+                "message_id": "msg-a",
+                "character_id": "host-a",
+                "character_name": "主持A",
+            },
+            "正在合成時被取消的句子。",
+            index=0,
+            source="director_audience_prepare",
+            interaction_job_id="audience-job",
+            runtime=runtime,
+        ))
+        try:
+            await asyncio.to_thread(started.wait, 1)
+            items = storage.list_presentation_items("live-a", statuses={"synthesizing"}, limit=10)
+            assert len(items) == 1
+
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+            item = storage.get_presentation_item(items[0]["item_id"])
+            assert item["status"] == "cancelled"
+            assert item["error"] == "presentation_prepare_cancelled"
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+
+@pytest.mark.asyncio
 async def test_late_prefetch_stream_result_after_timeout_does_not_create_ready_item(monkeypatch):
     with temp_storage() as storage:
         storage.upsert_connector({

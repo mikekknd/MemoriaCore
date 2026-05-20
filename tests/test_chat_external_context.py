@@ -550,7 +550,59 @@ def test_external_context_without_visible_events_never_displays_hidden_prompt():
     assert "topic_pack_fact_cards" not in display
 
 
-def test_youtube_live_external_context_preserves_turn_control_final_closing():
+def test_youtube_live_external_context_preserves_required_response_without_final_closing():
+    body = ChatSyncRequest(
+        content="直播即將收尾，請感謝本場 Super Chat 支持。",
+        channel="youtube_live",
+        user_id="__youtube_live__",
+        channel_class="public",
+        persona_face="public",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=closing_super_chat_thanks",
+            "turn_control": {
+                "required_response": True,
+                "source_action": "closing_super_chat_thanks",
+                "ignored": "value",
+            },
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context["turn_control"] == {
+        "required_response": True,
+        "source_action": "closing_super_chat_thanks",
+    }
+
+
+def test_youtube_live_external_context_preserves_final_closing_for_final_action():
+    body = ChatSyncRequest(
+        content="請做本場最後完整收尾。",
+        channel="youtube_live",
+        user_id="__youtube_live__",
+        channel_class="public",
+        persona_face="public",
+        external_context={
+            "source": "youtube_live_director",
+            "context_text": "直播流程 action=final_closing",
+            "turn_control": {
+                "final_closing": True,
+                "source_action": "final_closing",
+                "ignored": "value",
+            },
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context["turn_control"] == {
+        "final_closing": True,
+        "source_action": "final_closing",
+    }
+
+
+def test_youtube_live_external_context_ignores_final_closing_for_required_response_action():
     body = ChatSyncRequest(
         content="直播即將收尾，請感謝本場 Super Chat 支持。",
         channel="youtube_live",
@@ -563,7 +615,6 @@ def test_youtube_live_external_context_preserves_turn_control_final_closing():
             "turn_control": {
                 "final_closing": True,
                 "source_action": "closing_super_chat_thanks",
-                "ignored": "value",
             },
         },
     )
@@ -571,7 +622,7 @@ def test_youtube_live_external_context_preserves_turn_control_final_closing():
     context, _summary = _resolve_external_context_payload(body)
 
     assert context["turn_control"] == {
-        "final_closing": True,
+        "required_response": True,
         "source_action": "closing_super_chat_thanks",
     }
 

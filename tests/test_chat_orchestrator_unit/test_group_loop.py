@@ -536,7 +536,7 @@ async def test_group_loop_passes_youtube_live_turn_control_final_closing_to_rout
 
     session = SessionState(
         session_id="sid-live-turn-control",
-        messages=[{"role": "user", "content": "直播即將收尾，請感謝本場 Super Chat 支持。"}],
+        messages=[{"role": "user", "content": "請做本場最後完整收尾。"}],
         user_id="__youtube_live__",
         character_id="char-a",
         active_character_ids=["char-a", "char-b"],
@@ -576,13 +576,13 @@ async def test_group_loop_passes_youtube_live_turn_control_final_closing_to_rout
     try:
         await group_loop.run_group_chat_loop(
             session=session,
-            user_prompt="直播即將收尾，請感謝本場 Super Chat 支持。",
+            user_prompt="請做本場最後完整收尾。",
             user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
             orchestration_fn=fake_orchestration,
             extra_session_ctx={
                 "external_chat_context": {
                     "source": "youtube_live_director",
-                    "turn_control": {"final_closing": True, "source_action": "closing_super_chat_thanks"},
+                    "turn_control": {"final_closing": True, "source_action": "final_closing"},
                 }
             },
         )
@@ -590,6 +590,73 @@ async def test_group_loop_passes_youtube_live_turn_control_final_closing_to_rout
         session_manager._sessions.clear()
 
     assert captured_hints == [True]
+
+
+@pytest.mark.asyncio
+async def test_group_loop_required_response_overrides_youtube_live_router_stop(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-live-required-response",
+        messages=[{"role": "user", "content": "直播即將收尾，請感謝本場 Super Chat 支持。"}],
+        user_id="__youtube_live__",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="youtube_live",
+    )
+    session_manager._sessions["sid-live-required-response"] = session
+    captured_targets = []
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    def fake_group_router(*args, **kwargs):
+        return GroupRouterResult(False, None, "router stop", "stop_no_new_value", "single_response")
+
+    def fake_orchestration(*args, **kwargs):
+        captured_targets.append(kwargs["session_ctx"]["character_id"])
+        return (
+            "感謝本場 Super Chat",
+            [], {}, False, None,
+            "", None, None, None,
+            "", [], SharedToolState(executed=False),
+        )
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="直播即將收尾，請感謝本場 Super Chat 支持。",
+            user_prefs={"group_chat_max_bot_turns": 1, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            extra_session_ctx={
+                "external_chat_context": {
+                    "source": "youtube_live_director",
+                    "turn_control": {
+                        "required_response": True,
+                        "source_action": "closing_super_chat_thanks",
+                    },
+                }
+            },
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert captured_targets == ["char-a"]
+    assert len(turns) == 1
+    assert turns[0]["reply"] == "感謝本場 Super Chat"
 
 
 @pytest.mark.asyncio

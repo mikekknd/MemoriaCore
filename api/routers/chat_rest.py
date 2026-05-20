@@ -127,17 +127,31 @@ def _normalize_live_hosting(raw_hosting) -> dict:
 def _normalize_live_turn_control(raw_control) -> dict:
     if not isinstance(raw_control, dict):
         return {}
+    required_response_actions = {
+        "closing_super_chat_thanks",
+        "reply_chat_batch",
+        "reply_super_chat_batch",
+    }
     normalized = {}
-    if raw_control.get("final_closing") is True:
-        normalized["final_closing"] = True
     source_action = re.sub(
         r"[^A-Za-z0-9_.:-]",
         "_",
         str(raw_control.get("source_action") or "").strip(),
     )[:80]
+    is_required_response = (
+        raw_control.get("required_response") is True
+        or source_action in required_response_actions
+    )
+    if raw_control.get("final_closing") is True and not is_required_response:
+        normalized["final_closing"] = True
+    if is_required_response:
+        normalized["required_response"] = True
     if source_action:
         normalized["source_action"] = source_action
-    return normalized if normalized.get("final_closing") is True else {}
+    return normalized if (
+        normalized.get("final_closing") is True
+        or normalized.get("required_response") is True
+    ) else {}
 
 
 def _normalize_live_episode_plan(raw_plan) -> dict:

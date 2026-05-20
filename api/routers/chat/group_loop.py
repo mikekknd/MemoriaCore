@@ -123,9 +123,20 @@ async def run_group_chat_loop(
             break
 
         if not route.should_respond or not route.target_character_id:
-            if _is_youtube_live_director_router_intent(current_turn_intent):
+            if (
+                turn_index == 0
+                and _is_youtube_live_director_required_response_intent(current_turn_intent)
+            ):
+                target_character_id = _fallback_first_turn_target(
+                    participants,
+                    working_messages,
+                    last_speaker_id,
+                )
+                if not target_character_id:
+                    break
+            elif _is_youtube_live_director_router_intent(current_turn_intent):
                 break
-            if turn_index == 0:
+            elif turn_index == 0:
                 target_character_id = _fallback_first_turn_target(
                     participants,
                     working_messages,
@@ -372,7 +383,10 @@ def _final_closing_hint_for_external_context(extra_session_ctx: dict | None) -> 
     turn_control = external_context.get("turn_control")
     if not isinstance(turn_control, dict):
         return False
-    return turn_control.get("final_closing") is True
+    return (
+        turn_control.get("final_closing") is True
+        and not _is_required_response_turn_control(turn_control)
+    )
 
 
 def _router_intent_for_external_context(extra_session_ctx: dict | None) -> dict | None:
@@ -398,6 +412,8 @@ def _router_intent_for_external_context(extra_session_ctx: dict | None) -> dict 
         intent["action"] = normalized_action
     if raw_action:
         intent["raw_action"] = raw_action
+    if _is_required_response_turn_control(turn_control):
+        intent["required_response"] = True
     event_count = _first_non_empty(external_context.get("event_count"), summary.get("event_count"))
     if event_count is not None:
         try:
@@ -440,6 +456,25 @@ def _is_youtube_live_director_router_intent(current_turn_intent: dict | None) ->
         isinstance(current_turn_intent, dict)
         and str(current_turn_intent.get("source") or "").strip() == "youtube_live_director"
     )
+
+
+def _is_youtube_live_director_required_response_intent(current_turn_intent: dict | None) -> bool:
+    return (
+        _is_youtube_live_director_router_intent(current_turn_intent)
+        and current_turn_intent.get("required_response") is True
+    )
+
+
+def _is_required_response_turn_control(turn_control: dict | None) -> bool:
+    if not isinstance(turn_control, dict):
+        return False
+    if turn_control.get("required_response") is True:
+        return True
+    return str(turn_control.get("source_action") or "").strip() in {
+        "closing_super_chat_thanks",
+        "reply_chat_batch",
+        "reply_super_chat_batch",
+    }
 
 
 def _first_non_empty(*values: Any) -> Any:

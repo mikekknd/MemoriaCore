@@ -1634,6 +1634,14 @@ class DirectorRuntimeManagerMixin:
                 timeout_seconds=timeout_seconds,
             )
             expected_job_id = self._prefetch_task_job_id(prefetch_task)
+            if self._prefetch_task_interaction_source(prefetch_task) == "director_audience_prepare":
+                _director_timing_log(
+                    "audience_prepare_wait_timeout_kept_alive",
+                    session_id=runtime.session_id,
+                    job_id=expected_job_id,
+                    timeout_seconds=timeout_seconds,
+                )
+                return None
             recovered = self._recover_ready_prefetch_payload(
                 runtime,
                 expected_job_id=expected_job_id,
@@ -1674,6 +1682,15 @@ class DirectorRuntimeManagerMixin:
     @staticmethod
     def _prefetch_task_job_id(prefetch_task) -> str:
         return str(getattr(prefetch_task, "director_prefetch_job_id", "") or "")
+
+    def _prefetch_task_interaction_source(self, prefetch_task) -> str:
+        job_id = self._prefetch_task_job_id(prefetch_task)
+        if not job_id:
+            return ""
+        interaction = self.storage.get_interaction(job_id)
+        if not isinstance(interaction, dict):
+            return ""
+        return str(interaction.get("source") or "")
 
     @staticmethod
     def _prefetch_payload_job_id(prefetch: dict[str, Any] | None) -> str:
@@ -2855,9 +2872,14 @@ class DirectorRuntimeManagerMixin:
         }
         if is_audience_reply_action:
             external_context["suppress_external_turn_instruction"] = True
-        if action in {"closing_super_chat_thanks", "final_closing"}:
+        if action == "final_closing":
             external_context["turn_control"] = {
                 "final_closing": True,
+                "source_action": action,
+            }
+        elif action in {"closing_super_chat_thanks", "reply_chat_batch", "reply_super_chat_batch"}:
+            external_context["turn_control"] = {
+                "required_response": True,
                 "source_action": action,
             }
         if presentation_mode:
@@ -2930,7 +2952,7 @@ class DirectorRuntimeManagerMixin:
                 },
             }
         )
-        if prefetch_only:
+        if prefetch_only or prepare_only:
             current_task = asyncio.current_task()
             if current_task is not None:
                 setattr(current_task, "director_prefetch_job_id", interaction["job_id"])

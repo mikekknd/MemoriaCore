@@ -769,24 +769,25 @@ class ClosingManagerMixin:
             elif (
                 self._presentation_enabled(session)
                 and not self._events_have_pending_safety(pending_super_chats_before_drain)
-                and not self._has_active_closing_drain_audience_prepare(runtime.session_id)
             ):
                 pending_drain_visible_target = self._final_closing_pending_drain_visible_target(runtime.session_id)
-                drain_visible_target = (
-                    pending_drain_visible_target
-                    or self._latest_visible_message_for_session(runtime.session_id)
-                )
-                if drain_visible_target and not self._should_defer_closing_prefetch_until_drain_target(
-                    runtime.session_id,
-                    pending_drain_visible_target,
-                ):
-                    closing_super_chat_prefetch = self._start_closing_super_chat_prefetch(
-                        runtime,
-                        self.storage.get_session(runtime.session_id) or session,
-                        pending_super_chats_before_drain,
-                        visible_reply_target=drain_visible_target,
-                        reason="pending_super_chats_before_drain",
+                active_audience_prepare = self._has_active_closing_drain_audience_prepare(runtime.session_id)
+                if not active_audience_prepare or pending_drain_visible_target:
+                    drain_visible_target = (
+                        pending_drain_visible_target
+                        or self._latest_visible_message_for_session(runtime.session_id)
                     )
+                    if drain_visible_target and not self._should_defer_closing_prefetch_until_drain_target(
+                        runtime.session_id,
+                        pending_drain_visible_target,
+                    ):
+                        closing_super_chat_prefetch = self._start_closing_super_chat_prefetch(
+                            runtime,
+                            self.storage.get_session(runtime.session_id) or session,
+                            pending_super_chats_before_drain,
+                            visible_reply_target=drain_visible_target,
+                            reason="pending_super_chats_before_drain",
+                        )
         if final_closing_prefetch is not None:
             await asyncio.sleep(0)
         if closing_super_chat_prefetch is not None:
