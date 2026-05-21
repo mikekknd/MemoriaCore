@@ -89,6 +89,21 @@ def _build_external_chat_context_block(session_ctx: dict | None) -> str:
     )
 
 
+def _build_runtime_context_block(session_ctx: dict | None) -> str:
+    """注入 app runtime context；只把 context_text 渲染給 final chat LLM。"""
+    if not session_ctx:
+        return ""
+    runtime_context = session_ctx.get("transient_runtime_context")
+    if not isinstance(runtime_context, dict):
+        return ""
+    context_text = str(runtime_context.get("context_text") or "").strip()
+    if not context_text:
+        return ""
+    return get_prompt_manager().get("runtime_context_block").format(
+        context_text=context_text,
+    )
+
+
 def _normalize_prompt_text_for_dedupe(value: str) -> str:
     return " ".join(str(value or "").replace("\r", "\n").split()).strip()
 
@@ -158,6 +173,7 @@ def build_user_prefix(
     weather_block = _build_su_weather_block(user_prefs, session_ctx)
     user_identity_block = _build_user_identity_block(session_ctx)
     external_chat_context_block = _build_external_chat_context_block(session_ctx)
+    runtime_context_block = _build_runtime_context_block(session_ctx)
 
     env_block = pm.get("environment_context_block").format(
         current_time=current_time,
@@ -179,7 +195,16 @@ def build_user_prefix(
                 )
                 break
 
-    return env_block + user_identity_block + ("\n" + external_chat_context_block if external_chat_context_block else "") + emo_block + "\n\n"
+    blocks = [env_block]
+    if user_identity_block:
+        blocks.append(user_identity_block)
+    if external_chat_context_block:
+        blocks.append(external_chat_context_block)
+    if emo_block.strip():
+        blocks.append(emo_block.strip())
+    if runtime_context_block:
+        blocks.append(runtime_context_block)
+    return "\n".join(blocks) + "\n\n"
 
 
 def build_external_context_turn_control(

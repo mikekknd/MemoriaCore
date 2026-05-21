@@ -175,6 +175,36 @@ def test_build_final_chat_context_omits_empty_retrieved_memory_block():
     assert "無相關記憶" not in latest_user
 
 
+def test_build_final_chat_context_injects_runtime_context_before_latest_user_message():
+    from core.chat_orchestrator.generation_context import build_final_chat_context
+
+    api_messages, _clean_history, sys_prompt = build_final_chat_context(
+        char_sys_prompt="角色 prompt",
+        group_participants_block="",
+        mem_ctx="",
+        reply_rules="用繁體中文回應。",
+        session_messages=[{"role": "user", "content": "可以看一下房間裡面有甚麼東西嗎"}],
+        context_window=5,
+        user_prefs={},
+        session_ctx={
+            "transient_runtime_context": {
+                "source": "personacore_scene",
+                "context_text": (
+                    "[PersonaCore scene awareness]\n"
+                    "Persistent scene objects: window, low table, sofa"
+                ),
+            },
+        },
+        force_group=False,
+    )
+
+    latest_user = api_messages[-1]["content"]
+    assert "<runtime_context>" not in sys_prompt
+    assert "[PersonaCore scene awareness]" not in sys_prompt
+    assert latest_user.index("<runtime_context>") < latest_user.index("可以看一下房間裡面有甚麼東西嗎")
+    assert "Persistent scene objects: window, low table, sofa" in latest_user
+
+
 def test_youtube_live_chat_system_suffix_omits_dynamic_rules_and_memory_block():
     from core.chat_orchestrator.generation_context import build_final_chat_context
 

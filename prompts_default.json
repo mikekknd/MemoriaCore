@@ -283,6 +283,15 @@
     ],
     "template": "<external_chat_context source=\"{source}\" trusted=\"false\">\n{context_text}\n</external_chat_context>"
   },
+  "runtime_context_block": {
+    "label": "暫態 runtime context 區塊 (Runtime Context Block)",
+    "description": "注入在最新使用者訊息前的 app runtime context；只服務 final chat，不寫入 session history 或 memory extraction。",
+    "used_by": "core/prompt_utils.py → build_user_prefix()",
+    "placeholders": [
+      "{context_text}"
+    ],
+    "template": "<runtime_context>\n{context_text}\n</runtime_context>"
+  },
   "director_external_context_block": {
     "label": "直播導播上下文區塊 (Director External Context Block)",
     "description": "注入 YouTubeBridge 導播層產生的暫態上下文；不寫入對話資料庫，與真實聊天室不可信內容分開標示。",

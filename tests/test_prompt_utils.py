@@ -22,6 +22,11 @@ class _FakePromptManager:
                 "{context_text}\n"
                 "</director_context>"
             ),
+            "runtime_context_block": (
+                "<runtime_context>\n"
+                "{context_text}\n"
+                "</runtime_context>"
+            ),
             "emotional_trajectory_block": "<emotional_trajectory>{internal_thought}</emotional_trajectory>",
         }.get(key, "")
 
@@ -294,3 +299,29 @@ def test_latest_user_message_single_session_stays_plain():
     )
 
     assert wrapped == content
+
+
+def test_runtime_context_prefix_renders_clean_block_without_metadata(monkeypatch):
+    monkeypatch.setattr(prompt_utils, "get_prompt_manager", lambda: _FakePromptManager())
+
+    prefix = prompt_utils.build_user_prefix(
+        [{"role": "user", "content": "可以看一下房間裡面有甚麼東西嗎"}],
+        session_ctx={
+            "transient_runtime_context": {
+                "source": "personacore_scene",
+                "context_text": (
+                    "# Chat Scene Awareness Contract\n"
+                    "[PersonaCore scene awareness]\n"
+                    "Current scene: Room\n"
+                    "Persistent scene objects: window, low table, sofa"
+                ),
+            },
+        },
+    )
+
+    assert "<runtime_context>" in prefix
+    assert "[PersonaCore scene awareness]" in prefix
+    assert "Persistent scene objects: window, low table, sofa" in prefix
+    assert "personacore_scene" not in prefix
+    assert "persist=" not in prefix
+    assert "visibility=" not in prefix
