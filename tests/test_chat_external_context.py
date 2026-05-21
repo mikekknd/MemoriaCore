@@ -173,6 +173,79 @@ def test_transient_context_source_is_capped_by_resolver():
     assert " " not in context["source"]
 
 
+def test_transient_context_does_not_force_transient_memory_write_policy():
+    body = ChatSyncRequest(
+        content="我喜歡低矮桌旁邊的位置",
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "[PersonaCore scene awareness]\nCurrent scene: Room",
+        },
+    )
+
+    context, _summary = _resolve_transient_context_payload(body)
+
+    assert context is not None
+    assert _memory_write_policy_for_request(body, None) == "normal"
+
+
+def test_build_session_ctx_carries_transient_context_without_external_context():
+    from api.routers.chat.execution import _build_extra_session_ctx, _build_session_ctx
+
+    class Session:
+        user_id = "user-a"
+        character_id = "char-a"
+        persona_face = "private"
+        session_id = "sid-a"
+        bot_id = ""
+        channel = "personacore"
+        active_character_ids = ["char-a"]
+        session_mode = "single"
+        group_name = "PersonaCore"
+
+    transient_context = {
+        "source": "personacore_scene",
+        "context_text": "[PersonaCore scene awareness]\nCurrent scene: Room",
+    }
+
+    session_ctx = _build_session_ctx(
+        Session(),
+        {"id": "user-a", "username": "tester"},
+        None,
+        transient_context,
+    )
+    extra_ctx = _build_extra_session_ctx(None, "normal", transient_context)
+
+    assert session_ctx["transient_runtime_context"] == transient_context
+    assert extra_ctx["transient_runtime_context"] == transient_context
+    assert "external_chat_context" not in session_ctx
+    assert "external_chat_context" not in extra_ctx
+    assert "memory_write_policy" not in session_ctx
+    assert "memory_write_policy" not in extra_ctx
+
+
+@pytest.mark.asyncio
+async def test_persist_incoming_message_keeps_display_content_with_transient_context(monkeypatch):
+    persisted = []
+
+    async def fake_add_user_message(session_id, content):
+        persisted.append((session_id, content))
+        return 1
+
+    monkeypatch.setattr(chat_rest.session_manager, "add_user_message", fake_add_user_message)
+    body = ChatSyncRequest(
+        content="hidden orchestration text",
+        display_content="可以看一下房間裡面有甚麼東西嗎",
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "[PersonaCore scene awareness]\nCurrent scene: Room",
+        },
+    )
+
+    await chat_rest._persist_incoming_chat_message("sid-a", body, None, {})
+
+    assert persisted == [("sid-a", "可以看一下房間裡面有甚麼東西嗎")]
+
+
 def test_youtube_live_director_payload_preserves_conversation_history_session_id():
     body = ChatSyncRequest(
         content="continue",

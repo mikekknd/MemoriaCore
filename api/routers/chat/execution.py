@@ -22,6 +22,8 @@ class PreparedChatExecution:
     current_user: dict
     external_context: dict | None
     external_context_summary: dict
+    transient_context: dict | None
+    transient_context_summary: dict
     session: object
     runtime_session: object | None
     session_id: str
@@ -61,7 +63,7 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
     require_db_writes_enabled()
     chat_rest._reject_mutually_exclusive_contexts(body)
     external_context, external_context_summary = chat_rest._resolve_external_context_payload(body)
-    _transient_context, _transient_context_summary = chat_rest._resolve_transient_context_payload(body)
+    transient_context, transient_context_summary = chat_rest._resolve_transient_context_payload(body)
     session = await chat_rest._resolve_session(
         body.session_id,
         current_user,
@@ -88,10 +90,10 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
     orchestration_fn = chat_rest._select_orchestration(user_prefs)
     include_speech = body.include_speech and get_tts_client() is not None
 
-    session_ctx = _build_session_ctx(session, current_user, external_context)
+    session_ctx = _build_session_ctx(session, current_user, external_context, transient_context)
     if memory_write_policy == "transient":
         session_ctx["memory_write_policy"] = "transient"
-    extra_session_ctx = _build_extra_session_ctx(external_context, memory_write_policy)
+    extra_session_ctx = _build_extra_session_ctx(external_context, memory_write_policy, transient_context)
     history_messages = _load_external_history_messages(session, external_context)
 
     return PreparedChatExecution(
@@ -99,6 +101,8 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
         current_user=current_user,
         external_context=external_context,
         external_context_summary=external_context_summary,
+        transient_context=transient_context,
+        transient_context_summary=transient_context_summary,
         session=session,
         runtime_session=runtime_session,
         session_id=sid,
@@ -201,7 +205,12 @@ async def iter_chat_sse_events(prepared: PreparedChatExecution):
         yield event
 
 
-def _build_session_ctx(session, current_user: dict, external_context: dict | None) -> dict:
+def _build_session_ctx(
+    session,
+    current_user: dict,
+    external_context: dict | None,
+    transient_context: dict | None = None,
+) -> dict:
     from api.routers import chat_rest
 
     session_ctx = {
@@ -219,13 +228,21 @@ def _build_session_ctx(session, current_user: dict, external_context: dict | Non
     }
     if external_context:
         session_ctx["external_chat_context"] = external_context
+    if transient_context:
+        session_ctx["transient_runtime_context"] = transient_context
     return session_ctx
 
 
-def _build_extra_session_ctx(external_context: dict | None, memory_write_policy: str) -> dict | None:
+def _build_extra_session_ctx(
+    external_context: dict | None,
+    memory_write_policy: str,
+    transient_context: dict | None = None,
+) -> dict | None:
     extra_session_ctx = {}
     if external_context:
         extra_session_ctx["external_chat_context"] = external_context
+    if transient_context:
+        extra_session_ctx["transient_runtime_context"] = transient_context
     if memory_write_policy == "transient":
         extra_session_ctx["memory_write_policy"] = "transient"
     return extra_session_ctx or None
