@@ -224,6 +224,81 @@ def test_build_session_ctx_carries_transient_context_without_external_context():
 
 
 @pytest.mark.asyncio
+async def test_prepare_chat_execution_carries_transient_context_through_shared_path(monkeypatch):
+    from api.routers.chat import execution
+
+    class Session:
+        user_id = "user-a"
+        character_id = "char-a"
+        persona_face = "private"
+        session_id = "sid-a"
+        bot_id = ""
+        channel = "personacore"
+        active_character_ids = ["char-a"]
+        session_mode = "single"
+        group_name = "PersonaCore"
+
+    class FakeStorage:
+        def load_prefs(self):
+            return {"chat_mode": "single"}
+
+    class FakeSessionManager:
+        async def get(self, session_id):
+            assert session_id == "sid-a"
+            return session
+
+    session = Session()
+    persisted = []
+
+    async def fake_resolve_session(session_id, current_user, character_ids, group_name, external_context):
+        assert session_id == "sid-a"
+        assert current_user["id"] == "user-a"
+        assert character_ids is None
+        assert group_name is None
+        assert external_context is None
+        return session
+
+    async def fake_apply_roster_update(resolved_session, character_ids, group_name=None):
+        assert resolved_session is session
+        assert character_ids is None
+        assert group_name is None
+        return None
+
+    async def fake_persist_incoming_chat_message(session_id, body, external_context, external_context_summary):
+        persisted.append((session_id, body.content, external_context, external_context_summary))
+
+    body = ChatSyncRequest(
+        content="我喜歡低矮桌旁邊的位置",
+        session_id="sid-a",
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "[PersonaCore scene awareness]\nCurrent scene: Room",
+        },
+    )
+    expected_context, expected_summary = _resolve_transient_context_payload(body)
+
+    monkeypatch.setattr(execution, "require_db_writes_enabled", lambda: None)
+    monkeypatch.setattr(chat_rest, "_resolve_session", fake_resolve_session)
+    monkeypatch.setattr(execution, "apply_roster_update", fake_apply_roster_update)
+    monkeypatch.setattr(chat_rest, "_persist_incoming_chat_message", fake_persist_incoming_chat_message)
+    monkeypatch.setattr(execution, "session_manager", FakeSessionManager())
+    monkeypatch.setattr(execution, "get_storage", lambda: FakeStorage())
+    monkeypatch.setattr(chat_rest, "_select_orchestration", lambda user_prefs: "orchestration-fn")
+    monkeypatch.setattr(execution, "get_tts_client", lambda: None)
+
+    prepared = await execution.prepare_chat_execution(body, {"id": "user-a", "username": "tester"})
+
+    assert persisted == [("sid-a", body.content, None, {})]
+    assert prepared.transient_context == expected_context
+    assert prepared.transient_context_summary == expected_summary
+    assert prepared.session_ctx["transient_runtime_context"] == expected_context
+    assert prepared.extra_session_ctx["transient_runtime_context"] == expected_context
+    assert prepared.memory_write_policy == "normal"
+    assert "memory_write_policy" not in prepared.session_ctx
+    assert "memory_write_policy" not in prepared.extra_session_ctx
+
+
+@pytest.mark.asyncio
 async def test_persist_incoming_message_keeps_display_content_with_transient_context(monkeypatch):
     persisted = []
 
