@@ -4834,6 +4834,94 @@ async def test_drain_live_session_does_not_cancel_valid_ready_item_when_presente
 
 
 @pytest.mark.asyncio
+async def test_drain_live_session_skips_deferred_audience_gap_when_dedicated_closing_ready(monkeypatch):
+    with temp_storage() as storage:
+        storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt",
+            "display_name": "Live A",
+            "status": "closing",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        storage.update_director_state("live-a", director_enabled=True, status="running")
+        audience = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "priority": 45,
+            "status": "prepared",
+            "event_ids": [101],
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "audience reply",
+            "reply_text": "audience reply",
+            "metadata": {"decision": {"action": "reply_chat_batch", "episode_plan": {"mode": "audience_gap"}}},
+        })
+        audience_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": audience["job_id"],
+            "message_id": "audience-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "這包 audience gap 被 cooldown 延後。",
+            "status": "ready",
+            "audio_path": "audience.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_audience_prepare"},
+        })
+        closing = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_prefetch",
+            "priority": 55,
+            "status": "prefetched",
+            "event_ids": [],
+            "memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+            "content": "closing sc thanks",
+            "reply_text": "closing sc thanks",
+            "metadata": {"decision": {"action": "closing_super_chat_thanks"}},
+        })
+        closing_item = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": closing["job_id"],
+            "message_id": "closing-msg:0",
+            "character_id": "char-a",
+            "character_name": "角色A",
+            "sequence_index": 0,
+            "text": "這包 dedicated closing 已經 ready。",
+            "status": "ready",
+            "audio_path": "closing.wav",
+            "audio_format": "wav",
+            "metadata": {"source": "director_prefetch"},
+        })
+        runtime = LiveRuntime(session_id="live-a", running=True, status="closing")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+        presenter = AsyncMock(return_value=None)
+        monkeypatch.setattr(manager, "_present_ready_audience_batch_after_turn", presenter)
+
+        result = await manager._drain_live_session_before_closing(
+            runtime,
+            storage.get_session("live-a"),
+            timeout_seconds=0.5,
+        )
+
+        assert result["status"] == "drained"
+        assert presenter.await_count == 1
+        updated_audience = storage.get_interaction(audience["job_id"])
+        assert updated_audience["status"] == "interrupted"
+        assert updated_audience["reason"] == "closing_drain_deferred_audience_skipped_for_dedicated_closing"
+        refreshed_audience_item = storage.get_presentation_item(audience_item["item_id"])
+        assert refreshed_audience_item["status"] == "cancelled"
+        assert refreshed_audience_item["error"] == "closing_drain_deferred_audience_skipped_for_dedicated_closing"
+        assert storage.get_interaction(closing["job_id"])["status"] == "prefetched"
+        assert storage.get_presentation_item(closing_item["item_id"])["status"] == "ready"
+
+
+@pytest.mark.asyncio
 async def test_drain_live_session_presentation_await_respects_remaining_deadline(monkeypatch):
     with temp_storage() as storage:
         storage.upsert_connector({"connector_id": "yt", "name": "YouTube", "api_key": "key", "enabled": True})

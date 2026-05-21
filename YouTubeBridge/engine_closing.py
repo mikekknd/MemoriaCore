@@ -288,6 +288,84 @@ class ClosingManagerMixin:
                 "blocked_ready_reasons": reasons,
             }
 
+        def has_ready_dedicated_closing_prefetch() -> bool:
+            for interaction in self.storage.list_interactions(runtime.session_id, limit=200):
+                if str(interaction.get("status") or "") != "prefetched":
+                    continue
+                if not (
+                    self._is_final_closing_prefetch_interaction(interaction)
+                    or self._is_closing_super_chat_prefetch_interaction(interaction)
+                ):
+                    continue
+                if self._prepared_results_for_interaction(
+                    runtime.session_id,
+                    interaction,
+                    require_complete=True,
+                ):
+                    return True
+            return False
+
+        def cancel_deferred_audience_ready_items(
+            ready_items: list[dict[str, Any]],
+            *,
+            reason: str,
+        ) -> int:
+            job_ids: list[str] = []
+            for item in ready_items:
+                if str((item.get("metadata") or {}).get("source") or "") != "director_audience_prepare":
+                    continue
+                job_id = str(item.get("interaction_job_id") or "")
+                if not job_id or job_id in job_ids:
+                    continue
+                interaction = self.storage.get_interaction(job_id)
+                policy = prepared_turn_policy_for_interaction(interaction)
+                if policy is None or policy.dedicated_closing or not policy.mark_audience_events_injected:
+                    continue
+                job_ids.append(job_id)
+            for job_id in job_ids:
+                self._cancel_prepared_items_for_interaction(runtime.session_id, job_id, reason)
+                updater = getattr(self.storage, "update_interaction_if_status", None)
+                metadata = {
+                    "closing_drain_deferred_cancelled": True,
+                    "closing_drain_deferred_cancel_reason": reason,
+                }
+                if callable(updater):
+                    updated = updater(
+                        job_id,
+                        "prepared",
+                        status="interrupted",
+                        reason=reason,
+                        completed_at=datetime.now().isoformat(),
+                        interrupted_at=datetime.now().isoformat(),
+                        metadata=metadata,
+                    )
+                else:
+                    current = self.storage.get_interaction(job_id)
+                    updated = None
+                    if current and str(current.get("status") or "") == "prepared":
+                        updated = self.storage.update_interaction(
+                            job_id,
+                            status="interrupted",
+                            reason=reason,
+                            completed_at=datetime.now().isoformat(),
+                            interrupted_at=datetime.now().isoformat(),
+                            metadata=metadata,
+                        )
+                self._mark_director_audience_prepare_finished(
+                    runtime.session_id,
+                    error=reason,
+                    interaction=updated or self.storage.get_interaction(job_id),
+                    cancelled_reason=reason,
+                )
+            if job_ids:
+                logger.info(
+                    "closing drain cancelled deferred audience prepare session_id=%s job_ids=%s reason=%s",
+                    runtime.session_id,
+                    ",".join(job_ids),
+                    reason,
+                )
+            return len(job_ids)
+
         async def wait_remaining(awaitable) -> bool:
             remaining = (deadline - datetime.now()).total_seconds()
             if remaining <= 0:
@@ -378,6 +456,16 @@ class ClosingManagerMixin:
                     for item in ready_prepared
                     if str(item.get("item_id") or "")
                 }
+                if (
+                    ready_ids_before
+                    and ready_ids_before.issubset(deferred_ready_item_ids)
+                    and has_ready_dedicated_closing_prefetch()
+                    and cancel_deferred_audience_ready_items(
+                        ready_prepared,
+                        reason="closing_drain_deferred_audience_skipped_for_dedicated_closing",
+                    )
+                ):
+                    continue
                 if ready_ids_before and ready_ids_before.issubset(deferred_ready_item_ids):
                     if deadline_reached:
                         return timeout_result()
@@ -395,6 +483,14 @@ class ClosingManagerMixin:
                     if str(item.get("item_id") or "")
                 }
                 if ready_ids_after == ready_ids_before:
+                    if (
+                        has_ready_dedicated_closing_prefetch()
+                        and cancel_deferred_audience_ready_items(
+                            ready_prepared,
+                            reason="closing_drain_deferred_audience_skipped_for_dedicated_closing",
+                        )
+                    ):
+                        continue
                     deferred_ready_item_ids.update(ready_ids_before)
                     continue
                 continue
