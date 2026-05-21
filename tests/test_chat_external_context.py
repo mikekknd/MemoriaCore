@@ -11,8 +11,10 @@ from api.routers.chat_rest import (
     _live_session_scope_for_external_context,
     _memory_write_policy_for_request,
     _messages_for_orchestration,
+    _reject_mutually_exclusive_contexts,
     _resolve_chat_display_content,
     _resolve_external_context_payload,
+    _resolve_transient_context_payload,
     _transient_user_content_for_external_context,
 )
 from core.chat_orchestrator.generation_context import build_final_chat_context
@@ -58,6 +60,64 @@ def test_external_context_payload_ignores_empty_context():
 
     assert context is None
     assert summary == {}
+
+
+def test_transient_context_payload_is_generic_and_capped():
+    body = ChatSyncRequest(
+        content="可以看一下房間裡面有甚麼東西嗎",
+        transient_context={
+            "source": "personacore scene!",
+            "context_text": "x" * 1500,
+            "max_chars": 1000,
+        },
+    )
+
+    context, summary = _resolve_transient_context_payload(body)
+
+    assert context is not None
+    assert context["source"] == "personacore_scene_"
+    assert len(context["context_text"]) == 1000
+    assert summary == {
+        "source": "personacore_scene_",
+        "truncated": True,
+        "max_chars": 1000,
+    }
+
+
+def test_transient_context_payload_ignores_empty_context_text():
+    body = ChatSyncRequest(
+        content="hello",
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "  \r\n  ",
+        },
+    )
+
+    context, summary = _resolve_transient_context_payload(body)
+
+    assert context is None
+    assert summary == {}
+
+
+def test_transient_context_default_cap_is_visible_to_agents():
+    from api.models.requests import (
+        TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS,
+        TRANSIENT_CONTEXT_HARD_MAX_CHARS,
+    )
+
+    body = ChatSyncRequest(
+        content="hello",
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "x" * (TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS + 100),
+        },
+    )
+
+    context, summary = _resolve_transient_context_payload(body)
+
+    assert len(context["context_text"]) == TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS
+    assert summary["truncated"] is True
+    assert TRANSIENT_CONTEXT_HARD_MAX_CHARS >= TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS
 
 
 def test_youtube_live_director_payload_preserves_conversation_history_session_id():

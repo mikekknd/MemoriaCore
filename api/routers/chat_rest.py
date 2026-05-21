@@ -13,7 +13,13 @@ from api.dependencies import (
     get_current_user, get_storage, get_character_manager,
 )
 from api.session_manager import session_manager
-from api.models.requests import ChatSyncRequest
+from api.models.requests import (
+    ChatSyncRequest,
+    TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS,
+    TRANSIENT_CONTEXT_HARD_MAX_CHARS,
+    TRANSIENT_CONTEXT_MIN_MAX_CHARS,
+    TRANSIENT_CONTEXT_SOURCE_MAX_CHARS,
+)
 from api.models.responses import ChatSyncResponseDTO
 from api.routers.chat.execution import (
     execute_chat_turns,
@@ -607,6 +613,55 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
             context["conversation_history_session_id"] = history_session_id
             summary["conversation_history_session_id"] = history_session_id
     return context, summary
+
+
+def _reject_mutually_exclusive_contexts(body: ChatSyncRequest) -> None:
+    if body.external_context and getattr(body, "transient_context", None):
+        raise HTTPException(
+            status_code=400,
+            detail="external_context and transient_context cannot be used together",
+        )
+
+
+def _resolve_transient_context_payload(body: ChatSyncRequest) -> tuple[dict | None, dict]:
+    """Normalize app runtime context for final chat only.
+
+    Agent navigation note:
+    - This is not YouTubeBridge `external_context`.
+    - `context_text` is the only LLM-visible value.
+    - The cap constants live in api.models.requests for fast code search.
+    """
+    raw = body.transient_context
+    if raw is None:
+        return None, {}
+
+    source = re.sub(
+        r"[^A-Za-z0-9_.:-]",
+        "_",
+        str(raw.source or "runtime").strip() or "runtime",
+    )[:TRANSIENT_CONTEXT_SOURCE_MAX_CHARS]
+    context_text_original = str(raw.context_text or "").replace("\r", "\n")
+    context_text = context_text_original.strip()
+    if not context_text:
+        return None, {}
+
+    requested_max = raw.max_chars
+    if requested_max is None:
+        max_chars = TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS
+    else:
+        max_chars = max(
+            TRANSIENT_CONTEXT_MIN_MAX_CHARS,
+            min(int(requested_max), TRANSIENT_CONTEXT_HARD_MAX_CHARS),
+        )
+    if len(context_text) > max_chars:
+        context_text = context_text[:max_chars].rstrip()
+
+    summary = {
+        "source": source,
+        "truncated": len(context_text_original.strip()) > len(context_text),
+        "max_chars": max_chars,
+    }
+    return {"source": source, "context_text": context_text, "summary": summary}, summary
 
 
 def _normalize_visible_events(raw_events) -> list[dict]:
