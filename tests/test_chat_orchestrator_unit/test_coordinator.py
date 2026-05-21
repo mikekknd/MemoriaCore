@@ -749,6 +749,69 @@ class TestDualLayerCoordinator:
         assert result[4] is None
         assert "<retrieved_memory_context>" not in latest_user
 
+    def test_single_layer_tool_runtime_excludes_transient_context_but_final_prompt_keeps_it(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層工具 runtime context 不含 transient_runtime_context，但 final prompt 仍可使用。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        captured_runtime_contexts = []
+
+        def capture_execute_tool_call(tc, runtime_context=None):
+            captured_runtime_contexts.append(runtime_context)
+            return '{"answer": "ok"}'
+
+        with patch("tools.tavily.execute_tool_call", side_effect=capture_execute_tool_call):
+            orchestration._run_chat_orchestration(
+                session_messages=[{"role": "user", "content": "請查一下這個畫面"}],
+                last_entities=[],
+                user_prompt="請查一下這個畫面",
+                user_prefs={
+                    **sample_user_prefs,
+                    "dual_layer_enabled": False,
+                    "tavily_api_key": "test-key",
+                },
+                session_ctx={
+                    "session_id": "sid-single-tool",
+                    "user_id": "user-single-tool",
+                    "memory_write_policy": "transient",
+                    "external_chat_context": {"source": "unit_test"},
+                    "transient_runtime_context": {
+                        "context_text": "single layer scene text must stay final prompt only",
+                    },
+                },
+            )
+
+        assert len(captured_runtime_contexts) == 1
+        tool_runtime_context = captured_runtime_contexts[0]
+        serialized_runtime_context = json.dumps(tool_runtime_context, ensure_ascii=False)
+        assert "transient_runtime_context" not in tool_runtime_context
+        assert "single layer scene text must stay final prompt only" not in serialized_runtime_context
+        assert tool_runtime_context["session_id"] == "sid-single-tool"
+        assert tool_runtime_context["user_id"] == "user-single-tool"
+        assert tool_runtime_context["memory_write_policy"] == "transient"
+        assert tool_runtime_context["external_chat_context"] == {"source": "unit_test"}
+        assert tool_runtime_context["visual_prompt"] == "測試助理，乾淨的角色肖像。"
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<runtime_context>" in latest_user
+        assert "single layer scene text must stay final prompt only" in latest_user
+
     def test_single_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self,
         monkeypatch,

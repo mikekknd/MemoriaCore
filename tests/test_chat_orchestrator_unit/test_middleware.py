@@ -168,6 +168,7 @@ class TestRunMiddleware:
         runtime_context = {
             "session_id": "sid-tool",
             "user_id": "user-tool",
+            "memory_write_policy": "transient",
             "visual_prompt": "角色外觀",
             "external_chat_context": {"source": "unit_test"},
             "transient_runtime_context": {
@@ -186,6 +187,8 @@ class TestRunMiddleware:
         assert "context_text" not in serialized
         assert captured["session_id"] == "sid-tool"
         assert captured["user_id"] == "user-tool"
+        assert captured["memory_write_policy"] == "transient"
+        assert captured["external_chat_context"] == {"source": "unit_test"}
         assert captured["visual_prompt"] == "角色外觀"
 
 
