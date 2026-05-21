@@ -38,7 +38,7 @@
   - 主專案其他模組不得直接使用 `sqlite3`；如需 DB 操作，新增到對應 mixin 後透過 `StorageManager` facade 呼叫。
 - `core/core_memory.py` — 同上
   - 分區：Embedding 工具 / 查詢擴展 / Memory Block 寫入 / 叢集融合 / 三軌檢索 / Profile
-- `core/llm_gateway.py` — LLM routing；分派 9 種 task type 到可設定 provider（Ollama/OpenAI/OpenRouter/llama.cpp），設定存於 `user_prefs.json`
+- `core/llm_gateway.py` — LLM routing；分派多種 task type 到可設定 provider（Ollama/OpenAI/OpenRouter/llama.cpp），設定存於 `user_prefs.json`
   - 若任務帶 `response_format` 但模型回傳純文字（無 `{`），`LLMRouter.generate()` 會自動以警告 prompt + 降溫重試一次（針對 cloud-proxied 模型忽略 schema 的問題）
 
 ---
@@ -53,6 +53,8 @@
   - `pipeline.py`      — 記憶管線同步/背景執行
   - `orchestration.py` — `_run_chat_orchestration` 單層編排與雙層編排選擇器
   - `execution.py`     — REST `/chat/sync` 與 SSE `/chat/stream-sync` 共用執行核心
+  - `group_loop.py`    — 群組對話 loop 與 speaker selection orchestration
+  - `roster.py`        — session participant / roster event helpers
 - `api/routers/chat_ws.py`  — WebSocket 端點（slim，re-export 內部相容）
 - `api/routers/chat_rest.py`— REST `/chat/sync` 與 SSE `/chat/stream-sync` 端點
 
