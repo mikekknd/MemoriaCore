@@ -131,13 +131,9 @@ class TransientContextRequest(BaseModel):
     - `source` is debug metadata and is not rendered into final chat.
     """
 
-    source: str = Field("runtime", max_length=128)
+    source: str = "runtime"
     context_text: str
-    max_chars: Optional[int] = Field(
-        None,
-        ge=TRANSIENT_CONTEXT_MIN_MAX_CHARS,
-        le=TRANSIENT_CONTEXT_HARD_MAX_CHARS,
-    )
+    max_chars: Optional[int] = None
 
 
 class ChatSyncRequest(BaseModel):

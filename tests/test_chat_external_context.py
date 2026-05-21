@@ -120,6 +120,57 @@ def test_transient_context_default_cap_is_visible_to_agents():
     assert TRANSIENT_CONTEXT_HARD_MAX_CHARS >= TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS
 
 
+def test_transient_context_max_chars_is_clamped_by_resolver():
+    from api.models.requests import (
+        TRANSIENT_CONTEXT_HARD_MAX_CHARS,
+        TRANSIENT_CONTEXT_MIN_MAX_CHARS,
+    )
+
+    min_body = ChatSyncRequest(
+        content="hello",
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "x" * (TRANSIENT_CONTEXT_MIN_MAX_CHARS + 100),
+            "max_chars": TRANSIENT_CONTEXT_MIN_MAX_CHARS - 1,
+        },
+    )
+    min_context, min_summary = _resolve_transient_context_payload(min_body)
+
+    assert len(min_context["context_text"]) == TRANSIENT_CONTEXT_MIN_MAX_CHARS
+    assert min_summary["max_chars"] == TRANSIENT_CONTEXT_MIN_MAX_CHARS
+
+    hard_body = ChatSyncRequest(
+        content="hello",
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "x" * (TRANSIENT_CONTEXT_HARD_MAX_CHARS + 100),
+            "max_chars": TRANSIENT_CONTEXT_HARD_MAX_CHARS + 1,
+        },
+    )
+    hard_context, hard_summary = _resolve_transient_context_payload(hard_body)
+
+    assert len(hard_context["context_text"]) == TRANSIENT_CONTEXT_HARD_MAX_CHARS
+    assert hard_summary["max_chars"] == TRANSIENT_CONTEXT_HARD_MAX_CHARS
+
+
+def test_transient_context_source_is_capped_by_resolver():
+    from api.models.requests import TRANSIENT_CONTEXT_SOURCE_MAX_CHARS
+
+    body = ChatSyncRequest(
+        content="hello",
+        transient_context={
+            "source": "personacore scene!" * 20,
+            "context_text": "visible context",
+        },
+    )
+
+    context, summary = _resolve_transient_context_payload(body)
+
+    assert len(context["source"]) == TRANSIENT_CONTEXT_SOURCE_MAX_CHARS
+    assert summary["source"] == context["source"]
+    assert " " not in context["source"]
+
+
 def test_youtube_live_director_payload_preserves_conversation_history_session_id():
     body = ChatSyncRequest(
         content="continue",
