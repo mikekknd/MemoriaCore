@@ -25,6 +25,9 @@ class OrchestrationScope:
     force_group: bool
 
 
+FINAL_CHAT_ONLY_SESSION_CTX_KEYS = {"transient_runtime_context"}
+
+
 def resolve_orchestration_scope(session_ctx: dict | None) -> OrchestrationScope:
     ctx = session_ctx or {}
     user_id = ctx.get("user_id", "default")
@@ -41,6 +44,23 @@ def resolve_orchestration_scope(session_ctx: dict | None) -> OrchestrationScope:
         visibility_filter=visibility_filter,
         force_group=is_group_context(ctx),
     )
+
+
+def scrub_final_chat_only_session_ctx(session_ctx: dict | None) -> dict:
+    if not isinstance(session_ctx, dict):
+        return {}
+    return {
+        key: value
+        for key, value in session_ctx.items()
+        if key not in FINAL_CHAT_ONLY_SESSION_CTX_KEYS
+    }
+
+
+def build_tool_runtime_context(session_ctx: dict | None, extra: dict | None = None) -> dict:
+    ctx = scrub_final_chat_only_session_ctx(session_ctx)
+    if extra:
+        ctx.update(extra)
+    return ctx
 
 
 def normalize_internal_thought(value: object, *, max_chars: int = 40) -> str | None:

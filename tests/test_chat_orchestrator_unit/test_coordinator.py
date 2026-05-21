@@ -407,6 +407,52 @@ class TestDualLayerCoordinator:
         assert result[4] is None
         assert "<retrieved_memory_context>" not in latest_user
 
+    def test_dual_layer_tool_runtime_excludes_transient_context_but_final_prompt_keeps_it(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """transient_runtime_context 只進 final chat prompt，不進工具 runtime context。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+        from core.chat_orchestrator.dataclasses import ToolContext
+
+        captured_runtime_contexts = []
+
+        def capture_run_middleware(*, router_result, on_thinking_speech=None, on_tool_status=None, runtime_context=None):
+            captured_runtime_contexts.append(runtime_context)
+            return ToolContext(
+                tool_results=[{"tool_name": "tavily_search", "result": '{"answer": "ok"}'}],
+                tool_results_formatted="<tool_results>ok</tool_results>",
+                thinking_speech_sent=router_result.thinking_speech,
+            )
+
+        with patch("core.chat_orchestrator.coordinator.run_middleware", side_effect=capture_run_middleware):
+            run_dual_layer_orchestration(
+                session_messages=[{"role": "user", "content": "請看一下現在畫面"}],
+                last_entities=[],
+                user_prompt="請看一下現在畫面",
+                user_prefs={**sample_user_prefs, "tavily_api_key": "test-key"},
+                session_ctx={
+                    "session_id": "sid-dual",
+                    "user_id": "user-dual",
+                    "character_id": "default",
+                    "persona_face": "public",
+                    "transient_runtime_context": {
+                        "context_text": "scene text for final chat only",
+                    },
+                },
+            )
+
+        assert len(captured_runtime_contexts) == 1
+        tool_runtime_context = captured_runtime_contexts[0]
+        assert "transient_runtime_context" not in tool_runtime_context
+        assert tool_runtime_context["session_id"] == "sid-dual"
+        assert tool_runtime_context["user_id"] == "user-dual"
+        assert "visual_prompt" in tool_runtime_context
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<runtime_context>" in latest_user
+        assert "scene text for final chat only" in latest_user
+
     def test_dual_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
     ):

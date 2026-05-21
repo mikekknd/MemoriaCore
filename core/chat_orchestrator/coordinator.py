@@ -26,6 +26,7 @@ from core.chat_orchestrator.generation_context import (
     build_chat_response_schema,
     build_final_chat_context,
     build_history_preview,
+    build_tool_runtime_context,
     memory_lookup_skip_reason,
     resolve_orchestration_scope,
 )
@@ -409,7 +410,10 @@ def run_dual_layer_orchestration(
                     router_result=router_result,
                     on_thinking_speech=None,
                     on_tool_status=on_event,
-                    runtime_context={**_ctx, "visual_prompt": active_char.get("visual_prompt", "")},
+                    runtime_context=build_tool_runtime_context(
+                        _ctx,
+                        {"visual_prompt": active_char.get("visual_prompt", "")},
+                    ),
                 )
                 thinking = ctx.thinking_speech_sent
 

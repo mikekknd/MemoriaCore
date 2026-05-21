@@ -24,6 +24,7 @@ from core.chat_orchestrator.generation_context import (
     build_chat_response_schema,
     build_final_chat_context,
     build_history_preview,
+    build_tool_runtime_context,
     memory_lookup_skip_reason,
     normalize_internal_thought,
     resolve_orchestration_scope,
@@ -328,10 +329,10 @@ def _run_chat_orchestration(
                     "tool_calls": tool_calls,
                 })
                 for tc in tool_calls:
-                    tool_runtime_ctx = {
-                        **(session_ctx or {}),
-                        "visual_prompt": active_char.get("visual_prompt", ""),
-                    }
+                    tool_runtime_ctx = build_tool_runtime_context(
+                        session_ctx,
+                        {"visual_prompt": active_char.get("visual_prompt", "")},
+                    )
                     tool_result = execute_tool_call(tc, tool_runtime_ctx)
                     tool_results.append({
                         "tool_name": tc.get("function", {}).get("name", "unknown"),
