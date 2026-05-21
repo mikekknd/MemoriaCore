@@ -616,7 +616,7 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
 
 
 def _reject_mutually_exclusive_contexts(body: ChatSyncRequest) -> None:
-    if not body.external_context or body.transient_context is None:
+    if body.external_context is None or body.transient_context is None:
         return
     from core.system_logger import SystemLogger
 
