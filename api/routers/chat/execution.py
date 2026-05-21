@@ -6,7 +6,7 @@ import base64
 import contextlib
 import json
 import queue as sync_queue
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from api.dependencies import get_router, get_storage, get_tts_client, require_db_writes_enabled
 from api.models.requests import ChatSyncRequest
@@ -34,7 +34,7 @@ class PreparedChatExecution:
     include_speech: bool
     session_ctx: dict
     extra_session_ctx: dict | None
-    history_messages: list[dict]
+    history_messages: list[dict] = field(default_factory=list)
 
 
 def _load_external_history_messages(session, external_context: dict | None) -> list[dict]:
@@ -59,7 +59,9 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
     from api.routers import chat_rest
 
     require_db_writes_enabled()
+    chat_rest._reject_mutually_exclusive_contexts(body)
     external_context, external_context_summary = chat_rest._resolve_external_context_payload(body)
+    _transient_context, _transient_context_summary = chat_rest._resolve_transient_context_payload(body)
     session = await chat_rest._resolve_session(
         body.session_id,
         current_user,

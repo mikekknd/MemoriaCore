@@ -616,11 +616,25 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
 
 
 def _reject_mutually_exclusive_contexts(body: ChatSyncRequest) -> None:
-    if body.external_context and getattr(body, "transient_context", None):
-        raise HTTPException(
-            status_code=400,
-            detail="external_context and transient_context cannot be used together",
-        )
+    if not body.external_context or body.transient_context is None:
+        return
+    from core.system_logger import SystemLogger
+
+    external_source = ""
+    if isinstance(body.external_context, dict):
+        external_source = str(body.external_context.get("source") or "").strip()[:64]
+    transient_source = str(getattr(body.transient_context, "source", "") or "").strip()[:64]
+    message = "external_context and transient_context are mutually exclusive"
+    SystemLogger.log_error(
+        "ChatTransientContext",
+        message,
+        details={
+            "session_id": str(body.session_id or "")[:160],
+            "external_source": external_source,
+            "transient_source": transient_source,
+        },
+    )
+    raise HTTPException(400, detail=message)
 
 
 def _resolve_transient_context_payload(body: ChatSyncRequest) -> tuple[dict | None, dict]:

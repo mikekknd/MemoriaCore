@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import api.routers.chat_rest as chat_rest
 import core.chat_orchestrator.group_followup as group_followup_module
 from api.models.requests import ChatSyncRequest
@@ -1718,3 +1720,36 @@ def test_youtube_live_chat_external_context_keeps_short_batch_round_limit():
     limit = _external_context_group_turn_limit(session, {"source": "youtube_live"})
 
     assert limit == 3
+
+
+def test_external_and_transient_context_are_mutually_exclusive(monkeypatch):
+    from fastapi import HTTPException
+    import core.system_logger as system_logger
+
+    logged = []
+
+    def fake_log_error(category, message, details=None):
+        logged.append({"category": category, "message": message, "details": details or {}})
+
+    monkeypatch.setattr(system_logger.SystemLogger, "log_error", fake_log_error)
+    body = ChatSyncRequest(
+        content="hello",
+        session_id="sid-a",
+        external_context={"source": "youtube_live", "context_text": "觀眾: hi"},
+        transient_context={
+            "source": "personacore_scene",
+            "context_text": "[PersonaCore scene awareness]\nCurrent scene: Room",
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        _reject_mutually_exclusive_contexts(body)
+
+    assert exc.value.status_code == 400
+    assert "mutually exclusive" in str(exc.value.detail)
+    assert logged
+    assert "mutually exclusive" in logged[0]["message"]
+    assert logged[0]["details"]["session_id"] == "sid-a"
+    assert logged[0]["details"]["external_source"] == "youtube_live"
+    assert logged[0]["details"]["transient_source"] == "personacore_scene"
+    assert "context_text" not in logged[0]["details"]
