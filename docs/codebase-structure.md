@@ -56,6 +56,21 @@
 - `api/routers/chat_ws.py`  — WebSocket 端點（slim，re-export 內部相容）
 - `api/routers/chat_rest.py`— REST `/chat/sync` 與 SSE `/chat/stream-sync` 端點
 
+### Agents 的 chat context channels
+
+修改 chat request context 行為時，請先區分這兩個 channel：
+
+- `external_context`：bridge / YouTubeBridge 外部內容。它可以改變 live scope、可見 system events、group turn limits，以及 transient memory policy。
+- `transient_context`：app runtime context。它是 final-chat-only，渲染為 `<runtime_context>`，不進 session history，也不會停用一般 user-message memory extraction。
+
+Implementation map：
+
+- Request schema and cap constants：`api/models/requests.py`
+- Payload normalization and mutual exclusion：`api/routers/chat_rest.py`
+- Shared sync / stream execution path：`api/routers/chat/execution.py`
+- Final prompt rendering：`core/prompt_utils.py`
+- Prompt assembly caller：`core/chat_orchestrator/generation_context.py`
+
 ---
 
 ## `PersonaProbe/` 子專案
