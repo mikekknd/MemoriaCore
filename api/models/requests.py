@@ -151,6 +151,7 @@ class ChatSyncRequest(BaseModel):
     transient_context: Optional[TransientContextRequest] = None
     include_speech: bool = True
     memory_write_policy: Literal["normal", "transient"] = "normal"
+    tool_routing_policy: Literal["auto", "disabled"] = "auto"
 
 
 class PromptJsonRequest(BaseModel):

@@ -11,6 +11,7 @@ import re
 from core.system_logger import SystemLogger
 from core.chat_orchestrator.dataclasses import ToolContext, PersonaResult
 from core.llm_gateway import StructuredOutputValidationError
+from core.prompt_utils import append_control_before_user_input_tail
 from core.xml_prompt import format_tool_context_xml
 from core.opening_penalty import OpeningPenaltyPlan, get_opening_penalty_manager
 
@@ -100,7 +101,10 @@ def run_persona_agent(
             if final_messages and final_messages[-1]["role"] == "user":
                 final_messages[-1] = {
                     **final_messages[-1],
-                    "content": final_messages[-1]["content"] + tool_notice,
+                    "content": append_control_before_user_input_tail(
+                        final_messages[-1]["content"],
+                        tool_notice,
+                    ),
                 }
             else:
                 # 防禦性 fallback：末尾非 user 訊息時（理論上不應發生）補上

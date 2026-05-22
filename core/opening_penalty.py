@@ -12,6 +12,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque
 
+from core.prompt_utils import append_control_before_user_input_tail
 from core.prompt_manager import get_prompt_manager
 from core.system_logger import SystemLogger
 
@@ -225,7 +226,10 @@ class OpeningPenaltyManager:
         if messages and messages[-1].get("role") == "user":
             messages[-1] = {
                 **messages[-1],
-                "content": str(messages[-1].get("content", "")) + "\n\n" + instruction,
+                "content": append_control_before_user_input_tail(
+                    str(messages[-1].get("content", "")),
+                    instruction,
+                ),
             }
             return messages
         messages.append({"role": "user", "content": instruction})

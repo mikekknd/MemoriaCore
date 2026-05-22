@@ -88,13 +88,17 @@ class TestRunPersonaAgent:
         assistant_msgs = [m for m in captured_messages if m.get("role") == "assistant"]
         assert any("讓我查一下" in m.get("content", "") for m in assistant_msgs)
 
-    def test_tool_results_appended_after_user(self, mock_router, sample_api_messages, sample_chat_schema):
-        """工具結果應以 XML-like 格式附加在 user message 之後"""
+    def test_tool_results_inserted_before_user_input_tail(self, mock_router, sample_chat_schema):
+        """工具結果應在最新真人輸入前注入，讓 user_input 維持 prompt 末端。"""
         tool_ctx = ToolContext(
             tool_results=[{"tool_name": "tavily", "result": '{"answer": "95000"}'}],
             tool_results_formatted="【tavily 查詢結果】\n95000",
             thinking_speech_sent="",
         )
+        api_messages = [
+            {"role": "system", "content": "你是一個專業助理。"},
+            {"role": "user", "content": "<user_input>\n比特幣現在多少錢？\n</user_input>"},
+        ]
 
         captured_messages = []
         generate_called = [False]
@@ -107,7 +111,7 @@ class TestRunPersonaAgent:
 
         run_persona_agent(
             user_prompt="比特幣",
-            api_messages=sample_api_messages,
+            api_messages=api_messages,
             tool_context=tool_ctx,
             chat_schema=sample_chat_schema,
             router=mock_router,
@@ -120,6 +124,9 @@ class TestRunPersonaAgent:
         assert "<external_tool_context" in all_content
         assert "tavily" in all_content
         assert "系統通知" not in all_content
+        final_user_content = captured_messages[-1]["content"]
+        assert final_user_content.index("<external_tool_context") < final_user_content.index("<user_input>")
+        assert final_user_content.strip().endswith("</user_input>")
 
     def test_error_returns_persona_result_with_error(self, sample_api_messages, sample_chat_schema):
         """router.generate 例外時應回傳包含錯誤文字的 PersonaResult"""

@@ -90,10 +90,21 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
     orchestration_fn = chat_rest._select_orchestration(user_prefs)
     include_speech = body.include_speech and get_tts_client() is not None
 
-    session_ctx = _build_session_ctx(session, current_user, external_context, transient_context)
+    session_ctx = _build_session_ctx(
+        session,
+        current_user,
+        external_context,
+        transient_context,
+        body.tool_routing_policy,
+    )
     if memory_write_policy == "transient":
         session_ctx["memory_write_policy"] = "transient"
-    extra_session_ctx = _build_extra_session_ctx(external_context, memory_write_policy, transient_context)
+    extra_session_ctx = _build_extra_session_ctx(
+        external_context,
+        memory_write_policy,
+        transient_context,
+        body.tool_routing_policy,
+    )
     history_messages = _load_external_history_messages(session, external_context)
 
     return PreparedChatExecution(
@@ -210,6 +221,7 @@ def _build_session_ctx(
     current_user: dict,
     external_context: dict | None,
     transient_context: dict | None = None,
+    tool_routing_policy: str = "auto",
 ) -> dict:
     from api.routers import chat_rest
 
@@ -225,6 +237,7 @@ def _build_session_ctx(
         "session_mode": session.session_mode,
         "group_name": session.group_name,
         "expose_llm_trace": chat_rest._can_expose_llm_trace(current_user),
+        "tool_routing_policy": tool_routing_policy,
     }
     if external_context:
         session_ctx["external_chat_context"] = external_context
@@ -237,6 +250,7 @@ def _build_extra_session_ctx(
     external_context: dict | None,
     memory_write_policy: str,
     transient_context: dict | None = None,
+    tool_routing_policy: str = "auto",
 ) -> dict | None:
     extra_session_ctx = {}
     if external_context:
@@ -245,6 +259,8 @@ def _build_extra_session_ctx(
         extra_session_ctx["transient_runtime_context"] = transient_context
     if memory_write_policy == "transient":
         extra_session_ctx["memory_write_policy"] = "transient"
+    if tool_routing_policy != "auto":
+        extra_session_ctx["tool_routing_policy"] = tool_routing_policy
     return extra_session_ctx or None
 
 

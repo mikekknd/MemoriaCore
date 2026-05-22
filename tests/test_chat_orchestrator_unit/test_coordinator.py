@@ -228,7 +228,7 @@ class TestDualLayerCoordinator:
         assert "<environment_context" in messages[-1]["content"]
         assert "<user_identity" not in messages[-1]["content"]
         assert '<user user_name="夏雪" />' not in messages[-1]["content"]
-        assert '<latest_user_message speaker="human_user" user_name="夏雪">' not in messages[-1]["content"]
+        assert "<latest_user_message" not in messages[-1]["content"]
         assert "original_user_request:" in messages[-1]["content"]
         assert "role: background_constraint" in messages[-1]["content"]
         assert "speaker: human_user" in messages[-1]["content"]
@@ -355,6 +355,32 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_dual_layer_tool_routing_policy_disabled_skips_tool_router(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """request 明確停用 tool routing 時，即使工具可用也不跑 Router Agent。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        prefs = {**sample_user_prefs, "tavily_api_key": "test-key"}
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請查最新動畫排名"}],
+            last_entities=[],
+            user_prompt="請查最新動畫排名",
+            user_prefs=prefs,
+            session_ctx={"tool_routing_policy": "disabled"},
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        chat_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "chat"
+        ]
+        assert router_calls == []
+        assert chat_calls
 
     def test_dual_layer_youtube_live_external_context_skips_memory_lookup(
         self, mock_deps, mock_router_with_tools, mock_memory_system, mock_analyzer, sample_user_prefs
@@ -592,9 +618,11 @@ class TestDualLayerCoordinator:
         chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
         latest_user = chat_call["messages"][-1]
         assert latest_user["role"] == "user"
-        assert '<latest_user_message speaker="human_user" user_name="mikekknd">' in latest_user["content"]
+        assert '<user_input speaker="human_user" user_name="mikekknd">' in latest_user["content"]
+        assert "<latest_user_message" not in latest_user["content"]
         assert "user-1" not in latest_user["content"]
         assert "嗚嗚，可可都無視我拉!" in latest_user["content"]
+        assert latest_user["content"].strip().endswith("</user_input>")
 
     def test_single_layer_group_followup_turn_skips_tool_router(
         self,
@@ -683,6 +711,46 @@ class TestDualLayerCoordinator:
             if c["task_key"] == "router"
         ]
         assert router_calls == []
+
+    def test_single_layer_tool_routing_policy_disabled_skips_tool_router(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排也遵守 request-level tool_routing_policy。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        prefs = {**sample_user_prefs, "dual_layer_enabled": False, "tavily_api_key": "test-key"}
+        orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請查最新動畫排名"}],
+            last_entities=[],
+            user_prompt="請查最新動畫排名",
+            user_prefs=prefs,
+            session_ctx={"tool_routing_policy": "disabled"},
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        chat_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "chat"
+        ]
+        assert router_calls == []
+        assert chat_calls
 
     def test_single_layer_youtube_live_external_context_skips_memory_lookup(
         self,

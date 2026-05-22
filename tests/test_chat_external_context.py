@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 import api.routers.chat_rest as chat_rest
 import core.chat_orchestrator.group_followup as group_followup_module
@@ -68,6 +69,20 @@ def test_external_context_payload_preserves_persist_visible_event_false():
     assert context["source"] == "personacore_world_event"
     assert context["persist_visible_event"] is False
     assert "persist_visible_event" not in summary
+
+
+def test_chat_sync_request_supports_tool_routing_policy():
+    default_body = ChatSyncRequest(content="hello")
+    disabled_body = ChatSyncRequest(
+        content="hello",
+        tool_routing_policy="disabled",
+    )
+
+    assert default_body.tool_routing_policy == "auto"
+    assert disabled_body.tool_routing_policy == "disabled"
+
+    with pytest.raises(ValidationError):
+        ChatSyncRequest(content="hello", tool_routing_policy="manual")
 
 
 def test_external_context_payload_ignores_empty_context():
@@ -897,7 +912,7 @@ def test_explicit_display_content_takes_priority_over_hidden_prompt():
 def test_external_context_without_visible_events_never_displays_hidden_prompt():
     body = ChatSyncRequest(
         content=(
-            "<environment_context source=\"system_control\">\n"
+            "<environment_context>\n"
             "<external_chat_context source=\"youtube_live_director\" trusted=\"false\">\n"
             "直播導播 action=closing_super_chat_thanks\n"
             "<topic_pack_fact_cards>四月新番 fact card</topic_pack_fact_cards>\n"

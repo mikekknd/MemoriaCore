@@ -8,6 +8,8 @@ from datetime import datetime, timezone, timedelta
 from core.prompt_manager import get_prompt_manager
 from core.xml_prompt import xml_attr, xml_block
 
+_USER_INPUT_TAIL = re.compile(r'\s*<user_input\b[^>]*>.*?</user_input>\s*\Z', re.DOTALL)
+
 
 def _is_su_private_weather_context(session_ctx: dict | None) -> bool:
     """判斷目前對話是否允許注入 SU 專用天氣快取。"""
@@ -106,6 +108,22 @@ def _build_runtime_context_block(session_ctx: dict | None) -> str:
 
 def _normalize_prompt_text_for_dedupe(value: str) -> str:
     return " ".join(str(value or "").replace("\r", "\n").split()).strip()
+
+
+def append_control_before_user_input_tail(content: str, control: str) -> str:
+    """若 user message 已以 <user_input> 結尾，將控制區塊插在它前面。"""
+    text = str(content or "")
+    control_text = str(control or "").strip()
+    if not control_text:
+        return text
+
+    match = _USER_INPUT_TAIL.search(text)
+    if not match:
+        return text + "\n\n" + control_text
+
+    before = text[:match.start()].rstrip()
+    user_input = match.group(0).lstrip().rstrip()
+    return "\n\n".join(part for part in (before, control_text, user_input) if part)
 
 
 def _extract_youtube_live_director_handling_hints(ext: dict) -> list[str]:
@@ -257,24 +275,15 @@ def build_retrieved_memory_context_user_block(mem_ctx: str) -> str:
 
 
 def format_latest_user_message_for_llm(content: str, session_ctx: dict | None = None) -> str:
-    """群組模式中明確標示最後一則訊息來自真人使用者。
-
-    Chat API 的 role=user 對多數模型已足夠，但群組模式同時存在多個 AI speaker
-    label 與 user-role 控制區塊時，部分模型會把「我」誤連到前一位 AI。這裡只
-    包裝送進 LLM 的暫態內容，不改寫 DB 中的原始使用者訊息。
-    """
-    if not _is_group_prompt_context(session_ctx):
-        return content
-
-    ctx = session_ctx or {}
-    return xml_block(
-        "latest_user_message",
-        content,
-        attrs={
+    """以明確的 user_input 區塊標示最新真人輸入，避免控制區塊與人類輸入混淆。"""
+    attrs = None
+    if _is_group_prompt_context(session_ctx):
+        ctx = session_ctx or {}
+        attrs = {
             "speaker": "human_user",
             "user_name": ctx.get("user_name") or "",
-        },
-    )
+        }
+    return xml_block("user_input", content, attrs=attrs)
 
 
 def _is_group_prompt_context(session_ctx: dict | None) -> bool:

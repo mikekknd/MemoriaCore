@@ -74,6 +74,32 @@ def test_retrieved_memory_context_is_empty_without_retrieved_sections():
     assert result.block_details == []
 
 
+def test_retrieved_memory_context_labels_named_assistant_in_single_character_memory():
+    result = build_retrieved_memory_context(
+        core_insights=[],
+        profile_matches=[],
+        blocks=[
+            {
+                "block_id": "single-default",
+                "timestamp": "2026-05-22T10:00:00",
+                "overview": "單一角色回覆使用者。",
+                "raw_dialogues": [
+                    {"role": "user", "content": "你剛才怎麼說？"},
+                    {
+                        "role": "assistant",
+                        "content": "我說先確認上下文。",
+                        "character_name": "預設助理",
+                        "character_id": "default",
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert "[預設助理|default]: 我說先確認上下文。" in result.prompt
+    assert "assistant: 我說先確認上下文。" not in result.prompt
+
+
 def test_static_profile_prompt_uses_flat_sections():
     prompt = format_static_profile_prompt(
         basic_facts=[{"fact_key": "name", "fact_value": "夏雪"}],
@@ -151,7 +177,9 @@ def test_build_final_chat_context_moves_retrieved_memory_to_latest_user_message(
     assert latest_user.count("<retrieved_memory_context>") == 1
     assert "core_memory:" in latest_user
     assert "使用者偏好先驗證" in latest_user
-    assert latest_user.index("<retrieved_memory_context>") < latest_user.index("請整理重點。")
+    assert latest_user.index("<retrieved_memory_context>") < latest_user.index("<user_input>")
+    assert "請整理重點。" in latest_user
+    assert latest_user.strip().endswith("</user_input>")
 
 
 def test_build_final_chat_context_omits_empty_retrieved_memory_block():
@@ -173,6 +201,7 @@ def test_build_final_chat_context_omits_empty_retrieved_memory_block():
     assert "<retrieved_memory_context>" not in sys_prompt
     assert "<retrieved_memory_context>" not in latest_user
     assert "無相關記憶" not in latest_user
+    assert latest_user.strip().endswith("</user_input>")
 
 
 def test_build_final_chat_context_injects_runtime_context_before_latest_user_message():
@@ -201,8 +230,10 @@ def test_build_final_chat_context_injects_runtime_context_before_latest_user_mes
     latest_user = api_messages[-1]["content"]
     assert "<runtime_context>" not in sys_prompt
     assert "[PersonaCore scene awareness]" not in sys_prompt
-    assert latest_user.index("<runtime_context>") < latest_user.index("可以看一下房間裡面有甚麼東西嗎")
+    assert latest_user.index("<runtime_context>") < latest_user.index("<user_input>")
+    assert "可以看一下房間裡面有甚麼東西嗎" in latest_user
     assert "Persistent scene objects: window, low table, sofa" in latest_user
+    assert latest_user.strip().endswith("</user_input>")
 
 
 def test_youtube_live_chat_system_suffix_omits_dynamic_rules_and_memory_block():

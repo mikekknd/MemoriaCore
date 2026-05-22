@@ -84,9 +84,11 @@ def build_chat_response_schema() -> dict:
     }
 
 
-def _tool_calls_disabled_for_context(session_ctx: dict | None) -> bool:
+def tool_routing_disabled_for_context(session_ctx: dict | None) -> bool:
     if not isinstance(session_ctx, dict):
         return False
+    if str(session_ctx.get("tool_routing_policy") or "auto").strip() == "disabled":
+        return True
     if str(session_ctx.get("channel") or "").strip() == "youtube_live":
         return True
     external_context = session_ctx.get("external_chat_context")
@@ -112,7 +114,7 @@ def memory_lookup_skip_reason(session_ctx: dict | None) -> str | None:
 
 
 def build_available_tools(user_prefs: dict, session_ctx: dict | None = None) -> list[dict]:
-    if _tool_calls_disabled_for_context(session_ctx):
+    if tool_routing_disabled_for_context(session_ctx):
         return []
     tools_list: list[dict] = []
     try:

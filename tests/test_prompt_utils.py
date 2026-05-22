@@ -8,10 +8,12 @@ import tools.weather_cache as weather_cache
 class _FakePromptManager:
     def get(self, key: str) -> str:
         return {
-            "environment_context_block": "<environment_context>\nCurrent Time: {current_time}{weather_block}\n</environment_context>",
-            "user_identity_block": (
-                '<user_identity><user user_name="{user_name}" /></user_identity>'
+            "environment_context_block": (
+                "<environment_context>\n"
+                "<current_time>{current_time}</current_time>{weather_block}\n"
+                "</environment_context>"
             ),
+            "user_identity_block": '<user user_name="{user_name}" />',
             "external_chat_context_block": (
                 '<external_chat_context source="{source}" trusted="false">\n'
                 "{context_text}\n"
@@ -27,8 +29,32 @@ class _FakePromptManager:
                 "{context_text}\n"
                 "</runtime_context>"
             ),
-            "emotional_trajectory_block": "<emotional_trajectory>{internal_thought}</emotional_trajectory>",
+            "emotional_trajectory_block": (
+                "<previous_internal_thought>{internal_thought}</previous_internal_thought>"
+            ),
         }.get(key, "")
+
+
+def test_default_prompt_control_blocks_use_compact_tags():
+    from core.prompt_manager import get_prompt_manager
+
+    pm = get_prompt_manager()
+
+    env_template = pm.get_default("environment_context_block")
+    assert env_template == (
+        "<environment_context>\n"
+        "<current_time>{current_time}</current_time>{weather_block}\n"
+        "</environment_context>"
+    )
+
+    assert pm.get_default("user_identity_block") == '<user user_name="{user_name}" />'
+    assert pm.get_default("emotional_trajectory_block") == (
+        "<previous_internal_thought>{internal_thought}</previous_internal_thought>"
+    )
+    assert pm.get_default("opening_penalty_instruction").startswith(
+        "<opening_penalty_instruction>\n"
+    )
+    assert 'source="system_control"' not in pm.get_default("opening_penalty_instruction")
 
 
 def test_weather_prefix_skips_non_su(monkeypatch):
@@ -174,7 +200,7 @@ def test_youtube_live_prefix_omits_emotional_trajectory(monkeypatch):
         },
     )
 
-    assert "<emotional_trajectory>" not in prefix
+    assert "<previous_internal_thought>" not in prefix
     assert "直播內在思考" not in prefix
 
 
@@ -232,7 +258,7 @@ def test_user_prefix_includes_display_name(monkeypatch):
         },
     )
 
-    assert "<user_identity>" in prefix
+    assert "<user_identity" not in prefix
     assert '<user user_name="本機暱稱" />' in prefix
     assert "42" not in prefix
     assert "123456" not in prefix
@@ -251,7 +277,7 @@ def test_group_user_prefix_omits_redundant_identity(monkeypatch):
         },
     )
 
-    assert "<user_identity>" not in prefix
+    assert "<user_identity" not in prefix
     assert '<user user_name="夏雪" />' not in prefix
 
 
@@ -270,7 +296,7 @@ def test_emotional_trajectory_omits_when_group_character_has_no_prior_thought(mo
         session_ctx={"character_id": "char-a", "session_mode": "group"},
     )
 
-    assert "<emotional_trajectory>" not in prefix
+    assert "<previous_internal_thought>" not in prefix
 
 
 def test_latest_user_message_wraps_group_human_speaker():
@@ -284,21 +310,37 @@ def test_latest_user_message_wraps_group_human_speaker():
         },
     )
 
-    assert '<latest_user_message speaker="human_user" user_name="mikekknd">' in wrapped
+    assert '<user_input speaker="human_user" user_name="mikekknd">' in wrapped
+    assert "<latest_user_message" not in wrapped
     assert "user-1" not in wrapped
     assert "嗚嗚，可可都無視我拉!" in wrapped
-    assert wrapped.strip().endswith("</latest_user_message>")
+    assert wrapped.strip().endswith("</user_input>")
 
 
-def test_latest_user_message_single_session_stays_plain():
-    content = "嗚嗚，可可都無視我拉!"
-
+def test_latest_user_message_single_session_wraps_user_input():
     wrapped = prompt_utils.format_latest_user_message_for_llm(
-        content,
+        "嗚嗚，可可都無視我拉!",
         session_ctx={"session_mode": "single", "active_character_ids": ["char-a"]},
     )
 
-    assert wrapped == content
+    assert wrapped == "<user_input>\n嗚嗚，可可都無視我拉!\n</user_input>"
+
+
+def test_append_control_before_user_input_tail_keeps_user_input_last():
+    content = (
+        "<environment_context>\n"
+        "<current_time>2026-05-22 13:46:28 CST</current_time>\n"
+        "</environment_context>\n\n"
+        "<user_input>\n"
+        "今天喝什麼？\n"
+        "</user_input>"
+    )
+    control = "<opening_penalty_instruction>\n禁止用舊開頭。\n</opening_penalty_instruction>"
+
+    merged = prompt_utils.append_control_before_user_input_tail(content, control)
+
+    assert merged.index("<opening_penalty_instruction>") < merged.index("<user_input>")
+    assert merged.strip().endswith("</user_input>")
 
 
 def test_runtime_context_prefix_renders_clean_block_without_metadata(monkeypatch):

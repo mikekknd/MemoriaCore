@@ -28,6 +28,7 @@ from core.chat_orchestrator.generation_context import (
     memory_lookup_skip_reason,
     normalize_internal_thought,
     resolve_orchestration_scope,
+    tool_routing_disabled_for_context,
 )
 from core.xml_prompt import format_tool_context_xml, format_tool_results_xml
 from core.chat_orchestrator.group_context import (
@@ -82,7 +83,9 @@ def _run_chat_orchestration(
     is_group_followup_turn = bool(ctx.get("followup_instruction"))
     cached_shared_tool_state = ctx.get("shared_tool_state")
     shared_expand_state = ctx.get("shared_expand_state")
+    routing_disabled = tool_routing_disabled_for_context(ctx)
     reusing_shared_tool_state = (
+        not routing_disabled and
         isinstance(cached_shared_tool_state, SharedToolState)
         and cached_shared_tool_state.executed
     )
@@ -267,7 +270,7 @@ def _run_chat_orchestration(
             # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call。
             # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
             # 會同時出現在已處理歷史與當前訊息，污染意圖判斷。
-            cached_state = cached_shared_tool_state
+            cached_state = None if routing_disabled else cached_shared_tool_state
             tool_calls = []
             tool_results = []
             if isinstance(cached_state, SharedToolState) and cached_state.executed:

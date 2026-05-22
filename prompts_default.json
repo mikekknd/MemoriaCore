@@ -231,7 +231,7 @@
     "placeholders": [
       "{blocked_openings_json}"
     ],
-    "template": "<opening_penalty_instruction source=\"system_control\">\n你最近的 `reply` 開頭已重複使用以下片段，這一輪禁止用它們起手：\n{blocked_openings_json}\n\n請保持原本人格與語氣，但改用不同的第一句開場方式。這只限制 `reply` 欄位的最前面，不限制後文自然使用相同詞彙。\n</opening_penalty_instruction>"
+    "template": "<opening_penalty_instruction>\n你最近的 `reply` 開頭已重複使用以下片段，這一輪禁止用它們起手：\n{blocked_openings_json}\n\n請保持原本人格與語氣，但改用不同的第一句開場方式。這只限制 `reply` 欄位的最前面，不限制後文自然使用相同詞彙。\n</opening_penalty_instruction>"
   },
   "opening_penalty_retry": {
     "label": "開場白抑制重試 (Opening Penalty Retry)",
@@ -262,7 +262,7 @@
       "{current_time}",
       "{weather_block}"
     ],
-    "template": "<environment_context source=\"system_control\">\n<current_time>{current_time}</current_time>{weather_block}\n</environment_context>"
+    "template": "<environment_context>\n<current_time>{current_time}</current_time>{weather_block}\n</environment_context>"
   },
   "user_identity_block": {
     "label": "使用者身份區塊 (User Identity Block)",
@@ -271,7 +271,7 @@
     "placeholders": [
       "{user_name}"
     ],
-    "template": "<user_identity source=\"system_control\">\n<user user_name=\"{user_name}\" />\n</user_identity>"
+    "template": "<user user_name=\"{user_name}\" />"
   },
   "external_chat_context_block": {
     "label": "外部聊天室上下文區塊 (External Chat Context Block)",
@@ -309,7 +309,7 @@
     "placeholders": [
       "{internal_thought}"
     ],
-    "template": "<emotional_trajectory source=\"system_control\" subject=\"current_ai\">\n<previous_internal_thought>{internal_thought}</previous_internal_thought>\n</emotional_trajectory>"
+    "template": "<previous_internal_thought>{internal_thought}</previous_internal_thought>"
   },
   "tool_thinking_speech": {
     "label": "工具等待語 (Tool Thinking Speech)",
