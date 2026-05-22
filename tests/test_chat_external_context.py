@@ -531,6 +531,140 @@ def test_external_context_persist_visible_event_false_skips_visible_system_event
     assert event is None
 
 
+@pytest.mark.asyncio
+async def test_prepare_chat_execution_hidden_external_context_skips_incoming_messages_but_saves_reply(monkeypatch):
+    from api.routers.chat import execution
+    from core.chat_orchestrator.dataclasses import OrchestrationResult
+
+    class Session:
+        user_id = "user-a"
+        character_id = "char-a"
+        persona_face = "private"
+        session_id = "sid-a"
+        bot_id = ""
+        channel = "personacore"
+        channel_uid = ""
+        channel_class = "private"
+        active_character_ids = ["char-a"]
+        session_mode = "single"
+        group_name = "PersonaCore"
+
+    class FakeStorage:
+        def load_prefs(self):
+            return {"chat_mode": "single"}
+
+    user_messages = []
+    system_events = []
+    assistant_messages = []
+    session = Session()
+
+    class FakeSessionManager:
+        async def get(self, session_id):
+            assert session_id == "sid-a"
+            return session
+
+        async def add_user_message(self, session_id, content):
+            user_messages.append((session_id, content))
+            return 11
+
+        async def add_system_event(self, session_id, content, debug_info):
+            system_events.append((session_id, content, debug_info))
+            return 12
+
+        async def add_assistant_message(
+            self,
+            session_id,
+            content,
+            debug_info=None,
+            extracted_entities=None,
+            persona_state=None,
+            character_name=None,
+            character_id=None,
+        ):
+            assistant_messages.append({
+                "session_id": session_id,
+                "content": content,
+                "debug_info": debug_info,
+                "extracted_entities": extracted_entities,
+                "persona_state": persona_state,
+                "character_name": character_name,
+                "character_id": character_id,
+            })
+            return 13
+
+    async def fake_resolve_session(session_id, current_user, character_ids, group_name, external_context):
+        assert session_id == "sid-a"
+        assert current_user["id"] == "user-a"
+        assert character_ids == ["char-a"]
+        assert group_name == "PersonaCore"
+        assert external_context["source"] == "personacore_world_event"
+        assert external_context["persist_visible_event"] is False
+        return session
+
+    async def fake_apply_roster_update(resolved_session, character_ids, group_name=None):
+        assert resolved_session is session
+        assert character_ids == ["char-a"]
+        assert group_name == "PersonaCore"
+        return None
+
+    fake_session_manager = FakeSessionManager()
+    monkeypatch.setattr(execution, "require_db_writes_enabled", lambda: None)
+    monkeypatch.setattr(chat_rest, "_resolve_session", fake_resolve_session)
+    monkeypatch.setattr(execution, "apply_roster_update", fake_apply_roster_update)
+    monkeypatch.setattr(execution, "session_manager", fake_session_manager)
+    monkeypatch.setattr(chat_rest, "session_manager", fake_session_manager)
+    monkeypatch.setattr(execution, "get_storage", lambda: FakeStorage())
+    monkeypatch.setattr(chat_rest, "_select_orchestration", lambda user_prefs: "orchestration-fn")
+    monkeypatch.setattr(execution, "get_tts_client", lambda: None)
+    monkeypatch.setattr(chat_rest, "_get_session_character", lambda character_id: {"name": "角色A"})
+
+    body = ChatSyncRequest(
+        content="請根據 PersonaCore world event 自然延續。",
+        session_id="sid-a",
+        character_ids=["char-a"],
+        group_name="PersonaCore",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "[PersonaCore world event]\n"
+                "Event type: item_arrives\n"
+                "Event: 抹茶千層已經送上桌。"
+            ),
+            "persist_visible_event": False,
+        },
+    )
+
+    prepared = await execution.prepare_chat_execution(body, {"id": "user-a", "username": "tester"})
+    turn = await execution.persist_single_turn_result(
+        prepared,
+        OrchestrationResult(
+            reply_text="抹茶千層到了，我幫你放在桌邊。",
+            new_entities=["抹茶千層"],
+            retrieval_context={"source": "test"},
+            inner_thought="世界事件已轉為角色自然回應。",
+        ),
+    )
+
+    assert user_messages == []
+    assert system_events == []
+    assert assistant_messages == [
+        {
+            "session_id": "sid-a",
+            "content": "抹茶千層到了，我幫你放在桌邊。",
+            "debug_info": {
+                "source": "test",
+                "external_context": prepared.external_context_summary,
+            },
+            "extracted_entities": ["抹茶千層"],
+            "persona_state": {"internal_thought": "世界事件已轉為角色自然回應。"},
+            "character_name": "角色A",
+            "character_id": "char-a",
+        }
+    ]
+    assert turn["message_id"] == 13
+    assert turn["reply"] == "抹茶千層到了，我幫你放在桌邊。"
+
+
 def test_external_context_without_persist_visible_event_keeps_visible_system_event():
     body = ChatSyncRequest(
         content="請根據外部上下文回應。",

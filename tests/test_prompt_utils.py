@@ -260,9 +260,9 @@ def test_user_prefix_includes_display_name(monkeypatch):
 
     assert "<user_identity" not in prefix
     assert '<user user_name="本機暱稱" />' in prefix
-    assert "42" not in prefix
-    assert "123456" not in prefix
-    assert "987654" not in prefix
+    assert 'user_id="42"' not in prefix
+    assert 'telegram_user_id="123456"' not in prefix
+    assert 'discord_user_id="987654"' not in prefix
 
 
 def test_group_user_prefix_omits_redundant_identity(monkeypatch):

@@ -49,7 +49,7 @@ This plan does not implement PersonaCore scheduled world events, PersonaCore cli
 **Files:**
 - Modify: `tests/test_chat_external_context.py`
 
-- [ ] **Step 1: Add resolver test for preserving explicit false**
+- [x] **Step 1: Add resolver test for preserving explicit false**
 
 Add this test after `test_external_context_payload_is_generic_and_capped()`:
 
@@ -72,7 +72,7 @@ def test_external_context_payload_preserves_persist_visible_event_false():
     assert "persist_visible_event" not in summary
 ```
 
-- [ ] **Step 2: Run the new resolver test and verify it fails**
+- [x] **Step 2: Run the new resolver test and verify it fails**
 
 Run:
 
@@ -82,7 +82,7 @@ python -m pytest tests/test_chat_external_context.py::test_external_context_payl
 
 Expected: FAIL with `KeyError: 'persist_visible_event'`.
 
-- [ ] **Step 3: Add hidden visible-event policy test**
+- [x] **Step 3: Add hidden visible-event policy test**
 
 Add this test after `test_external_context_visible_event_is_not_llm_visible()`:
 
@@ -107,7 +107,7 @@ def test_external_context_persist_visible_event_false_skips_visible_system_event
     assert event is None
 ```
 
-- [ ] **Step 4: Run the hidden visible-event policy test and verify it fails**
+- [x] **Step 4: Run the hidden visible-event policy test and verify it fails**
 
 Run:
 
@@ -117,7 +117,7 @@ python -m pytest tests/test_chat_external_context.py::test_external_context_pers
 
 Expected: FAIL because `_build_external_context_visible_event()` still returns an `external_context_notice` tuple.
 
-- [ ] **Step 5: Add omitted-flag backward-compatibility test for generic external context**
+- [x] **Step 5: Add omitted-flag backward-compatibility test for generic external context**
 
 Add this test after `test_external_context_persist_visible_event_false_skips_visible_system_event()`:
 
@@ -143,7 +143,7 @@ def test_external_context_without_persist_visible_event_keeps_visible_system_eve
     assert debug_info["source"] == "personacore_world_event"
 ```
 
-- [ ] **Step 6: Run the omitted-flag compatibility test**
+- [x] **Step 6: Run the omitted-flag compatibility test**
 
 Run:
 
@@ -153,7 +153,7 @@ python -m pytest tests/test_chat_external_context.py::test_external_context_with
 
 Expected: PASS before implementation. This confirms the existing behavior that must remain unchanged.
 
-- [ ] **Step 7: Commit tests after the failing expectations are observed**
+- [x] **Step 7: Commit tests after the failing expectations are observed**
 
 Run:
 
@@ -172,7 +172,7 @@ Expected: commit succeeds with only `tests/test_chat_external_context.py` staged
 - Modify: `api/routers/chat_rest.py:522-615`
 - Modify: `api/routers/chat_rest.py:775-817`
 
-- [ ] **Step 1: Preserve `persist_visible_event=false` during normalization**
+- [x] **Step 1: Preserve `persist_visible_event=false` during normalization**
 
 In `_resolve_external_context_payload()`, after the `context = { ... }` block and before `if group_turn_limit is not None:`, add:
 
@@ -196,7 +196,7 @@ The surrounding block should read:
         context["group_turn_limit"] = group_turn_limit
 ```
 
-- [ ] **Step 2: Skip visible system event when the normalized flag is false**
+- [x] **Step 2: Skip visible system event when the normalized flag is false**
 
 In `_build_external_context_visible_event()`, immediately after:
 
@@ -228,7 +228,7 @@ def _build_external_context_visible_event(
         return None
 ```
 
-- [ ] **Step 3: Run the two new policy tests**
+- [x] **Step 3: Run the two new policy tests**
 
 Run:
 
@@ -241,7 +241,7 @@ python -m pytest `
 
 Expected: both tests PASS.
 
-- [ ] **Step 4: Commit implementation**
+- [x] **Step 4: Commit implementation**
 
 Run:
 
@@ -259,7 +259,7 @@ Expected: commit succeeds with only `api/routers/chat_rest.py` staged.
 **Files:**
 - Modify: `tests/test_chat_external_context.py`
 
-- [ ] **Step 1: Add explicit YouTube Live omitted-flag regression test**
+- [x] **Step 1: Add explicit YouTube Live omitted-flag regression test**
 
 Add this test after `test_external_context_visible_event_is_not_llm_visible()`:
 
@@ -292,7 +292,7 @@ def test_youtube_live_external_context_without_persist_flag_still_persists_visib
     assert debug_info["llm_visible"] is False
 ```
 
-- [ ] **Step 2: Add explicit YouTube Live false-flag behavior test**
+- [x] **Step 2: Add explicit YouTube Live false-flag behavior test**
 
 Add this test after `test_youtube_live_external_context_without_persist_flag_still_persists_visible_event()`:
 
@@ -321,7 +321,7 @@ def test_youtube_live_external_context_can_opt_out_of_visible_event_when_explici
     assert event is None
 ```
 
-- [ ] **Step 3: Keep YouTube Live Director hidden behavior unchanged**
+- [x] **Step 3: Keep YouTube Live Director hidden behavior unchanged**
 
 Run the existing test:
 
@@ -331,7 +331,7 @@ python -m pytest tests/test_chat_external_context.py::test_youtube_live_director
 
 Expected: PASS. This proves `youtube_live_director` remains hidden even without the new flag.
 
-- [ ] **Step 4: Run the explicit YouTubeBridge compatibility tests**
+- [x] **Step 4: Run the explicit YouTubeBridge compatibility tests**
 
 Run:
 
@@ -352,7 +352,7 @@ python -m pytest `
 
 Expected: all listed tests PASS.
 
-- [ ] **Step 5: Commit YouTubeBridge compatibility tests**
+- [x] **Step 5: Commit YouTubeBridge compatibility tests**
 
 Run:
 
@@ -371,7 +371,7 @@ Expected: commit succeeds with only `tests/test_chat_external_context.py` staged
 - Modify: `docs/API_使用說明書.md:149`
 - Modify: `docs/API_使用說明書.md:174-207`
 
-- [ ] **Step 1: Update the request body table row**
+- [x] **Step 1: Update the request body table row**
 
 Change the `external_context` row from:
 
@@ -385,7 +385,7 @@ to:
 | `external_context` | object | ❌ | null | transient 外部上下文，不寫入 private memory；可用 `persist_visible_event=false` 跳過可見 system event |
 ```
 
-- [ ] **Step 2: Add an `external_context` contract section before `transient_context`**
+- [x] **Step 2: Add an `external_context` contract section before `transient_context`**
 
 Insert this section before the existing `#### transient_context contract` heading:
 
@@ -439,7 +439,7 @@ PersonaCore autonomous assistant turn 最小 payload：
 ```
 ```
 
-- [ ] **Step 3: Run a docs grep check**
+- [x] **Step 3: Run a docs grep check**
 
 Run:
 
@@ -449,7 +449,7 @@ rg -n "persist_visible_event|external_context contract|youtube_live_chat_batch|p
 
 Expected: output includes the new field name, the new section heading, the YouTube compatibility sentence, and the PersonaCore example source.
 
-- [ ] **Step 4: Commit docs**
+- [x] **Step 4: Commit docs**
 
 Run:
 
@@ -469,7 +469,7 @@ Expected: commit succeeds with only `docs/API_使用說明書.md` staged.
 - Verify: `tests/test_chat_external_context.py`
 - Verify: `docs/API_使用說明書.md`
 
-- [ ] **Step 1: Run focused external context tests**
+- [x] **Step 1: Run focused external context tests**
 
 Run:
 
@@ -479,7 +479,7 @@ python -m pytest tests/test_chat_external_context.py -q
 
 Expected: all tests in `tests/test_chat_external_context.py` PASS.
 
-- [ ] **Step 2: Run focused orchestrator tests for tool-routing and final prompt safety**
+- [x] **Step 2: Run focused orchestrator tests for tool-routing and final prompt safety**
 
 Run:
 
@@ -489,7 +489,7 @@ python -m pytest tests/test_chat_orchestrator_unit/test_coordinator.py -q
 
 Expected: all tests in `tests/test_chat_orchestrator_unit/test_coordinator.py` PASS.
 
-- [ ] **Step 3: Inspect changed file scope**
+- [x] **Step 3: Inspect changed file scope**
 
 Run:
 
@@ -505,7 +505,7 @@ Expected:
 - No PersonaCore files are modified.
 - No YouTubeBridge engine/client files are modified.
 
-- [ ] **Step 4: Run final status check**
+- [x] **Step 4: Run final status check**
 
 Run:
 
@@ -514,6 +514,10 @@ git status -sb
 ```
 
 Expected: working tree is clean after commits, or only unrelated pre-existing files remain unstaged.
+
+## Post-Review Follow-Up
+
+PersonaCore world event 目前仍使用通用 `external_chat_context_block`，因此 final prompt 會標成 `trusted="false"`。本計畫刻意不變更這個行為；後續設計應補一個通用 `trust_boundary` / `system_generated` 類欄位來表示內部排程事件，而不是新增 `source == "personacore_world_event"` 的 prompt 特例。
 
 ## Self-Review
 
