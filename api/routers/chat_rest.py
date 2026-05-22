@@ -591,6 +591,8 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         "visible_events": visible_events,
         "summary": summary,
     }
+    if raw.get("persist_visible_event") is False:
+        context["persist_visible_event"] = False
     if group_turn_limit is not None:
         context["group_turn_limit"] = group_turn_limit
     if character_prompt_overrides:
@@ -777,6 +779,8 @@ def _build_external_context_visible_event(
     summary: dict,
 ) -> tuple[str, dict] | None:
     if not external_context:
+        return None
+    if external_context.get("persist_visible_event") is False:
         return None
     context_text = str(external_context.get("context_text") or "").strip()
     if not context_text:
