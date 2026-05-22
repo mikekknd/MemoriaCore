@@ -444,6 +444,58 @@ def test_external_context_visible_event_is_not_llm_visible():
     assert formatted == [{"role": "user", "content": "hello"}]
 
 
+def test_youtube_live_external_context_without_persist_flag_still_persists_visible_event():
+    body = ChatSyncRequest(
+        content="請根據已帶入的 YouTube 直播留言上下文回應。",
+        external_context={
+            "source": "youtube_live",
+            "context_text": "觀眾A: 這段怎麼看？",
+            "visible_events": [
+                {
+                    "event_id": "evt-a",
+                    "author_display_name": "觀眾A",
+                    "message_text": "這段怎麼看？",
+                }
+            ],
+            "summary": {"event_count": 1},
+        },
+    )
+    context, summary = _resolve_external_context_payload(body)
+
+    event = _build_external_context_visible_event(context, summary)
+
+    assert event is not None
+    content, debug_info = event
+    assert content == "YouTube Live 留言注入：1 則\n觀眾A: 這段怎麼看？"
+    assert debug_info["event_type"] == "youtube_live_chat_batch"
+    assert debug_info["source"] == "youtube_live"
+    assert debug_info["llm_visible"] is False
+
+
+def test_youtube_live_external_context_can_opt_out_of_visible_event_when_explicitly_false():
+    body = ChatSyncRequest(
+        content="請根據已帶入的 YouTube 直播留言上下文回應。",
+        external_context={
+            "source": "youtube_live",
+            "context_text": "觀眾A: 這段怎麼看？",
+            "visible_events": [
+                {
+                    "event_id": "evt-a",
+                    "author_display_name": "觀眾A",
+                    "message_text": "這段怎麼看？",
+                }
+            ],
+            "persist_visible_event": False,
+            "summary": {"event_count": 1},
+        },
+    )
+    context, summary = _resolve_external_context_payload(body)
+
+    event = _build_external_context_visible_event(context, summary)
+
+    assert event is None
+
+
 def test_external_context_persist_visible_event_false_skips_visible_system_event():
     body = ChatSyncRequest(
         content="請根據 PersonaCore world event 自然延續。",
