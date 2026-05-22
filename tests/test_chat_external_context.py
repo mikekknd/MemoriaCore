@@ -52,6 +52,24 @@ def test_external_context_payload_is_generic_and_capped():
     assert summary["truncated"] is True
 
 
+def test_external_context_payload_preserves_persist_visible_event_false():
+    body = ChatSyncRequest(
+        content="hello",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": "Event: 抹茶千層已經送上桌。",
+            "persist_visible_event": False,
+        },
+    )
+
+    context, summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert context["source"] == "personacore_world_event"
+    assert context["persist_visible_event"] is False
+    assert "persist_visible_event" not in summary
+
+
 def test_external_context_payload_ignores_empty_context():
     body = ChatSyncRequest(
         content="hello",
@@ -424,6 +442,47 @@ def test_external_context_visible_event_is_not_llm_visible():
         {"role": "user", "content": "hello"},
     ])
     assert formatted == [{"role": "user", "content": "hello"}]
+
+
+def test_external_context_persist_visible_event_false_skips_visible_system_event():
+    body = ChatSyncRequest(
+        content="請根據 PersonaCore world event 自然延續。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "[PersonaCore world event]\n"
+                "Event type: item_arrives\n"
+                "Event: 抹茶千層已經送上桌。"
+            ),
+            "persist_visible_event": False,
+        },
+    )
+    context, summary = _resolve_external_context_payload(body)
+
+    event = _build_external_context_visible_event(context, summary)
+
+    assert event is None
+
+
+def test_external_context_without_persist_visible_event_keeps_visible_system_event():
+    body = ChatSyncRequest(
+        content="請根據外部上下文回應。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": "Event: 抹茶千層已經送上桌。",
+        },
+    )
+    context, summary = _resolve_external_context_payload(body)
+
+    event = _build_external_context_visible_event(context, summary)
+
+    assert event is not None
+    content, debug_info = event
+    assert content.startswith("外部上下文注入：1 則")
+    assert "抹茶千層已經送上桌" in content
+    assert debug_info["event_type"] == "external_context_notice"
+    assert debug_info["llm_visible"] is False
+    assert debug_info["source"] == "personacore_world_event"
 
 
 def test_external_context_display_content_uses_only_visible_chat_lines():
