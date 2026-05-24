@@ -138,6 +138,34 @@ def test_external_context_payload_derives_router_context_from_context_text():
     assert "Event summary: 門鈴響了" in router_context["context_excerpt"]
 
 
+def test_external_context_payload_ignores_structured_router_context_fields():
+    body = ChatSyncRequest(
+        content="角色主動回合。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "Event summary: 門鈴響了\n"
+                "Event instruction: 請自然延續這個已發生的事件。"
+            ),
+            "router_context": {
+                "trigger_kind": {"kind": "world_event"},
+                "summary": {"text": "不應進入 router prompt"},
+                "instruction": ["不應進入 router prompt"],
+                "routing_hint": ["不應進入 router prompt"],
+            },
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    router_context = context["router_turn_context"]
+    assert router_context["trigger_kind"] == "personacore_world_event"
+    assert router_context["summary"] == "門鈴響了"
+    assert router_context["instruction"] == "請自然延續這個已發生的事件。"
+    assert "routing_hint" not in router_context
+
+
 def test_router_turn_context_for_external_context_returns_none_without_context_text():
     assert _router_turn_context_for_external_context(None) is None
     assert _router_turn_context_for_external_context({}) is None
