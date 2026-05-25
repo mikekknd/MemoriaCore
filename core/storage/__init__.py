@@ -11,7 +11,6 @@ from core.storage.persona_snapshots import PersonaSnapshotRepositoryMixin
 from core.storage.profiles import ProfileRepositoryMixin
 from core.storage.topic_cache import TopicCacheRepositoryMixin
 from core.storage.users import UserRepositoryMixin
-from core.storage.youtube_bridge_v2 import YouTubeBridgeV2RepositoryMixin
 from core.storage.constants import (
     DEFAULT_SYSTEM_PROMPT,
     GLOBAL_TOPIC_CHARACTER_ID,
@@ -36,5 +35,4 @@ __all__ = [
     "ConversationRepositoryMixin",
     "MessageStatsRepositoryMixin",
     "PersonaSnapshotRepositoryMixin",
-    "YouTubeBridgeV2RepositoryMixin",
 ]

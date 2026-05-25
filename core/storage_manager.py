@@ -16,7 +16,6 @@ from core.storage import (
     StorageCommonMixin,
     TopicCacheRepositoryMixin,
     UserRepositoryMixin,
-    YouTubeBridgeV2RepositoryMixin,
 )
 
 
@@ -31,19 +30,16 @@ class StorageManager(
     ConversationRepositoryMixin,
     MessageStatsRepositoryMixin,
     PersonaSnapshotRepositoryMixin,
-    YouTubeBridgeV2RepositoryMixin,
 ):
     def __init__(
         self,
         prefs_file=None,
         history_file=None,
         persona_snapshot_db_path=None,
-        youtube_bridge_v2_db_path=None,
     ):
         self.prefs_file = prefs_file or runtime_file("user_prefs.json")
         self.history_file = history_file or runtime_file("chat_history.json")
         self.persona_snapshot_db_path = persona_snapshot_db_path or runtime_file("persona_snapshots.db")
-        self.youtube_bridge_v2_db_path = youtube_bridge_v2_db_path or runtime_file("youtubebridge_v2.db")
 
 
 __all__ = [
