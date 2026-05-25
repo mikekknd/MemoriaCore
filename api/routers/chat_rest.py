@@ -519,6 +519,98 @@ def _chat_user_display_name(current_user: dict, external_context: dict | None) -
     return _user_display_name(current_user)
 
 
+ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS = 1200
+ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS = 500
+
+
+def _compact_router_context_text(value: object, max_chars: int) -> str:
+    text = str(value or "").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip()
+
+
+def _router_context_value(raw: dict, key: str) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    value = raw.get(key)
+    if not isinstance(value, str | int | float | bool):
+        return ""
+    return _compact_router_context_text(value, ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS)
+
+
+def _line_value_from_context_text(context_text: str, prefixes: tuple[str, ...]) -> str:
+    for line in str(context_text or "").replace("\r", "\n").splitlines():
+        stripped = line.strip()
+        for prefix in prefixes:
+            if stripped.lower().startswith(prefix.lower()):
+                return _compact_router_context_text(
+                    stripped[len(prefix) :],
+                    ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS,
+                )
+    return ""
+
+
+def _router_turn_context_for_external_context(
+    external_context: dict | None,
+    raw_router_context: dict | None = None,
+) -> dict | None:
+    if not isinstance(external_context, dict):
+        return None
+    context_text = str(external_context.get("context_text") or "").replace("\r", "\n").strip()
+    if not context_text:
+        return None
+
+    raw_router_context = raw_router_context if isinstance(raw_router_context, dict) else {}
+    source = str(external_context.get("source") or "external_bridge").strip() or "external_bridge"
+    summary = _router_context_value(raw_router_context, "summary")
+    instruction = _router_context_value(raw_router_context, "instruction")
+    trigger_kind = _router_context_value(raw_router_context, "trigger_kind") or source
+    routing_hint = _router_context_value(raw_router_context, "routing_hint")
+
+    if not summary:
+        summary = _line_value_from_context_text(
+            context_text,
+            (
+                "Event summary:",
+                "Event:",
+                "事件摘要：",
+                "事件：",
+            ),
+        )
+    if not instruction:
+        instruction = _line_value_from_context_text(
+            context_text,
+            (
+                "Event instruction:",
+                "Instruction:",
+                "事件指令：",
+                "指令：",
+            ),
+        )
+    if not summary:
+        summary = _compact_router_context_text(context_text, 240)
+
+    result = {
+        "source": source,
+        "trigger_kind": trigger_kind,
+        "summary": summary,
+        "persistence": "hidden" if external_context.get("persist_visible_event") is False else "default_visible_event",
+    }
+    if instruction:
+        result["instruction"] = instruction
+    if routing_hint:
+        result["routing_hint"] = routing_hint
+
+    excerpt = _compact_router_context_text(context_text, ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS)
+    if excerpt:
+        result["context_excerpt"] = excerpt
+    return result
+
+
 def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | None, dict]:
     """將外部 bridge payload 轉成暫態 LLM context。
 
@@ -572,6 +664,7 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         group_turn_limit = max(1, min(group_turn_limit, 12))
         summary["group_turn_limit"] = group_turn_limit
     visible_events = _normalize_visible_events(raw.get("visible_events"))
+    raw_router_context = raw.get("router_context") if isinstance(raw.get("router_context"), dict) else {}
     character_prompt_overrides = {}
     live_hosting = {}
     live_episode_plan = {}
@@ -593,6 +686,9 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
     }
     if raw.get("persist_visible_event") is False:
         context["persist_visible_event"] = False
+    router_turn_context = _router_turn_context_for_external_context(context, raw_router_context)
+    if router_turn_context:
+        context["router_turn_context"] = router_turn_context
     if group_turn_limit is not None:
         context["group_turn_limit"] = group_turn_limit
     if character_prompt_overrides:

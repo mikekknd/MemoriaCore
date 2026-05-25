@@ -410,6 +410,148 @@ def test_previous_context_excludes_persisted_current_user_message():
     assert "這一輪新主題" not in previous_context
 
 
+def test_group_router_prompt_includes_external_turn_context_without_polluting_previous_context():
+    router = _Router({
+        "conversation_intent": "group_discussion",
+        "action": "new_speaker_add",
+        "target_character_id": "char-a",
+        "reason": "世界事件需要角色回應",
+    })
+    messages = [
+        {"role": "user", "content": "上一輪主題"},
+        {"role": "assistant", "content": "上一輪 A。", "character_id": "char-a", "character_name": "角色A"},
+    ]
+
+    run_group_router(
+        messages,
+        _chars(),
+        router,
+        honor_mentions=False,
+        current_turn_instruction="請根據已帶入的外部上下文回應。",
+        current_turn_start_index=len(messages),
+        router_turn_context={
+            "source": "personacore_world_event",
+            "trigger_kind": "world_event",
+            "summary": "廚房水燒開了",
+            "instruction": "請自然用角色台詞延續這個已發生的事件。",
+            "persistence": "hidden",
+            "context_excerpt": (
+                "[PersonaCore world event]\n"
+                "Event summary: 廚房水燒開了\n"
+                "Event instruction: 請自然用角色台詞延續這個已發生的事件。"
+            ),
+        },
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    turn_state = _extract_turn_state(prompt_text)
+    previous_context = _extract_previous_context(prompt_text)
+    external_turn_context = _extract_external_turn_context(prompt_text)
+
+    assert turn_state["original_user_request"] == (
+        "外部事件觸發（personacore_world_event）：廚房水燒開了。"
+        "請自然用角色台詞延續這個已發生的事件。"
+    )
+    assert external_turn_context["source"] == "personacore_world_event"
+    assert external_turn_context["summary"] == "廚房水燒開了"
+    assert external_turn_context["persistence"] == "hidden"
+    assert "上一輪主題" in previous_context
+    assert "上一輪 A" in previous_context
+    assert "廚房水燒開了" not in previous_context
+
+
+def test_group_router_prompt_renders_null_external_turn_context_when_absent():
+    router = _Router({
+        "conversation_intent": "group_discussion",
+        "action": "new_speaker_add",
+        "target_character_id": "char-a",
+        "reason": "一般使用者輸入",
+    })
+
+    run_group_router(
+        [{"role": "user", "content": "一般問題"}],
+        _chars(),
+        router,
+        honor_mentions=False,
+        current_turn_instruction="一般問題",
+        current_turn_start_index=1,
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    assert _extract_external_turn_context(prompt_text) is None
+    assert _extract_turn_state(prompt_text)["original_user_request"] == "一般問題"
+
+
+def test_group_router_prompt_compacts_external_turn_context():
+    router = _Router({
+        "conversation_intent": "group_discussion",
+        "action": "new_speaker_add",
+        "target_character_id": "char-a",
+        "reason": "外部事件需要回應",
+    })
+    long_summary = "水" * 1300
+
+    run_group_router(
+        [{"role": "user", "content": "請根據已帶入的外部上下文回應。"}],
+        _chars(),
+        router,
+        honor_mentions=False,
+        current_turn_instruction="請根據已帶入的外部上下文回應。",
+        current_turn_start_index=1,
+        router_turn_context={
+            "source": "personacore_world_event",
+            "summary": long_summary,
+            "unexpected": "不應進入 prompt",
+        },
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    external_turn_context = _extract_external_turn_context(prompt_text)
+    assert external_turn_context["summary"] == "水" * 1200
+    assert "unexpected" not in external_turn_context
+    assert "不應進入 prompt" not in prompt_text
+
+
+def test_group_router_keeps_youtube_live_director_turn_label_when_external_turn_context_present():
+    router = _Router({
+        "conversation_intent": "group_discussion",
+        "action": "new_speaker_add",
+        "target_character_id": "char-a",
+        "reason": "直播導播回合",
+    })
+
+    run_group_router(
+        [{"role": "user", "content": "直播導播控制。"}],
+        _chars(),
+        router,
+        honor_mentions=False,
+        discussion_mode="youtube_live",
+        current_turn_instruction="直播導播控制。",
+        current_turn_intent={
+            "source": "youtube_live_director",
+            "action": "audience_response",
+        },
+        current_turn_start_index=1,
+        router_turn_context={
+            "source": "youtube_live_director",
+            "trigger_kind": "live_director",
+            "summary": "聊天室集中問候主持人",
+            "instruction": "回應本批觀眾留言",
+            "persistence": "default_visible_event",
+        },
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    turn_state = _extract_turn_state(prompt_text)
+    external_turn_context = _extract_external_turn_context(prompt_text)
+
+    assert turn_state["original_user_request"] == "YouTube Live audience response turn"
+    assert turn_state["turn_intent"]["source"] == "youtube_live_director"
+    assert turn_state["turn_intent"]["action"] == "audience_response"
+    assert external_turn_context["source"] == "youtube_live_director"
+    assert external_turn_context["summary"] == "聊天室集中問候主持人"
+
+
 def test_continue_discussion_intent_with_stop_all_spoken_stops_when_valid():
     router = _Router({
         "conversation_intent": "continue_group_discussion",
@@ -1260,6 +1402,8 @@ def test_group_router_prompt_contract_mentions_turn_intent():
     assert "turn_intent" in source
     assert "audience_response" in source
     assert "super_chat_response" in source
+    assert "external_turn_context_json" in source
+    assert "本輪外部觸發事件" in source
 
 
 def _extract_turn_state(prompt_text: str) -> dict:
@@ -1278,3 +1422,12 @@ def _extract_previous_context(prompt_text: str) -> str:
     match = re.search(r"<previous_context>\s*(.*?)\s*</previous_context>", prompt_text, re.S)
     assert match, prompt_text
     return match.group(1)
+
+
+def _extract_external_turn_context(prompt_text: str) -> dict | None:
+    match = re.search(r"<external_turn_context_json>\s*(.*?)\s*</external_turn_context_json>", prompt_text, re.S)
+    assert match, prompt_text
+    raw = match.group(1).strip()
+    if raw == "null":
+        return None
+    return json.loads(raw)

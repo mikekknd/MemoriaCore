@@ -228,6 +228,90 @@ async def test_group_loop_uses_transient_turn_instruction_without_user_message(m
 
 
 @pytest.mark.asyncio
+async def test_group_loop_passes_router_turn_context_to_group_router(monkeypatch):
+    from api.routers.chat import group_loop
+
+    session = SessionState(
+        session_id="sid-router-context",
+        messages=[],
+        user_id="user-1",
+        character_id="char-a",
+        active_character_ids=["char-a", "char-b"],
+        session_mode="group",
+        persona_face="public",
+        channel="dashboard",
+    )
+    session_manager._sessions[session.session_id] = session
+
+    class FakeCharacterManager:
+        def get_character(self, character_id):
+            return {
+                "character_id": character_id,
+                "name": "角色A" if character_id == "char-a" else "角色B",
+                "system_prompt": "測試角色",
+                "tts_language": "",
+                "tts_rules": "",
+            }
+
+    captured_kwargs = []
+
+    def fake_group_router(*_args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return GroupRouterResult(False, None, "done", action="stop_no_new_value")
+
+    def fake_orchestration(*_args, **_kwargs):
+        return (
+            "fallback reply",
+            [],
+            {},
+            False,
+            None,
+            "內在想法",
+            None,
+            None,
+            None,
+            "",
+            [],
+            None,
+        )
+
+    router_turn_context = {
+        "source": "personacore_world_event",
+        "trigger_kind": "world_event",
+        "summary": "廚房水燒開了",
+        "instruction": "請自然用角色台詞延續這個已發生的事件。",
+        "persistence": "hidden",
+    }
+
+    monkeypatch.setattr(group_loop, "get_character_manager", lambda: FakeCharacterManager())
+    monkeypatch.setattr(group_loop, "get_router", lambda: object())
+    monkeypatch.setattr(group_loop, "run_group_router", fake_group_router)
+
+    try:
+        turns = await group_loop.run_group_chat_loop(
+            session=session,
+            user_prompt="請根據已帶入的外部上下文回應。",
+            user_prefs={"group_chat_max_bot_turns": 2, "group_chat_turn_delay_seconds": 0},
+            orchestration_fn=fake_orchestration,
+            transient_user_content="請根據已帶入的外部上下文回應。",
+            extra_session_ctx={
+                "external_chat_context": {
+                    "source": "personacore_world_event",
+                    "context_text": "Event summary: 廚房水燒開了",
+                    "router_turn_context": router_turn_context,
+                },
+                "memory_write_policy": "transient",
+            },
+        )
+    finally:
+        session_manager._sessions.clear()
+
+    assert turns
+    assert captured_kwargs
+    assert captured_kwargs[0]["router_turn_context"] == router_turn_context
+
+
+@pytest.mark.asyncio
 async def test_group_loop_uses_external_history_without_persisting_it_to_draft(monkeypatch):
     from api.routers.chat import group_loop
 

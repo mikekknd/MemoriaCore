@@ -18,6 +18,7 @@ from api.routers.chat_rest import (
     _resolve_chat_display_content,
     _resolve_external_context_payload,
     _resolve_transient_context_payload,
+    _router_turn_context_for_external_context,
     _transient_user_content_for_external_context,
 )
 from core.chat_orchestrator.generation_context import build_final_chat_context, memory_lookup_skip_reason
@@ -69,6 +70,106 @@ def test_external_context_payload_preserves_persist_visible_event_false():
     assert context["source"] == "personacore_world_event"
     assert context["persist_visible_event"] is False
     assert "persist_visible_event" not in summary
+
+
+def test_external_context_payload_preserves_explicit_router_context():
+    body = ChatSyncRequest(
+        content="角色主動回合。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "[PersonaCore world event]\n"
+                "Event summary: 廚房水燒開了\n"
+                "Event instruction: 請自然用角色台詞延續這個已發生的事件。"
+            ),
+            "persist_visible_event": False,
+            "router_context": {
+                "trigger_kind": "world_event",
+                "summary": "廚房水燒開了",
+                "instruction": "請自然用角色台詞延續這個已發生的事件。",
+                "routing_hint": "判斷預設助理或角色誰更適合回應",
+            },
+        },
+    )
+
+    context, summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    assert summary["source"] == "personacore_world_event"
+    assert context["router_turn_context"] == {
+        "source": "personacore_world_event",
+        "trigger_kind": "world_event",
+        "summary": "廚房水燒開了",
+        "instruction": "請自然用角色台詞延續這個已發生的事件。",
+        "persistence": "hidden",
+        "routing_hint": "判斷預設助理或角色誰更適合回應",
+        "context_excerpt": (
+            "[PersonaCore world event]\n"
+            "Event summary: 廚房水燒開了\n"
+            "Event instruction: 請自然用角色台詞延續這個已發生的事件。"
+        ),
+    }
+
+
+def test_external_context_payload_derives_router_context_from_context_text():
+    body = ChatSyncRequest(
+        content="角色主動回合。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "[PersonaCore world event]\n"
+                "Event type: manual_debug_event\n"
+                "Event summary: 門鈴響了\n"
+                "Event instruction: 請自然延續這個已發生的事件。"
+            ),
+            "persist_visible_event": False,
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    router_context = context["router_turn_context"]
+    assert router_context["source"] == "personacore_world_event"
+    assert router_context["trigger_kind"] == "personacore_world_event"
+    assert router_context["summary"] == "門鈴響了"
+    assert router_context["instruction"] == "請自然延續這個已發生的事件。"
+    assert router_context["persistence"] == "hidden"
+    assert "Event summary: 門鈴響了" in router_context["context_excerpt"]
+
+
+def test_external_context_payload_ignores_structured_router_context_fields():
+    body = ChatSyncRequest(
+        content="角色主動回合。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "Event summary: 門鈴響了\n"
+                "Event instruction: 請自然延續這個已發生的事件。"
+            ),
+            "router_context": {
+                "trigger_kind": {"kind": "world_event"},
+                "summary": {"text": "不應進入 router prompt"},
+                "instruction": ["不應進入 router prompt"],
+                "routing_hint": ["不應進入 router prompt"],
+            },
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    router_context = context["router_turn_context"]
+    assert router_context["trigger_kind"] == "personacore_world_event"
+    assert router_context["summary"] == "門鈴響了"
+    assert router_context["instruction"] == "請自然延續這個已發生的事件。"
+    assert "routing_hint" not in router_context
+
+
+def test_router_turn_context_for_external_context_returns_none_without_context_text():
+    assert _router_turn_context_for_external_context(None) is None
+    assert _router_turn_context_for_external_context({}) is None
+    assert _router_turn_context_for_external_context({"source": "x", "context_text": " "}) is None
 
 
 def test_chat_sync_request_supports_tool_routing_policy():

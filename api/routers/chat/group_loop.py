@@ -95,6 +95,7 @@ async def run_group_chat_loop(
     live_episode_plan = _live_episode_plan_for_external_context(extra_session_ctx)
     final_closing_hint = _final_closing_hint_for_external_context(extra_session_ctx)
     current_turn_intent = _router_intent_for_external_context(extra_session_ctx)
+    router_turn_context = _router_turn_context_for_external_context(extra_session_ctx)
 
     for turn_index in range(max_turns):
         if _group_loop_cancel_requested(cancel_event):
@@ -118,6 +119,7 @@ async def run_group_chat_loop(
             current_turn_instruction=turn_instruction,
             current_turn_intent=current_turn_intent,
             current_turn_start_index=current_turn_start_index,
+            router_turn_context=router_turn_context,
         )
         if _group_loop_cancel_requested(cancel_event):
             break
@@ -427,6 +429,16 @@ def _router_intent_for_external_context(extra_session_ctx: dict | None) -> dict 
     if current_topic:
         intent["current_topic"] = current_topic
     return intent
+
+
+def _router_turn_context_for_external_context(extra_session_ctx: dict | None) -> dict | None:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return None
+    router_turn_context = external_context.get("router_turn_context")
+    if isinstance(router_turn_context, dict) and router_turn_context:
+        return router_turn_context
+    return None
 
 
 def _youtube_live_director_external_context(extra_session_ctx: dict | None) -> dict | None:
