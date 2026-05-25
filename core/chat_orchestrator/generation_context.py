@@ -106,8 +106,7 @@ def memory_lookup_skip_reason(session_ctx: dict | None) -> str | None:
     source = ""
     if isinstance(external_context, dict):
         source = str(external_context.get("source") or "").strip()
-    if source in {"youtube_live", "youtube_live_director"}:
-        return source
+        return source or "external_context"
     if str(session_ctx.get("channel") or "").strip() == "youtube_live":
         return "youtube_live"
     return None

@@ -433,6 +433,55 @@ class TestDualLayerCoordinator:
         assert result[4] is None
         assert "<retrieved_memory_context>" not in latest_user
 
+    def test_dual_layer_personacore_world_event_skips_memory_lookup(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, mock_analyzer, sample_user_prefs
+    ):
+        """PersonaCore 世界事件是系統事件，不應送進 query expansion 或記憶檢索。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        memory_calls = []
+
+        def record_memory_call(name):
+            def _inner(*args, **kwargs):
+                memory_calls.append(name)
+                if name == "expand_query":
+                    return {"expanded_keywords": "不該出現", "entity_confidence": 1.0}
+                return []
+            return _inner
+
+        mock_analyzer.detect_topic_shift.side_effect = AssertionError("system event should skip topic shift")
+        mock_memory_system.expand_query = record_memory_call("expand_query")
+        mock_memory_system.search_blocks = record_memory_call("search_blocks")
+        mock_memory_system.search_core_memories = record_memory_call("search_core_memories")
+        mock_memory_system.search_profile_by_query = record_memory_call("search_profile_by_query")
+        mock_memory_system.get_static_profile_prompt = record_memory_call("get_static_profile_prompt")
+        mock_memory_system.get_proactive_topics_prompt = record_memory_call("get_proactive_topics_prompt")
+
+        result = run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請根據 PersonaCore world event 讓角色自然延續"}],
+            last_entities=["舊標籤"],
+            user_prompt=(
+                "請根據 PersonaCore world event 讓角色自然延續，只輸出角色會說出口的台詞。\n\n"
+                "[外部上下文已由 personacore_world_event 提供；請只根據本次注入的 external_chat_context 回應。"
+                "不要開啟瀏覽器、不要搜尋網頁、不要嘗試連線外部平台。]"
+            ),
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "external_chat_context": {
+                    "source": "personacore_world_event",
+                    "context_text": "蛋糕已經送上桌。",
+                },
+            },
+        )
+
+        retrieval_ctx = result[2]
+
+        assert memory_calls == []
+        assert retrieval_ctx["expanded_keywords"] == ""
+        assert retrieval_ctx["has_memory"] is False
+        assert retrieval_ctx["block_count"] == 0
+        assert retrieval_ctx["memory_lookup_skipped"] == "personacore_world_event"
+
     def test_dual_layer_tool_runtime_excludes_transient_context_but_final_prompt_keeps_it(
         self, mock_deps, mock_router_with_tools, sample_user_prefs
     ):

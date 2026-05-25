@@ -20,7 +20,7 @@ from api.routers.chat_rest import (
     _resolve_transient_context_payload,
     _transient_user_content_for_external_context,
 )
-from core.chat_orchestrator.generation_context import build_final_chat_context
+from core.chat_orchestrator.generation_context import build_final_chat_context, memory_lookup_skip_reason
 from core.chat_orchestrator.dialogue_format import format_history_for_llm
 from core.chat_orchestrator.dataclasses import PipelineContext
 from core.chat_orchestrator.group_followup import (
@@ -1179,6 +1179,20 @@ def test_external_context_forces_transient_memory_write_policy():
     body = ChatSyncRequest(content="hello", memory_write_policy="normal")
 
     assert _memory_write_policy_for_request(body, {"source": "youtube_live"}) == "transient"
+
+
+def test_any_external_context_skips_memory_lookup():
+    assert (
+        memory_lookup_skip_reason(
+            {
+                "external_chat_context": {
+                    "source": "personacore_world_event",
+                    "context_text": "蛋糕已經送上桌。",
+                }
+            }
+        )
+        == "personacore_world_event"
+    )
 
 
 def test_youtube_live_external_context_uses_public_live_scope():
