@@ -32,7 +32,66 @@ class MemoryAnalyzer:
         normalized_quote = self._normalize_profile_evidence(evidence_quote)
         if not normalized_quote:
             return False
-        return any(normalized_quote in self._normalize_profile_evidence(line) for line in user_lines)
+        normalized_user_lines = [
+            self._normalize_profile_evidence(line) for line in user_lines
+        ]
+        if any(normalized_quote in line for line in normalized_user_lines):
+            return True
+        return normalized_quote in "".join(normalized_user_lines)
+
+    @staticmethod
+    def _remove_json_trailing_commas(text: str) -> str:
+        cleaned = []
+        in_string = False
+        escaped = False
+        length = len(text)
+        index = 0
+
+        while index < length:
+            char = text[index]
+
+            if in_string:
+                cleaned.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+
+            if char == '"':
+                in_string = True
+                cleaned.append(char)
+            elif char == ",":
+                lookahead = index + 1
+                while lookahead < length and text[lookahead].isspace():
+                    lookahead += 1
+                if lookahead < length and text[lookahead] in "}]":
+                    index += 1
+                    continue
+                cleaned.append(char)
+            else:
+                cleaned.append(char)
+
+            index += 1
+
+        return "".join(cleaned)
+
+    @classmethod
+    def _decode_llm_json_object(cls, raw_text: str) -> dict:
+        start = raw_text.find('{')
+        if start == -1:
+            raise ValueError("找不到 JSON")
+
+        decoder = json.JSONDecoder()
+        try:
+            parsed, _ = decoder.raw_decode(raw_text, start)
+        except json.JSONDecodeError:
+            cleaned = cls._remove_json_trailing_commas(raw_text[start:])
+            parsed, _ = decoder.raw_decode(cleaned, 0)
+        return parsed
 
     def _is_valid_profile_fact(self, fact: dict, user_lines: list[str]) -> bool:
         fact_key = str(fact.get("fact_key") or "").strip().lower()
@@ -124,7 +183,7 @@ class MemoryAnalyzer:
             if _start == -1:
                 return {"error": f"找不到 JSON -> {raw_text}"}
             try:
-                parsed, _ = json.JSONDecoder().raw_decode(raw_text, _start)
+                parsed = self._decode_llm_json_object(raw_text)
             except Exception as _je:
                 return {"error": f"JSON 解析失敗: {_je} -> {raw_text[:200]}"}
             new_mems = parsed.get("new_memories", [])

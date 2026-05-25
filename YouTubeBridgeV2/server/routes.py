@@ -1,0 +1,966 @@
+"""FastAPI route contracts for YouTubeBridgeV2.
+
+Routes 只負責 request/response mapping 與 SSE envelope。所有 runtime 行為
+委派給 runtime service 或 query service；本模組不直接改 phase、不呼叫
+adapter、不碰 storage internals。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from itertools import chain
+from pathlib import Path
+from typing import Any, Iterable, Literal
+
+from fastapi import APIRouter, Body, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError
+
+from core.runtime_paths import runtime_path
+from YouTubeBridgeV2.display.events import sanitize_display_value
+from YouTubeBridgeV2.server.auth_config import (
+    delete_v2_api_key_entry,
+    list_v2_api_key_entries,
+    upsert_v2_api_key_entry,
+)
+from YouTubeBridgeV2.query_service import V2QueryServiceError
+from YouTubeBridgeV2.runtime.application_service import (
+    RuntimeCommand,
+    RuntimeCommandType,
+)
+
+
+router = APIRouter(prefix="/v2", tags=["YouTubeBridgeV2"])
+
+
+class RuntimeServiceNotConfigured(RuntimeError):
+    """V2 runtime service 尚未由 application wiring 注入."""
+
+
+class QueryServiceNotConfigured(RuntimeError):
+    """V2 query service 尚未由 application wiring 注入."""
+
+
+class StorageManagerNotConfigured(RuntimeError):
+    """StorageManager 尚未由 application wiring 注入."""
+
+
+class SessionCreateRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    session_id: str = Field(..., min_length=1)
+    plan_id: str | None = None
+    aftertalk_policy: Literal["disabled", "auto"] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class PlanBindRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    plan: dict[str, object]
+
+
+class AftertalkPolicyRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    aftertalk_policy: Literal["disabled", "auto"]
+
+
+class AutomationControlRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    enabled: bool | None = None
+    paused: bool | None = None
+    reason: str | None = None
+
+
+class ManualCloseRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    reason: str | None = None
+
+
+class TickRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+
+
+class YouTubeEventIngestRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    youtube_event: dict[str, object]
+    polling_cursor: dict[str, object] | None = None
+    page_info: dict[str, object] | None = None
+
+
+class ApiKeyCreateRequest(BaseModel):
+    key: str = Field(..., min_length=1)
+    permission_group: Literal["operator", "display", "observer"]
+
+
+class TTSDeliveryAckRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+
+
+class TTSDeliveryTimeoutRequest(BaseModel):
+    command_id: str = Field(..., min_length=1)
+    timeout_seconds: int = Field(..., gt=0)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+def get_runtime_service() -> object:
+    """FastAPI dependency placeholder for Runtime Application Service."""
+
+    raise RuntimeServiceNotConfigured("runtime service dependency is not configured")
+
+
+def get_query_service() -> object:
+    """FastAPI dependency placeholder for read/query service."""
+
+    raise QueryServiceNotConfigured("query service dependency is not configured")
+
+
+def get_storage_manager() -> object:
+    """FastAPI dependency placeholder for StorageManager-backed prefs."""
+
+    raise StorageManagerNotConfigured("storage manager dependency is not configured")
+
+
+def get_now() -> datetime:
+    """FastAPI dependency for deterministic command timestamps in tests."""
+
+    return datetime.now(timezone.utc)
+
+
+@router.get("/api-keys", response_model=None)
+def list_api_keys_endpoint(
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object]:
+    """Return sanitized V2 API key entries for operator management."""
+
+    return {
+        "api_keys": [
+            _object_to_dict(entry)
+            for entry in list_v2_api_key_entries(storage_manager)
+        ]
+    }
+
+
+@router.post("/api-keys", response_model=None)
+def create_api_key_endpoint(
+    raw_body: object = Body(...),
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object] | JSONResponse:
+    """Create or update a V2 API key entry without echoing the raw key."""
+
+    body = _validate_body(ApiKeyCreateRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    try:
+        entry = upsert_v2_api_key_entry(
+            storage_manager,
+            key=body.key,
+            permission_group=body.permission_group,
+        )
+    except ValueError:
+        return _validation_error_response(raw_body)
+    return {
+        "status": "ok",
+        "api_key": _object_to_dict(entry),
+    }
+
+
+@router.delete("/api-keys/{key_fingerprint}", response_model=None)
+def delete_api_key_endpoint(
+    key_fingerprint: str,
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object]:
+    """Revoke a V2 API key by fingerprint."""
+
+    removed = delete_v2_api_key_entry(storage_manager, key_fingerprint=key_fingerprint)
+    return {
+        "status": "ok",
+        "removed": removed,
+        "api_keys": [
+            _object_to_dict(entry)
+            for entry in list_v2_api_key_entries(storage_manager)
+        ],
+    }
+
+
+@router.get("/episode-plans", response_model=None)
+def list_episode_plans_endpoint() -> dict[str, object]:
+    """Return sanitized local EpisodePlans packages for operator plan binding."""
+
+    root = runtime_path("YouTubeBridge", "EpisodePlans")
+    return {"episode_plans": _list_episode_plan_packages(root)}
+
+
+@router.post("/sessions", response_model=None)
+def create_session_endpoint(
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Create a V2 session by delegating to runtime service."""
+
+    body = _validate_body(SessionCreateRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=body.session_id,
+        command_type=RuntimeCommandType.CREATE_SESSION,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={
+            "plan_id": body.plan_id,
+            "aftertalk_policy": body.aftertalk_policy,
+            "metadata": body.metadata,
+        },
+    )
+    return _call_runtime(runtime_service, "create_session", command, now)
+
+
+@router.get("/sessions/{session_id}", response_model=None)
+def get_session_endpoint(
+    session_id: str,
+    request: Request,
+    query_service: object = Depends(get_query_service),
+) -> dict[str, object] | JSONResponse:
+    """Return public V2 session status through query service."""
+
+    try:
+        return _status_with_permission_context(
+            query_service.get_session(session_id),
+            request,
+        )
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
+
+
+@router.post("/sessions/{session_id}/plan", response_model=None)
+def bind_plan_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Bind a LiveEpisodePlan by delegating to runtime service."""
+
+    body = _validate_body(PlanBindRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.BIND_PLAN,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={"plan": body.plan},
+    )
+    return _call_runtime(runtime_service, "bind_plan", command, now)
+
+
+@router.get("/sessions/{session_id}/phase", response_model=None)
+def get_phase_endpoint(
+    session_id: str,
+    request: Request,
+    query_service: object = Depends(get_query_service),
+) -> dict[str, object] | JSONResponse:
+    """Return phase status body through query service."""
+
+    try:
+        return _status_with_permission_context(
+            query_service.get_phase(session_id),
+            request,
+        )
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
+
+
+@router.post("/sessions/{session_id}/aftertalk-policy", response_model=None)
+def update_aftertalk_policy_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Update aftertalk policy by delegating to runtime service."""
+
+    body = _validate_body(AftertalkPolicyRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.UPDATE_AFTERTALK_POLICY,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={"aftertalk_policy": body.aftertalk_policy},
+    )
+    return _call_runtime(runtime_service, "update_aftertalk_policy", command, now)
+
+
+@router.post("/sessions/{session_id}/automation-control", response_model=None)
+def update_automation_control_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Update runtime automation safety controls through runtime service."""
+
+    body = _validate_body(AutomationControlRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    if body.enabled is None and body.paused is None:
+        return _validation_error_response(raw_body)
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.UPDATE_AUTOMATION_CONTROL,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={
+            "enabled": body.enabled,
+            "paused": body.paused,
+            "reason": body.reason,
+        },
+    )
+    return _call_runtime(runtime_service, "update_automation_control", command, now)
+
+
+@router.post("/sessions/{session_id}/manual-close", response_model=None)
+def manual_close_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Request manual close by delegating to runtime service."""
+
+    body = _validate_body(ManualCloseRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.MANUAL_CLOSE,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={"reason": body.reason},
+    )
+    return _call_runtime(runtime_service, "request_manual_close", command, now)
+
+
+@router.post("/sessions/{session_id}/tick", response_model=None)
+def tick_session_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Advance one explicit runtime tick through runtime service."""
+
+    body = _validate_body(TickRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.TICK,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={},
+    )
+    return _call_runtime(runtime_service, "tick_session", command, now)
+
+
+@router.post("/sessions/{session_id}/youtube-events", response_model=None)
+def ingest_youtube_event_endpoint(
+    session_id: str,
+    request: Request,
+    raw_body: object = Body(...),
+    runtime_service: object = Depends(get_runtime_service),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Ingest one YouTube event by delegating to runtime service."""
+
+    body = _validate_body(YouTubeEventIngestRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    command = _command(
+        command_id=body.command_id,
+        session_id=session_id,
+        command_type=RuntimeCommandType.HANDLE_YOUTUBE_EVENT,
+        now=now,
+        permission_context=_request_permission_context(request),
+        payload={
+            "youtube_event": body.youtube_event,
+            "polling_cursor": body.polling_cursor,
+            "page_info": body.page_info,
+        },
+    )
+    return _call_runtime(runtime_service, "handle_youtube_event", command, now)
+
+
+@router.get("/sessions/{session_id}/events", response_model=None)
+def get_session_events_endpoint(
+    session_id: str,
+    limit: int = 100,
+    query_service: object = Depends(get_query_service),
+) -> dict[str, object] | JSONResponse:
+    """Return public event history through query service."""
+
+    safe_limit = max(1, min(int(limit), 500))
+    try:
+        events = query_service.get_session_events(session_id, safe_limit)
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
+    return {
+        "session_id": session_id,
+        "events": _sanitize_public_payload(list(events)),
+    }
+
+
+@router.get("/sessions/{session_id}/tts-queue", response_model=None)
+def get_tts_queue_endpoint(
+    session_id: str,
+    limit: int = 100,
+    status: str | None = None,
+    query_service: object = Depends(get_query_service),
+) -> dict[str, object] | JSONResponse:
+    """Return public TTS delivery queue state."""
+
+    try:
+        queue = query_service.get_tts_queue(session_id, max(1, min(int(limit), 500)), status)
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
+    return {
+        "session_id": session_id,
+        "tts_queue": _sanitize_public_payload(list(queue)),
+    }
+
+
+@router.post("/sessions/{session_id}/tts-deliveries/{delivery_id}/ack", response_model=None)
+def ack_tts_delivery_endpoint(
+    session_id: str,
+    delivery_id: str,
+    raw_body: object = Body(...),
+    storage_manager: object = Depends(get_storage_manager),
+    now: datetime = Depends(get_now),
+) -> dict[str, object] | JSONResponse:
+    """Acknowledge one TTS delivery without changing runtime phase."""
+
+    body = _validate_body(TTSDeliveryAckRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    try:
+        return _sanitize_public_payload(
+            storage_manager.ack_v2_tts_delivery(
+                session_id,
+                delivery_id,
+                {"acknowledged_at": now, "command_id": body.command_id},
+            )
+        )
+    except KeyError:
+        return _query_not_found_response(session_id)
+
+
+@router.post("/sessions/{session_id}/tts-deliveries/{delivery_id}/timeout", response_model=None)
+def timeout_tts_delivery_endpoint(
+    session_id: str,
+    delivery_id: str,
+    raw_body: object = Body(...),
+    storage_manager: object = Depends(get_storage_manager),
+) -> dict[str, object] | JSONResponse:
+    """Mark one TTS delivery timeout without changing runtime phase."""
+
+    body = _validate_body(TTSDeliveryTimeoutRequest, raw_body)
+    if isinstance(body, JSONResponse):
+        return body
+    try:
+        return _sanitize_public_payload(
+            storage_manager.timeout_v2_tts_delivery(
+                session_id,
+                delivery_id,
+                {
+                    "timeout_seconds": body.timeout_seconds,
+                    "metadata": _sanitize_public_payload(body.metadata),
+                    "command_id": body.command_id,
+                },
+            )
+        )
+    except KeyError:
+        return _query_not_found_response(session_id)
+
+
+@router.get("/sessions/{session_id}/operator-stream", response_model=None)
+def operator_stream_endpoint(
+    session_id: str,
+    query_service: object = Depends(get_query_service),
+) -> StreamingResponse | JSONResponse:
+    """Return operator-safe SSE stream."""
+
+    try:
+        events = _prime_event_iterable(query_service.iter_operator_events(session_id))
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
+    return StreamingResponse(
+        _sse_stream(events, display_safe=False),
+        media_type="text/event-stream",
+    )
+
+
+@router.get("/sessions/{session_id}/display-stream", response_model=None)
+def display_stream_endpoint(
+    session_id: str,
+    query_service: object = Depends(get_query_service),
+) -> StreamingResponse | JSONResponse:
+    """Return display-safe SSE stream."""
+
+    try:
+        events = _prime_event_iterable(query_service.iter_display_events(session_id))
+    except V2QueryServiceError:
+        return _query_not_found_response(session_id)
+    return StreamingResponse(
+        _sse_stream(events, display_safe=True),
+        media_type="text/event-stream",
+    )
+
+
+def _command(
+    *,
+    command_id: str,
+    session_id: str,
+    command_type: RuntimeCommandType,
+    now: datetime,
+    permission_context: object | None = None,
+    payload: dict[str, object],
+) -> RuntimeCommand:
+    return RuntimeCommand(
+        command_id=command_id,
+        session_id=session_id,
+        command_type=command_type,
+        issued_at=now,
+        permission_context=permission_context,
+        payload={key: value for key, value in payload.items() if value is not None},
+    )
+
+
+def _request_permission_context(request: Request) -> object | None:
+    return getattr(request.state, "youtubebridge_v2_permission", None)
+
+
+def _list_episode_plan_packages(root: Path) -> list[dict[str, object]]:
+    if not root.exists() or not root.is_dir():
+        return []
+
+    plans: list[dict[str, object]] = []
+    for plan_path in sorted(root.rglob("episode-plan.json")):
+        package = _episode_plan_package(root, plan_path)
+        if package:
+            plans.append(package)
+    return sorted(
+        plans,
+        key=lambda item: (
+            str(item.get("title") or "").casefold(),
+            str(item.get("plan_id") or "").casefold(),
+            str(item.get("folder") or "").casefold(),
+        ),
+    )
+
+
+def _episode_plan_package(root: Path, plan_path: Path) -> dict[str, object] | None:
+    try:
+        raw_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(raw_plan, dict):
+        return None
+
+    plan = _sanitize_public_payload(raw_plan)
+    if not isinstance(plan, dict):
+        return None
+    plan = _bindable_episode_plan(plan)
+    try:
+        folder = plan_path.parent.relative_to(root).as_posix()
+    except ValueError:
+        return None
+    plan_id = str(plan.get("plan_id") or folder or plan_path.parent.name)
+    title = str(plan.get("title") or plan.get("plan_title") or plan_id)
+    try:
+        updated_at = datetime.fromtimestamp(plan_path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        updated_at = ""
+    return {
+        "id": folder or plan_id,
+        "plan_id": plan_id,
+        "title": title,
+        "folder": folder,
+        "filename": plan_path.name,
+        "updated_at": updated_at,
+        "plan": plan,
+    }
+
+
+def _bindable_episode_plan(plan: dict[str, object]) -> dict[str, object]:
+    if isinstance(plan.get("turns"), list):
+        return plan
+    turns = _turns_from_planner_segments(plan)
+    if not turns:
+        return plan
+    return {**plan, "turns": turns}
+
+
+def _turns_from_planner_segments(plan: dict[str, object]) -> list[dict[str, object]]:
+    segments = plan.get("segments")
+    if not isinstance(segments, list):
+        return []
+
+    participant_ids = _participant_ids(plan)
+    turns: list[dict[str, object]] = []
+    for segment_index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            continue
+        contracts = segment.get("planned_turn_contracts")
+        if not isinstance(contracts, list):
+            continue
+        for turn_index, raw_turn in enumerate(contracts):
+            if not isinstance(raw_turn, dict):
+                continue
+            turn = _planner_turn_to_bindable_turn(
+                raw_turn,
+                segment=segment,
+                segment_index=segment_index,
+                turn_index=turn_index,
+                participant_ids=participant_ids,
+            )
+            if turn:
+                turns.append(turn)
+    return turns
+
+
+def _planner_turn_to_bindable_turn(
+    raw_turn: dict[str, object],
+    *,
+    segment: dict[str, object],
+    segment_index: int,
+    turn_index: int,
+    participant_ids: list[str],
+) -> dict[str, object] | None:
+    segment_id = _clean_text(segment.get("segment_id")) or f"segment_{segment_index + 1}"
+    turn_id = _clean_text(raw_turn.get("turn_id")) or f"{segment_id}_turn_{turn_index + 1}"
+    intent = _clean_text(raw_turn.get("intent"))
+    purpose = intent or _clean_text(segment.get("goal")) or _clean_text(segment.get("title"))
+    speaker_policy = _bindable_speaker_policy(raw_turn.get("speaker_policy"), participant_ids)
+    if not turn_id or not purpose or not speaker_policy["speaker_ids"]:
+        return None
+    return {
+        "id": turn_id,
+        "purpose": purpose,
+        "topic_cue": _planner_topic_cue(raw_turn, segment, intent),
+        "speaker_policy": speaker_policy,
+        "audience_insertion": _bindable_audience_insertion(raw_turn),
+    }
+
+
+def _bindable_speaker_policy(
+    raw_policy: object,
+    participant_ids: list[str],
+) -> dict[str, object]:
+    policy = raw_policy if isinstance(raw_policy, dict) else {}
+    policy_type = _clean_text(policy.get("type") or policy.get("selection_mode")) or "fixed"
+    speaker_ids = _string_list(policy.get("speaker_ids"))
+    if not speaker_ids:
+        speaker_ids = _string_list(policy.get("allowed_character_ids"))
+    if not speaker_ids:
+        speaker_ids = _string_list(policy.get("allowed_participant_ids"))
+    if not speaker_ids:
+        speaker_ids = participant_ids
+    return {
+        "type": policy_type,
+        "speaker_ids": speaker_ids,
+    }
+
+
+def _bindable_audience_insertion(raw_turn: dict[str, object]) -> dict[str, bool]:
+    raw_policy = raw_turn.get("audience_insertion")
+    if not isinstance(raw_policy, dict):
+        raw_policy = raw_turn.get("audience_event_policy")
+    policy = raw_policy if isinstance(raw_policy, dict) else {}
+    return {
+        "enabled": bool(policy.get("enabled", False)),
+        "allow_super_chats": bool(policy.get("allow_super_chats", False)),
+    }
+
+
+def _planner_topic_cue(
+    raw_turn: dict[str, object],
+    segment: dict[str, object],
+    intent: str,
+) -> str:
+    lines = [
+        _prefixed_line("Segment", _clean_text(segment.get("title") or segment.get("segment_id"))),
+        _prefixed_line("Goal", _clean_text(segment.get("goal"))),
+        _prefixed_line("Intent", intent),
+    ]
+    evidence = raw_turn.get("evidence_brief")
+    if isinstance(evidence, dict):
+        lines.append(_prefixed_line("Facts", "; ".join(_string_list(evidence.get("facts_to_state")))))
+        lines.append(
+            _prefixed_line(
+                "Source boundaries",
+                "; ".join(_string_list(evidence.get("source_boundaries"))),
+            )
+        )
+    return "\n".join(line for line in lines if line)
+
+
+def _prefixed_line(label: str, value: str) -> str:
+    if not value:
+        return ""
+    return f"{label}: {value}"
+
+
+def _participant_ids(plan: dict[str, object]) -> list[str]:
+    participants = plan.get("participants")
+    if not isinstance(participants, list):
+        return []
+    ids: list[str] = []
+    for participant in participants:
+        if not isinstance(participant, dict):
+            continue
+        participant_id = _clean_text(participant.get("character_id") or participant.get("participant_id"))
+        if participant_id and participant_id not in ids:
+            ids.append(participant_id)
+    return ids
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        text = _clean_text(item)
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _clean_text(value: object) -> str:
+    return str(value or "").replace("\r", "\n").strip()
+
+
+def _status_with_permission_context(body: object, request: Request) -> dict[str, object]:
+    data = _object_to_dict(body).copy()
+    permission_context = _request_permission_context(request)
+    permission_group = getattr(permission_context, "permission_group", "")
+    if permission_group:
+        data["permission_group"] = _enum_value(permission_group)
+    return _sanitize_public_payload(data)
+
+
+def _validate_body(model_type: type[BaseModel], raw_body: object) -> BaseModel | JSONResponse:
+    try:
+        return model_type.model_validate(raw_body)
+    except ValidationError:
+        return _validation_error_response(raw_body)
+
+
+def _validation_error_response(raw_body: object) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": "validation_error",
+                "message": "invalid request body",
+            },
+            "correlation_id": f"runtime-{_command_id_from_raw(raw_body)}",
+        },
+    )
+
+
+def _command_id_from_raw(raw_body: object) -> str:
+    if isinstance(raw_body, dict):
+        return str(raw_body.get("command_id") or "unknown")
+    return "unknown"
+
+
+def _call_runtime(
+    runtime_service: object,
+    method_name: str,
+    command: RuntimeCommand,
+    now: datetime,
+) -> dict[str, object] | JSONResponse:
+    method = getattr(runtime_service, method_name)
+    try:
+        result = method(command, now)
+    except KeyError:
+        return _query_not_found_response(command.session_id)
+    except Exception as exc:
+        return _service_error_response(command, exc)
+    return _service_result_body(result)
+
+
+def _service_result_body(result: object) -> dict[str, object]:
+    data = _object_to_dict(result)
+    return _sanitize_public_payload(
+        {
+            "status": data.get("status", ""),
+            "session_id": data.get("session_id", ""),
+            "phase": _enum_value(data.get("phase")),
+            "events": [_event_body(event) for event in data.get("events", [])],
+            "errors": data.get("errors", []),
+            "correlation_id": data.get("correlation_id", ""),
+        }
+    )
+
+
+def _event_body(event: object) -> dict[str, object]:
+    data = _object_to_dict(event)
+    return {
+        "event_type": data.get("event_type", ""),
+        "session_id": data.get("session_id", ""),
+        "phase": _enum_value(data.get("phase")),
+        "payload": data.get("payload", {}),
+        "correlation_id": data.get("correlation_id", ""),
+    }
+
+
+def _service_error_response(command: RuntimeCommand, _exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "service_error",
+                "message": "request failed",
+            },
+            "correlation_id": f"runtime-{command.command_id}",
+        },
+    )
+
+
+def _query_not_found_response(session_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": {
+                "code": "session_not_found",
+                "message": "session not found",
+            },
+            "correlation_id": f"query-{session_id}",
+        },
+    )
+
+
+def _prime_event_iterable(events: Iterable[object]) -> Iterable[object]:
+    iterator = iter(events)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return iter(())
+    return chain((first,), iterator)
+
+
+def _sse_stream(
+    events: Iterable[object],
+    *,
+    display_safe: bool,
+) -> Iterable[str]:
+    for event in events:
+        payload = _display_safe_payload(event) if display_safe else _sanitize_public_payload(event)
+        yield "data: " + json.dumps(payload, ensure_ascii=False, default=str) + "\n\n"
+
+
+def _display_safe_payload(event: object) -> object:
+    return sanitize_display_value(event)
+
+
+def _object_to_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if is_dataclass(value):
+        return asdict(value)
+    if hasattr(value, "__dict__"):
+        return vars(value)
+    return {"value": value}
+
+
+def _enum_value(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def _sanitize_public_payload(value: Any) -> Any:
+    return _sanitize_payload(value, _PUBLIC_FORBIDDEN_KEYS)
+
+
+_PUBLIC_FORBIDDEN_KEYS = {
+    "hidden_prompt",
+    "raw_prompt",
+    "raw_payload",
+    "raw_memoriacore_payload",
+    "raw_adapter_payload",
+    "topic_pack",
+    "raw_topic_pack",
+    "youtube_raw",
+    "memoriacore_raw",
+    "factcard",
+    "fact_card",
+    "topic_pack_fact_cards",
+    "raw_factcard",
+    "raw_fact_card",
+    "raw_fact_cards",
+    "access_token",
+    "authorization",
+    "secret",
+    "token",
+}
+
+
+def _sanitize_payload(value: Any, forbidden_keys: set[str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_payload(inner_value, forbidden_keys)
+            for key, inner_value in value.items()
+            if str(key).lower() not in forbidden_keys
+        }
+    if isinstance(value, list):
+        return [_sanitize_payload(item, forbidden_keys) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_payload(item, forbidden_keys) for item in value)
+    return value
+
+
+__all__ = [
+    "ApiKeyCreateRequest",
+    "ack_tts_delivery_endpoint",
+    "bind_plan_endpoint",
+    "create_session_endpoint",
+    "create_api_key_endpoint",
+    "delete_api_key_endpoint",
+    "display_stream_endpoint",
+    "get_now",
+    "get_phase_endpoint",
+    "get_query_service",
+    "get_runtime_service",
+    "get_storage_manager",
+    "get_tts_queue_endpoint",
+    "list_episode_plans_endpoint",
+    "list_api_keys_endpoint",
+    "get_session_endpoint",
+    "get_session_events_endpoint",
+    "ingest_youtube_event_endpoint",
+    "manual_close_endpoint",
+    "operator_stream_endpoint",
+    "router",
+    "tick_session_endpoint",
+    "timeout_tts_delivery_endpoint",
+    "update_automation_control_endpoint",
+    "update_aftertalk_policy_endpoint",
+]
