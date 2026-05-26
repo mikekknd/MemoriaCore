@@ -145,7 +145,7 @@ async def refresh_weather_cache(city: Optional[str] = Query(None)):
         return {"status": "error", "message": "未設定 weather_city 或 openweather_api_key"}
     from tools.weather_cache import WeatherCache
     wc = WeatherCache()
-    success = await asyncio.to_thread(wc.ensure_today, city, api_key)
+    success = await asyncio.to_thread(wc.ensure_today, city, api_key, force=True)
     if success:
         return {"status": "ok", "message": f"已刷新 {city} 天氣快取"}
     return {"status": "error", "message": "刷新失敗，請檢查 API Key 與城市名稱"}

@@ -8,6 +8,7 @@
 
 - `weather_city` 視為 SU 的常駐城市設定。
 - FastAPI 啟動預熱只在已設定 SU、`weather_city`、`openweather_api_key` 時執行。
+- FastAPI lifespan 會掛載每日固定刷新排程，於本機時間 00:00、08:00、16:00 重新讀取最新設定並強制刷新 SU 常駐城市快取。
 - 對話 prompt 注入只在 `session_ctx.user_id == SU_USER_ID` 且 `persona_face == "private"` 時執行。
 - 非 SU 或 public face 不讀取 `WeatherCache`，也不會把天氣摘要加到 user message 前綴。
 - 若 SU private face 當輪需要天氣：
@@ -28,6 +29,6 @@
 - 共用 prompt/context 組裝：`core/chat_orchestrator/generation_context.py`
 - 單層對話傳入 `session_ctx`：`api/routers/chat/orchestration.py`
 - 雙層對話傳入 `session_ctx`：`core/chat_orchestrator/coordinator.py`
-- 啟動預熱：`api/main.py`
+- 啟動預熱與每日 00:00 / 08:00 / 16:00 定時刷新：`api/main.py`
 
 若未來加入多個 SU 或多地點日程，應先把 `weather_city` 升級成 per-SU profile 欄位，再擴充快取 key；不要回到全域多城市 prompt cache。

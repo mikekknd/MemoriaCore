@@ -1,5 +1,5 @@
 """
-天氣快取模組 — 每日自動快取指定城市的天氣預報，供對話注入使用。
+天氣快取模組 — 快取指定城市的天氣預報，供對話注入與定時刷新使用。
 
 快取儲存於 weather_cache.json，新格式：
 {
@@ -31,10 +31,10 @@ class WeatherCache:
 
     # ── 公開方法 ──────────────────────────────────────────
 
-    def ensure_today(self, city: str, api_key: str) -> bool:
+    def ensure_today(self, city: str, api_key: str, force: bool = False) -> bool:
         """
         確保今天 + 此城市的快取已存在。
-        若快取有效則直接回傳 True，否則呼叫 API 抓取並寫入。
+        若快取有效且未要求強制刷新則直接回傳 True，否則呼叫 API 抓取並寫入。
         """
         city = (city or "").strip()
         if not city:
@@ -43,11 +43,12 @@ class WeatherCache:
         today_str = datetime.now().strftime("%Y-%m-%d")
         cache = self._load_cache() or self._empty_cache()
         entry = self.get_cache(city, cache=cache)
-        if entry and entry.get("date") == today_str:
+        if entry and entry.get("date") == today_str and not force:
             SystemLogger.log_system_event("WeatherCache", f"天氣快取命中：{city} ({today_str})，跳過 API 呼叫。")
             return True
 
-        SystemLogger.log_system_event("WeatherCache", f"天氣快取未命中或已過期，正在為 {city} 抓取今日天氣...")
+        reason = "定時強制刷新" if force else "未命中或已過期"
+        SystemLogger.log_system_event("WeatherCache", f"天氣快取{reason}，正在為 {city} 抓取今日天氣...")
         try:
             slots, country = self._fetch_today_forecast(city, api_key)
             if not slots:
