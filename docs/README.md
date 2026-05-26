@@ -7,6 +7,7 @@
 - [架構說明.md](架構說明.md)：高層系統圖、主要 Module、請求流程與服務端口。
 - [codebase-structure.md](codebase-structure.md)：Agent 查找檔案職責、package 切分與 SECTION 原則時使用。
 - [API_使用說明書.md](API_使用說明書.md)：FastAPI REST / WebSocket / SSE 對外 Interface。
+- [group-router-action-policy.md](group-router-action-policy.md)：群組發話 router action、stop 語義與 fallback 規則。
 
 ## Runtime 與維運
 
