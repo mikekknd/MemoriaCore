@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from bridge_runtime import LiveRuntime
+from youtube_oauth import load_youtube_oauth_credentials
 
 
 logger = logging.getLogger("youtube_bridge")
@@ -167,12 +168,20 @@ class RuntimeLifecycleManagerMixin:
                 if not connector.get("enabled"):
                     raise ValueError("connector 未啟用")
                 needs_youtube_polling = bool(session.get("live_chat_id") or session.get("video_id"))
-                if needs_youtube_polling and not connector.get("api_key"):
-                    raise ValueError("connector 缺少 YouTube API key")
+                oauth_credentials = load_youtube_oauth_credentials()
+                if needs_youtube_polling and not connector.get("api_key") and not oauth_credentials.get("configured"):
+                    raise ValueError("connector 缺少 YouTube API key 且 OAuth token 未設定")
                 if needs_youtube_polling and not session.get("live_chat_id"):
+                    access_token = ""
+                    if not connector.get("api_key") and oauth_credentials.get("configured"):
+                        access_token = await asyncio.to_thread(
+                            self.youtube_client.oauth_access_token,
+                            oauth_credentials,
+                        )
                     live_chat_id = await asyncio.to_thread(
                         self.youtube_client.resolve_live_chat_id,
-                        api_key=connector["api_key"],
+                        api_key=str(connector.get("api_key") or ""),
+                        access_token=access_token,
                         video_id=session["video_id"],
                     )
                     session = self.storage.update_session_fields(session_id, live_chat_id=live_chat_id) or session

@@ -533,13 +533,17 @@ def _compact_router_context_text(value: object, max_chars: int) -> str:
     return text[:max_chars].rstrip()
 
 
-def _router_context_value(raw: dict, key: str) -> str:
+def _router_context_value(
+    raw: dict,
+    key: str,
+    max_chars: int = ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS,
+) -> str:
     if not isinstance(raw, dict):
         return ""
     value = raw.get(key)
     if not isinstance(value, str | int | float | bool):
         return ""
-    return _compact_router_context_text(value, ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS)
+    return _compact_router_context_text(value, max_chars)
 
 
 def _line_value_from_context_text(context_text: str, prefixes: tuple[str, ...]) -> str:
@@ -552,6 +556,44 @@ def _line_value_from_context_text(context_text: str, prefixes: tuple[str, ...]) 
                     ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS,
                 )
     return ""
+
+
+def _personacore_world_event_context_excerpt(context_text: str) -> str:
+    text = str(context_text or "").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    scene_marker = "[PersonaCore 場景感知]"
+    event_marker = "[PersonaCore world event]"
+    scene_index = text.find(scene_marker)
+    if scene_index < 0:
+        return ""
+    text = text[scene_index:]
+    event_index = text.find(event_marker)
+    if event_index >= 0:
+        text = text[:event_index]
+
+    filtered_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == event_marker:
+            continue
+        if stripped.lower().startswith(("event summary:", "event instruction:")):
+            continue
+        if stripped.startswith(("事件摘要：", "事件指令：")):
+            continue
+        filtered_lines.append(stripped)
+    return _compact_router_context_text(
+        "\n".join(filtered_lines),
+        ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS,
+    )
+
+
+def _router_context_excerpt_from_context_text(context_text: str, source: str) -> str:
+    if source == "personacore_world_event":
+        return _personacore_world_event_context_excerpt(context_text)
+    return _compact_router_context_text(context_text, ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS)
 
 
 def _router_turn_context_for_external_context(
@@ -570,6 +612,11 @@ def _router_turn_context_for_external_context(
     instruction = _router_context_value(raw_router_context, "instruction")
     trigger_kind = _router_context_value(raw_router_context, "trigger_kind") or source
     routing_hint = _router_context_value(raw_router_context, "routing_hint")
+    context_excerpt = _router_context_value(
+        raw_router_context,
+        "context_excerpt",
+        ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS,
+    )
 
     if not summary:
         summary = _line_value_from_context_text(
@@ -605,9 +652,10 @@ def _router_turn_context_for_external_context(
     if routing_hint:
         result["routing_hint"] = routing_hint
 
-    excerpt = _compact_router_context_text(context_text, ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS)
-    if excerpt:
-        result["context_excerpt"] = excerpt
+    if not context_excerpt:
+        context_excerpt = _router_context_excerpt_from_context_text(context_text, source)
+    if context_excerpt:
+        result["context_excerpt"] = context_excerpt
     return result
 
 

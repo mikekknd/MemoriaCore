@@ -52,6 +52,7 @@ from research_gate import ResearchGateModule, TavilyResearchSearchAdapter
 from storage import BridgeStorage, infer_super_chat_tier
 from tts_gpt_sovits import GptSoVitsTTSProvider, TTSResult
 from youtube_client import YouTubeClient, normalize_message
+from youtube_oauth import load_youtube_oauth_credentials
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -1007,9 +1008,17 @@ class YouTubeBridgeManager(
                 runtime.running = False
                 return
             try:
+                oauth_credentials = load_youtube_oauth_credentials()
+                access_token = ""
+                if not connector.get("api_key") and oauth_credentials.get("configured"):
+                    access_token = await asyncio.to_thread(
+                        self.youtube_client.oauth_access_token,
+                        oauth_credentials,
+                    )
                 data = await asyncio.to_thread(
                     self.youtube_client.fetch_live_chat_messages,
-                    api_key=connector["api_key"],
+                    api_key=str(connector.get("api_key") or ""),
+                    access_token=access_token,
                     live_chat_id=session["live_chat_id"],
                     page_token=runtime.next_page_token,
                 )

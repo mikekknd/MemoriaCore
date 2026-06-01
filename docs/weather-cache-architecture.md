@@ -16,6 +16,7 @@
   2. 若命中，直接注入，不呼叫 OpenWeather，也不產生命中 log。
   3. 若未命中且有 API key，才呼叫 `ensure_today(weather_city, api_key)` 刷新。
   4. 刷新後仍無資料則省略天氣區塊。
+- Weather Cache 會保存 OpenWeather forecast 回傳的城市日出 / 日落時間，並在天氣摘要中輸出當地 `HH:MM`。
 
 ## 與 get_weather tool 的差異
 

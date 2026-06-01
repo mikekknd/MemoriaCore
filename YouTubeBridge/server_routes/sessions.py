@@ -33,6 +33,7 @@ from server_presenters import (
 from server_routes.sse_response import InstrumentedSseResponse
 from storage import DEFAULT_CONNECTOR_ID
 from youtube_client import extract_video_id
+from youtube_oauth import load_youtube_oauth_credentials
 
 
 router = APIRouter()
@@ -404,6 +405,35 @@ async def _prepare_current_session_start_config(config: dict) -> dict:
     config["video_id"] = extract_video_id(config.get("video_id", ""))
     config = await _apply_episode_plan_character_binding(config)
 
+    connector = storage.get_connector(DEFAULT_CONNECTOR_ID)
+    oauth_credentials = load_youtube_oauth_credentials()
+    fallback_channel_id = str(oauth_credentials.get("fallback_channel_id") or "")
+    if not config.get("video_id") and not config.get("live_chat_id"):
+        can_try_detection = bool(
+            oauth_credentials.get("configured")
+            or (connector and connector.get("api_key") and fallback_channel_id)
+        )
+        if can_try_detection:
+            if not connector:
+                raise ValueError("connector 不存在")
+            if not connector.get("enabled"):
+                raise ValueError("connector 未啟用")
+            detected = await asyncio.to_thread(
+                manager.youtube_client.resolve_current_live_source,
+                oauth_credentials=oauth_credentials,
+                api_key=str(connector.get("api_key") or ""),
+                fallback_channel_id=fallback_channel_id,
+            )
+            config["video_id"] = detected["video_id"]
+            config["live_chat_id"] = detected["live_chat_id"]
+            config["_source_detection"] = {
+                "auth_method": detected.get("auth_method", ""),
+                "fallback_used": bool(detected.get("fallback_used")),
+                "fallback_reason": str(detected.get("fallback_reason") or ""),
+                "title": str(detected.get("title") or ""),
+                "channel_id": str(detected.get("channel_id") or ""),
+            }
+
     needs_youtube_polling = bool(
         str(config.get("live_chat_id") or "").strip()
         or str(config.get("video_id") or "").strip()
@@ -411,17 +441,23 @@ async def _prepare_current_session_start_config(config: dict) -> dict:
     if not needs_youtube_polling:
         return config
 
-    connector = storage.get_connector(DEFAULT_CONNECTOR_ID)
     if not connector:
         raise ValueError("connector 不存在")
     if not connector.get("enabled"):
         raise ValueError("connector 未啟用")
-    if not connector.get("api_key"):
-        raise ValueError("connector 缺少 YouTube API key")
     if config.get("video_id") and not config.get("live_chat_id"):
+        if not connector.get("api_key") and not oauth_credentials.get("configured"):
+            raise ValueError("connector 缺少 YouTube API key 且 OAuth token 未設定")
+        access_token = ""
+        if not connector.get("api_key") and oauth_credentials.get("configured"):
+            access_token = await asyncio.to_thread(
+                manager.youtube_client.oauth_access_token,
+                oauth_credentials,
+            )
         config["live_chat_id"] = await asyncio.to_thread(
             manager.youtube_client.resolve_live_chat_id,
             api_key=connector["api_key"],
+            access_token=access_token,
             video_id=config["video_id"],
         )
     return config
@@ -489,6 +525,7 @@ async def start_current_session(body: LiveSessionConfig):
             }
         archived_sessions.append(archived)
 
+    source_detection = config.pop("_source_detection", None)
     session = storage.upsert_session(config)
     try:
         runtime_status = await manager.start_session(session["session_id"])
@@ -500,6 +537,11 @@ async def start_current_session(body: LiveSessionConfig):
         "event_count": storage.count_events(refreshed["session_id"], active_only=True),
         "runtime_status": runtime_status,
         "archived_sessions": archived_sessions,
+        "source_detection": source_detection or {
+            "auth_method": "manual" if refreshed.get("video_id") or refreshed.get("live_chat_id") else "test",
+            "fallback_used": False,
+            "fallback_reason": "",
+        },
     }
 
 

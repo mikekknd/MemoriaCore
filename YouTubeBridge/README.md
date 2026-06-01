@@ -106,6 +106,30 @@ Storage 支援模組：
 - 目前下一個高價值但高耦合拆分候選是 Research Gate / external context，應獨立規劃與驗證。
 - `engine_topic_packs.py` 與 `storage_repositories/topic_packs.py` 仍偏大，但不要和行為修正混在同一批做大搬移。
 
+## YouTube OAuth 直播來源偵測
+
+OAuth 檔案放在 repo runtime：
+
+```text
+runtime/YouTubeBridge/oauth/
+```
+
+支援兩種檔案配置：
+
+- `client_secret.json`：Google Cloud 下載的 OAuth client 設定。
+- `token.json` 或 `youtube_oauth.json`：放 `refresh_token`，也可放 `fallback_channel_id`。
+
+最小 token 檔格式：
+
+```json
+{
+  "refresh_token": "...",
+  "fallback_channel_id": "UC..."
+}
+```
+
+`fallback_channel_id` 只在 OAuth 不可用、需要改用 API key 搜尋公開 active live 時使用；OAuth 正常走 `liveBroadcasts.list(mine=true, broadcastStatus=active)`，不需要頻道 ID。
+
 ## 測試與驗證
 
 常用 targeted 測試：

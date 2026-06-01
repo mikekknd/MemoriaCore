@@ -4,6 +4,7 @@
 import os
 import requests
 import json
+from datetime import datetime, timedelta, timezone
 from core.system_logger import SystemLogger
 
 def _get_openweather_key():
@@ -60,6 +61,29 @@ def get_weather(city: str, mode: str = "current") -> str:
         SystemLogger.log_error("OpenWeather", f"天氣查詢過程中發生錯誤: {e}")
         return json.dumps({"error": f"天氣查詢過程中發生錯誤: {e}"}, ensure_ascii=False)
 
+
+def _format_local_time(unix_ts, timezone_offset) -> str | None:
+    if unix_ts is None or timezone_offset is None:
+        return None
+    try:
+        utc_dt = datetime.fromtimestamp(int(unix_ts), timezone.utc)
+        local_dt = utc_dt + timedelta(seconds=int(timezone_offset))
+        return local_dt.strftime("%H:%M")
+    except Exception:
+        return None
+
+
+def _sun_times_text(sunrise, sunset, timezone_offset) -> str:
+    sunrise_text = _format_local_time(sunrise, timezone_offset)
+    sunset_text = _format_local_time(sunset, timezone_offset)
+    parts = []
+    if sunrise_text:
+        parts.append(f"日出 {sunrise_text}")
+    if sunset_text:
+        parts.append(f"日落 {sunset_text}")
+    return "，".join(parts)
+
+
 def _fetch_current(city: str, api_key: str) -> str:
     url = "https://api.openweathermap.org/data/2.5/weather"
     params = {
@@ -81,12 +105,19 @@ def _fetch_current(city: str, api_key: str) -> str:
         "humidity": d.get("main", {}).get("humidity"),
         "wind_speed": d.get("wind", {}).get("speed"),
         "visibility_m": d.get("visibility"),
+        "sun_times": _sun_times_text(
+            d.get("sys", {}).get("sunrise"),
+            d.get("sys", {}).get("sunset"),
+            d.get("timezone"),
+        ),
     }
     summary = (
         f"{result['city']} ({result['country']}) 即時天氣：{result['weather']}，"
         f"氣溫 {result['temp']}°C（體感 {result['feels_like']}°C），"
         f"濕度 {result['humidity']}%，風速 {result['wind_speed']} m/s"
     )
+    if result["sun_times"]:
+        summary += f"，{result['sun_times']}"
     if result["visibility_m"] is not None:
         summary += f"，能見度 {result['visibility_m']}m"
 
@@ -107,6 +138,11 @@ def _fetch_forecast(city: str, api_key: str) -> str:
 
     city_name = d.get("city", {}).get("name", city)
     country = d.get("city", {}).get("country", "")
+    sun_times = _sun_times_text(
+        d.get("city", {}).get("sunrise"),
+        d.get("city", {}).get("sunset"),
+        d.get("city", {}).get("timezone"),
+    )
     entries = []
     for item in d.get("list", []):
         dt_txt = item.get("dt_txt", "")
@@ -120,4 +156,6 @@ def _fetch_forecast(city: str, api_key: str) -> str:
         )
 
     summary = f"{city_name} ({country}) 未來 24 小時預報：\n" + "\n".join(entries)
+    if sun_times:
+        summary = f"{city_name} ({country}) 未來 24 小時預報（{sun_times}）：\n" + "\n".join(entries)
     return json.dumps({"weather_forecast": summary}, ensure_ascii=False)

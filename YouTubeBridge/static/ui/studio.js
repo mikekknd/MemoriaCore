@@ -2350,6 +2350,18 @@ function studioLiveSessionPayload() {
   return payload;
 }
 
+function logSourceDetectionResult(data = {}) {
+  const detection = data.source_detection || {};
+  if (detection.fallback_used) {
+    const reason = detection.fallback_reason ? `：${detection.fallback_reason}` : "";
+    appendLog("WARN", `OAuth 偵測失敗，已使用 API key fallback${reason}`);
+  } else if (detection.auth_method === "oauth") {
+    appendLog("INFO", "直播來源已由 OAuth 自動偵測");
+  } else if (detection.auth_method === "api_key") {
+    appendLog("INFO", "直播來源已由 API key 自動偵測");
+  }
+}
+
 async function startStudioDirector(sessionId) {
   try {
     await api(`/sessions/${encodeURIComponent(sessionId)}/director/start`, {
@@ -2437,6 +2449,7 @@ async function startLive() {
       body: studioLiveSessionPayload(),
     });
     applySessionSnapshot(data);
+    logSourceDetectionResult(data);
     subtitle.textContent = planSelect.options[planSelect.selectedIndex]?.textContent || data.episode_plan_id || "Live Session";
     subscribeSessionEvents(data.session_id);
     await startStudioDirector(data.session_id);

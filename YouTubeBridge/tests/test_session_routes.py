@@ -782,6 +782,142 @@ async def test_start_current_session_validates_new_live_before_archiving_existin
 
 
 @pytest.mark.asyncio
+async def test_start_current_session_uses_oauth_current_live_detection(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._sessions_routes, "storage", storage)
+    monkeypatch.setattr(
+        server_module._sessions_routes,
+        "load_youtube_oauth_credentials",
+        lambda: {
+            "configured": True,
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "refresh_token": "refresh-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+    )
+
+    started: list[str] = []
+
+    class FakeYoutubeClient:
+        def resolve_current_live_source(self, **kwargs):
+            assert kwargs["oauth_credentials"]["refresh_token"] == "refresh-token"
+            assert kwargs["api_key"] == ""
+            return {
+                "video_id": "oauth-video",
+                "live_chat_id": "oauth-chat",
+                "auth_method": "oauth",
+                "fallback_used": False,
+                "fallback_reason": "",
+                "title": "目前直播",
+                "channel_id": "channel-a",
+            }
+
+    class FakeManager:
+        youtube_client = FakeYoutubeClient()
+
+        async def start_session(self, session_id: str):
+            started.append(session_id)
+            storage.update_session_fields(session_id, status="running", started_at="2026-05-06T10:20:00")
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        def get_status(self, session_id: str):
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        async def stop_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="stopped")
+            return {"session_id": session_id, "status": "stopped", "running": False}
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+    monkeypatch.setattr(server_module._sessions_routes, "manager", FakeManager())
+
+    result = await server_module.start_current_session(server_module.LiveSessionConfig(
+        video_id="",
+        character_ids=["coco"],
+    ))
+
+    assert started == [result["session_id"]]
+    assert result["video_id"] == "oauth-video"
+    assert result["live_chat_id"] == "oauth-chat"
+    assert result["source_detection"]["auth_method"] == "oauth"
+    assert result["source_detection"]["fallback_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_start_current_session_reports_api_key_fallback_detection(monkeypatch, tmp_path):
+    storage = server_module.BridgeStorage(tmp_path / "bridge.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "api-key",
+        "enabled": True,
+    })
+    monkeypatch.setattr(server_module, "storage", storage)
+    monkeypatch.setattr(server_module._sessions_routes, "storage", storage)
+    monkeypatch.setattr(
+        server_module._sessions_routes,
+        "load_youtube_oauth_credentials",
+        lambda: {
+            "configured": True,
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "refresh_token": "bad-refresh-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "fallback_channel_id": "fallback-channel",
+        },
+    )
+
+    class FakeYoutubeClient:
+        def resolve_current_live_source(self, **kwargs):
+            assert kwargs["api_key"] == "api-key"
+            assert kwargs["fallback_channel_id"] == "fallback-channel"
+            return {
+                "video_id": "fallback-video",
+                "live_chat_id": "fallback-chat",
+                "auth_method": "api_key",
+                "fallback_used": True,
+                "fallback_reason": "OAuth refresh failed",
+                "title": "Fallback Live",
+                "channel_id": "fallback-channel",
+            }
+
+    class FakeManager:
+        youtube_client = FakeYoutubeClient()
+
+        async def start_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="running", started_at="2026-05-06T10:20:00")
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        def get_status(self, session_id: str):
+            return {"session_id": session_id, "status": "running", "running": True}
+
+        async def stop_session(self, session_id: str):
+            storage.update_session_fields(session_id, status="stopped")
+            return {"session_id": session_id, "status": "stopped", "running": False}
+
+    monkeypatch.setattr(server_module, "manager", FakeManager())
+    monkeypatch.setattr(server_module._sessions_routes, "manager", FakeManager())
+
+    result = await server_module.start_current_session(server_module.LiveSessionConfig(
+        video_id="",
+        character_ids=["coco"],
+    ))
+
+    assert result["video_id"] == "fallback-video"
+    assert result["live_chat_id"] == "fallback-chat"
+    assert result["source_detection"]["auth_method"] == "api_key"
+    assert result["source_detection"]["fallback_used"] is True
+    assert result["source_detection"]["fallback_reason"] == "OAuth refresh failed"
+
+
+@pytest.mark.asyncio
 async def test_start_current_session_never_reuses_client_memoria_session_id(monkeypatch, tmp_path):
     storage = server_module.BridgeStorage(tmp_path / "bridge.db")
     storage.upsert_connector({

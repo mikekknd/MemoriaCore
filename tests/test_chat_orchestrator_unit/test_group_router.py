@@ -432,13 +432,13 @@ def test_group_router_prompt_includes_external_turn_context_without_polluting_pr
         router_turn_context={
             "source": "personacore_world_event",
             "trigger_kind": "world_event",
-            "summary": "廚房水燒開了",
+            "summary": "廚房水燒開了。",
             "instruction": "請自然用角色台詞延續這個已發生的事件。",
             "persistence": "hidden",
+            "routing_hint": "依角色 routing_profile 判斷回應者",
             "context_excerpt": (
-                "[PersonaCore world event]\n"
-                "Event summary: 廚房水燒開了\n"
-                "Event instruction: 請自然用角色台詞延續這個已發生的事件。"
+                "[PersonaCore 場景感知]\n"
+                "Current scene: Kitchen"
             ),
         },
     )
@@ -449,15 +449,21 @@ def test_group_router_prompt_includes_external_turn_context_without_polluting_pr
     external_turn_context = _extract_external_turn_context(prompt_text)
 
     assert turn_state["original_user_request"] == (
-        "外部事件觸發（personacore_world_event）：廚房水燒開了。"
+        "外部事件觸發：廚房水燒開了。"
         "請自然用角色台詞延續這個已發生的事件。"
     )
-    assert external_turn_context["source"] == "personacore_world_event"
-    assert external_turn_context["summary"] == "廚房水燒開了"
-    assert external_turn_context["persistence"] == "hidden"
+    assert external_turn_context == {
+        "routing_hint": "依角色 routing_profile 判斷回應者",
+        "context_excerpt": (
+            "[PersonaCore 場景感知]\n"
+            "Current scene: Kitchen"
+        ),
+    }
     assert "上一輪主題" in previous_context
     assert "上一輪 A" in previous_context
     assert "廚房水燒開了" not in previous_context
+    for hidden_key in ("source", "trigger_kind", "summary", "instruction", "persistence"):
+        assert hidden_key not in external_turn_context
 
 
 def test_group_router_prompt_renders_null_external_turn_context_when_absent():
@@ -482,14 +488,13 @@ def test_group_router_prompt_renders_null_external_turn_context_when_absent():
     assert _extract_turn_state(prompt_text)["original_user_request"] == "一般問題"
 
 
-def test_group_router_prompt_compacts_external_turn_context():
+def test_group_router_prompt_keeps_routing_hint_only_external_turn_context():
     router = _Router({
         "conversation_intent": "group_discussion",
         "action": "new_speaker_add",
         "target_character_id": "char-a",
-        "reason": "外部事件需要回應",
+        "reason": "外部路由提示",
     })
-    long_summary = "水" * 1300
 
     run_group_router(
         [{"role": "user", "content": "請根據已帶入的外部上下文回應。"}],
@@ -500,14 +505,47 @@ def test_group_router_prompt_compacts_external_turn_context():
         current_turn_start_index=1,
         router_turn_context={
             "source": "personacore_world_event",
-            "summary": long_summary,
+            "routing_hint": "依角色 routing_profile 判斷回應者",
+        },
+    )
+
+    prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
+    assert _extract_external_turn_context(prompt_text) == {
+        "routing_hint": "依角色 routing_profile 判斷回應者",
+    }
+    assert (
+        _extract_turn_state(prompt_text)["original_user_request"]
+        == "請根據已帶入的外部上下文回應。"
+    )
+
+
+def test_group_router_prompt_compacts_external_turn_context():
+    router = _Router({
+        "conversation_intent": "group_discussion",
+        "action": "new_speaker_add",
+        "target_character_id": "char-a",
+        "reason": "外部事件需要回應",
+    })
+    long_excerpt = "水" * 1300
+
+    run_group_router(
+        [{"role": "user", "content": "請根據已帶入的外部上下文回應。"}],
+        _chars(),
+        router,
+        honor_mentions=False,
+        current_turn_instruction="請根據已帶入的外部上下文回應。",
+        current_turn_start_index=1,
+        router_turn_context={
+            "source": "personacore_world_event",
+            "summary": "水壺冒出蒸氣。",
+            "context_excerpt": long_excerpt,
             "unexpected": "不應進入 prompt",
         },
     )
 
     prompt_text = "\n".join(str(m.get("content", "")) for m in router.args[1])
     external_turn_context = _extract_external_turn_context(prompt_text)
-    assert external_turn_context["summary"] == "水" * 1200
+    assert external_turn_context == {"context_excerpt": "水" * 1200}
     assert "unexpected" not in external_turn_context
     assert "不應進入 prompt" not in prompt_text
 
@@ -538,6 +576,8 @@ def test_group_router_keeps_youtube_live_director_turn_label_when_external_turn_
             "summary": "聊天室集中問候主持人",
             "instruction": "回應本批觀眾留言",
             "persistence": "default_visible_event",
+            "routing_hint": "這是觀眾批次回應",
+            "context_excerpt": "聊天室集中問候主持人",
         },
     )
 
@@ -548,8 +588,10 @@ def test_group_router_keeps_youtube_live_director_turn_label_when_external_turn_
     assert turn_state["original_user_request"] == "YouTube Live audience response turn"
     assert turn_state["turn_intent"]["source"] == "youtube_live_director"
     assert turn_state["turn_intent"]["action"] == "audience_response"
-    assert external_turn_context["source"] == "youtube_live_director"
-    assert external_turn_context["summary"] == "聊天室集中問候主持人"
+    assert external_turn_context == {
+        "routing_hint": "這是觀眾批次回應",
+        "context_excerpt": "聊天室集中問候主持人",
+    }
 
 
 def test_continue_discussion_intent_with_stop_all_spoken_stops_when_valid():

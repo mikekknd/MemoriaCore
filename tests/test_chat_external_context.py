@@ -88,6 +88,7 @@ def test_external_context_payload_preserves_explicit_router_context():
                 "summary": "廚房水燒開了",
                 "instruction": "請自然用角色台詞延續這個已發生的事件。",
                 "routing_hint": "判斷預設助理或角色誰更適合回應",
+                "context_excerpt": "Current scene: Kitchen\nPersistent scene objects: kettle",
             },
         },
     )
@@ -103,11 +104,7 @@ def test_external_context_payload_preserves_explicit_router_context():
         "instruction": "請自然用角色台詞延續這個已發生的事件。",
         "persistence": "hidden",
         "routing_hint": "判斷預設助理或角色誰更適合回應",
-        "context_excerpt": (
-            "[PersonaCore world event]\n"
-            "Event summary: 廚房水燒開了\n"
-            "Event instruction: 請自然用角色台詞延續這個已發生的事件。"
-        ),
+        "context_excerpt": "Current scene: Kitchen\nPersistent scene objects: kettle",
     }
 
 
@@ -135,7 +132,67 @@ def test_external_context_payload_derives_router_context_from_context_text():
     assert router_context["summary"] == "門鈴響了"
     assert router_context["instruction"] == "請自然延續這個已發生的事件。"
     assert router_context["persistence"] == "hidden"
-    assert "Event summary: 門鈴響了" in router_context["context_excerpt"]
+    assert "context_excerpt" not in router_context
+
+
+def test_external_context_payload_fallback_excerpt_keeps_scene_awareness_without_world_event():
+    body = ChatSyncRequest(
+        content="角色主動回合。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "# 聊天場景感知契約\n"
+                "\n"
+                "請把這段場景感知內容當作背景脈絡。\n"
+                "\n"
+                "[PersonaCore 場景感知]\n"
+                "Current scene: Room\n"
+                "Persistent scene objects: window, low table, sofa\n"
+                "\n"
+                "[PersonaCore world event]\n"
+                "Event summary: 使用者回到網頁。\n"
+                "Event instruction: 請自然接續使用者回來的狀態。"
+            ),
+            "persist_visible_event": False,
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    router_context = context["router_turn_context"]
+    assert router_context["summary"] == "使用者回到網頁。"
+    assert router_context["instruction"] == "請自然接續使用者回來的狀態。"
+    assert router_context["context_excerpt"] == (
+        "[PersonaCore 場景感知]\n"
+        "Current scene: Room\n"
+        "Persistent scene objects: window, low table, sofa"
+    )
+
+
+def test_external_context_payload_fallback_excerpt_drops_personacore_contract_without_scene_marker():
+    body = ChatSyncRequest(
+        content="角色主動回合。",
+        external_context={
+            "source": "personacore_world_event",
+            "context_text": (
+                "# 聊天場景感知契約\n"
+                "請把這段場景感知內容當作背景脈絡。\n"
+                "[PersonaCore world event]\n"
+                "Event summary: 使用者回到網頁。\n"
+                "Event instruction: 請自然接續使用者回來的狀態。"
+            ),
+            "persist_visible_event": False,
+        },
+    )
+
+    context, _summary = _resolve_external_context_payload(body)
+
+    assert context is not None
+    router_context = context["router_turn_context"]
+    assert router_context["summary"] == "使用者回到網頁。"
+    assert router_context["instruction"] == "請自然接續使用者回來的狀態。"
+    assert "context_excerpt" not in router_context
 
 
 def test_external_context_payload_ignores_structured_router_context_fields():

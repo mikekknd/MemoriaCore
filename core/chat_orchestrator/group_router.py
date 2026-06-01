@@ -98,6 +98,7 @@ def run_group_router(
     latest_user_text = str(current_turn_instruction or "").strip() or _latest_user_text(session_messages)
     normalized_turn_intent = _normalize_turn_intent(current_turn_intent)
     normalized_router_turn_context = _normalize_router_turn_context(router_turn_context)
+    visible_router_turn_context = _visible_router_turn_context(normalized_router_turn_context)
     youtube_live_director_intent = _is_youtube_live_director_intent(
         normalized_turn_intent,
         discussion_mode=normalized_discussion_mode,
@@ -177,7 +178,7 @@ def run_group_router(
             limit=3,
         ),
         external_turn_context_json=json.dumps(
-            normalized_router_turn_context,
+            visible_router_turn_context,
             ensure_ascii=False,
             indent=2,
         ),
@@ -283,23 +284,38 @@ def _normalize_router_turn_context(value: dict | None) -> dict | None:
         text = str(value.get(key) or "").replace("\r", "\n").strip()
         if text:
             result[key] = text[:1200].rstrip()
-    if not result.get("summary") and not result.get("context_excerpt"):
+    if not any(result.get(key) for key in ("summary", "instruction", "routing_hint", "context_excerpt")):
         return None
     return result
+
+
+def _visible_router_turn_context(value: dict | None) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    for key in ("routing_hint", "context_excerpt"):
+        text = str(value.get(key) or "").replace("\r", "\n").strip()
+        if text:
+            result[key] = text[:1200].rstrip()
+    return result or None
+
+
+def _external_request_text(summary: str, instruction: str) -> str:
+    label = "外部事件觸發"
+    if summary and instruction:
+        separator = "" if summary.endswith(("。", "！", "？", ".", "!", "?")) else "。"
+        return f"{label}：{summary}{separator}{instruction}"
+    if summary:
+        return f"{label}：{summary}"
+    return ""
 
 
 def _original_request_from_router_turn_context(router_turn_context: dict | None, fallback: str) -> str:
     if not router_turn_context:
         return fallback
-    source = str(router_turn_context.get("source") or "external").strip() or "external"
     summary = str(router_turn_context.get("summary") or router_turn_context.get("context_excerpt") or "").strip()
     instruction = str(router_turn_context.get("instruction") or "").strip()
-    label = f"外部事件觸發（{source}）" if source else "外部事件觸發"
-    if summary and instruction:
-        return f"{label}：{summary}。{instruction}"
-    if summary:
-        return f"{label}：{summary}"
-    return fallback
+    return _external_request_text(summary, instruction) or fallback
 
 
 def _is_youtube_live_director_intent(turn_intent: dict | None, *, discussion_mode: str) -> bool:

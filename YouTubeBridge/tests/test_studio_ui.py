@@ -1053,6 +1053,18 @@ def test_studio_start_resets_previous_conversation_before_new_session_request():
     assert 'renderConversationEmpty("正在建立新的 Live Session，等待後端產生 AI 對話。")' in studio_js
 
 
+def test_studio_start_logs_oauth_detection_and_api_key_fallback():
+    studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
+    start_index = studio_js.index("async function startLive()")
+    start_body = studio_js[start_index:studio_js.index("async function stopLive()", start_index)]
+
+    assert "function logSourceDetectionResult(" in studio_js
+    assert "const detection = data.source_detection || {};" in studio_js
+    assert "API key fallback" in studio_js
+    assert "OAuth" in studio_js
+    assert "logSourceDetectionResult(data);" in start_body
+
+
 def test_studio_refresh_subscribes_running_and_closing_session_events():
     studio_js = (Path(server_module.UI_ASSETS_ROOT) / "studio.js").read_text(encoding="utf-8")
     refresh_index = studio_js.index("async function refreshStudioSession()")
