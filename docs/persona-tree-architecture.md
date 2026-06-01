@@ -411,7 +411,7 @@ await asyncio.to_thread(_run_probe_sync)
   ├── LLM 第 3 次：build_persona_md_prompt → new_persona
   └── 回傳 {persona, trait_diff, summary, output_dir}
   ↓
-char_mgr.set_evolved_prompt() → 寫入 ai_persona.md
+char_mgr.set_evolved_prompt() → 寫入 `characters.json` 內該角色 / face 的 `evolved_prompt`
   ↓
 snapshot_id = store.save_snapshot(
   character_id, trait_diff, summary, evolved_prompt

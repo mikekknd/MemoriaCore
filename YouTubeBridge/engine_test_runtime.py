@@ -129,28 +129,64 @@ class TestRuntimeManagerMixin:
         super_chat_count: int = 0,
         include_malicious_sc: bool = False,
         sc_burst: bool = False,
+        manual_events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         session = self.storage.get_session(session_id)
         if not session:
             raise ValueError("live session 不存在")
         self._ensure_test_events_allowed(session_id, session)
-        count = max(1, min(int(count or 5), 30))
+        count = max(0, min(int(count or 0), 30))
         super_chat_count = max(0, min(int(super_chat_count or 0), 30))
-        comments = await asyncio.to_thread(
-            self._generate_test_comments,
-            session,
-            count,
-            str(topic_hint or ""),
-            bool(use_llm),
-        )
-        super_chat_comments = self._generate_test_super_chats(
-            session,
-            super_chat_count,
-            str(topic_hint or ""),
-            include_malicious_sc=include_malicious_sc,
-            sc_burst=sc_burst,
+        manual_items = self._clean_manual_test_events(manual_events)
+        if not manual_items and count == 0 and super_chat_count == 0:
+            count = 1
+        llm_comment_pool: list[dict[str, str]] = []
+        if bool(use_llm) and (count + super_chat_count) > 0:
+            llm_comment_pool = await asyncio.to_thread(
+                self._generate_test_comments,
+                session,
+                count + super_chat_count,
+                str(topic_hint or ""),
+                True,
+            )
+        comments: list[dict[str, str]] = []
+        if count > 0:
+            if bool(use_llm):
+                comments = llm_comment_pool[:count]
+            else:
+                comments = await asyncio.to_thread(
+                    self._generate_test_comments,
+                    session,
+                    count,
+                    str(topic_hint or ""),
+                    False,
+                )
+        super_chat_comments = (
+            self._generate_llm_test_super_chats(
+                session,
+                super_chat_count,
+                str(topic_hint or ""),
+                include_malicious_sc,
+                sc_burst,
+                llm_comment_pool[count:count + super_chat_count],
+            )
+            if super_chat_count > 0 and bool(use_llm)
+            else self._generate_test_super_chats(
+                session,
+                super_chat_count,
+                str(topic_hint or ""),
+                include_malicious_sc=include_malicious_sc,
+                sc_burst=sc_burst,
+            )
         )
         saved_events: list[dict[str, Any]] = []
+        for item in manual_items:
+            event = self._save_manual_test_event(session, item)
+            if event:
+                saved_events.append(event)
+                public_event = self._public_live_event(event)
+                if public_event:
+                    await self._broadcast(session_id, {"type": "youtube_live_event", "event": public_event})
         recent_comment_texts = {
             str(event.get("message_text") or "").strip()
             for event in self.storage.list_events(session_id, limit=100)
@@ -183,6 +219,7 @@ class TestRuntimeManagerMixin:
                 "metadata": {
                     "source": "test_comment_generator",
                     "topic_hint": str(topic_hint or "")[:300],
+                    "phase": self._event_phase_for_session(session_id),
                 },
             })
             if event:
@@ -230,6 +267,7 @@ class TestRuntimeManagerMixin:
                     "topic_hint": str(topic_hint or "")[:300],
                     "sc_burst": bool(sc_burst),
                     "include_malicious_sc": bool(include_malicious_sc),
+                    "phase": self._event_phase_for_session(session_id),
                 },
             })
             if event:
@@ -272,6 +310,67 @@ class TestRuntimeManagerMixin:
     @staticmethod
     def _format_test_amount(amount_micros: int) -> str:
         return engine_test_events.format_test_amount(amount_micros)
+
+    @staticmethod
+    def _clean_manual_test_events(manual_events: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for raw in manual_events or []:
+            if not isinstance(raw, dict):
+                continue
+            text = str(raw.get("message_text") or "").replace("\r", " ").replace("\n", " ").strip()
+            if not text:
+                continue
+            kind = "super" if str(raw.get("kind") or "comment") == "super" else "comment"
+            author = str(raw.get("author_display_name") or "").replace("\r", " ").replace("\n", " ").strip()
+            amount_display = str(raw.get("amount_display_string") or "").replace("\r", " ").replace("\n", " ").strip()
+            try:
+                amount_micros = int(raw.get("amount_micros", 0) or 0)
+            except (TypeError, ValueError):
+                amount_micros = 0
+            items.append({
+                "kind": kind,
+                "author_display_name": (author or ("SC 測試帳號" if kind == "super" else "觀眾 測試帳號"))[:80],
+                "message_text": text[:500],
+                "amount_display_string": amount_display[:40],
+                "amount_micros": max(0, amount_micros),
+            })
+            if len(items) >= 30:
+                break
+        return items
+
+    def _save_manual_test_event(self, session: dict[str, Any], item: dict[str, Any]) -> dict[str, Any] | None:
+        kind = str(item.get("kind") or "comment")
+        is_super = kind == "super"
+        amount_micros = int(item.get("amount_micros", 0) or 0)
+        amount_display = str(item.get("amount_display_string") or "").strip()
+        if is_super and amount_micros <= 0:
+            amount_micros = 750000000 if "750" in amount_display else 75000000
+        if is_super and not amount_display:
+            amount_display = self._format_test_amount(amount_micros)
+        now = datetime.now().isoformat()
+        return self.storage.save_event({
+            "bridge_session_id": session["session_id"],
+            "connector_id": session["connector_id"],
+            "video_id": session.get("video_id", ""),
+            "live_chat_id": session.get("live_chat_id", ""),
+            "youtube_message_id": f"studio-test-{'sc-' if is_super else ''}{uuid.uuid4().hex}",
+            "message_type": "testSuperChatEvent" if is_super else "testMessageEvent",
+            "author_channel_id": f"studio-test-{uuid.uuid4().hex[:12]}",
+            "author_display_name": str(item.get("author_display_name") or ("SC 測試帳號" if is_super else "觀眾 測試帳號"))[:80],
+            "message_text": str(item.get("message_text") or "")[:500],
+            "published_at": now,
+            "received_at": now,
+            "status": "active",
+            "amount_display_string": amount_display if is_super else "",
+            "currency": "TWD" if is_super else "",
+            "amount_micros": amount_micros if is_super else 0,
+            "sc_tier": infer_super_chat_tier(amount_micros, 0) if is_super else 0,
+            "priority_class": "super_chat" if is_super else "normal",
+            "metadata": {
+                "source": "studio_test_comment",
+                "phase": self._event_phase_for_session(session["session_id"]),
+            },
+        })
 
     @staticmethod
     def _variant_test_comment_text(text: str, seed: int) -> str:
@@ -357,6 +456,45 @@ class TestRuntimeManagerMixin:
             except Exception as exc:
                 logger.warning("test comment LLM generation failed session_id=%s error=%s", session["session_id"], exc)
         return self._fallback_test_comments(session, count, topic_hint)
+
+    def _generate_llm_test_super_chats(
+        self,
+        session: dict[str, Any],
+        count: int,
+        topic_hint: str,
+        include_malicious_sc: bool,
+        sc_burst: bool,
+        comments: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        comments = list(comments or [])
+        if len(comments) < count:
+            comments.extend(self._fallback_test_comments(session, count - len(comments), topic_hint))
+        fallback = self._generate_test_super_chats(
+            session,
+            count,
+            topic_hint,
+            include_malicious_sc=include_malicious_sc,
+            sc_burst=sc_burst,
+        )
+        super_chats: list[dict[str, Any]] = []
+        for index in range(count):
+            base = fallback[index] if index < len(fallback) else {}
+            comment = comments[index] if index < len(comments) else {}
+            is_malicious = bool(base.get("is_malicious_sample") or base.get("safety_label"))
+            amount_micros = int(base.get("amount_micros", 0) or 0)
+            if amount_micros <= 0:
+                amount_micros = 75000000
+            super_chats.append({
+                "author_display_name": str(comment.get("author_display_name") or base.get("author_display_name") or f"SC觀眾{index + 1}")[:80],
+                "message_text": str((base if is_malicious else comment).get("message_text") or base.get("message_text") or "")[:500],
+                "amount_micros": amount_micros,
+                "amount_display_string": str(base.get("amount_display_string") or self._format_test_amount(amount_micros)),
+                "currency": str(base.get("currency") or "TWD"),
+                "sc_tier": infer_super_chat_tier(amount_micros, int(base.get("sc_tier", 0) or 0)),
+                "safety_label": str(base.get("safety_label") or ""),
+                "is_malicious_sample": is_malicious,
+            })
+        return super_chats
 
     @classmethod
     def _clean_test_comments(cls, raw_comments: Any, count: int) -> list[dict[str, str]]:

@@ -302,3 +302,166 @@ def test_summary_memory_text_allows_verified_topic_pack_fact_without_review():
         assert "星圖轉場" in summary["memory_text"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_summarize_session_phase_filters_events_and_interactions(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YT",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Phase Summary",
+        "character_ids": ["char-a"],
+    })
+    storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "youtube-main",
+        "youtube_message_id": "main-1",
+        "message_type": "textMessageEvent",
+        "author_channel_id": "u1",
+        "author_display_name": "觀眾A",
+        "message_text": "正式段落問題",
+        "published_at": "2026-05-15T10:00:00",
+        "received_at": "2026-05-15T10:00:00",
+        "status": "active",
+        "safety_label": "clean",
+        "safety_status": "completed",
+        "safe_message_text": "正式段落問題",
+        "metadata": {"phase": "planned_content"},
+    })
+    storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "youtube-main",
+        "youtube_message_id": "main-closing-1",
+        "message_type": "textMessageEvent",
+        "author_channel_id": "u2",
+        "author_display_name": "觀眾B",
+        "message_text": "正式收尾問題",
+        "published_at": "2026-05-15T10:05:00",
+        "received_at": "2026-05-15T10:05:00",
+        "status": "active",
+        "safety_label": "clean",
+        "safety_status": "completed",
+        "safe_message_text": "正式收尾問題",
+        "metadata": {"phase": "main_audience_closing"},
+    })
+    storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "youtube-main",
+        "youtube_message_id": "legacy-main-1",
+        "message_type": "textMessageEvent",
+        "author_channel_id": "u5",
+        "author_display_name": "觀眾E",
+        "message_text": "舊格式正式段落問題",
+        "published_at": "2026-05-15T10:06:00",
+        "received_at": "2026-05-15T10:06:00",
+        "status": "active",
+        "safety_label": "clean",
+        "safety_status": "completed",
+        "safe_message_text": "舊格式正式段落問題",
+        "metadata": {},
+    })
+    storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "youtube-main",
+        "youtube_message_id": "free-1",
+        "message_type": "textMessageEvent",
+        "author_channel_id": "u3",
+        "author_display_name": "觀眾C",
+        "message_text": "雜談問題",
+        "published_at": "2026-05-15T10:10:00",
+        "received_at": "2026-05-15T10:10:00",
+        "status": "active",
+        "safety_label": "clean",
+        "safety_status": "completed",
+        "safe_message_text": "雜談問題",
+        "metadata": {"phase": "post_plan_free_talk"},
+    })
+    storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "youtube-main",
+        "youtube_message_id": "free-2",
+        "message_type": "textMessageEvent",
+        "author_channel_id": "u4",
+        "author_display_name": "觀眾D",
+        "message_text": "自由聊天問題",
+        "published_at": "2026-05-15T10:15:00",
+        "received_at": "2026-05-15T10:15:00",
+        "status": "active",
+        "safety_label": "clean",
+        "safety_status": "completed",
+        "safe_message_text": "自由聊天問題",
+        "metadata": {"phase": "free_talk"},
+    })
+    storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "status": "completed",
+        "reply_text": "正式段落 AI 回應",
+        "metadata": {"phase": "planned_content"},
+    })
+    storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "status": "completed",
+        "reply_text": "正式收尾 AI 回應",
+        "metadata": {"phase": "main_audience_closing"},
+    })
+    storage.create_interaction({
+        "session_id": "live-a",
+        "source": "main_audience_closing",
+        "status": "completed",
+        "reply_text": "舊格式正式收尾 AI 回應",
+        "metadata": {},
+    })
+    storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "status": "completed",
+        "reply_text": "雜談 AI 回應",
+        "metadata": {"phase": "post_plan_free_talk"},
+    })
+    storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "status": "completed",
+        "reply_text": "自由聊天 AI 回應",
+        "metadata": {"phase": "free_talk"},
+    })
+    storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "status": "completed",
+        "reply_text": "舊格式雜談 AI 回應",
+        "metadata": {"decision": {"action": "post_plan_free_talk_topic"}},
+    })
+    fake_client = FakeMemoriaClient()
+    manager = YouTubeLiveSummaryManager(storage, memoria_client=fake_client)
+
+    result = manager.summarize_session_phase("live-a", summary_phase="main", force=True)
+
+    assert result["status"] == "completed"
+    summary = result["summary"]
+    assert summary["metadata"]["summary_phase"] == "main"
+    assert summary["event_count"] == 3
+    summary_call = next(
+        call for call in fake_client.calls
+        if call["prompt_key"] == "youtube_live_interaction_summary_prompt"
+    )
+    summary_source = summary_call["variables"]["summary_source"]
+    assert "正式段落問題" in summary_source
+    assert "正式收尾問題" in summary_source
+    assert "舊格式正式段落問題" in summary_source
+    assert "正式段落 AI 回應" in summary_source
+    assert "正式收尾 AI 回應" in summary_source
+    assert "舊格式正式收尾 AI 回應" in summary_source
+    assert "雜談問題" not in summary_source
+    assert "自由聊天問題" not in summary_source
+    assert "雜談 AI 回應" not in summary_source
+    assert "自由聊天 AI 回應" not in summary_source
+    assert "舊格式雜談 AI 回應" not in summary_source

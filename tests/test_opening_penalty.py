@@ -91,3 +91,27 @@ def test_find_violation_uses_cleaned_reply_start():
 
     assert mgr.find_violation("[白蓮|c1]: 哼...新回覆。", plan) == "哼..."
     assert mgr.find_violation("換個開頭，這次不重複。", plan) == ""
+
+
+def test_apply_instruction_keeps_user_input_at_tail():
+    mgr = OpeningPenaltyManager()
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "<environment_context>\n"
+                "<current_time>2026-05-22 13:46:28 CST</current_time>\n"
+                "</environment_context>\n\n"
+                "<user_input>\n"
+                "今天喝什麼？\n"
+                "</user_input>"
+            ),
+        }
+    ]
+    instruction = "<opening_penalty_instruction>\n禁止用舊開頭。\n</opening_penalty_instruction>"
+
+    mgr.apply_instruction_to_messages(messages, instruction)
+
+    content = messages[-1]["content"]
+    assert content.index("<opening_penalty_instruction>") < content.index("<user_input>")
+    assert content.strip().endswith("</user_input>")

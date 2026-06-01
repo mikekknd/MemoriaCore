@@ -9,6 +9,11 @@ from core.i18n import normalize_locale
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 
+TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS = 8000
+TRANSIENT_CONTEXT_MIN_MAX_CHARS = 1000
+TRANSIENT_CONTEXT_HARD_MAX_CHARS = 12000
+TRANSIENT_CONTEXT_SOURCE_MAX_CHARS = 64
+
 
 class SearchRequest(BaseModel):
     query: str
@@ -117,6 +122,20 @@ class ExpandQueryRequest(BaseModel):
     recent_history: list[dict] = []
 
 
+class TransientContextRequest(BaseModel):
+    """Final-chat-only runtime context supplied by an app integration.
+
+    Agent navigation note:
+    - `context_text` is capped by TRANSIENT_CONTEXT_* constants.
+    - The rendered LLM prompt uses only `context_text`.
+    - `source` is debug metadata and is not rendered into final chat.
+    """
+
+    source: str = "runtime"
+    context_text: str
+    max_chars: Optional[int] = None
+
+
 class ChatSyncRequest(BaseModel):
     content: str
     display_content: Optional[str] = None
@@ -129,8 +148,10 @@ class ChatSyncRequest(BaseModel):
     channel_class: Optional[Literal["public", "private"]] = None
     persona_face: Optional[Literal["public", "private"]] = None
     external_context: Optional[dict] = None
+    transient_context: Optional[TransientContextRequest] = None
     include_speech: bool = True
     memory_write_policy: Literal["normal", "transient"] = "normal"
+    tool_routing_policy: Literal["auto", "disabled"] = "auto"
 
 
 class PromptJsonRequest(BaseModel):
@@ -160,6 +181,14 @@ class CreateSessionRequest(BaseModel):
 class SessionSystemEventRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
     debug_info: dict[str, Any] = Field(default_factory=dict)
+
+
+class SessionAssistantEventRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+    character_id: Optional[str] = None
+    character_name: Optional[str] = None
+    debug_info: dict[str, Any] = Field(default_factory=dict)
+    extracted_entities: Optional[list[str]] = None
 
 
 class BlockUpdateRequest(BaseModel):

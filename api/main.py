@@ -4,6 +4,7 @@ FastAPI 應用程式組裝 — 唯一的 API 閘道入口。
 """
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import os
 
@@ -21,6 +22,34 @@ from api.session_manager import session_manager
 from core.background_gatherer import start_background_gather_loop
 from api.middleware.auth import AuthMiddleware
 from api.routers import auth, health, memory, profile, system, session, logs, chat_ws, chat_rest, character, prompts, persona_evolution, personality_public, admin_users, bots, llm_tasks
+
+
+WEATHER_CACHE_REFRESH_HOURS = (0, 8, 16)
+
+
+def _next_weather_cache_refresh_at(now: datetime) -> datetime:
+    """回傳下一個天氣快取固定刷新時段。"""
+    hour_base = now.replace(minute=0, second=0, microsecond=0)
+    for hour in WEATHER_CACHE_REFRESH_HOURS:
+        candidate = hour_base.replace(hour=hour)
+        if candidate > now:
+            return candidate
+    return (hour_base + timedelta(days=1)).replace(hour=WEATHER_CACHE_REFRESH_HOURS[0])
+
+
+async def _refresh_su_weather_cache_once(force: bool = False) -> bool:
+    """依最新設定刷新 SU 常駐城市天氣快取；設定不完整時略過。"""
+    user_prefs = get_storage().load_prefs()
+    weather_city = (user_prefs.get("weather_city") or "").strip()
+    ow_key = (user_prefs.get("openweather_api_key") or "").strip()
+    from core.deployment_config import get_su_user_id
+    su_user_id = user_prefs.get("su_user_id") or get_su_user_id()
+    if not (su_user_id and weather_city and ow_key):
+        return False
+
+    from tools.weather_cache import WeatherCache
+    wc = WeatherCache()
+    return await asyncio.to_thread(wc.ensure_today, weather_city, ow_key, force=force)
 
 
 def _persona_sync_candidate_character_ids(storage) -> list[str]:
@@ -63,15 +92,27 @@ async def lifespan(app: FastAPI):
     await get_telegram_bot_manager().sync_from_registry()
     await get_discord_bot_manager().sync_from_registry()
 
-    # SU 天氣快取預熱（有 SU + 設定城市 + API key 才執行）
-    weather_city = user_prefs.get("weather_city", "")
-    ow_key = user_prefs.get("openweather_api_key", "")
-    from core.deployment_config import get_su_user_id
-    su_user_id = user_prefs.get("su_user_id") or get_su_user_id()
-    if su_user_id and weather_city and ow_key:
-        from tools.weather_cache import WeatherCache
-        wc = WeatherCache()
-        await asyncio.to_thread(wc.ensure_today, weather_city, ow_key)
+    # SU 天氣快取：啟動預熱一次，之後每日 00:00 / 08:00 / 16:00 定時刷新。
+    await _refresh_su_weather_cache_once()
+
+    async def _weather_cache_refresh_loop():
+        from core.system_logger import SystemLogger
+        while True:
+            next_refresh = _next_weather_cache_refresh_at(datetime.now())
+            delay_seconds = max(0.0, (next_refresh - datetime.now()).total_seconds())
+            SystemLogger.log_system_event(
+                "WeatherCache",
+                f"天氣快取排程已掛載，下次預計刷新時間: {next_refresh.strftime('%Y-%m-%d %H:%M:%S')}",
+            )
+            await asyncio.sleep(delay_seconds)
+            try:
+                await _refresh_su_weather_cache_once(force=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                SystemLogger.log_error("WeatherCache", f"定時刷新天氣快取失敗: {e}")
+
+    weather_cache_task = asyncio.create_task(_weather_cache_refresh_loop())
 
     # 背景話題搜集 (每 4 小時一次)
     bg_gather_task = None
@@ -119,12 +160,14 @@ async def lifespan(app: FastAPI):
     await get_telegram_bot_manager().stop_all()
     await get_discord_bot_manager().stop_all()
     cleanup_task.cancel()
+    weather_cache_task.cancel()
     if bg_gather_task:
         bg_gather_task.cancel()
     persona_sync_task.cancel()
 
     try:
         await cleanup_task
+        await weather_cache_task
         if bg_gather_task:
             await bg_gather_task
         await persona_sync_task

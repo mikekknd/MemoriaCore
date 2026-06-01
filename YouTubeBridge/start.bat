@@ -69,15 +69,15 @@ echo.
 echo ============================================
 echo   Starting YouTubeBridge in foreground mode
 echo.
-echo   Control UI   : http://localhost:%API_PORT%/ui/
-echo   Live page    : http://localhost:%API_PORT%/live/
+echo   Studio UI    : http://localhost:%API_PORT%/studio/
+echo   Legacy UI    : http://localhost:%API_PORT%/ui/
 echo   API server   : http://localhost:%API_PORT%
 echo   API docs     : http://localhost:%API_PORT%/docs
 echo ============================================
 echo.
 echo [INFO] Keep this window open while using the API. Close it or press Ctrl+C to stop.
 echo [INFO] Console output is mirrored to: %LOG_DIR%\youtube_bridge_8091.foreground.log
-echo [INFO] Open the Control UI after the server reports that it is running.
+echo [INFO] Open the Studio UI after the server reports that it is running.
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $ProgressPreference='SilentlyContinue'; $env:MEMORIACORE_ADMIN_BYPASS='%MEMORIACORE_ADMIN_BYPASS%'; $env:PYTHONUTF8='%PYTHONUTF8%'; $env:PYTHONIOENCODING='%PYTHONIOENCODING%'; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; $OutputEncoding = [Console]::OutputEncoding; $cmdLine = [char]34 + '%PYTHON%' + [char]34 + ' server.py 2>&1'; cmd /d /s /c $cmdLine | Tee-Object -FilePath '%LOG_DIR%\youtube_bridge_8091.foreground.log' -Append; $code = $LASTEXITCODE; exit $code }"
 set EXIT_CODE=%errorlevel%

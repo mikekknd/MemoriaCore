@@ -13,7 +13,13 @@ from api.dependencies import (
     get_current_user, get_storage, get_character_manager,
 )
 from api.session_manager import session_manager
-from api.models.requests import ChatSyncRequest
+from api.models.requests import (
+    ChatSyncRequest,
+    TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS,
+    TRANSIENT_CONTEXT_HARD_MAX_CHARS,
+    TRANSIENT_CONTEXT_MIN_MAX_CHARS,
+    TRANSIENT_CONTEXT_SOURCE_MAX_CHARS,
+)
 from api.models.responses import ChatSyncResponseDTO
 from api.routers.chat.execution import (
     execute_chat_turns,
@@ -25,6 +31,7 @@ from api.routers.chat.execution import (
 from api.routers.chat.orchestration import _select_orchestration, _unpack_orchestration_result
 from api.routers.chat.group_loop import is_group_session, run_group_chat_loop
 from api.routers.chat.roster import normalize_character_ids
+from core.prompt_manager import get_prompt_manager
 from tools.minimax_image import generated_image_path
 
 
@@ -123,6 +130,36 @@ def _normalize_live_hosting(raw_hosting) -> dict:
     return normalized
 
 
+def _normalize_live_turn_control(raw_control) -> dict:
+    if not isinstance(raw_control, dict):
+        return {}
+    required_response_actions = {
+        "closing_super_chat_thanks",
+        "reply_chat_batch",
+        "reply_super_chat_batch",
+    }
+    normalized = {}
+    source_action = re.sub(
+        r"[^A-Za-z0-9_.:-]",
+        "_",
+        str(raw_control.get("source_action") or "").strip(),
+    )[:80]
+    is_required_response = (
+        raw_control.get("required_response") is True
+        or source_action in required_response_actions
+    )
+    if raw_control.get("final_closing") is True and not is_required_response:
+        normalized["final_closing"] = True
+    if is_required_response:
+        normalized["required_response"] = True
+    if source_action:
+        normalized["source_action"] = source_action
+    return normalized if (
+        normalized.get("final_closing") is True
+        or normalized.get("required_response") is True
+    ) else {}
+
+
 def _normalize_live_episode_plan(raw_plan) -> dict:
     if not isinstance(raw_plan, dict):
         return {}
@@ -158,6 +195,15 @@ def _normalize_live_episode_plan(raw_plan) -> dict:
     evidence_policy = _normalize_live_episode_evidence_policy(raw_plan.get("evidence_policy"))
     if evidence_policy:
         normalized["evidence_policy"] = evidence_policy
+    evidence_brief = _normalize_live_episode_evidence_brief(raw_plan.get("evidence_brief"))
+    if evidence_brief:
+        normalized["evidence_brief"] = evidence_brief
+    focus_policy = _normalize_live_episode_focus_policy(raw_plan.get("focus_policy"))
+    if focus_policy:
+        normalized["focus_policy"] = focus_policy
+    forbidden_repetition = _normalize_live_episode_forbidden_repetition(raw_plan.get("forbidden_repetition"))
+    if forbidden_repetition:
+        normalized["forbidden_repetition"] = forbidden_repetition
     interrupt_state = _normalize_live_episode_interrupt_state(raw_plan.get("interrupt_state"))
     if interrupt_state:
         normalized["interrupt_state"] = interrupt_state
@@ -286,6 +332,74 @@ def _normalize_live_episode_evidence_policy(raw_evidence) -> dict:
     return normalized
 
 
+def _normalize_compact_string_list(raw_items, *, limit: int, max_length: int) -> list[str]:
+    if not isinstance(raw_items, list):
+        return []
+    items: list[str] = []
+    for raw in raw_items:
+        item = " ".join(str(raw or "").split())[:max_length].strip()
+        if item:
+            items.append(item)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _normalize_live_episode_evidence_brief(raw_evidence) -> dict:
+    if not isinstance(raw_evidence, dict):
+        return {}
+    facts_to_state = _normalize_compact_string_list(
+        raw_evidence.get("facts_to_state"),
+        limit=4,
+        max_length=300,
+    )
+    source_boundaries = _normalize_compact_string_list(
+        raw_evidence.get("source_boundaries"),
+        limit=3,
+        max_length=300,
+    )
+    normalized = {}
+    if facts_to_state:
+        normalized["facts_to_state"] = facts_to_state
+    if source_boundaries:
+        normalized["source_boundaries"] = source_boundaries
+    if isinstance(raw_evidence.get("do_not_delegate_to_character"), bool):
+        normalized["do_not_delegate_to_character"] = raw_evidence.get("do_not_delegate_to_character")
+    return normalized
+
+
+def _normalize_live_episode_focus_policy(raw_focus) -> dict:
+    if not isinstance(raw_focus, dict):
+        return {}
+    must_cover = _normalize_compact_string_list(
+        raw_focus.get("must_cover"),
+        limit=4,
+        max_length=200,
+    )
+    return {"must_cover": must_cover} if must_cover else {}
+
+
+def _normalize_live_episode_forbidden_repetition(raw_repetition) -> dict:
+    if not isinstance(raw_repetition, dict):
+        return {}
+    claims = _normalize_compact_string_list(
+        raw_repetition.get("claims"),
+        limit=4,
+        max_length=200,
+    )
+    phrases = _normalize_compact_string_list(
+        raw_repetition.get("phrases"),
+        limit=6,
+        max_length=120,
+    )
+    normalized = {}
+    if claims:
+        normalized["claims"] = claims
+    if phrases:
+        normalized["phrases"] = phrases
+    return normalized
+
+
 def _normalize_live_episode_interrupt_state(raw_state) -> dict:
     if not isinstance(raw_state, dict):
         return {}
@@ -405,6 +519,146 @@ def _chat_user_display_name(current_user: dict, external_context: dict | None) -
     return _user_display_name(current_user)
 
 
+ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS = 1200
+ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS = 500
+
+
+def _compact_router_context_text(value: object, max_chars: int) -> str:
+    text = str(value or "").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip()
+
+
+def _router_context_value(
+    raw: dict,
+    key: str,
+    max_chars: int = ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS,
+) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    value = raw.get(key)
+    if not isinstance(value, str | int | float | bool):
+        return ""
+    return _compact_router_context_text(value, max_chars)
+
+
+def _line_value_from_context_text(context_text: str, prefixes: tuple[str, ...]) -> str:
+    for line in str(context_text or "").replace("\r", "\n").splitlines():
+        stripped = line.strip()
+        for prefix in prefixes:
+            if stripped.lower().startswith(prefix.lower()):
+                return _compact_router_context_text(
+                    stripped[len(prefix) :],
+                    ROUTER_TURN_CONTEXT_FIELD_MAX_CHARS,
+                )
+    return ""
+
+
+def _personacore_world_event_context_excerpt(context_text: str) -> str:
+    text = str(context_text or "").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    scene_marker = "[PersonaCore 場景感知]"
+    event_marker = "[PersonaCore world event]"
+    scene_index = text.find(scene_marker)
+    if scene_index < 0:
+        return ""
+    text = text[scene_index:]
+    event_index = text.find(event_marker)
+    if event_index >= 0:
+        text = text[:event_index]
+
+    filtered_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == event_marker:
+            continue
+        if stripped.lower().startswith(("event summary:", "event instruction:")):
+            continue
+        if stripped.startswith(("事件摘要：", "事件指令：")):
+            continue
+        filtered_lines.append(stripped)
+    return _compact_router_context_text(
+        "\n".join(filtered_lines),
+        ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS,
+    )
+
+
+def _router_context_excerpt_from_context_text(context_text: str, source: str) -> str:
+    if source == "personacore_world_event":
+        return _personacore_world_event_context_excerpt(context_text)
+    return _compact_router_context_text(context_text, ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS)
+
+
+def _router_turn_context_for_external_context(
+    external_context: dict | None,
+    raw_router_context: dict | None = None,
+) -> dict | None:
+    if not isinstance(external_context, dict):
+        return None
+    context_text = str(external_context.get("context_text") or "").replace("\r", "\n").strip()
+    if not context_text:
+        return None
+
+    raw_router_context = raw_router_context if isinstance(raw_router_context, dict) else {}
+    source = str(external_context.get("source") or "external_bridge").strip() or "external_bridge"
+    summary = _router_context_value(raw_router_context, "summary")
+    instruction = _router_context_value(raw_router_context, "instruction")
+    trigger_kind = _router_context_value(raw_router_context, "trigger_kind") or source
+    routing_hint = _router_context_value(raw_router_context, "routing_hint")
+    context_excerpt = _router_context_value(
+        raw_router_context,
+        "context_excerpt",
+        ROUTER_TURN_CONTEXT_EXCERPT_MAX_CHARS,
+    )
+
+    if not summary:
+        summary = _line_value_from_context_text(
+            context_text,
+            (
+                "Event summary:",
+                "Event:",
+                "事件摘要：",
+                "事件：",
+            ),
+        )
+    if not instruction:
+        instruction = _line_value_from_context_text(
+            context_text,
+            (
+                "Event instruction:",
+                "Instruction:",
+                "事件指令：",
+                "指令：",
+            ),
+        )
+    if not summary:
+        summary = _compact_router_context_text(context_text, 240)
+
+    result = {
+        "source": source,
+        "trigger_kind": trigger_kind,
+        "summary": summary,
+        "persistence": "hidden" if external_context.get("persist_visible_event") is False else "default_visible_event",
+    }
+    if instruction:
+        result["instruction"] = instruction
+    if routing_hint:
+        result["routing_hint"] = routing_hint
+
+    if not context_excerpt:
+        context_excerpt = _router_context_excerpt_from_context_text(context_text, source)
+    if context_excerpt:
+        result["context_excerpt"] = context_excerpt
+    return result
+
+
 def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | None, dict]:
     """將外部 bridge payload 轉成暫態 LLM context。
 
@@ -458,13 +712,16 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         group_turn_limit = max(1, min(group_turn_limit, 12))
         summary["group_turn_limit"] = group_turn_limit
     visible_events = _normalize_visible_events(raw.get("visible_events"))
+    raw_router_context = raw.get("router_context") if isinstance(raw.get("router_context"), dict) else {}
     character_prompt_overrides = {}
     live_hosting = {}
     live_episode_plan = {}
+    turn_control = {}
     if source in YOUTUBE_LIVE_EXTERNAL_SOURCES and _body_declares_youtube_live_scope(body):
         character_prompt_overrides = _normalize_character_prompt_overrides(raw.get("character_prompt_overrides"))
         live_hosting = _normalize_live_hosting(raw.get("live_hosting"))
         live_episode_plan = _normalize_live_episode_plan(raw.get("live_episode_plan"))
+        turn_control = _normalize_live_turn_control(raw.get("turn_control"))
     for key in ("episode_plan_id", "episode_plan_turn_id", "episode_plan_mode"):
         value = raw_summary.get(key)
         if value is not None:
@@ -475,6 +732,11 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         "visible_events": visible_events,
         "summary": summary,
     }
+    if raw.get("persist_visible_event") is False:
+        context["persist_visible_event"] = False
+    router_turn_context = _router_turn_context_for_external_context(context, raw_router_context)
+    if router_turn_context:
+        context["router_turn_context"] = router_turn_context
     if group_turn_limit is not None:
         context["group_turn_limit"] = group_turn_limit
     if character_prompt_overrides:
@@ -483,7 +745,83 @@ def _resolve_external_context_payload(body: ChatSyncRequest) -> tuple[dict | Non
         context["live_hosting"] = live_hosting
     if live_episode_plan:
         context["live_episode_plan"] = live_episode_plan
+    if turn_control:
+        context["turn_control"] = turn_control
+    if source == "youtube_live_director" and raw.get("suppress_external_turn_instruction"):
+        context["suppress_external_turn_instruction"] = True
+    if source in YOUTUBE_LIVE_EXTERNAL_SOURCES and _body_declares_youtube_live_scope(body):
+        history_session_id = re.sub(
+            r"[^A-Za-z0-9_.:-]",
+            "_",
+            str(raw.get("conversation_history_session_id") or "").strip(),
+        )[:160]
+        if history_session_id:
+            context["conversation_history_session_id"] = history_session_id
+            summary["conversation_history_session_id"] = history_session_id
     return context, summary
+
+
+def _reject_mutually_exclusive_contexts(body: ChatSyncRequest) -> None:
+    if body.external_context is None or body.transient_context is None:
+        return
+    from core.system_logger import SystemLogger
+
+    external_source = ""
+    if isinstance(body.external_context, dict):
+        external_source = str(body.external_context.get("source") or "").strip()[:64]
+    transient_source = str(getattr(body.transient_context, "source", "") or "").strip()[:64]
+    message = "external_context and transient_context are mutually exclusive"
+    SystemLogger.log_error(
+        "ChatTransientContext",
+        message,
+        details={
+            "session_id": str(body.session_id or "")[:160],
+            "external_source": external_source,
+            "transient_source": transient_source,
+        },
+    )
+    raise HTTPException(400, detail=message)
+
+
+def _resolve_transient_context_payload(body: ChatSyncRequest) -> tuple[dict | None, dict]:
+    """Normalize app runtime context for final chat only.
+
+    Agent navigation note:
+    - This is not YouTubeBridge `external_context`.
+    - `context_text` is the only LLM-visible value.
+    - The cap constants live in api.models.requests for fast code search.
+    """
+    raw = body.transient_context
+    if raw is None:
+        return None, {}
+
+    source = re.sub(
+        r"[^A-Za-z0-9_.:-]",
+        "_",
+        str(raw.source or "runtime").strip() or "runtime",
+    )[:TRANSIENT_CONTEXT_SOURCE_MAX_CHARS]
+    context_text_original = str(raw.context_text or "").replace("\r", "\n")
+    context_text = context_text_original.strip()
+    if not context_text:
+        return None, {}
+
+    requested_max = raw.max_chars
+    if requested_max is None:
+        max_chars = TRANSIENT_CONTEXT_DEFAULT_MAX_CHARS
+    else:
+        max_chars = max(
+            TRANSIENT_CONTEXT_MIN_MAX_CHARS,
+            min(int(requested_max), TRANSIENT_CONTEXT_HARD_MAX_CHARS),
+        )
+    if len(context_text) > max_chars:
+        context_text = context_text[:max_chars].rstrip()
+
+    summary = {
+        "source": source,
+        "truncated": len(context_text_original.strip()) > len(context_text),
+        "max_chars": max_chars,
+    }
+    return {"source": source, "context_text": context_text, "summary": summary}, summary
 
 
 def _normalize_visible_events(raw_events) -> list[dict]:
@@ -586,6 +924,8 @@ def _build_external_context_visible_event(
 ) -> tuple[str, dict] | None:
     if not external_context:
         return None
+    if external_context.get("persist_visible_event") is False:
+        return None
     context_text = str(external_context.get("context_text") or "").strip()
     if not context_text:
         return None
@@ -647,26 +987,23 @@ def _transient_user_content_for_external_context(body: ChatSyncRequest, external
         return ""
     source = str(external_context.get("source") or "").strip()
     if source == "youtube_live_director":
+        if external_context.get("suppress_external_turn_instruction"):
+            return ""
         public_turn_instruction = str(body.content or "").replace("\r", "\n").strip()
         if external_context.get("director_dialogue_expansion_enabled") is False:
-            base_instruction = (
-                "請根據已提供的直播流程提示回應。"
-                "這是直播自主推進，本次只需要目前被導播或路由指定的一位角色完成回應；"
-                "不要要求其他角色接話。"
-                "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+            base_instruction = get_prompt_manager().get(
+                "youtube_live_director_transient_single_turn"
             )
         else:
-            base_instruction = (
-                "請根據已提供的直播流程提示回應。"
-                "這是直播自主推進，不保證有觀眾即時回覆；請讓角色彼此接話、補充或提出不同角度。"
-                "除非正在回應留言或 Super Chat，否則不要把問題丟回觀眾。"
+            base_instruction = get_prompt_manager().get(
+                "youtube_live_director_transient_group_turn"
             )
         if public_turn_instruction:
             return f"{public_turn_instruction}\n\n{base_instruction}"
         return base_instruction
     if source == "youtube_live":
-        return "請根據已帶入的 YouTube 直播留言上下文回應。"
-    return "請根據已帶入的外部上下文回應。"
+        return get_prompt_manager().get("youtube_live_comment_transient_instruction")
+    return get_prompt_manager().get("external_context_transient_instruction")
 
 
 def _memory_write_policy_for_request(body: ChatSyncRequest, external_context: dict | None) -> str:

@@ -70,8 +70,11 @@ def run_group_router(
     discussion_mode: str = "default",
     live_hosting: dict | None = None,
     live_episode_plan: dict | None = None,
+    final_closing_hint: bool = False,
     current_turn_instruction: str = "",
+    current_turn_intent: dict | None = None,
     current_turn_start_index: int | None = None,
+    router_turn_context: dict | None = None,
 ) -> GroupRouterResult:
     """根據近期群組上下文選出下一位 AI；無需接話時回傳 should_respond=False。"""
     participants = _normalize_characters(active_characters)
@@ -93,7 +96,23 @@ def run_group_router(
         return GroupRouterResult(False, None, "no participants", "stop_no_new_value")
 
     latest_user_text = str(current_turn_instruction or "").strip() or _latest_user_text(session_messages)
-    mentioned_id = _detect_mention(latest_user_text, participants) if honor_mentions else None
+    normalized_turn_intent = _normalize_turn_intent(current_turn_intent)
+    normalized_router_turn_context = _normalize_router_turn_context(router_turn_context)
+    visible_router_turn_context = _visible_router_turn_context(normalized_router_turn_context)
+    youtube_live_director_intent = _is_youtube_live_director_intent(
+        normalized_turn_intent,
+        discussion_mode=normalized_discussion_mode,
+    )
+    turn_original_user_request = (
+        _youtube_live_director_turn_label(normalized_turn_intent)
+        if youtube_live_director_intent
+        else _original_request_from_router_turn_context(normalized_router_turn_context, latest_user_text)
+    )
+    mentioned_id = (
+        _detect_mention(latest_user_text, participants)
+        if honor_mentions and not youtube_live_director_intent
+        else None
+    )
     if mentioned_id:
         return GroupRouterResult(True, mentioned_id, "explicit mention", "explicit_user_request")
 
@@ -118,6 +137,14 @@ def run_group_router(
     not_yet_spoken_refs = _participant_refs(not_yet_spoken_ids, participants)
     all_participants_spoke = len(participants) > 1 and not not_yet_spoken_ids
     remaining_bot_turns = _remaining_bot_turns(bot_turn_index, max_bot_turns)
+    closing_mode = _closing_mode_for_turn(
+        latest_user_text,
+        discussion_mode=normalized_discussion_mode,
+        participants=participants,
+        live_episode_plan=live_episode_plan_context,
+        max_bot_turns=max_bot_turns,
+        final_closing_hint=final_closing_hint,
+    )
 
     if len(participants) == 1:
         only_id = participants[0]["character_id"]
@@ -127,30 +154,46 @@ def run_group_router(
             return GroupRouterResult(True, only_id, "single participant repeat", "repeat_speaker_reply_to_ai")
         return GroupRouterResult(True, only_id, "single participant", "new_speaker_ack")
 
+    turn_state = {
+        "original_user_request": turn_original_user_request,
+        "last_speaker": _participant_ref(last_speaker_id, participants),
+        "already_spoken_this_turn": already_spoken_refs,
+        "not_yet_spoken_this_turn": not_yet_spoken_refs,
+        "all_participants_already_spoke_this_turn": all_participants_spoke,
+        "recent_assistant_exchange_this_turn": recent_exchange,
+        "bot_turn_index": max(0, int(bot_turn_index or 0)),
+        "max_bot_turns": max_bot_turns,
+        "remaining_bot_turns_including_next": remaining_bot_turns,
+        "closing_mode": closing_mode,
+    }
+    if normalized_turn_intent is not None:
+        turn_state["turn_intent"] = normalized_turn_intent
+
     prompt = get_prompt_manager().get("group_router_system").format(
         participants_json=json.dumps(participants, ensure_ascii=False, indent=2),
-        history_text=_format_history(session_messages[-12:]),
+        history_text=_format_previous_context(
+            session_messages,
+            turn_start_index=turn_start_index,
+            current_user_text=latest_user_text,
+            limit=3,
+        ),
+        external_turn_context_json=json.dumps(
+            visible_router_turn_context,
+            ensure_ascii=False,
+            indent=2,
+        ),
         turn_state_json=json.dumps(
-            {
-                "original_user_request": latest_user_text,
-                "latest_user_text": latest_user_text,
-                "last_speaker": _participant_ref(last_speaker_id, participants),
-                "already_spoken_this_turn": already_spoken_refs,
-                "not_yet_spoken_this_turn": not_yet_spoken_refs,
-                "all_participants_already_spoke_this_turn": all_participants_spoke,
-                "recent_assistant_exchange_this_turn": recent_exchange,
-                "bot_turn_index": max(0, int(bot_turn_index or 0)),
-                "max_bot_turns": max_bot_turns,
-                "remaining_bot_turns_including_next": remaining_bot_turns,
-                "discussion_mode": normalized_discussion_mode,
-                "live_episode_plan": live_episode_plan_context,
-            },
+            turn_state,
             ensure_ascii=False,
             indent=2,
         ),
     )
     if normalized_discussion_mode == "youtube_live":
         prompt += "\n\n" + _youtube_live_group_router_rules(live_hosting)
+        if closing_mode != "none":
+            prompt += "\n\n" + get_prompt_manager().get("group_router_youtube_live_closing_rules").format(
+                closing_mode=closing_mode,
+            )
 
     try:
         parsed = router.generate_json(
@@ -171,7 +214,7 @@ def run_group_router(
     action = str(parsed.get("action") or "")
     target = parsed.get("target_character_id")
     reason = str(parsed.get("reason", ""))
-    result = _validate_action_result(
+    raw_result = _validate_action_result(
         conversation_intent=conversation_intent,
         action=action,
         target=target,
@@ -181,8 +224,8 @@ def run_group_router(
         not_yet_spoken_ids=not_yet_spoken_ids,
         last_speaker_id=last_speaker_id,
     )
-    result = _enforce_youtube_live_speaker_rules(
-        result,
+    enforced_result = _enforce_youtube_live_speaker_rules(
+        raw_result,
         participants=participants,
         already_spoken_ids=spoken_after_user,
         not_yet_spoken_ids=not_yet_spoken_ids,
@@ -191,32 +234,125 @@ def run_group_router(
         discussion_mode=normalized_discussion_mode,
         live_episode_plan=live_episode_plan_context,
     )
-    return _apply_youtube_live_continuation_policy(
-        result,
+    final_result = _apply_youtube_live_continuation_policy(
+        enforced_result,
         participants=participants,
         already_spoken_ids=spoken_after_user,
         last_speaker_id=last_speaker_id,
         remaining_bot_turns=remaining_bot_turns,
         discussion_mode=normalized_discussion_mode,
         live_episode_plan=live_episode_plan_context,
+        closing_mode=closing_mode,
     )
+    if normalized_discussion_mode == "youtube_live":
+        _log_group_router_policy_adjustment(
+            policy=(
+                "youtube_live_group_closing"
+                if closing_mode == "group_closing"
+                else "youtube_live_continuation_policy"
+            ),
+            closing_mode=closing_mode,
+            raw_result=raw_result,
+            final_result=final_result,
+        )
+    return final_result
 
 
 def _normalize_discussion_mode(value: str | None) -> str:
     return "youtube_live" if str(value or "").strip() == "youtube_live" else "default"
 
 
+def _normalize_turn_intent(value: dict | None) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    return dict(value)
+
+
+def _normalize_router_turn_context(value: dict | None) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    for key in (
+        "source",
+        "trigger_kind",
+        "summary",
+        "instruction",
+        "persistence",
+        "routing_hint",
+        "context_excerpt",
+    ):
+        text = str(value.get(key) or "").replace("\r", "\n").strip()
+        if text:
+            result[key] = text[:1200].rstrip()
+    if not any(result.get(key) for key in ("summary", "instruction", "routing_hint", "context_excerpt")):
+        return None
+    return result
+
+
+def _visible_router_turn_context(value: dict | None) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    for key in ("routing_hint", "context_excerpt"):
+        text = str(value.get(key) or "").replace("\r", "\n").strip()
+        if text:
+            result[key] = text[:1200].rstrip()
+    return result or None
+
+
+def _external_request_text(summary: str, instruction: str) -> str:
+    label = "外部事件觸發"
+    if summary and instruction:
+        separator = "" if summary.endswith(("。", "！", "？", ".", "!", "?")) else "。"
+        return f"{label}：{summary}{separator}{instruction}"
+    if summary:
+        return f"{label}：{summary}"
+    return ""
+
+
+def _original_request_from_router_turn_context(router_turn_context: dict | None, fallback: str) -> str:
+    if not router_turn_context:
+        return fallback
+    summary = str(router_turn_context.get("summary") or router_turn_context.get("context_excerpt") or "").strip()
+    instruction = str(router_turn_context.get("instruction") or "").strip()
+    return _external_request_text(summary, instruction) or fallback
+
+
+def _is_youtube_live_director_intent(turn_intent: dict | None, *, discussion_mode: str) -> bool:
+    if discussion_mode != "youtube_live" or not isinstance(turn_intent, dict):
+        return False
+    return str(turn_intent.get("source") or "").strip() == "youtube_live_director"
+
+
+def _youtube_live_director_turn_label(turn_intent: dict | None) -> str:
+    actions = [
+        str((turn_intent or {}).get(key) or "").strip()
+        for key in ("action", "source_action", "raw_action")
+    ]
+    normalized_actions = {action for action in actions if action}
+    if normalized_actions & {"reply_chat_batch", "audience_response"}:
+        return "YouTube Live audience response turn"
+    if normalized_actions & {"reply_super_chat_batch", "super_chat_response"}:
+        return "YouTube Live Super Chat response turn"
+    if any("final" in action or "closing" in action for action in normalized_actions):
+        if any("final" in action for action in normalized_actions):
+            return "YouTube Live final closing turn"
+        return "YouTube Live closing turn"
+    action = next((action for action in actions if action), "")
+    if action:
+        compact_action = "_".join(action.split())[:80]
+        return f"YouTube Live director turn: {compact_action}"
+    return "YouTube Live director turn"
+
+
 def _youtube_live_group_router_rules(live_hosting: dict | None = None) -> str:
     base = (
-        "<youtube_live_group_router_rules>\n"
+        "<youtube_live_rules>\n"
         "- 這是 YouTube 直播的多角色對話，不是普通使用者問答。\n"
-        "- 一般直播對話禁止同一角色連續發言；若上一位 speaker 與候選 speaker 相同，除非是 final_closing、系統安全補充、使用者明確指定或格式錯誤重試，必須改派其他角色或停止。\n"
-        "- 同一個 live_episode_plan.turn_id / turn_type 內，同一角色不可針對同一段任務發言兩次；所有可用角色都已完成後應停止並交回導播推進下一段。\n"
-        "- remaining_bot_turns_including_next 是硬性上限，不是必須用完的目標；段落核心資訊已說出後，可停止而不是補同一資料點。\n"
-        "- 角色把問題丟給觀眾時，不代表應該等待觀眾；應讓另一位角色接住，除非目前正在回應留言或 Super Chat。\n"
-        "- 若 live_episode_plan.speaker_policy.anchor_status=first_reply_already_completed，代表第一棒指定角色已完成；後續應優先評估其他角色是否能接話、補充或反駁。\n"
-        "- 只有在近期交換已自然收束、沒有具體主張可補充，或已沒有剩餘回合時才停止。\n"
-        "</youtube_live_group_router_rules>"
+        "- 除非使用者指定、final_closing、修正錯誤或安全補充，避免同角色連續發言。\n"
+        "- 同一直播段落中，角色完成本輪任務後不應再次發言。\n"
+        "- 若角色把問題丟給觀眾，本輪任務仍未完成時可由另一位角色接住；若是正式收尾或禁止開新話題，應停止。\n"
+        "</youtube_live_rules>"
     )
     hosting = _youtube_live_hosting_router_rules(live_hosting)
     return base + ("\n\n" + hosting if hosting else "")
@@ -478,6 +614,58 @@ def _live_episode_plan_allows_multi_reply(live_episode_plan: dict, max_bot_turns
         return False
 
 
+def _closing_mode_for_turn(
+    current_turn_instruction: str,
+    *,
+    discussion_mode: str,
+    participants: list[dict],
+    live_episode_plan: dict,
+    max_bot_turns: int | None,
+    final_closing_hint: bool = False,
+) -> str:
+    if not _is_final_closing_request(
+        current_turn_instruction,
+        live_episode_plan,
+        final_closing_hint=final_closing_hint,
+    ):
+        return "none"
+    if discussion_mode != "youtube_live" or len(participants) < 2:
+        return "single_closing"
+    try:
+        if int(max_bot_turns or 0) <= 1:
+            return "single_closing"
+    except (TypeError, ValueError):
+        pass
+    return "group_closing"
+
+
+def _is_final_closing_request(
+    current_turn_instruction: str,
+    live_episode_plan: dict,
+    *,
+    final_closing_hint: bool = False,
+) -> bool:
+    if final_closing_hint:
+        return True
+    if _live_episode_turn_type(live_episode_plan) == "final_closing":
+        return True
+    text = str(current_turn_instruction or "").strip()
+    if not text:
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            "最後收尾",
+            "正式道別",
+            "結束本場",
+            "結束這場",
+            "結束直播",
+            "本場最後",
+            "收場",
+        )
+    )
+
+
 def _normalize_characters(active_characters: list[dict]) -> list[dict]:
     normalized = []
     seen = set()
@@ -486,16 +674,32 @@ def _normalize_characters(active_characters: list[dict]) -> list[dict]:
         if not cid or cid in seen:
             continue
         seen.add(cid)
-        normalized.append({
+        item = {
             "character_id": cid,
             "name": char.get("name") or cid,
-            "summary": _summarize_character(char),
-        })
+            "routing_profile": _routing_profile_text(char),
+        }
+        role_functions = _routing_role_functions(char)
+        if role_functions:
+            item["role_functions"] = role_functions
+        normalized.append(item)
     return normalized
 
 
-def _summarize_character(char: dict) -> str:
+def _routing_profile_text(char: dict) -> str:
     return character_summary_text(char, fallback_to_prompt=True)
+
+
+def _routing_role_functions(char: dict) -> list[str]:
+    raw = char.get("routing_role_functions") or char.get("role_functions") or []
+    if not isinstance(raw, list):
+        return []
+    roles = []
+    for item in raw:
+        role = str(item or "").strip()
+        if role:
+            roles.append(role)
+    return roles[:6]
 
 
 def _participant_ref(character_id: str | None, participants: list[dict]) -> dict | None:
@@ -686,6 +890,38 @@ def _format_history(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_previous_context(
+    messages: list[dict],
+    *,
+    turn_start_index: int | None,
+    current_user_text: str = "",
+    limit: int,
+) -> str:
+    """只提供跨輪上下文，避免和本輪 turn_state 的發話狀態互相干擾。"""
+    if turn_start_index is not None:
+        candidates = messages[:max(0, int(turn_start_index or 0))]
+        if _is_current_user_message(candidates[-1] if candidates else None, current_user_text):
+            candidates = candidates[:-1]
+    else:
+        latest_user_index = None
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "user":
+                latest_user_index = idx
+                break
+        candidates = messages[:latest_user_index] if latest_user_index is not None else messages
+    text = _format_history(candidates[-max(1, int(limit or 1)):])
+    return text or "（無）"
+
+
+def _is_current_user_message(message: dict | None, current_user_text: str) -> bool:
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    expected = str(current_user_text or "").strip()
+    if not expected:
+        return False
+    return str(message.get("content") or "").strip() == expected
+
+
 def _coerce_legacy_router_result(
     parsed: dict,
     already_spoken_ids: set[str],
@@ -783,6 +1019,20 @@ def _enforce_youtube_live_speaker_rules(
         return result
     if remaining_bot_turns is not None and remaining_bot_turns <= 0:
         return GroupRouterResult(False, None, "youtube live planned turn reply budget exhausted", "stop_no_new_value")
+    if (
+        result.should_respond
+        and result.action != "explicit_user_request"
+        and result.conversation_intent != "directed_character"
+        and _live_episode_turn_type(live_episode_plan) == "final_closing"
+        and _all_participants_already_spoke(participants, already_spoken_ids)
+    ):
+        return GroupRouterResult(
+            False,
+            None,
+            "youtube live final closing already completed",
+            "stop_all_spoken",
+            "continue_group_discussion",
+        )
     if _youtube_live_allows_same_speaker_repeat(result, live_episode_plan):
         return result
     if not result.should_respond or not result.target_character_id:
@@ -846,6 +1096,44 @@ def _youtube_live_unique_alternative_speaker(
     return None
 
 
+def _all_participants_already_spoke(participants: list[dict], already_spoken_ids: set[str]) -> bool:
+    if not participants:
+        return False
+    return all(participant["character_id"] in already_spoken_ids for participant in participants)
+
+
+def _route_identity(result: GroupRouterResult) -> tuple[bool, str | None, str]:
+    return (
+        bool(result.should_respond),
+        result.target_character_id,
+        str(result.action or ""),
+    )
+
+
+def _log_group_router_policy_adjustment(
+    *,
+    policy: str,
+    closing_mode: str,
+    raw_result: GroupRouterResult,
+    final_result: GroupRouterResult,
+) -> None:
+    if _route_identity(raw_result) == _route_identity(final_result):
+        return
+    SystemLogger.log_system_event(
+        "group_router_post_policy",
+        f"route adjusted by {policy}",
+        details={
+            "policy": policy,
+            "closing_mode": closing_mode,
+            "raw_action": raw_result.action,
+            "raw_target_character_id": raw_result.target_character_id,
+            "final_action": final_result.action,
+            "final_target_character_id": final_result.target_character_id,
+            "final_conversation_intent": final_result.conversation_intent,
+        },
+    )
+
+
 def _live_episode_turn_identity(live_episode_plan: dict) -> str:
     turn_id = str(live_episode_plan.get("turn_id") or "").strip()
     if turn_id:
@@ -882,8 +1170,25 @@ def _apply_youtube_live_continuation_policy(
     remaining_bot_turns: int | None,
     discussion_mode: str,
     live_episode_plan: dict | None = None,
+    closing_mode: str = "none",
 ) -> GroupRouterResult:
     if discussion_mode != "youtube_live" or result.should_respond:
+        return result
+    if closing_mode == "group_closing" and result.action == "stop_no_new_value":
+        target = _youtube_live_unique_alternative_speaker(
+            participants,
+            already_spoken_ids=already_spoken_ids,
+            last_speaker_id=last_speaker_id,
+        )
+        if target:
+            return GroupRouterResult(
+                True,
+                target,
+                "youtube live group closing allows unspoken speaker to complete a brief farewell",
+                "new_speaker_reply_to_ai",
+                "continue_group_discussion",
+            )
+    if result.action == "stop_no_new_value":
         return result
     if live_episode_plan:
         return result

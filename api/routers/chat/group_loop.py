@@ -31,6 +31,10 @@ def get_session_characters(session: SessionState) -> list[dict]:
     return characters
 
 
+def _group_loop_cancel_requested(cancel_event: asyncio.Event | None) -> bool:
+    return bool(cancel_event and cancel_event.is_set())
+
+
 async def run_group_chat_loop(
     *,
     session: SessionState,
@@ -44,6 +48,8 @@ async def run_group_chat_loop(
     extra_session_ctx: dict | None = None,
     transient_user_content: str = "",
     max_turns_override: int | None = None,
+    cancel_event: asyncio.Event | None = None,
+    history_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """執行一輪使用者輸入後的多 AI 接力，並負責持久化 assistant turn。"""
     participants = get_session_characters(session)
@@ -70,7 +76,7 @@ async def run_group_chat_loop(
             pass
         max_turns = max(1, min(max_turns, MAX_GROUP_TURNS_HARD_LIMIT))
     turn_delay_seconds = _group_turn_delay_seconds(user_prefs)
-    working_messages = list(session.messages)
+    working_messages = list(history_messages or []) + list(session.messages)
     transient_user_content = str(transient_user_content or "").strip()
     turn_instruction = transient_user_content or user_prompt
     current_turn_start_index = len(working_messages)
@@ -87,8 +93,14 @@ async def run_group_chat_loop(
     discussion_mode = _discussion_mode_for_external_context(extra_session_ctx)
     live_hosting = _live_hosting_for_external_context(extra_session_ctx)
     live_episode_plan = _live_episode_plan_for_external_context(extra_session_ctx)
+    final_closing_hint = _final_closing_hint_for_external_context(extra_session_ctx)
+    current_turn_intent = _router_intent_for_external_context(extra_session_ctx)
+    router_turn_context = _router_turn_context_for_external_context(extra_session_ctx)
 
     for turn_index in range(max_turns):
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         route = await asyncio.to_thread(
             run_group_router,
             working_messages,
@@ -103,11 +115,30 @@ async def run_group_chat_loop(
             discussion_mode=discussion_mode,
             live_hosting=live_hosting,
             live_episode_plan=live_episode_plan,
+            final_closing_hint=final_closing_hint,
             current_turn_instruction=turn_instruction,
+            current_turn_intent=current_turn_intent,
             current_turn_start_index=current_turn_start_index,
+            router_turn_context=router_turn_context,
         )
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         if not route.should_respond or not route.target_character_id:
-            if turn_index == 0:
+            if (
+                turn_index == 0
+                and _is_youtube_live_director_required_response_intent(current_turn_intent)
+            ):
+                target_character_id = _fallback_first_turn_target(
+                    participants,
+                    working_messages,
+                    last_speaker_id,
+                )
+                if not target_character_id:
+                    break
+            elif _is_youtube_live_director_router_intent(current_turn_intent):
+                break
+            elif turn_index == 0:
                 target_character_id = _fallback_first_turn_target(
                     participants,
                     working_messages,
@@ -124,6 +155,9 @@ async def run_group_chat_loop(
         if not target_char:
             break
         character_name = target_char.get("name") or target_character_id
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         live_episode_reply_task = _build_live_episode_reply_task(
             live_episode_plan,
             turn_index=turn_index,
@@ -182,6 +216,9 @@ async def run_group_chat_loop(
         if live_episode_reply_task:
             session_ctx["live_episode_reply_task"] = live_episode_reply_task
 
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
         result = await asyncio.to_thread(
             orchestration_fn,
             generation_messages,
@@ -191,6 +228,24 @@ async def run_group_chat_loop(
             on_event=on_event,
             session_ctx=session_ctx,
         )
+        if _group_loop_cancel_requested(cancel_event):
+            break
+
+        if getattr(result, "generation_discarded", False):
+            from core.system_logger import SystemLogger
+            SystemLogger.log_error(
+                "GroupChatLoop",
+                "structured output retry failed; discarded assistant turn without writing context.",
+                details={
+                    "session_id": session.session_id,
+                    "turn_index": turn_index,
+                    "character_id": target_character_id,
+                    "discard_reason": getattr(result, "discard_reason", ""),
+                    "retrieval_context": getattr(result, "retrieval_context", {}),
+                },
+            )
+            break
+
         reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
             inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
             tool_state_export = _unpack_orchestration_result(result)
@@ -263,7 +318,7 @@ async def run_group_chat_loop(
         turns[-1]["is_final"] = True
         # 若迴圈提前結束（早退），最後一個 turn 的 is_final 在 on_turn 時是 False，
         # 需補送一次更正過的 snapshot，讓 WS/SSE 客戶端感知真實的結束旗標。
-        if not was_final and on_turn:
+        if not was_final and on_turn and not _group_loop_cancel_requested(cancel_event):
             callback_result = on_turn(dict(turns[-1]))
             if inspect.isawaitable(callback_result):
                 await callback_result
@@ -320,6 +375,142 @@ def _live_episode_plan_for_external_context(extra_session_ctx: dict | None) -> d
     return live_episode_plan if isinstance(live_episode_plan, dict) and live_episode_plan else None
 
 
+def _final_closing_hint_for_external_context(extra_session_ctx: dict | None) -> bool:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return False
+    source = str(external_context.get("source") or "").strip()
+    if source not in {"youtube_live", "youtube_live_director"}:
+        return False
+    turn_control = external_context.get("turn_control")
+    if not isinstance(turn_control, dict):
+        return False
+    return (
+        turn_control.get("final_closing") is True
+        and not _is_required_response_turn_control(turn_control)
+    )
+
+
+def _router_intent_for_external_context(extra_session_ctx: dict | None) -> dict | None:
+    external_context = _youtube_live_director_external_context(extra_session_ctx)
+    if not external_context:
+        return None
+    summary = external_context.get("summary") if isinstance(external_context.get("summary"), dict) else {}
+    turn_control = (
+        external_context.get("turn_control")
+        if isinstance(external_context.get("turn_control"), dict)
+        else {}
+    )
+    raw_action = _first_non_empty(
+        external_context.get("raw_action"),
+        external_context.get("action"),
+        summary.get("raw_action"),
+        summary.get("action"),
+        turn_control.get("source_action"),
+    )
+    intent = {"source": "youtube_live_director"}
+    normalized_action = _normalize_youtube_live_router_action(raw_action)
+    if normalized_action:
+        intent["action"] = normalized_action
+    if raw_action:
+        intent["raw_action"] = raw_action
+    if _is_required_response_turn_control(turn_control):
+        intent["required_response"] = True
+    event_count = _first_non_empty(external_context.get("event_count"), summary.get("event_count"))
+    if event_count is not None:
+        try:
+            intent["event_count"] = int(event_count)
+        except (TypeError, ValueError):
+            pass
+    source_session_id = _first_non_empty(external_context.get("source_session_id"), summary.get("source_session_id"))
+    if source_session_id:
+        intent["source_session_id"] = source_session_id
+    current_topic = _first_non_empty(external_context.get("current_topic"), summary.get("current_topic"))
+    if current_topic:
+        intent["current_topic"] = current_topic
+    return intent
+
+
+def _router_turn_context_for_external_context(extra_session_ctx: dict | None) -> dict | None:
+    external_context = (extra_session_ctx or {}).get("external_chat_context")
+    if not isinstance(external_context, dict):
+        return None
+    router_turn_context = external_context.get("router_turn_context")
+    if isinstance(router_turn_context, dict) and router_turn_context:
+        return router_turn_context
+    return None
+
+
+def _youtube_live_director_external_context(extra_session_ctx: dict | None) -> dict | None:
+    if not isinstance(extra_session_ctx, dict):
+        return None
+    nested = extra_session_ctx.get("external_chat_context")
+    candidates = [nested, extra_session_ctx]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("source") or "").strip() == "youtube_live_director":
+            return candidate
+    return None
+
+
+def _normalize_youtube_live_router_action(raw_action: Any) -> str:
+    action = str(raw_action or "").strip()
+    if action == "reply_chat_batch":
+        return "audience_response"
+    if action == "reply_super_chat_batch":
+        return "super_chat_response"
+    return action
+
+
+def _is_youtube_live_director_router_intent(current_turn_intent: dict | None) -> bool:
+    return (
+        isinstance(current_turn_intent, dict)
+        and str(current_turn_intent.get("source") or "").strip() == "youtube_live_director"
+    )
+
+
+def _is_youtube_live_director_required_response_intent(current_turn_intent: dict | None) -> bool:
+    return (
+        _is_youtube_live_director_router_intent(current_turn_intent)
+        and current_turn_intent.get("required_response") is True
+    )
+
+
+def _is_required_response_turn_control(turn_control: dict | None) -> bool:
+    if not isinstance(turn_control, dict):
+        return False
+    if turn_control.get("required_response") is True:
+        return True
+    return str(turn_control.get("source_action") or "").strip() in {
+        "closing_super_chat_thanks",
+        "reply_chat_batch",
+        "reply_super_chat_batch",
+    }
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+            continue
+        return value
+    return None
+
+
+def _compact_prompt_list(value: Any, *, limit: int = 4) -> list[str]:
+    items = value if isinstance(value, list) else []
+    return [
+        " ".join(str(item or "").split())
+        for item in items
+        if str(item or "").strip()
+    ][:limit]
+
+
 def _build_live_episode_reply_task(
     live_episode_plan: dict | None,
     *,
@@ -351,6 +542,21 @@ def _build_live_episode_reply_task(
         if isinstance(live_episode_plan.get("turn_contract"), dict)
         else {}
     )
+    focus_policy = (
+        live_episode_plan.get("focus_policy")
+        if isinstance(live_episode_plan.get("focus_policy"), dict)
+        else {}
+    )
+    evidence_policy = (
+        live_episode_plan.get("evidence_policy")
+        if isinstance(live_episode_plan.get("evidence_policy"), dict)
+        else {}
+    )
+    forbidden_repetition = (
+        live_episode_plan.get("forbidden_repetition")
+        if isinstance(live_episode_plan.get("forbidden_repetition"), dict)
+        else {}
+    )
     task = {
         "stage": stage,
         "turn_reply_index": reply_index,
@@ -361,6 +567,18 @@ def _build_live_episode_reply_task(
         "turn_type": str(live_episode_plan.get("turn_type") or turn_contract.get("turn_type") or "").strip(),
         "previous_claims": previous_claims,
     }
+    must_cover = _compact_prompt_list(focus_policy.get("must_cover"))
+    forbidden_claims = _compact_prompt_list(forbidden_repetition.get("claims"))
+    forbidden_phrases = _compact_prompt_list(forbidden_repetition.get("phrases"), limit=6)
+    if must_cover:
+        task["must_cover"] = must_cover
+    allow_unverified_claims = evidence_policy.get("allow_unverified_claims")
+    if isinstance(allow_unverified_claims, bool):
+        task["allow_unverified_claims"] = allow_unverified_claims
+    if forbidden_claims:
+        task["forbidden_claims"] = forbidden_claims
+    if forbidden_phrases:
+        task["forbidden_phrases"] = forbidden_phrases
     if last_character_name:
         task["previous_speaker_name"] = str(last_character_name or "").strip()
     if last_reply:

@@ -26,8 +26,10 @@ from core.chat_orchestrator.generation_context import (
     build_chat_response_schema,
     build_final_chat_context,
     build_history_preview,
+    build_tool_runtime_context,
     memory_lookup_skip_reason,
     resolve_orchestration_scope,
+    tool_routing_disabled_for_context,
 )
 from core.chat_orchestrator.group_context import (
     build_group_participants_block,
@@ -105,7 +107,9 @@ def run_dual_layer_orchestration(
     is_group_followup_turn = bool(_ctx.get("followup_instruction"))
     cached_shared_tool_state = _ctx.get("shared_tool_state")
     shared_expand_state = _ctx.get("shared_expand_state")
+    routing_disabled = tool_routing_disabled_for_context(_ctx)
     reusing_shared_tool_state = (
+        not routing_disabled and
         isinstance(cached_shared_tool_state, SharedToolState)
         and cached_shared_tool_state.executed
     )
@@ -350,7 +354,7 @@ def run_dual_layer_orchestration(
         # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/middleware。
         # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
         # 會同時出現在已處理歷史與當前訊息，污染意圖判斷。
-        cached = cached_shared_tool_state
+        cached = None if routing_disabled else cached_shared_tool_state
         if isinstance(cached, SharedToolState) and cached.executed:
             return {
                 "tool_context": ToolContext(
@@ -409,7 +413,10 @@ def run_dual_layer_orchestration(
                     router_result=router_result,
                     on_thinking_speech=None,
                     on_tool_status=on_event,
-                    runtime_context={**_ctx, "visual_prompt": active_char.get("visual_prompt", "")},
+                    runtime_context=build_tool_runtime_context(
+                        _ctx,
+                        {"visual_prompt": active_char.get("visual_prompt", "")},
+                    ),
                 )
                 thinking = ctx.thinking_speech_sent
 
@@ -488,6 +495,26 @@ def run_dual_layer_orchestration(
             persona_result = _parse_persona_response(raw_res, log_context=log_context)
 
     reply_text = persona_result.reply_text
+    if persona_result.generation_discarded:
+        retrieval_ctx["generation_discarded"] = True
+        retrieval_ctx["generation_discard_reason"] = persona_result.discard_reason
+        retrieval_ctx["perf_timing"] = main_timer.summary()
+        return OrchestrationResult(
+            reply_text="",
+            new_entities=[],
+            retrieval_context=retrieval_ctx,
+            topic_shifted=False,
+            pipeline_data=None,
+            inner_thought=None,
+            status_metrics=None,
+            tone=None,
+            speech=None,
+            thinking_speech=thinking_speech,
+            cited_uids=[],
+            tool_state_export=SharedToolState(executed=False),
+            generation_discarded=True,
+            discard_reason=persona_result.discard_reason,
+        )
     if tool_context:
         from tools.minimax_image import append_generated_images, strip_generated_images
         if reusing_shared_tool_state:

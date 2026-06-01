@@ -77,6 +77,8 @@ class PersonaResult:
     # status_metrics / tone 已從 LLM schema 移除，保留欄位供向後相容（值永遠為 None）
     status_metrics: dict | None = None
     tone: str | None = None
+    generation_discarded: bool = False
+    discard_reason: str = ""
 
 
 # ════════════════════════════════════════════════════════════
@@ -102,6 +104,8 @@ class OrchestrationResult:
     thinking_speech: str = ""
     cited_uids: list[str] = field(default_factory=list)
     tool_state_export: object | None = None
+    generation_discarded: bool = False
+    discard_reason: str = ""
 
     def as_tuple(self) -> tuple:
         return (

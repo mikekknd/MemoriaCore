@@ -1,0 +1,983 @@
+import json
+import asyncio
+import types
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from bridge_engine_test_support import (
+    BridgeStorage,
+    FakeClosingMemoriaClient,
+    LiveRuntime,
+    YouTubeBridgeManager,
+)
+from storage import DEFAULT_CONNECTOR_ID
+import engine_phase_pipeline as phase_pipeline
+
+
+def _storage(tmp_path: Path) -> BridgeStorage:
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": DEFAULT_CONNECTOR_ID,
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+    return storage
+
+
+def _create_session(storage: BridgeStorage, **overrides) -> dict:
+    config = {
+        "session_id": "live-a",
+        "connector_id": DEFAULT_CONNECTOR_ID,
+        "display_name": "Phase Pipeline",
+        "status": "running",
+        "target_memoria_session_id": "mem-a",
+        "character_ids": ["koko", "byakuren"],
+        "auto_sc_thanks_on_finalize": True,
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_topic_pack_ids": ["casual"],
+        "post_plan_free_talk_idle_turns_min": 4,
+        "post_plan_free_talk_idle_turns_max": 4,
+        "post_plan_free_talk_tick_interval_seconds": 5,
+    }
+    config.update(overrides)
+    return storage.upsert_session(config)
+
+
+def _topic_root(tmp_path: Path) -> Path:
+    topic_root = tmp_path / "runtime" / "YouTubeBridge" / "freeTalkTopics"
+    topic_root.mkdir(parents=True)
+    (topic_root / "casual.json").write_text(
+        json.dumps([
+            {
+                "title": "雜談題",
+                "prompt": "請聊一輪雜談。",
+            }
+        ], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return topic_root
+
+
+async def _cancel_director_task(runtime: LiveRuntime) -> None:
+    runtime.running = False
+    if runtime.director_task:
+        runtime.director_task.cancel()
+        try:
+            await runtime.director_task
+        except asyncio.CancelledError:
+            pass
+        runtime.director_task = None
+
+
+def _save_clean_event(
+    storage: BridgeStorage,
+    *,
+    youtube_message_id: str,
+    message_type: str,
+    priority_class: str,
+    message_text: str,
+    metadata: dict | None = None,
+    amount_display_string: str = "",
+    amount_micros: int = 0,
+) -> dict:
+    event = storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": DEFAULT_CONNECTOR_ID,
+        "youtube_message_id": youtube_message_id,
+        "message_type": message_type,
+        "author_channel_id": f"{youtube_message_id}-author",
+        "author_display_name": "測試觀眾",
+        "message_text": message_text,
+        "published_at": "2026-05-15T10:00:00",
+        "received_at": "2026-05-15T10:00:00",
+        "status": "active",
+        "amount_display_string": amount_display_string,
+        "amount_micros": amount_micros,
+        "priority_class": priority_class,
+        "safety_label": "clean",
+        "safety_status": "completed",
+        "safe_message_text": message_text,
+        "safety_summary": message_text,
+        "metadata": metadata or {},
+    })
+    assert event is not None
+    return event
+
+
+@pytest.mark.asyncio
+async def test_finish_main_phase_handles_sc_and_enters_free_talk(tmp_path):
+    FakeClosingMemoriaClient.calls.clear()
+    topic_root = _topic_root(tmp_path)
+    storage = _storage(tmp_path)
+    session = _create_session(storage)
+    storage.update_director_state("live-a", director_enabled=True, status="running", metadata={"phase": "planned_content"})
+    _save_clean_event(
+        storage,
+        youtube_message_id="sc-1",
+        message_type="superChatEvent",
+        priority_class="super_chat",
+        message_text="謝謝直播",
+        amount_display_string="NT$75",
+        amount_micros=75000000,
+        metadata={"phase": "planned_content"},
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    manager._runtimes["live-a"] = runtime
+
+    try:
+        result = await manager.finish_main_phase(
+            "live-a",
+            reason="episode_plan_completed",
+            enter_free_talk=True,
+            topic_root=topic_root,
+        )
+
+        assert result["phase"] == "post_plan_free_talk"
+        assert storage.list_super_chats("live-a", unhandled_only=True) == []
+        state = storage.get_director_state("live-a")
+        metadata = state["metadata"]
+        assert metadata["phase"] == "post_plan_free_talk"
+        assert metadata["main_audience_closing"]["status"] == "completed"
+        assert metadata["main_audience_closing"]["closing"]["super_chat_count"] == 1
+        assert metadata["main_summary"]["status"] in {"queued", "running"}
+        assert metadata["post_plan_free_talk"]["transition_reason"] == "episode_plan_completed"
+    finally:
+        await _cancel_director_task(runtime)
+
+
+@pytest.mark.asyncio
+async def test_free_talk_continues_on_director_loop_interval_after_finish_main(tmp_path, monkeypatch):
+    FakeClosingMemoriaClient.calls.clear()
+    topic_root = _topic_root(tmp_path)
+    storage = _storage(tmp_path)
+    session = _create_session(storage)
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    manager._runtimes["live-a"] = runtime
+
+    await manager.finish_main_phase(
+        "live-a",
+        reason="episode_plan_completed",
+        enter_free_talk=True,
+        topic_root=topic_root,
+    )
+    assert len(FakeClosingMemoriaClient.calls) == 1
+
+    state = storage.get_director_state("live-a")
+    metadata = dict(state["metadata"])
+    metadata["post_plan_free_talk"] = {
+        **metadata["post_plan_free_talk"],
+        "last_tick_at": (datetime.now() - timedelta(seconds=10)).isoformat(),
+    }
+    storage.update_director_state(
+        "live-a",
+        last_director_action_at=(datetime.now() - timedelta(seconds=10)).isoformat(),
+        metadata=metadata,
+    )
+
+    def fail_if_episode_plan_reruns(*args, **kwargs):
+        raise AssertionError("LiveEpisodePlan should not be evaluated during free-talk ticks")
+
+    original_tick = manager._run_post_plan_free_talk_tick
+
+    async def tick_once(*args, **kwargs):
+        result = await original_tick(*args, **kwargs)
+        runtime.running = False
+        return result
+
+    monkeypatch.setattr(manager, "_episode_plan_next_decision", fail_if_episode_plan_reruns)
+    monkeypatch.setattr(manager, "_run_post_plan_free_talk_tick", tick_once)
+
+    await manager._director_loop(runtime)
+
+    assert len(FakeClosingMemoriaClient.calls) == 2
+    state = storage.get_director_state("live-a")
+    assert state["metadata"]["phase"] == "post_plan_free_talk"
+
+
+@pytest.mark.asyncio
+async def test_finish_main_phase_starts_director_loop_for_second_natural_free_talk_tick(tmp_path, monkeypatch):
+    FakeClosingMemoriaClient.calls.clear()
+    topic_root = _topic_root(tmp_path)
+    storage = _storage(tmp_path)
+    session = _create_session(
+        storage,
+        post_plan_free_talk_topic_pack_ids=[],
+        post_plan_free_talk_idle_turns_min=4,
+        post_plan_free_talk_idle_turns_max=4,
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    manager._runtimes["live-a"] = runtime
+    tick_statuses: list[str] = []
+    original_tick = manager._run_post_plan_free_talk_tick
+
+    async def observed_tick(*args, **kwargs):
+        result = await original_tick(*args, **kwargs)
+        tick_statuses.append(str(result.get("status") or ""))
+        if len(tick_statuses) == 1:
+            state = storage.get_director_state("live-a")
+            metadata = dict(state["metadata"])
+            metadata["post_plan_free_talk"] = {
+                **metadata["post_plan_free_talk"],
+                "last_tick_at": (datetime.now() - timedelta(seconds=10)).isoformat(),
+            }
+            storage.update_director_state(
+                "live-a",
+                last_director_action_at=(datetime.now() - timedelta(seconds=10)).isoformat(),
+                metadata=metadata,
+            )
+        else:
+            runtime.running = False
+        return result
+
+    monkeypatch.setattr(manager, "_run_post_plan_free_talk_tick", observed_tick)
+
+    await manager.finish_main_phase(
+        "live-a",
+        reason="episode_plan_completed",
+        enter_free_talk=True,
+        topic_root=topic_root,
+    )
+    assert runtime.director_task is not None
+    await runtime.director_task
+
+    assert tick_statuses == ["natural_chat", "natural_chat"]
+    assert len(FakeClosingMemoriaClient.calls) == 2
+    runtime.director_task = None
+
+
+@pytest.mark.asyncio
+async def test_main_audience_sc_closing_does_not_consume_normal_comments(tmp_path):
+    FakeClosingMemoriaClient.calls.clear()
+    storage = _storage(tmp_path)
+    session = _create_session(storage)
+    sc_event = _save_clean_event(
+        storage,
+        youtube_message_id="sc-1",
+        message_type="superChatEvent",
+        priority_class="super_chat",
+        message_text="主節目 SC",
+        amount_display_string="NT$150",
+        amount_micros=150000000,
+        metadata={"phase": "planned_content"},
+    )
+    normal_event = _save_clean_event(
+        storage,
+        youtube_message_id="normal-1",
+        message_type="textMessageEvent",
+        priority_class="normal",
+        message_text="這是一般留言，不應被主階段 SC closing 消耗。",
+        metadata={"phase": "planned_content"},
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+
+    result = await manager._run_main_audience_sc_closing(
+        runtime,
+        session,
+        reason="episode_plan_completed",
+    )
+
+    assert result["status"] == "completed"
+    assert result["super_chat_count"] == 1
+    refreshed_sc = storage.get_events_by_ids("live-a", [sc_event["id"]])[0]
+    refreshed_normal = storage.get_events_by_ids("live-a", [normal_event["id"]])[0]
+    assert refreshed_sc["handled_in_closing_at"]
+    assert refreshed_sc["injected_at"]
+    assert not refreshed_normal["handled_in_closing_at"]
+    assert not refreshed_normal["injected_at"]
+    assert [interaction["event_ids"] for interaction in storage.list_interactions("live-a")] == [[sc_event["id"]]]
+
+
+@pytest.mark.asyncio
+async def test_main_audience_sc_closing_marks_only_injected_super_chats_when_context_caps(tmp_path):
+    FakeClosingMemoriaClient.calls.clear()
+    storage = _storage(tmp_path)
+    session = _create_session(storage, max_context_chars=100000)
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    event_ids: list[int] = []
+    for index in range(101):
+        event = _save_clean_event(
+            storage,
+            youtube_message_id=f"sc-{index}",
+            message_type="superChatEvent",
+            priority_class="super_chat",
+            message_text=f"主節目 SC {index}",
+            amount_display_string="NT$75",
+            amount_micros=75000000,
+            metadata={"phase": "planned_content"},
+        )
+        event_ids.append(int(event["id"]))
+
+    result = await manager._run_main_audience_sc_closing(
+        runtime,
+        session,
+        reason="episode_plan_completed",
+    )
+
+    interaction = result["result"]["interaction"]
+    injected_ids = interaction["event_ids"]
+    handled_ids = {
+        int(event["id"])
+        for event in storage.get_events_by_ids("live-a", event_ids, limit=200)
+        if event["handled_in_closing_at"]
+    }
+
+    assert len(injected_ids) == 100
+    assert result["marked"] == len(injected_ids)
+    assert handled_ids == set(injected_ids)
+    assert len(storage.list_super_chats("live-a", unhandled_only=True, limit=200)) == 1
+
+
+@pytest.mark.asyncio
+async def test_finish_main_phase_quiesces_auto_inject_and_soft_interrupts_active_generation(tmp_path):
+    FakeClosingMemoriaClient.calls.clear()
+    storage = _storage(tmp_path)
+    session = _create_session(storage, auto_inject=True)
+    active = storage.create_interaction({
+        "session_id": "live-a",
+        "source": "director",
+        "priority": 50,
+        "status": "running",
+        "content": "主階段發言中",
+    })
+    _save_clean_event(
+        storage,
+        youtube_message_id="sc-1",
+        message_type="superChatEvent",
+        priority_class="super_chat",
+        message_text="主節目 SC",
+        amount_display_string="NT$75",
+        amount_micros=75000000,
+        metadata={"phase": "planned_content"},
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    manager._runtimes["live-a"] = runtime
+
+    try:
+        await manager.finish_main_phase(
+            "live-a",
+            reason="episode_plan_completed",
+            enter_free_talk=True,
+            topic_root=_topic_root(tmp_path),
+        )
+
+        refreshed = storage.get_session("live-a")
+        active_after = storage.get_interaction(active["job_id"])
+        assert refreshed["auto_inject"] is False
+        assert active_after["status"] == "interrupt_requested"
+        assert active_after["reason"] == "higher_priority:main_audience_closing"
+        assert not active_after["completed_at"]
+    finally:
+        await _cancel_director_task(runtime)
+
+
+@pytest.mark.asyncio
+async def test_finish_main_phase_finalizes_without_free_talk_when_disabled(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        character_ids=[],
+        target_memoria_session_id="",
+        post_plan_free_talk_enabled=False,
+        auto_sc_thanks_on_finalize=False,
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    manager._runtimes["live-a"] = LiveRuntime(session_id="live-a", running=True, status="running")
+
+    result = await manager.finish_main_phase(
+        "live-a",
+        reason="episode_plan_completed",
+        enter_free_talk=True,
+        topic_root=_topic_root(tmp_path),
+    )
+
+    assert result["phase"] == "finalizing_main_only"
+    assert storage.get_session("live-a")["status"] == "ended"
+    metadata = storage.get_director_state("live-a")["metadata"]
+    assert "post_plan_free_talk" not in metadata
+    assert metadata["phase_finalize"]["reason"] == "episode_plan_completed"
+
+
+@pytest.mark.asyncio
+async def test_finish_main_phase_force_enters_free_talk_even_when_default_disabled(tmp_path):
+    topic_root = _topic_root(tmp_path)
+    storage = _storage(tmp_path)
+    session = _create_session(
+        storage,
+        post_plan_free_talk_enabled=False,
+        auto_sc_thanks_on_finalize=False,
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+    runtime = LiveRuntime(session_id=session["session_id"], running=True, status="running")
+    manager._runtimes["live-a"] = runtime
+
+    try:
+        result = await manager.finish_main_phase(
+            "live-a",
+            reason="operator_debug_skip_to_free_talk",
+            enter_free_talk=True,
+            force_enter_free_talk=True,
+            topic_root=topic_root,
+        )
+
+        assert result["phase"] == "post_plan_free_talk"
+        assert storage.get_session("live-a")["status"] == "running"
+        metadata = storage.get_director_state("live-a")["metadata"]
+        assert metadata["phase"] == "post_plan_free_talk"
+        assert metadata["main_audience_closing"]["status"] == "completed"
+        assert metadata["post_plan_free_talk"]["transition_reason"] == "operator_debug_skip_to_free_talk"
+    finally:
+        await _cancel_director_task(runtime)
+
+
+@pytest.mark.asyncio
+async def test_finish_main_phase_refuses_stopped_session_before_mutation(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage, status="stopped")
+    storage.update_director_state(
+        "live-a",
+        director_enabled=False,
+        status="stopped",
+        metadata={"phase": "planned_content"},
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+    with pytest.raises(ValueError, match="尚未開始"):
+        await manager.finish_main_phase(
+            "live-a",
+            reason="operator",
+            enter_free_talk=True,
+            topic_root=_topic_root(tmp_path),
+        )
+
+    assert storage.get_session("live-a")["status"] == "stopped"
+    state = storage.get_director_state("live-a")
+    assert state["status"] == "stopped"
+    assert state["metadata"] == {"phase": "planned_content"}
+    assert storage.list_interactions("live-a") == []
+
+
+@pytest.mark.asyncio
+async def test_finish_main_phase_refuses_missing_runtime_before_mutation(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage, status="running")
+    storage.update_director_state(
+        "live-a",
+        director_enabled=True,
+        status="running",
+        metadata={"phase": "planned_content"},
+    )
+    sc_event = _save_clean_event(
+        storage,
+        youtube_message_id="sc-1",
+        message_type="superChatEvent",
+        priority_class="super_chat",
+        message_text="不應被處理",
+        amount_display_string="NT$75",
+        amount_micros=75000000,
+        metadata={"phase": "planned_content"},
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+    with pytest.raises(ValueError, match="尚未開始"):
+        await manager.finish_main_phase(
+            "live-a",
+            reason="operator",
+            enter_free_talk=True,
+            topic_root=_topic_root(tmp_path),
+        )
+
+    assert storage.get_session("live-a")["status"] == "running"
+    state = storage.get_director_state("live-a")
+    assert state["status"] == "running"
+    assert state["metadata"] == {"phase": "planned_content"}
+    assert storage.get_events_by_ids("live-a", [sc_event["id"]])[0]["handled_in_closing_at"] == ""
+    assert storage.list_interactions("live-a") == []
+
+
+@pytest.mark.asyncio
+async def test_episode_plan_completed_enters_phase_pipeline_instead_of_direct_finalize(tmp_path, monkeypatch):
+    storage = _storage(tmp_path)
+    session = _create_session(storage, post_plan_free_talk_enabled=False)
+    manager = YouTubeBridgeManager(storage)
+    called = []
+
+    async def fake_finish_main_phase(session_id, *, reason, enter_free_talk, topic_root):
+        called.append({
+            "session_id": session_id,
+            "reason": reason,
+            "enter_free_talk": enter_free_talk,
+            "topic_root": Path(topic_root),
+        })
+        return {"phase": "finalizing_main_only"}
+
+    monkeypatch.setattr(manager, "finish_main_phase", fake_finish_main_phase, raising=False)
+    runtime = manager._runtimes.setdefault("live-a", LiveRuntime(session_id="live-a", running=True, status="running"))
+
+    await manager._finalize_for_episode_plan_completed(
+        runtime,
+        session,
+        {"plan_status": "completed"},
+    )
+
+    assert called == [{
+        "session_id": "live-a",
+        "reason": "episode_plan_completed",
+        "enter_free_talk": True,
+        "topic_root": Path(__file__).resolve().parents[2] / "runtime" / "YouTubeBridge" / "freeTalkTopics",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_phase_pipeline_runs_summary_callback_and_records_memory_status(tmp_path):
+    storage = _storage(tmp_path)
+    storage.upsert_session({"session_id": "live-a", "connector_id": DEFAULT_CONNECTOR_ID, "display_name": "Summary"})
+    manager = YouTubeBridgeManager(storage)
+    calls = []
+
+    async def fake_callback(session_id, *, summary_phase, reason):
+        calls.append((session_id, summary_phase, reason))
+        return {
+            "summary": {"id": 7, "metadata": {"summary_phase": summary_phase}},
+            "memory_write": {"status": "completed"},
+        }
+
+    manager.phase_summary_callback = fake_callback
+
+    result = await manager.run_phase_summary("live-a", summary_phase="main", reason="test")
+
+    assert calls == [("live-a", "main", "test")]
+    assert result["memory_write"]["status"] == "completed"
+    state = storage.get_director_state("live-a")
+    assert state["metadata"]["main_summary"]["status"] == "completed"
+    assert state["metadata"]["main_summary"]["memory_write_status"] == "completed"
+    assert state["metadata"]["main_summary"]["summary_id"] == 7
+
+
+def test_phase_pipeline_marks_new_runtime_items_with_current_phase(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage)
+    manager = YouTubeBridgeManager(storage)
+
+    assert manager._event_phase_for_session("live-a") == "planned_content"
+
+    storage.update_director_state("live-a", metadata={"phase": "post_plan_free_talk"})
+
+    assert manager._event_phase_for_session("live-a") == "post_plan_free_talk"
+    assert manager._interaction_phase_for_session(
+        "live-a",
+        source="director",
+        action="post_plan_free_talk_topic",
+    ) == "post_plan_free_talk"
+    assert manager._interaction_phase_for_session(
+        "live-a",
+        source="main_audience_closing",
+    ) == "main_audience_closing"
+
+
+@pytest.mark.asyncio
+async def test_free_talk_tick_preserves_completed_main_summary_metadata(tmp_path, monkeypatch):
+    storage = _storage(tmp_path)
+    session = _create_session(storage)
+    manager = YouTubeBridgeManager(storage)
+    runtime = LiveRuntime(session_id="live-a", running=True, status="running")
+    runtime.post_plan_free_talk_topic_queue = []
+    stale_state = storage.update_director_state(
+        "live-a",
+        director_enabled=True,
+        status="post_plan_free_talk",
+        metadata={
+            "phase": "post_plan_free_talk",
+            "post_plan_free_talk": {
+                "topic_cursor": 0,
+                "last_tick_action": "",
+            },
+            "main_summary": {
+                "status": "queued",
+                "reason": "episode_plan_completed",
+            },
+        },
+    )
+
+    async def fake_send(_session, _state, _decision):
+        storage.update_director_state(
+            "live-a",
+            metadata={
+                "main_summary": {
+                    "status": "completed",
+                    "memory_write_status": "completed",
+                    "summary_id": 42,
+                },
+            },
+        )
+        return {"interaction": {"job_id": "job-a", "status": "completed"}}
+
+    monkeypatch.setattr(manager, "_send_director_turn", fake_send)
+
+    await manager._run_post_plan_free_talk_tick(runtime, session, stale_state)
+
+    metadata = storage.get_director_state("live-a")["metadata"]
+    assert metadata["main_summary"]["status"] == "completed"
+    assert metadata["main_summary"]["memory_write_status"] == "completed"
+    assert metadata["main_summary"]["summary_id"] == 42
+    assert metadata["last_result_job_id"] == "job-a"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_waits_for_required_summaries(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage, auto_delete_after_processed=True)
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+        "free_talk_summary": {"status": "running", "memory_write_status": "not_started"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "waiting"
+    assert cleanup_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_runs_after_main_and_free_talk_summaries_complete(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(storage, auto_delete_after_processed=True)
+    storage.update_director_state("live-a", metadata={
+        "phase": "free_talk_audience_closing",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+        "free_talk_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "cleaned"
+    assert cleanup_calls == ["live-a"]
+    assert storage.get_director_state("live-a")["metadata"]["phase_cleanup"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_requires_only_main_summary_when_free_talk_disabled(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        post_plan_free_talk_enabled=False,
+        auto_delete_after_processed=True,
+    )
+    storage.update_director_state("live-a", metadata={
+        "phase": "finalizing_main_only",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "cleaned"
+    assert cleanup_calls == ["live-a"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_requires_free_talk_summary_when_metadata_exists(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        post_plan_free_talk_enabled=False,
+        auto_delete_after_processed=True,
+    )
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "post_plan_free_talk": {"status": "running"},
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    cleanup_calls = []
+
+    async def fake_cleanup(session_id):
+        cleanup_calls.append(session_id)
+        return {"deleted": True}
+
+    manager.phase_cleanup_callback = fake_cleanup
+
+    result = await manager.maybe_run_phase_cleanup("live-a")
+
+    assert result["status"] == "waiting"
+    assert result["reason"] == "free_talk_summary_not_complete"
+    assert cleanup_calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_phase_during_free_talk_runs_free_talk_summary(tmp_path):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        target_memoria_session_id="",
+        character_ids=[],
+        auto_sc_thanks_on_finalize=False,
+        auto_delete_after_processed=False,
+    )
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    manager._runtimes["live-a"] = LiveRuntime(session_id="live-a", running=True, status="running")
+    summary_calls = []
+
+    async def fake_summary(session_id, *, summary_phase, reason):
+        summary_calls.append((session_id, summary_phase, reason))
+        return {"summary": {"id": 8}, "memory_write": {"status": "completed"}}
+
+    manager.phase_summary_callback = fake_summary
+
+    result = await manager.finalize_phase_pipeline("live-a", reason="operator_finalize")
+
+    assert result["phase"] == "free_talk_summary"
+    assert summary_calls == [("live-a", "free_talk", "operator_finalize")]
+
+
+@pytest.mark.asyncio
+async def test_free_talk_closing_skips_low_signal_and_batches_eligible_comments(tmp_path):
+    FakeClosingMemoriaClient.calls.clear()
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        auto_sc_thanks_on_finalize=False,
+        free_talk_closing_target_batches=2,
+        free_talk_closing_min_batch_size=2,
+        free_talk_closing_max_batch_size=2,
+        free_talk_closing_time_limit_seconds=300,
+    )
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    low_signal = _save_clean_event(
+        storage,
+        youtube_message_id="noise-1",
+        message_type="textMessageEvent",
+        priority_class="normal",
+        message_text="666666",
+        metadata={"phase": "post_plan_free_talk"},
+    )
+    first = _save_clean_event(
+        storage,
+        youtube_message_id="normal-1",
+        message_type="textMessageEvent",
+        priority_class="normal",
+        message_text="這個工具適合團隊共用嗎？",
+        metadata={"phase": "post_plan_free_talk"},
+    )
+    second = _save_clean_event(
+        storage,
+        youtube_message_id="normal-2",
+        message_type="textMessageEvent",
+        priority_class="normal",
+        message_text="可以補充實際案例嗎？",
+        metadata={"phase": "post_plan_free_talk"},
+    )
+    duplicate = _save_clean_event(
+        storage,
+        youtube_message_id="duplicate-1",
+        message_type="textMessageEvent",
+        priority_class="normal",
+        message_text="可以補充實際案例嗎？",
+        metadata={"phase": "post_plan_free_talk"},
+    )
+    super_chat = _save_clean_event(
+        storage,
+        youtube_message_id="sc-1",
+        message_type="superChatEvent",
+        priority_class="super_chat",
+        message_text="雜談 SC 不應由一般留言 closing drain 處理",
+        metadata={"phase": "post_plan_free_talk"},
+        amount_display_string="NT$75",
+        amount_micros=75000000,
+    )
+    planned_phase = _save_clean_event(
+        storage,
+        youtube_message_id="planned-1",
+        message_type="textMessageEvent",
+        priority_class="normal",
+        message_text="主階段留言不應被雜談收尾處理",
+        metadata={"phase": "planned_content"},
+    )
+    third = _save_clean_event(
+        storage,
+        youtube_message_id="normal-3",
+        message_type="textMessageEvent",
+        priority_class="normal",
+        message_text="最後可否整理成三個重點？",
+        metadata={"phase": "post_plan_free_talk"},
+    )
+    manager = YouTubeBridgeManager(storage, memoria_client_factory=FakeClosingMemoriaClient)
+
+    result = await manager._run_free_talk_audience_closing("live-a", reason="operator_finalize")
+
+    assert result["status"] == "completed"
+    assert result["eligible_processed_count"] == 3
+    assert result["low_signal_skipped_count"] == 2
+    assert result["closing_skipped_count"] == 0
+    assert result["batch_size"] == 2
+    assert result["batch_count"] == 2
+    assert [
+        call["external_context"]["event_ids"]
+        for call in FakeClosingMemoriaClient.calls
+    ] == [[first["id"], second["id"]], [third["id"]]]
+    assert "666666" not in "\n".join(
+        call["external_context"]["context_text"]
+        for call in FakeClosingMemoriaClient.calls
+    )
+    events_by_id = {
+        int(event["id"]): event
+        for event in storage.list_events("live-a", include_inactive=True)
+    }
+    assert events_by_id[int(low_signal["id"])]["status"] == "low_signal_skipped"
+    assert events_by_id[int(low_signal["id"])]["metadata"]["low_signal_reason"] == "repeated_short_token"
+    assert events_by_id[int(duplicate["id"])]["status"] == "low_signal_skipped"
+    assert events_by_id[int(duplicate["id"])]["metadata"]["low_signal_reason"] == "duplicate_message"
+    assert events_by_id[int(super_chat["id"])]["injected_at"] == ""
+    assert events_by_id[int(planned_phase["id"])]["injected_at"] == ""
+    assert storage.get_director_state("live-a")["metadata"]["free_talk_audience_closing"] == result
+
+
+@pytest.mark.asyncio
+async def test_free_talk_closing_time_limit_records_remaining_eligible_comments(tmp_path, monkeypatch):
+    storage = _storage(tmp_path)
+    _create_session(
+        storage,
+        free_talk_closing_target_batches=2,
+        free_talk_closing_min_batch_size=2,
+        free_talk_closing_max_batch_size=2,
+        free_talk_closing_time_limit_seconds=300,
+    )
+    storage.update_director_state("live-a", metadata={"phase": "post_plan_free_talk"})
+    events = [
+        _save_clean_event(
+            storage,
+            youtube_message_id=f"normal-{index}",
+            message_type="textMessageEvent",
+            priority_class="normal",
+            message_text=f"雜談收尾問題 {index}？",
+            metadata={"phase": "post_plan_free_talk"},
+        )
+        for index in range(4)
+    ]
+    manager = YouTubeBridgeManager(storage)
+    clock = {"value": 0.0}
+    injected_batches: list[list[int]] = []
+
+    async def fake_inject_recent(session_id, *, event_ids, **_kwargs):
+        injected_batches.append([int(event_id) for event_id in event_ids])
+        storage.mark_events_injected(session_id, event_ids)
+        clock["value"] = 301.0
+        return {
+            "summary": {"event_ids": event_ids},
+            "interaction": {"status": "completed"},
+        }
+
+    monkeypatch.setattr(phase_pipeline, "time", types.SimpleNamespace(monotonic=lambda: clock["value"]), raising=False)
+    monkeypatch.setattr(manager, "inject_recent", fake_inject_recent)
+
+    result = await manager._run_free_talk_audience_closing("live-a", reason="timeout_test")
+
+    assert result["status"] == "time_limited"
+    assert result["eligible_processed_count"] == 2
+    assert result["closing_skipped_count"] == 2
+    assert result["low_signal_skipped_count"] == 0
+    assert result["batch_size"] == 2
+    assert result["batch_count"] == 1
+    assert injected_batches == [[events[0]["id"], events[1]["id"]]]
+
+
+@pytest.mark.asyncio
+async def test_finalize_phase_records_free_talk_closing_before_free_talk_summary(tmp_path, monkeypatch):
+    storage = _storage(tmp_path)
+    _create_session(storage, auto_sc_thanks_on_finalize=False, auto_delete_after_processed=False)
+    storage.update_director_state("live-a", metadata={
+        "phase": "post_plan_free_talk",
+        "main_summary": {"status": "completed", "memory_write_status": "completed"},
+    })
+    manager = YouTubeBridgeManager(storage)
+    manager._runtimes["live-a"] = LiveRuntime(session_id="live-a", running=True, status="running")
+    closing_calls: list[tuple[str, str]] = []
+    summary_seen_closing: list[dict] = []
+
+    async def fake_closing(session_id, *, reason):
+        closing_calls.append((session_id, reason))
+        metadata = dict(storage.get_director_state(session_id)["metadata"])
+        metadata["phase"] = "free_talk_audience_closing"
+        metadata["free_talk_audience_closing"] = {
+            "status": "completed",
+            "reason": reason,
+            "eligible_processed_count": 2,
+            "low_signal_skipped_count": 1,
+            "closing_skipped_count": 0,
+            "batch_size": 2,
+            "batch_count": 1,
+        }
+        storage.update_director_state(session_id, status="free_talk_audience_closing", metadata=metadata)
+        return metadata["free_talk_audience_closing"]
+
+    async def fake_summary(session_id, *, summary_phase, reason):
+        assert summary_phase == "free_talk"
+        assert reason == "operator_finalize"
+        summary_seen_closing.append(
+            dict(storage.get_director_state(session_id)["metadata"].get("free_talk_audience_closing") or {})
+        )
+        return {"summary": {"id": 8}, "memory_write": {"status": "completed"}}
+
+    async def fake_finalize_live_session(_runtime, _session, **kwargs):
+        return {
+            "status": "ended",
+            "finalize_metadata": kwargs.get("metadata") or {},
+        }
+
+    monkeypatch.setattr(manager, "_run_free_talk_audience_closing", fake_closing, raising=False)
+    monkeypatch.setattr(manager, "_finalize_live_session", fake_finalize_live_session)
+    manager.phase_summary_callback = fake_summary
+
+    result = await manager.finalize_phase_pipeline("live-a", reason="operator_finalize")
+
+    assert closing_calls == [("live-a", "operator_finalize")]
+    assert summary_seen_closing == [{
+        "status": "completed",
+        "reason": "operator_finalize",
+        "eligible_processed_count": 2,
+        "low_signal_skipped_count": 1,
+        "closing_skipped_count": 0,
+        "batch_size": 2,
+        "batch_count": 1,
+    }]
+    assert result["free_talk_audience_closing"] == summary_seen_closing[0]
+    assert result["finalize_metadata"]["free_talk_audience_closing"] == summary_seen_closing[0]

@@ -2,7 +2,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from api.session_manager import session_manager, SessionState
-from api.models.requests import CreateSessionRequest, SessionSystemEventRequest
+from api.models.requests import (
+    CreateSessionRequest,
+    SessionAssistantEventRequest,
+    SessionSystemEventRequest,
+)
 from api.models.responses import (
     SessionDTO, SessionMessageDTO,
     ConversationSessionDTO, ConversationHistoryDTO,
@@ -176,6 +180,35 @@ async def add_session_system_event(
         session_id,
         body.content,
         body.debug_info,
+    )
+    if message_id is None:
+        raise HTTPException(404, detail=f"Session {session_id} not found")
+    return {"status": "created", "session_id": session_id, "message_id": message_id}
+
+
+@router.post("/{session_id}/assistant-event")
+async def add_session_assistant_event(
+    session_id: str,
+    body: SessionAssistantEventRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    s = await session_manager.get(session_id)
+    if not s:
+        try:
+            s = await session_manager.restore_from_db(session_id, user_id=None)
+        except PermissionError:
+            raise HTTPException(403, detail="Session owner mismatch")
+    if not s:
+        raise HTTPException(404, detail=f"Session {session_id} not found")
+    if s.user_id != str(current_user["id"]) and current_user.get("role") != "admin":
+        raise HTTPException(403, detail="Session owner mismatch")
+    message_id = await session_manager.add_assistant_message(
+        session_id,
+        body.content,
+        body.debug_info,
+        body.extracted_entities,
+        character_name=body.character_name,
+        character_id=body.character_id,
     )
     if message_id is None:
         raise HTTPException(404, detail=f"Session {session_id} not found")

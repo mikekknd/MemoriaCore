@@ -7,20 +7,22 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
-import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import engine_public_events
 from engine_closing import ClosingManagerMixin
+from external_context import ExternalContextBuilder
 from engine_director import DirectorManagerMixin
 from engine_director_runtime import DirectorRuntimeManagerMixin
 from engine_episode_plans import EpisodePlanManagerMixin
 from engine_event_safety import EventSafetyManagerMixin
+from engine_phase_pipeline import PhasePipelineManagerMixin
 from engine_injection import InjectionManagerMixin
 from engine_runtime_lifecycle import RuntimeLifecycleManagerMixin
 from engine_test_runtime import TestRuntimeManagerMixin
@@ -46,9 +48,11 @@ from fact_cards import (
     parse_fact_card_markdown,
 )
 from memoria_client import MemoriaClient
+from research_gate import ResearchGateModule, TavilyResearchSearchAdapter
 from storage import BridgeStorage, infer_super_chat_tier
 from tts_gpt_sovits import GptSoVitsTTSProvider, TTSResult
 from youtube_client import YouTubeClient, normalize_message
+from youtube_oauth import load_youtube_oauth_credentials
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +72,7 @@ def clear_llm_trace_log(path: Path | None = None) -> dict[str, Any]:
 
 class YouTubeBridgeManager(
     EpisodePlanManagerMixin,
+    PhasePipelineManagerMixin,
     DirectorRuntimeManagerMixin,
     ClosingManagerMixin,
     InjectionManagerMixin,
@@ -91,8 +96,37 @@ class YouTubeBridgeManager(
         self._memoria_client_cache = None
         self._tts_provider_cache = None
         self.auto_finalize_archive_callback = None
+        self.phase_summary_callback = None
+        self.phase_cleanup_callback = None
         self._runtimes: dict[str, LiveRuntime] = {}
         self._lock = asyncio.Lock()
+        self._research_gate = ResearchGateModule(
+            storage=self.storage,
+            runtime_lookup=lambda session_id: self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id)),
+            runtime_getter=lambda session_id: self._runtimes.get(session_id),
+            topic_pack_context_text=lambda entries: self._topic_pack_context_text(entries),
+            record_topic_pack_usage=lambda session_id, entries, query_text, source: self._record_topic_pack_usage(
+                session_id,
+                entries,
+                query_text,
+                source,
+            ),
+            index_topic_pack_entry=lambda entry_id: self.index_topic_pack_entry(entry_id),
+            search_adapter=TavilyResearchSearchAdapter(),
+        )
+        self._external_context_builder = ExternalContextBuilder(
+            storage=self.storage,
+            event_line=lambda event: self._event_line(event),
+            visible_event=lambda event: self._visible_event(event),
+            is_public_live_event_displayable=lambda event: self._is_public_live_event_displayable(event),
+            query_context_for_events=lambda session, events, lines: self._live_query_context_for_events(
+                session,
+                events,
+                lines,
+            ),
+            presentation_enabled=lambda session: self._presentation_enabled(session),
+            attach_live_persona_overrides=lambda session, payload: self._attach_live_persona_overrides(session, payload),
+        )
 
     def _memoria_client(self):
         if self._memoria_client_cache is None:
@@ -141,6 +175,98 @@ class YouTubeBridgeManager(
     def _presentation_audio_root() -> Path:
         return PROJECT_ROOT / "runtime" / "YouTubeBridge" / "TTSAudio"
 
+    @staticmethod
+    def _presentation_debug_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {
+                str(key)[:80]: YouTubeBridgeManager._presentation_debug_value(item)
+                for key, item in list(value.items())[:40]
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [YouTubeBridgeManager._presentation_debug_value(item) for item in list(value)[:40]]
+        return str(value)[:500]
+
+    @staticmethod
+    def _presentation_debug_payload(
+        session_id: str,
+        phase: str,
+        item: dict[str, Any] | None = None,
+        **details: Any,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "phase": phase,
+            "session_id": session_id,
+            "at": datetime.now().isoformat(),
+        }
+        if item:
+            text = str(item.get("text") or "")
+            payload.update({
+                "item_id": item.get("item_id") or "",
+                "interaction_job_id": item.get("interaction_job_id") or "",
+                "message_id": item.get("message_id") or "",
+                "character_id": item.get("character_id") or "",
+                "character_name": item.get("character_name") or "",
+                "sequence_index": item.get("sequence_index"),
+                "status": item.get("status") or "",
+                "has_audio": bool(item.get("audio_path")),
+                "audio_format": item.get("audio_format") or "",
+                "text_chars": len(text),
+                "text_preview": text[:80],
+                "presented_at": item.get("presented_at") or "",
+                "acked_at": item.get("acked_at") or "",
+                "error": item.get("error") or "",
+            })
+        for key, value in details.items():
+            if value is not None:
+                payload[str(key)] = YouTubeBridgeManager._presentation_debug_value(value)
+        return payload
+
+    @staticmethod
+    def _log_presentation_debug_event(payload: dict[str, Any]) -> None:
+        logger.warning(
+            "PRESENTATION_QUEUE %s",
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+
+    async def _emit_presentation_debug(
+        self,
+        session_id: str,
+        phase: str,
+        item: dict[str, Any] | None = None,
+        **details: Any,
+    ) -> dict[str, Any]:
+        payload = self._presentation_debug_payload(session_id, phase, item, **details)
+        self._log_presentation_debug_event(payload)
+        await self._broadcast(
+            session_id,
+            {
+                "type": "presentation_debug",
+                "event": payload,
+            },
+        )
+        return payload
+
+    def report_presentation_client_debug(self, session_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        phase = str(data.get("phase") or "client_event")[:80]
+        item_id = str(data.get("item_id") or "")
+        item = self.storage.get_presentation_item(item_id) if item_id else None
+        if item and item.get("session_id") != session_id:
+            item = None
+        details = data.get("details") if isinstance(data.get("details"), dict) else {}
+        payload = self._presentation_debug_payload(
+            session_id,
+            phase,
+            item,
+            source="studio_client",
+            item_id=item_id if not item else None,
+            client_status=str(data.get("status") or "")[:80],
+            details=details,
+        )
+        self._log_presentation_debug_event(payload)
+        return payload
+
     def _presentation_item_public(self, item: dict[str, Any]) -> dict[str, Any]:
         audio_url = ""
         if item.get("audio_path"):
@@ -160,6 +286,31 @@ class YouTubeBridgeManager(
             "audio_format": item.get("audio_format") or "wav",
             "status": item.get("status") or "",
         }
+
+    def _presentation_item_preload_public(self, item: dict[str, Any]) -> dict[str, Any]:
+        audio_url = ""
+        if item.get("audio_path"):
+            audio_url = (
+                f"/sessions/{item['session_id']}/presentation/"
+                f"{item['item_id']}/audio"
+            )
+        return {
+            "item_id": item.get("item_id"),
+            "audio_url": audio_url,
+            "audio_format": item.get("audio_format") or "wav",
+            "status": item.get("status") or "",
+        }
+
+    async def _broadcast_presentation_preload(self, session_id: str, item: dict[str, Any]) -> None:
+        if not item.get("audio_path"):
+            return
+        await self._broadcast(
+            session_id,
+            {
+                "type": "presentation_item_preload",
+                "item": self._presentation_item_preload_public(item),
+            },
+        )
 
     async def present_stream_result(
         self,
@@ -288,9 +439,9 @@ class YouTubeBridgeManager(
         *,
         source: str,
         interaction_job_id: str = "",
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         if not prepared_results:
-            return
+            return []
         session = self.storage.get_session(session_id)
         if not self._presentation_enabled(session):
             for prepared in prepared_results:
@@ -304,8 +455,9 @@ class YouTubeBridgeManager(
                             "source": source,
                         },
                     )
-            return
+            return []
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
+        presented_items: list[dict[str, Any]] = []
         async with runtime.presentation_sequence_condition:
             presentation_sequence = runtime.presentation_next_sequence
             runtime.presentation_next_sequence += 1
@@ -321,7 +473,7 @@ class YouTubeBridgeManager(
                     message = prepared.get("message") if isinstance(prepared.get("message"), dict) else {}
                     for item in prepared.get("items") or []:
                         if isinstance(item, dict):
-                            await self._present_prepared_item(
+                            presented = await self._present_prepared_item(
                                 session or {},
                                 message,
                                 item,
@@ -329,6 +481,8 @@ class YouTubeBridgeManager(
                                 interaction_job_id=interaction_job_id,
                                 runtime=runtime,
                             )
+                            if isinstance(presented, dict):
+                                presented_items.append(presented)
         finally:
             async with runtime.presentation_sequence_condition:
                 if runtime.presentation_present_sequence == presentation_sequence:
@@ -339,6 +493,7 @@ class YouTubeBridgeManager(
                 else:
                     runtime.presentation_skipped_sequences.add(presentation_sequence)
                 runtime.presentation_sequence_condition.notify_all()
+        return presented_items
 
     async def _prepare_presentation_item(
         self,
@@ -363,7 +518,9 @@ class YouTubeBridgeManager(
             "audio_format": "wav",
             "metadata": {"source": source},
         })
+        await self._emit_presentation_debug(session_id, "item_created", item, source=source)
         item = self.storage.update_presentation_item(item["item_id"], status="synthesizing") or item
+        await self._emit_presentation_debug(session_id, "item_synthesizing", item, source=source)
         try:
             tts_result = await self._synthesize_presentation_audio(session, item)
             update_fields: dict[str, Any] = {"status": "ready"}
@@ -383,12 +540,28 @@ class YouTubeBridgeManager(
                     "audio_format": tts_result.audio_format or item.get("audio_format") or "wav",
                     "error": tts_result.error,
                 })
+        except asyncio.CancelledError:
+            cancelled_item = self.storage.update_presentation_item(
+                item["item_id"],
+                status="cancelled",
+                error="presentation_prepare_cancelled",
+            ) or item
+            await self._emit_presentation_debug(session_id, "item_cancelled", cancelled_item, source=source)
+            raise
         except Exception as exc:
             update_fields = {
                 "status": "ready",
                 "error": str(exc)[:500],
             }
         item = self.storage.update_presentation_item(item["item_id"], **update_fields) or item
+        ready_phase = (
+            "item_prefetch_ready"
+            if source in {"director_prefetch", "director_audience_prepare"}
+            else "item_ready"
+        )
+        await self._emit_presentation_debug(session_id, ready_phase, item, source=source)
+        if source in {"director_prefetch", "director_audience_prepare"}:
+            await self._broadcast_presentation_preload(session_id, item)
         return item
 
     async def _present_prepared_item(
@@ -400,7 +573,7 @@ class YouTubeBridgeManager(
         source: str,
         interaction_job_id: str,
         runtime: LiveRuntime,
-    ) -> None:
+    ) -> dict[str, Any]:
         session_id = str(session.get("session_id") or runtime.session_id)
         update_fields: dict[str, Any] = {
             "status": "presenting",
@@ -409,10 +582,18 @@ class YouTubeBridgeManager(
         if not item.get("audio_path") and item.get("error"):
             update_fields["status"] = "failed"
         item = self.storage.update_presentation_item(item["item_id"], **update_fields) or item
+        await self._emit_presentation_debug(session_id, "item_presenting", item, source=source)
         if interaction_job_id:
             self.storage.update_interaction(interaction_job_id, status="presenting")
         ack_event = asyncio.Event()
         runtime.presentation_ack_events[item["item_id"]] = ack_event
+        await self._emit_presentation_debug(
+            session_id,
+            "ack_wait_start",
+            item,
+            source=source,
+            timeout_seconds=self._presentation_ack_timeout(session),
+        )
         await self._broadcast(
             session_id,
             {
@@ -420,19 +601,33 @@ class YouTubeBridgeManager(
                 "item": self._presentation_item_public(item),
             },
         )
+        self._mark_interaction_message_visible(
+            interaction_job_id,
+            {
+                **message,
+                "message_id": item.get("message_id") or message.get("message_id"),
+                "content": item.get("text") or message.get("content") or "",
+                "created_at": item.get("presented_at") or message.get("created_at"),
+                "timestamp": item.get("presented_at") or message.get("timestamp"),
+            },
+            source=source,
+        )
         try:
             await asyncio.wait_for(
                 ack_event.wait(),
                 timeout=self._presentation_ack_timeout(session),
             )
         except asyncio.TimeoutError:
+            # 這是真實播放失敗：item 已送到 client 並進入 presenting，ACK timeout 才是終端 skipped 狀態。
             item = self.storage.update_presentation_item(
                 item["item_id"],
                 status="skipped",
                 error="presentation ack timeout",
             ) or item
+            await self._emit_presentation_debug(session_id, "ack_timeout", item, source=source)
         finally:
             runtime.presentation_ack_events.pop(item["item_id"], None)
+        item = self.storage.get_presentation_item(item["item_id"]) or item
         if item.get("status") != "skipped":
             chat_message = {
                 **message,
@@ -449,6 +644,12 @@ class YouTubeBridgeManager(
                     "source": source,
                 },
             )
+            self._mark_interaction_message_visible(
+                interaction_job_id,
+                chat_message,
+                source=source,
+            )
+        return item
 
     async def _synthesize_presentation_audio(
         self,
@@ -476,6 +677,12 @@ class YouTubeBridgeManager(
         )
         runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
         ack_event = runtime.presentation_ack_events.get(item_id)
+        await self._emit_presentation_debug(
+            session_id,
+            "ack_received",
+            updated or item,
+            ack_event_found=bool(ack_event),
+        )
         if ack_event:
             ack_event.set()
         return updated
@@ -492,6 +699,12 @@ class YouTubeBridgeManager(
             acked_at=datetime.now().isoformat(),
         )
         ack_event = runtime.presentation_ack_events.get(item["item_id"])
+        await self._emit_presentation_debug(
+            session_id,
+            "item_skipped",
+            updated or item,
+            ack_event_found=bool(ack_event),
+        )
         if ack_event:
             ack_event.set()
         return updated
@@ -648,6 +861,46 @@ class YouTubeBridgeManager(
             "source": source,
         }
 
+    def _mark_interaction_message_visible(
+        self,
+        interaction_job_id: str,
+        message: dict[str, Any],
+        *,
+        source: str,
+    ) -> None:
+        if not interaction_job_id or not isinstance(message, dict):
+            return
+        content = str(message.get("content") or "").strip()
+        if not content:
+            return
+        current = self.storage.get_interaction(interaction_job_id)
+        if not current:
+            return
+        visible_message = {
+            "message_id": message.get("message_id"),
+            "role": message.get("role") or "assistant",
+            "content": content,
+            "created_at": message.get("created_at") or message.get("timestamp") or "",
+            "timestamp": message.get("timestamp") or message.get("created_at") or "",
+            "character_id": message.get("character_id"),
+            "character_name": message.get("character_name"),
+            "source": source,
+        }
+        self.storage.append_interaction_visible_message(interaction_job_id, visible_message)
+
+    @staticmethod
+    def _log_stream_broadcast_future(future: Any) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning("stream chat broadcast task failed error=%s", exc, exc_info=True)
+
+    def _stream_interaction_is_stale(self, interaction_job_id: str) -> bool:
+        if not interaction_job_id:
+            return False
+        current = self.storage.get_interaction(interaction_job_id)
+        return bool(current and current.get("status") in {"interrupt_requested", "interrupted", "discarded"})
+
     def _broadcast_stream_chat_message(
         self,
         loop: asyncio.AbstractEventLoop,
@@ -655,21 +908,39 @@ class YouTubeBridgeManager(
         event: dict[str, Any],
         *,
         source: str,
+        interaction_job_id: str = "",
     ) -> None:
         message = self._chat_message_from_stream_result(event, source=source)
         if not message:
             return
-        asyncio.run_coroutine_threadsafe(
-            self._broadcast(
+        async def broadcast_if_current() -> None:
+            if self._stream_interaction_is_stale(interaction_job_id):
+                logger.warning(
+                    "stale_generation_dropped_before_broadcast session_id=%s job_id=%s source=%s",
+                    session_id,
+                    interaction_job_id,
+                    source,
+                )
+                return
+            await self._broadcast(
                 session_id,
                 {
                     "type": "chat_message",
                     "message": message,
                     "source": source,
                 },
-            ),
+            )
+            self._mark_interaction_message_visible(
+                interaction_job_id,
+                message,
+                source=source,
+            )
+
+        future = asyncio.run_coroutine_threadsafe(
+            broadcast_if_current(),
             loop,
         )
+        future.add_done_callback(self._log_stream_broadcast_future)
 
     def _dispatch_stream_chat_result(
         self,
@@ -694,7 +965,13 @@ class YouTubeBridgeManager(
                 return None
         session = self.storage.get_session(session_id)
         if not self._presentation_enabled(session):
-            self._broadcast_stream_chat_message(loop, session_id, event, source=source)
+            self._broadcast_stream_chat_message(
+                loop,
+                session_id,
+                event,
+                source=source,
+                interaction_job_id=interaction_job_id,
+            )
             return None
         future = asyncio.run_coroutine_threadsafe(
             self.present_stream_result(
@@ -731,9 +1008,17 @@ class YouTubeBridgeManager(
                 runtime.running = False
                 return
             try:
+                oauth_credentials = load_youtube_oauth_credentials()
+                access_token = ""
+                if not connector.get("api_key") and oauth_credentials.get("configured"):
+                    access_token = await asyncio.to_thread(
+                        self.youtube_client.oauth_access_token,
+                        oauth_credentials,
+                    )
                 data = await asyncio.to_thread(
                     self.youtube_client.fetch_live_chat_messages,
-                    api_key=connector["api_key"],
+                    api_key=str(connector.get("api_key") or ""),
+                    access_token=access_token,
                     live_chat_id=session["live_chat_id"],
                     page_token=runtime.next_page_token,
                 )
@@ -745,6 +1030,9 @@ class YouTubeBridgeManager(
                     event = normalize_message(item, session=session, connector=connector)
                     if not event.get("youtube_message_id"):
                         continue
+                    metadata = dict(event.get("metadata") if isinstance(event.get("metadata"), dict) else {})
+                    metadata.setdefault("phase", self._event_phase_for_session(runtime.session_id))
+                    event["metadata"] = metadata
                     saved = self.storage.save_event(event)
                     if saved:
                         saved_any = True
@@ -815,79 +1103,41 @@ class YouTubeBridgeManager(
         events: list[dict[str, Any]],
         lines: list[str],
     ) -> tuple[str, dict[str, Any]]:
-        session_id = str(session.get("session_id") or "")
-        query_intent = self._audience_query_intent_from_events(events)
-        query_text = str(query_intent.get("sanitized_query") or "").strip()
-        resolution: dict[str, Any] = {
-            "query": query_text,
-            "query_intent": query_intent,
-            "local_answerable": False,
-            "local_entry_count": 0,
-            "local_top_similarity": None,
-            "research_status": "not_needed" if not query_text else "not_attempted",
-            "research_error": "",
-        }
-        base_query = "\n".join([*lines, str(session.get("director_guidance") or "")])
-        if not query_text:
-            context = self._topic_pack_sequence_context_for_session(
+        return self._research_gate.live_query_context_for_events(
+            session=session,
+            events=events,
+            lines=lines,
+            audience_query_intent_from_events=self._audience_query_intent_from_events,
+            topic_pack_sequence_context_for_session=lambda session_id, base_query: self._topic_pack_sequence_context_for_session(
                 session_id,
                 base_query,
                 usage_source="external_context",
-            )
-            return context, resolution
-
-        entries, search_status = self._topic_pack_entries_for_query(
-            session_id,
-            base_query,
-            limit=6,
-            min_score=AUDIENCE_QUERY_FACT_CARD_MIN_SCORE,
-            allow_fallback=False,
-        )
-        resolution["local_entry_count"] = len(entries)
-        resolution["local_top_similarity"] = search_status.get("top_similarity")
-        if self._topic_pack_entries_can_answer(entries):
-            resolution["local_answerable"] = True
-            resolution["research_status"] = "not_needed"
-            context_entries = self._topic_graph_context_entries_for_hits(
+            ),
+            topic_pack_entries_for_query=lambda session_id, query_text: self._topic_pack_entries_for_query(
                 session_id,
-                entries[:1],
+                query_text,
+                limit=6,
+                min_score=AUDIENCE_QUERY_FACT_CARD_MIN_SCORE,
+                allow_fallback=False,
+            ),
+            audience_query_topic_terms=self._audience_query_topic_terms,
+            topic_pack_entry_matches_query_terms=self._topic_pack_entry_matches_query_terms,
+            topic_pack_entries_can_answer=lambda entries, query_text: self._topic_pack_entries_can_answer(
+                entries,
+                query_text=query_text,
+            ),
+            topic_graph_context_entries_for_hits=lambda session_id, entries, query_text: self._topic_graph_context_entries_for_hits(
+                session_id,
+                entries,
                 query_text,
                 "external_context",
                 max_entries=4,
-            )
-            return self._topic_pack_context_text(context_entries), resolution
-
-        if not session.get("research_enabled"):
-            resolution["research_status"] = "disabled"
-            return "", resolution
-        if not query_intent.get("needs_external_search") or not query_intent.get("safe_search_allowed"):
-            resolution["research_status"] = "not_allowed"
-            return "", resolution
-
-        completed_context, completed_status = self._completed_audience_research_context(session_id, query_text)
-        if completed_context:
-            resolution["research_status"] = completed_status or "completed"
-            return completed_context, resolution
-
-        worker = self._ensure_audience_research_worker(
-            session,
-            query_text,
-            pack_id=self._first_session_topic_pack_id(session_id),
+            ),
+            ensure_audience_worker=self._ensure_audience_research_worker,
         )
-        resolution["research_status"] = str(worker.get("status") or "queued")
-        if worker.get("error"):
-            resolution["research_error"] = str(worker.get("error") or "")[:300]
-        if resolution["research_status"] in {"queued", "running"}:
-            resolution["fallback_reason"] = "research_incomplete"
-            return (
-                "觀眾查詢資料狀態：相關查證仍在背景處理；"
-                "本輪只能根據已知直播脈絡安全回應，不得宣稱已查到最新資料或具體排名。",
-                resolution,
-            )
-        return "", resolution
 
     @staticmethod
-    def _topic_pack_entries_can_answer(entries: list[dict[str, Any]]) -> bool:
+    def _topic_pack_entries_can_answer(entries: list[dict[str, Any]], *, query_text: str = "") -> bool:
         if not entries:
             return False
         top_score = float(entries[0].get("similarity") or 0.0)
@@ -895,10 +1145,118 @@ class YouTubeBridgeManager(
             return True
         if top_score < AUDIENCE_QUERY_FACT_CARD_MIN_SCORE:
             return False
+        query_terms = YouTubeBridgeManager._audience_query_topic_terms(query_text)
         if len(entries) == 1:
-            return True
+            if not query_terms:
+                return True
+            return YouTubeBridgeManager._topic_pack_entry_matches_query_terms(entries[0], query_terms)
         second_score = float(entries[1].get("similarity") or 0.0)
         return (top_score - second_score) >= AUDIENCE_QUERY_FACT_CARD_MIN_GAP
+
+    @staticmethod
+    def _normalize_topic_match_text(value: Any) -> str:
+        text = str(value or "").lower()
+        text = re.sub(r"[《》〈〉「」『』【】\[\]（）()]", " ", text)
+        text = re.sub(r"[\s\r\n\t_\-／/・:：,，.。!！?？;；、]+", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _audience_query_topic_terms(query_text: str) -> list[str]:
+        normalized = YouTubeBridgeManager._normalize_topic_match_text(query_text)
+        if not normalized:
+            return []
+        generic_terms = {
+            "劇情",
+            "解說",
+            "介紹",
+            "分析",
+            "評價",
+            "看點",
+            "心得",
+            "整理",
+            "動畫",
+            "作品",
+            "這部",
+            "這部動畫",
+        }
+        terms: list[str] = []
+
+        def add_term(value: str) -> None:
+            term = value.strip()
+            if not term or term in generic_terms or len(term) < 2:
+                return
+            if term not in terms:
+                terms.append(term)
+
+        for token in normalized.split():
+            add_term(token.replace("的", ""))
+
+        compact = "".join(normalized.split()).replace("的", "")
+        compact = re.sub(r"^(請問|想知道|想補一下|幫我查|可以講一下|可以說一下)", "", compact)
+        for phrase in (
+            "可以講一下嗎",
+            "可以說一下嗎",
+            "可以講一下",
+            "可以說一下",
+            "有什麼看點",
+            "有哪些看點",
+            "是誰",
+            "嗎",
+            "呢",
+        ):
+            compact = compact.replace(phrase, "")
+        for suffix in (
+            "劇情解說",
+            "劇情介紹",
+            "劇情分析",
+            "畫風解說",
+            "評價解說",
+            "解說",
+            "介紹",
+            "分析",
+            "評價",
+            "看點",
+            "心得",
+        ):
+            if compact.endswith(suffix):
+                compact = compact[: -len(suffix)]
+                break
+        add_term(compact)
+        topicish = compact
+        for phrase in ("有什麼", "有哪些", "可以", "深入", "比較", "細節", "查證", "資料"):
+            topicish = topicish.replace(phrase, " ")
+        for segment in re.split(r"\s+", topicish):
+            segment = segment.strip()
+            if not segment:
+                continue
+            add_term(segment)
+            for size in (4, 3):
+                if len(segment) <= size:
+                    continue
+                for index in range(0, len(segment) - size + 1):
+                    add_term(segment[index:index + size])
+        return sorted(terms, key=len, reverse=True)
+
+    @staticmethod
+    def _topic_pack_entry_matches_query_terms(entry: dict[str, Any], terms: list[str]) -> bool:
+        if not terms:
+            return True
+        values: list[Any] = [
+            entry.get("title"),
+            entry.get("body"),
+            entry.get("summary"),
+        ]
+        tags = entry.get("tags")
+        if isinstance(tags, list):
+            values.extend(tags)
+        entry_text = YouTubeBridgeManager._normalize_topic_match_text(" ".join(str(value or "") for value in values))
+        entry_compact = "".join(entry_text.split()).replace("的", "")
+        for term in terms:
+            normalized_term = YouTubeBridgeManager._normalize_topic_match_text(term)
+            compact_term = "".join(normalized_term.split()).replace("的", "")
+            if compact_term and compact_term in entry_compact:
+                return True
+        return False
 
     def _audience_query_text_from_events(self, events: list[dict[str, Any]]) -> str:
         return str(self._audience_query_intent_from_events(events).get("sanitized_query") or "").strip()
@@ -964,40 +1322,13 @@ class YouTubeBridgeManager(
         *,
         pack_id: int | None = None,
     ) -> dict[str, Any]:
-        session_id = str(session.get("session_id") or "")
-        query_key = self._audience_query_key(session_id, query_text)
-        runtime = self._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id))
-        thread = runtime.audience_research_tasks.get(query_key)
-        thread_alive = bool(thread and thread.is_alive())
-        existing = self._audience_research_job(session_id, query_key)
-        if existing.get("in_progress") and thread_alive:
-            return {**existing, "status": str(existing.get("status") or "running")}
-        if str(existing.get("status") or "") in {"completed", "completed_with_results", "completed_no_results", "degraded", "failed"}:
-            return existing
-        if thread_alive:
-            return {"status": "running", "query_key": query_key, "query": query_text}
-        if thread:
-            runtime.audience_research_tasks.pop(query_key, None)
-        started_at = datetime.now().isoformat()
-        self._update_audience_research_job(session_id, query_key, {
-            "status": "queued",
-            "in_progress": True,
-            "query": query_text,
-            "pack_id": int(pack_id) if pack_id else 0,
-            "started_at": started_at,
-            "updated_at": started_at,
-            "error": "",
-        })
-        thread = threading.Thread(
-            target=self._run_audience_research_worker,
-            args=(session_id, query_key, query_text),
-            kwargs={"pack_id": pack_id},
-            name=f"audience-research-{session_id[:12]}",
-            daemon=True,
+        return self._research_gate.ensure_audience_worker(
+            session,
+            query_text,
+            pack_id=pack_id,
+            thread_factory=threading.Thread,
+            worker_target=self._run_audience_research_worker,
         )
-        runtime.audience_research_tasks[query_key] = thread
-        thread.start()
-        return {"status": "queued", "query_key": query_key, "query": query_text}
 
     def _run_audience_research_worker(
         self,
@@ -1007,91 +1338,29 @@ class YouTubeBridgeManager(
         *,
         pack_id: int | None = None,
     ) -> None:
-        self._update_audience_research_job(session_id, query_key, {
-            "status": "running",
-            "in_progress": True,
-            "query": query_text,
-            "pack_id": int(pack_id) if pack_id else 0,
-            "updated_at": datetime.now().isoformat(),
-            "error": "",
-        })
-        try:
-            result = self._research_request_sync(
-                session_id,
-                query_text,
-                pack_id=pack_id,
-                enforce_cooldown=True,
-            )
-            entry = result.get("entry") if isinstance(result, dict) else {}
-            record = result.get("record") if isinstance(result, dict) else {}
-            status = str((record or {}).get("status") or result.get("status") or "completed")
-            self._update_audience_research_job(session_id, query_key, {
-                "status": status,
-                "in_progress": False,
-                "query": query_text,
-                "pack_id": int(pack_id) if pack_id else int((entry or {}).get("pack_id") or 0),
-                "entry_id": int((entry or {}).get("id") or 0),
-                "updated_at": datetime.now().isoformat(),
-                "error": "",
-            })
-        except Exception as exc:
-            self._update_audience_research_job(session_id, query_key, {
-                "status": "failed",
-                "in_progress": False,
-                "query": query_text,
-                "pack_id": int(pack_id) if pack_id else 0,
-                "updated_at": datetime.now().isoformat(),
-                "error": str(exc)[:500],
-            })
-            logger.warning("audience research worker failed session_id=%s error=%s", session_id, exc)
-        finally:
-            runtime = self._runtimes.get(session_id)
-            if runtime:
-                runtime.audience_research_tasks.pop(query_key, None)
+        self._research_gate.run_audience_worker(
+            session_id,
+            query_key,
+            query_text,
+            pack_id=pack_id,
+            request_sync=self._research_request_sync,
+        )
 
     @staticmethod
     def _audience_query_key(session_id: str, query_text: str) -> str:
-        return uuid.uuid5(uuid.NAMESPACE_URL, f"youtube-live:{session_id}:{query_text}").hex
+        return ResearchGateModule.audience_query_key(session_id, query_text)
 
     def _audience_research_job(self, session_id: str, query_key: str) -> dict[str, Any]:
-        state = self.storage.get_director_state(session_id)
-        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
-        jobs = metadata.get("audience_query_research") if isinstance(metadata.get("audience_query_research"), dict) else {}
-        job = jobs.get(query_key) if isinstance(jobs.get(query_key), dict) else {}
-        return dict(job)
+        return self._research_gate.audience_research_job(session_id, query_key)
 
     def _update_audience_research_job(self, session_id: str, query_key: str, fields: dict[str, Any]) -> dict[str, Any]:
-        state = self.storage.get_director_state(session_id)
-        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
-        jobs = dict(metadata.get("audience_query_research") or {})
-        current = dict(jobs.get(query_key) or {})
-        current.update(fields)
-        current["query_key"] = query_key
-        jobs[query_key] = current
-        self.storage.update_director_state(session_id, metadata={"audience_query_research": jobs})
-        return current
+        return self._research_gate.update_audience_research_job(session_id, query_key, fields)
 
     def _first_session_topic_pack_id(self, session_id: str) -> int | None:
-        packs = self.storage.list_session_topic_packs(session_id)
-        if not packs:
-            return None
-        return int(packs[0]["id"])
+        return self._research_gate.first_session_topic_pack_id(session_id)
 
     def _completed_audience_research_context(self, session_id: str, query_text: str) -> tuple[str, str]:
-        query_key = self._audience_query_key(session_id, query_text)
-        job = self._audience_research_job(session_id, query_key)
-        status = str(job.get("status") or "")
-        if status not in {"completed", "completed_with_results", "degraded"}:
-            return "", status
-        entry_id = int(job.get("entry_id") or 0)
-        if not entry_id:
-            return "", status
-        entry = self.storage.get_topic_pack_entry(entry_id)
-        if not entry:
-            return "", status
-        self._record_topic_pack_usage(session_id, [entry], query_text, "external_context")
-        return self._topic_pack_context_text([entry]), status
-
+        return self._research_gate.completed_context(session_id, query_text)
 
     @classmethod
     def _research_gate_usage_status(
@@ -1196,202 +1465,47 @@ class YouTubeBridgeManager(
         pack_id: int | None = None,
         enforce_cooldown: bool = True,
     ) -> dict[str, Any]:
-        session = self.storage.get_session(session_id)
-        if not session:
-            raise ValueError("live session 不存在")
-        if not session.get("research_enabled"):
-            raise ValueError("本場直播未啟用 Research Gate")
-        query = str(query or "").strip()
-        if not query:
-            raise ValueError("research query 不可為空")
-        cooldown = max(0, int(session.get("research_cooldown_seconds", 300) or 300))
-        session_limit = max(0, int(session.get("research_max_per_session", 12) or 12))
-        if session_limit and self.storage.count_research_requests(session_id) >= session_limit:
-            raise ValueError("Research Gate 已達本場查詢上限")
-        if enforce_cooldown and cooldown:
-            since = (datetime.now() - timedelta(seconds=cooldown)).isoformat()
-            if self.storage.count_research_requests(session_id, since_iso=since) >= 2:
-                raise ValueError("Research Gate 冷卻中，稍後再查")
-        target_pack_id = pack_id
-        if target_pack_id is None:
-            packs = self.storage.list_session_topic_packs(session_id)
-            if packs:
-                target_pack_id = int(packs[0]["id"])
-            else:
-                pack = self.storage.create_topic_pack({
-                    "title": f"{session.get('display_name') or session_id} Research",
-                    "description": "Bridge Research Gate 自動建立的直播 fact cards。",
-                })
-                self.storage.link_topic_pack_to_session(session_id, int(pack["id"]))
-                target_pack_id = int(pack["id"])
-        try:
-            from tools.tavily import search_web
-
-            raw_result = search_web(query=query, topic="general")
-        except Exception as exc:
-            self.storage.create_research_request(session_id, query, status="failed", metadata={"error": str(exc)[:500]})
-            raise
-        body = self._research_result_to_fact_card(query, raw_result)
-        research_meta = self._research_result_metadata(raw_result)
-        entry = self.storage.create_topic_pack_entry(int(target_pack_id), {
-            "title": query[:120],
-            "body": body,
-            "source_url": research_meta["source_urls"][0] if research_meta["source_urls"] else "",
-            "source_type": "research_gate",
-            "tags": ["research_gate"],
-        })
-        embedding = None
-        try:
-            embedding = self.index_topic_pack_entry(int(entry["id"]))
-        except Exception as exc:
-            logger.warning("research fact card embedding failed session_id=%s entry_id=%s error=%s", session_id, entry["id"], exc)
-        record = self.storage.create_research_request(
+        return self._research_gate.request_sync(
             session_id,
             query,
-            status=research_meta["status"],
-            result_entry_id=int(entry["id"]),
-            metadata={
-                "pack_id": int(target_pack_id),
-                "status": research_meta["status"],
-                "source_count": len(research_meta["source_urls"]),
-                "source_urls": research_meta["source_urls"],
-                "source_titles": research_meta["source_titles"],
-            },
+            pack_id=pack_id,
+            enforce_cooldown=enforce_cooldown,
         )
-        return {
-            "status": research_meta["status"],
-            "source_count": len(research_meta["source_urls"]),
-            "source_urls": research_meta["source_urls"],
-            "entry": entry,
-            "research": record,
-            "record": record,
-            "embedding": embedding,
-        }
 
     @staticmethod
     def _research_items(raw_result: Any) -> list[dict[str, str]]:
-        raw = raw_result
-        if isinstance(raw_result, str):
-            stripped = raw_result.strip()
-            try:
-                raw = json.loads(stripped)
-            except Exception:
-                raw = {"search_results": [{"title": "Research Gate result", "url": "", "content": stripped}]}
-        if isinstance(raw, dict):
-            candidates = (
-                raw.get("results")
-                or raw.get("search_results")
-                or raw.get("items")
-                or raw.get("data")
-                or []
-            )
-        elif isinstance(raw, list):
-            candidates = raw
-        else:
-            candidates = []
-        if isinstance(candidates, str):
-            candidates = YouTubeBridgeManager._legacy_research_text_items(candidates)
-
-        items: list[dict[str, str]] = []
-        for item in candidates[:8]:
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or item.get("name") or item.get("source") or "").strip()
-            url = str(item.get("url") or item.get("source_url") or item.get("link") or "").strip()
-            content = str(item.get("content") or item.get("snippet") or item.get("summary") or item.get("body") or "").strip()
-            if not any((title, url, content)):
-                continue
-            items.append({
-                "title": title[:180],
-                "url": url[:1000],
-                "content": " ".join(content.replace("\r", " ").split())[:700],
-            })
-        return items
+        return ResearchGateModule.research_items(raw_result)
 
     @staticmethod
     def _legacy_research_text_items(text: str) -> list[dict[str, str]]:
-        """解析舊版 Tavily wrapper 的純文字 search_results。"""
-        blocks = [block.strip() for block in str(text or "").split("\n\n") if block.strip()]
-        items: list[dict[str, str]] = []
-        for block in blocks[:8]:
-            lines = [line.strip() for line in block.splitlines() if line.strip()]
-            if not lines:
-                continue
-            title = lines[0]
-            if title.startswith("[") and "]" in title:
-                title = title.split("]", 1)[1].strip()
-            content = " ".join(lines[1:]).strip()
-            items.append({
-                "title": title[:180],
-                "url": "",
-                "content": content[:700],
-            })
-        return items
+        return ResearchGateModule.legacy_research_text_items(text)
 
     @staticmethod
     def _research_result_metadata(raw_result: Any) -> dict[str, Any]:
-        items = YouTubeBridgeManager._research_items(raw_result)
-        source_titles = [item["title"] for item in items if item.get("title")][:5]
-        source_urls = [item["url"] for item in items if item.get("url")][:5]
-        return {
-            "status": "completed_with_results" if items else "completed_no_results",
-            "source_titles": source_titles,
-            "source_urls": source_urls,
-        }
+        return ResearchGateModule.research_result_metadata(raw_result)
 
     @staticmethod
     def _research_result_to_fact_card(query: str, raw_result: Any) -> str:
-        items = YouTubeBridgeManager._research_items(raw_result)
-        if not items:
-            return (
-                f"summary: Research Gate 查詢「{query}」沒有取得可用摘要。\n"
-                "facts:\n"
-                "- 目前沒有可引用的外部資料。\n"
-                "source_titles:\n"
-                "- none\n"
-                "source_urls:\n"
-                "- none\n"
-                "confidence: low\n"
-                "status: completed_no_results"
-            )
-        trusted_hosts = ("official", "anime", "news", "wikipedia", "wiki", "ann", "crunchyroll")
-        ranked = sorted(
-            items,
-            key=lambda item: (
-                0 if any(token in (item.get("url", "") + " " + item.get("title", "")).lower() for token in trusted_hosts) else 1,
-                len(item.get("content", "")) * -1,
-            ),
-        )
-        top = ranked[:4]
-        facts = []
-        for item in top:
-            content = item.get("content") or item.get("title") or item.get("url") or ""
-            if content:
-                facts.append(content[:240])
-        source_titles = [item.get("title") or "untitled" for item in top if item.get("title") or item.get("url")]
-        source_urls = [item.get("url") for item in top if item.get("url")]
-        summary_text = facts[0] if facts else f"Research Gate 查詢「{query}」取得 {len(items)} 筆來源。"
-        lines = [
-            f"summary: {summary_text}",
-            "facts:",
-            *[f"- {fact}" for fact in facts[:5]],
-            "source_titles:",
-            *[f"- {title}" for title in source_titles[:5]],
-            "source_urls:",
-            *[f"- {url}" for url in source_urls[:5]],
-            "confidence: medium" if source_urls else "confidence: low",
-            "status: completed_with_results",
-        ]
-        return "\n".join(lines)
+        return ResearchGateModule.research_result_to_fact_card(query, raw_result)
 
     async def _broadcast(self, session_id: str, payload: dict[str, Any]) -> None:
         runtime = self._runtimes.get(session_id)
         if not runtime:
             return
+        timed_types = {
+            "presentation_debug",
+            "presentation_item_preload",
+            "presentation_item_ready",
+        }
+        event_payload = (
+            {**payload, "_broadcast_at": datetime.now().isoformat()}
+            if payload.get("type") in timed_types
+            else payload
+        )
         stale: list[asyncio.Queue] = []
         for queue in list(runtime.subscribers):
             try:
-                queue.put_nowait(payload)
+                queue.put_nowait(event_payload)
             except asyncio.QueueFull:
                 stale.append(queue)
         for queue in stale:
@@ -1408,91 +1522,11 @@ class YouTubeBridgeManager(
         event_ids: list[int] | None = None,
         max_events: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        session = self.storage.get_session(session_id)
-        if not session:
-            raise ValueError("live session 不存在")
-        limit = max(1, min(int(max_events or session.get("max_context_messages", 50)), 100))
-        if event_ids:
-            events = self.storage.get_events_by_ids(session_id, event_ids, limit=limit)
-            events = [event for event in events if not event.get("injected_at")]
-        else:
-            events = self.storage.list_events(session_id, limit=limit, uninjected_only=True)
-        active_events = [
-            event
-            for event in events
-            if event.get("status") == "active"
-            and event.get("message_text")
-            and event.get("safety_status") == "completed"
-            and self._is_public_live_event_displayable(event)
-        ]
-        hidden_event_ids = [
-            int(event["id"])
-            for event in events
-            if event.get("status") == "active"
-            and event.get("message_text")
-            and event.get("safety_status") in {"completed", "failed"}
-            and not self._is_public_live_event_displayable(event)
-        ]
-        if hidden_event_ids:
-            self.storage.mark_events_injected(session_id, hidden_event_ids)
-
-        lines: list[str] = []
-        used_ids: list[int] = []
-        visible_events: list[dict[str, Any]] = []
-        max_chars = int(session.get("max_context_chars", 8000) or 8000)
-        presentation_mode = self._presentation_enabled(session)
-        if presentation_mode:
-            max_chars = min(max_chars, 1200)
-        used_chars = 0
-        for event in active_events:
-            line = self._event_line(event)
-            next_len = len(line) + 1
-            if lines and used_chars + next_len > max_chars:
-                break
-            lines.append(line)
-            used_ids.append(int(event["id"]))
-            if self._is_public_live_event_displayable(event):
-                visible_events.append(self._visible_event(event))
-            used_chars += next_len
-        if not lines:
-            raise ValueError("沒有可注入的直播留言")
-
-        summary = {
-            "source": "youtube_live",
-            "source_session_id": session_id,
-            "connector_id": session["connector_id"],
-            "video_id": session.get("video_id", ""),
-            "live_chat_id": session.get("live_chat_id", ""),
-            "event_ids": used_ids,
-            "event_count": len(used_ids),
-            "hidden_unsafe_count": len(hidden_event_ids),
-            "dropped_count": max(0, len(active_events) - len(used_ids)),
-        }
-        if presentation_mode:
-            summary["presentation_enabled"] = True
-            summary["group_turn_limit"] = 1
-        topic_context, query_resolution = self._live_query_context_for_events(session, active_events, lines)
-        summary["query_resolution"] = query_resolution
-        context_parts = ["\n".join(lines), topic_context]
-        if presentation_mode:
-            context_parts.append(
-                "直播輸出模式：請只產生一個短 spoken beat；避免多角色連續接話，讓前端播放完成後再進入下一輪。"
-            )
-        payload = {
-            "source": "youtube_live",
-            "source_session_id": session_id,
-            "connector_id": session["connector_id"],
-            "video_id": session.get("video_id", ""),
-            "live_chat_id": session.get("live_chat_id", ""),
-            "context_text": "\n".join([part for part in context_parts if part]),
-            "event_ids": used_ids,
-            "visible_events": visible_events,
-            "max_chars": max_chars,
-            "summary": summary,
-        }
-        if presentation_mode:
-            payload["group_turn_limit"] = 1
-        return self._attach_live_persona_overrides(session, payload), summary
+        return self._external_context_builder.build(
+            session_id,
+            event_ids=event_ids,
+            max_events=max_events,
+        )
 
     @staticmethod
     def _event_line(event: dict[str, Any]) -> str:
@@ -1586,7 +1620,6 @@ class YouTubeBridgeManager(
             "suspicious_prompt_injection": "prompt injection 測試",
             "suspicious_secret_request": "祕密/憑證要求",
             "suspicious_url_or_token": "可疑 URL 或 token",
-            "suspicious_sexual_or_coercive_roleplay": "可疑動作或角色狀態注入",
             "spam_or_duplicate": "重複或洗版",
             "unclassified": "尚未通過安全檢查",
             "unsafe_other": "可疑內容",

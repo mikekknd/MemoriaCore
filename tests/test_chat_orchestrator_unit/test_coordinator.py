@@ -228,7 +228,7 @@ class TestDualLayerCoordinator:
         assert "<environment_context" in messages[-1]["content"]
         assert "<user_identity" not in messages[-1]["content"]
         assert '<user user_name="夏雪" />' not in messages[-1]["content"]
-        assert '<latest_user_message speaker="human_user" user_name="夏雪">' not in messages[-1]["content"]
+        assert "<latest_user_message" not in messages[-1]["content"]
         assert "original_user_request:" in messages[-1]["content"]
         assert "role: background_constraint" in messages[-1]["content"]
         assert "speaker: human_user" in messages[-1]["content"]
@@ -356,6 +356,32 @@ class TestDualLayerCoordinator:
         ]
         assert router_calls == []
 
+    def test_dual_layer_tool_routing_policy_disabled_skips_tool_router(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """request 明確停用 tool routing 時，即使工具可用也不跑 Router Agent。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        prefs = {**sample_user_prefs, "tavily_api_key": "test-key"}
+        run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請查最新動畫排名"}],
+            last_entities=[],
+            user_prompt="請查最新動畫排名",
+            user_prefs=prefs,
+            session_ctx={"tool_routing_policy": "disabled"},
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        chat_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "chat"
+        ]
+        assert router_calls == []
+        assert chat_calls
+
     def test_dual_layer_youtube_live_external_context_skips_memory_lookup(
         self, mock_deps, mock_router_with_tools, mock_memory_system, mock_analyzer, sample_user_prefs
     ):
@@ -406,6 +432,101 @@ class TestDualLayerCoordinator:
         assert result[3] is False
         assert result[4] is None
         assert "<retrieved_memory_context>" not in latest_user
+
+    def test_dual_layer_personacore_world_event_skips_memory_lookup(
+        self, mock_deps, mock_router_with_tools, mock_memory_system, mock_analyzer, sample_user_prefs
+    ):
+        """PersonaCore 世界事件是系統事件，不應送進 query expansion 或記憶檢索。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+
+        memory_calls = []
+
+        def record_memory_call(name):
+            def _inner(*args, **kwargs):
+                memory_calls.append(name)
+                if name == "expand_query":
+                    return {"expanded_keywords": "不該出現", "entity_confidence": 1.0}
+                return []
+            return _inner
+
+        mock_analyzer.detect_topic_shift.side_effect = AssertionError("system event should skip topic shift")
+        mock_memory_system.expand_query = record_memory_call("expand_query")
+        mock_memory_system.search_blocks = record_memory_call("search_blocks")
+        mock_memory_system.search_core_memories = record_memory_call("search_core_memories")
+        mock_memory_system.search_profile_by_query = record_memory_call("search_profile_by_query")
+        mock_memory_system.get_static_profile_prompt = record_memory_call("get_static_profile_prompt")
+        mock_memory_system.get_proactive_topics_prompt = record_memory_call("get_proactive_topics_prompt")
+
+        result = run_dual_layer_orchestration(
+            session_messages=[{"role": "user", "content": "請根據 PersonaCore world event 讓角色自然延續"}],
+            last_entities=["舊標籤"],
+            user_prompt=(
+                "請根據 PersonaCore world event 讓角色自然延續，只輸出角色會說出口的台詞。\n\n"
+                "[外部上下文已由 personacore_world_event 提供；請只根據本次注入的 external_chat_context 回應。"
+                "不要開啟瀏覽器、不要搜尋網頁、不要嘗試連線外部平台。]"
+            ),
+            user_prefs=sample_user_prefs,
+            session_ctx={
+                "external_chat_context": {
+                    "source": "personacore_world_event",
+                    "context_text": "蛋糕已經送上桌。",
+                },
+            },
+        )
+
+        retrieval_ctx = result[2]
+
+        assert memory_calls == []
+        assert retrieval_ctx["expanded_keywords"] == ""
+        assert retrieval_ctx["has_memory"] is False
+        assert retrieval_ctx["block_count"] == 0
+        assert retrieval_ctx["memory_lookup_skipped"] == "personacore_world_event"
+
+    def test_dual_layer_tool_runtime_excludes_transient_context_but_final_prompt_keeps_it(
+        self, mock_deps, mock_router_with_tools, sample_user_prefs
+    ):
+        """transient_runtime_context 只進 final chat prompt，不進工具 runtime context。"""
+        from core.chat_orchestrator.coordinator import run_dual_layer_orchestration
+        from core.chat_orchestrator.dataclasses import ToolContext
+
+        captured_runtime_contexts = []
+
+        def capture_run_middleware(*, router_result, on_thinking_speech=None, on_tool_status=None, runtime_context=None):
+            captured_runtime_contexts.append(runtime_context)
+            return ToolContext(
+                tool_results=[{"tool_name": "tavily_search", "result": '{"answer": "ok"}'}],
+                tool_results_formatted="<tool_results>ok</tool_results>",
+                thinking_speech_sent=router_result.thinking_speech,
+            )
+
+        with patch("core.chat_orchestrator.coordinator.run_middleware", side_effect=capture_run_middleware):
+            run_dual_layer_orchestration(
+                session_messages=[{"role": "user", "content": "請看一下現在畫面"}],
+                last_entities=[],
+                user_prompt="請看一下現在畫面",
+                user_prefs={**sample_user_prefs, "tavily_api_key": "test-key"},
+                session_ctx={
+                    "session_id": "sid-dual",
+                    "user_id": "user-dual",
+                    "character_id": "default",
+                    "persona_face": "public",
+                    "transient_runtime_context": {
+                        "context_text": "scene text for final chat only",
+                    },
+                },
+            )
+
+        assert len(captured_runtime_contexts) == 1
+        tool_runtime_context = captured_runtime_contexts[0]
+        assert "transient_runtime_context" not in tool_runtime_context
+        assert tool_runtime_context["session_id"] == "sid-dual"
+        assert tool_runtime_context["user_id"] == "user-dual"
+        assert "visual_prompt" in tool_runtime_context
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<runtime_context>" in latest_user
+        assert "scene text for final chat only" in latest_user
 
     def test_dual_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self, mock_deps, mock_router_with_tools, mock_memory_system, sample_user_prefs
@@ -546,9 +667,11 @@ class TestDualLayerCoordinator:
         chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
         latest_user = chat_call["messages"][-1]
         assert latest_user["role"] == "user"
-        assert '<latest_user_message speaker="human_user" user_name="mikekknd">' in latest_user["content"]
+        assert '<user_input speaker="human_user" user_name="mikekknd">' in latest_user["content"]
+        assert "<latest_user_message" not in latest_user["content"]
         assert "user-1" not in latest_user["content"]
         assert "嗚嗚，可可都無視我拉!" in latest_user["content"]
+        assert latest_user["content"].strip().endswith("</user_input>")
 
     def test_single_layer_group_followup_turn_skips_tool_router(
         self,
@@ -638,6 +761,46 @@ class TestDualLayerCoordinator:
         ]
         assert router_calls == []
 
+    def test_single_layer_tool_routing_policy_disabled_skips_tool_router(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層編排也遵守 request-level tool_routing_policy。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        prefs = {**sample_user_prefs, "dual_layer_enabled": False, "tavily_api_key": "test-key"}
+        orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請查最新動畫排名"}],
+            last_entities=[],
+            user_prompt="請查最新動畫排名",
+            user_prefs=prefs,
+            session_ctx={"tool_routing_policy": "disabled"},
+        )
+
+        router_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "router"
+        ]
+        chat_calls = [
+            c for c in mock_router_with_tools.generate_calls
+            if c["task_key"] == "chat"
+        ]
+        assert router_calls == []
+        assert chat_calls
+
     def test_single_layer_youtube_live_external_context_skips_memory_lookup(
         self,
         monkeypatch,
@@ -702,6 +865,69 @@ class TestDualLayerCoordinator:
         assert result[3] is False
         assert result[4] is None
         assert "<retrieved_memory_context>" not in latest_user
+
+    def test_single_layer_tool_runtime_excludes_transient_context_but_final_prompt_keeps_it(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層工具 runtime context 不含 transient_runtime_context，但 final prompt 仍可使用。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        captured_runtime_contexts = []
+
+        def capture_execute_tool_call(tc, runtime_context=None):
+            captured_runtime_contexts.append(runtime_context)
+            return '{"answer": "ok"}'
+
+        with patch("tools.tavily.execute_tool_call", side_effect=capture_execute_tool_call):
+            orchestration._run_chat_orchestration(
+                session_messages=[{"role": "user", "content": "請查一下這個畫面"}],
+                last_entities=[],
+                user_prompt="請查一下這個畫面",
+                user_prefs={
+                    **sample_user_prefs,
+                    "dual_layer_enabled": False,
+                    "tavily_api_key": "test-key",
+                },
+                session_ctx={
+                    "session_id": "sid-single-tool",
+                    "user_id": "user-single-tool",
+                    "memory_write_policy": "transient",
+                    "external_chat_context": {"source": "unit_test"},
+                    "transient_runtime_context": {
+                        "context_text": "single layer scene text must stay final prompt only",
+                    },
+                },
+            )
+
+        assert len(captured_runtime_contexts) == 1
+        tool_runtime_context = captured_runtime_contexts[0]
+        serialized_runtime_context = json.dumps(tool_runtime_context, ensure_ascii=False)
+        assert "transient_runtime_context" not in tool_runtime_context
+        assert "single layer scene text must stay final prompt only" not in serialized_runtime_context
+        assert tool_runtime_context["session_id"] == "sid-single-tool"
+        assert tool_runtime_context["user_id"] == "user-single-tool"
+        assert tool_runtime_context["memory_write_policy"] == "transient"
+        assert tool_runtime_context["external_chat_context"] == {"source": "unit_test"}
+        assert tool_runtime_context["visual_prompt"] == "測試助理，乾淨的角色肖像。"
+
+        chat_call = [c for c in mock_router_with_tools.generate_calls if c["task_key"] == "chat"][-1]
+        latest_user = [m for m in chat_call["messages"] if m["role"] == "user"][-1]["content"]
+        assert "<runtime_context>" in latest_user
+        assert "single layer scene text must stay final prompt only" in latest_user
 
     def test_single_layer_retrieved_memory_context_is_moved_to_user_prompt(
         self,
@@ -959,6 +1185,43 @@ class TestDualLayerCoordinator:
 
         assert result[0] == "我沿用剛剛那張圖。"
 
+    def test_single_layer_truncates_internal_thought_from_provider_response(
+        self,
+        monkeypatch,
+        mock_router_with_tools,
+        mock_memory_system,
+        mock_storage,
+        mock_analyzer,
+        mock_character_manager,
+        sample_user_prefs,
+    ):
+        """單層解析層應截斷 provider 未遵守 schema 的過長 internal_thought。"""
+        from api.routers.chat import orchestration
+
+        monkeypatch.setattr(orchestration, "get_memory_sys", lambda: mock_memory_system)
+        monkeypatch.setattr(orchestration, "get_storage", lambda: mock_storage)
+        monkeypatch.setattr(orchestration, "get_router", lambda: mock_router_with_tools)
+        monkeypatch.setattr(orchestration, "get_analyzer", lambda: mock_analyzer)
+        monkeypatch.setattr(orchestration, "get_embed_model", lambda: "bge-m3")
+        monkeypatch.setattr(orchestration, "get_character_manager", lambda: mock_character_manager)
+
+        long_thought = "這是一段超過四十個字的內心獨白，用來確認解析層會穩定截斷多餘內容並忽略模型多寫的部分"
+        mock_router_with_tools.set_chat_response({
+            "internal_thought": long_thought,
+            "reply": "已完成。",
+            "extracted_entities": [],
+        })
+
+        result = orchestration._run_chat_orchestration(
+            session_messages=[{"role": "user", "content": "請回覆"}],
+            last_entities=[],
+            user_prompt="請回覆",
+            user_prefs={**sample_user_prefs, "dual_layer_enabled": False},
+        )
+
+        assert result[5] == long_thought[:40]
+        assert len(result[5]) == 40
+
     def test_dual_layer_updates_opening_penalty_state_by_character(
         self, mock_deps, sample_user_prefs
     ):
@@ -1077,15 +1340,35 @@ class TestSelectOrchestration:
 
 
 class TestUnpackOrchestrationResult:
-    def test_handles_12_tuple(self):
-        """12-tuple（最新）應直接回傳"""
+    def test_normalizes_12_tuple_internal_thought(self):
+        """12-tuple（最新）也應套用 internal_thought 長度限制。"""
         from api.routers.chat.orchestration import _unpack_orchestration_result
 
-        result = tuple(range(12))
+        long_thought = "這是一段超過四十個字的內心獨白，用來確認 tuple path 也會穩定截斷多餘內容"
+        slots = list(range(12))
+        slots[5] = long_thought
+        result = tuple(slots)
+
         unpacked = _unpack_orchestration_result(result)
+        expected = list(result)
+        expected[5] = long_thought[:40]
 
         assert len(unpacked) == 12
-        assert unpacked == result
+        assert unpacked == tuple(expected)
+        assert len(unpacked[5]) == 40
+
+    def test_normalizes_orchestration_result_internal_thought(self):
+        """OrchestrationResult 經 API 解構時也應套用 internal_thought 長度限制。"""
+        from api.routers.chat.orchestration import _unpack_orchestration_result
+        from core.chat_orchestrator.dataclasses import OrchestrationResult
+
+        long_thought = "這是一段超過四十個字的內心獨白，用來確認解析層會穩定截斷多餘內容並忽略模型多寫的部分"
+        result = OrchestrationResult(reply_text="已完成。", inner_thought=long_thought)
+
+        unpacked = _unpack_orchestration_result(result)
+
+        assert unpacked[5] == long_thought[:40]
+        assert len(unpacked[5]) == 40
 
     @pytest.mark.parametrize("length", [9, 10, 11, 13])
     def test_rejects_legacy_tuple_lengths(self, length):

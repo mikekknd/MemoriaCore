@@ -46,13 +46,20 @@ def test_live_persona_overlay_storage_roundtrip(tmp_path):
             "opening_intro": "本小姐是今天的主持。",
             "reply_rules": "自然接話。",
             "addressing": {"bailian": "白蓮大人"},
+            "avatar_url": "https://example.invalid/coco.png",
+            "chat_background_color": "#f2fbff",
+            "chat_accent_color": "#0d9488",
         },
     )
 
     assert saved["character_id"] == "coco"
     assert saved["enabled"] is True
     assert saved["addressing"] == {"bailian": "白蓮大人"}
+    assert saved["avatar_url"] == "https://example.invalid/coco.png"
+    assert saved["chat_background_color"] == "#f2fbff"
+    assert saved["chat_accent_color"] == "#0d9488"
     assert storage.get_live_persona_overlay("coco")["system_prompt"] == "直播可可 prompt"
+    assert storage.get_live_persona_overlay("coco")["avatar_url"] == "https://example.invalid/coco.png"
     assert storage.list_live_persona_overlays()[0]["self_address"] == "本小姐"
 
 
@@ -168,6 +175,20 @@ def test_manager_attaches_enabled_live_persona_overrides(tmp_path):
     assert overrides["coco"]["system_prompt"] == "直播可可 prompt"
     assert overrides["coco"]["addressing"] == {"bailian": "白蓮大人"}
     assert external_context.get("character_prompt_overrides") is None
+
+
+def test_live_persona_overlay_rejects_invalid_chat_colors(tmp_path):
+    storage = BridgeStorage(tmp_path / "bridge.db")
+
+    with pytest.raises(ValueError):
+        storage.upsert_live_persona_overlay(
+            "coco",
+            {
+                "enabled": True,
+                "mode": "replace",
+                "chat_background_color": "not-a-color",
+            },
+        )
 
 
 def test_memoria_client_sends_live_persona_overrides_with_live_scope():

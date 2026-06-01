@@ -170,13 +170,19 @@ def format_history_for_llm(messages: list[dict], force_group: bool = False) -> l
 # SECTION: 記憶分析 dialogue 文字（expand / pipeline / facts）
 # ════════════════════════════════════════════════════════════
 
-def format_dialogue_for_analysis(messages: list[dict], force_group: bool = False) -> str:
+def format_dialogue_for_analysis(
+    messages: list[dict],
+    force_group: bool = False,
+    *,
+    prefer_named_assistant: bool = False,
+) -> str:
     """組裝供 LLM 分析任務（query_expand / memory_pipeline / extract_user_facts）
     使用的純文字 dialogue。
 
     - 每行一則訊息
     - 群組 session 的 assistant 訊息以 `[name|character_id]:` 為前綴
-    - 單一 character session 仍用 `assistant:`
+    - 單一 character session 預設仍用 `assistant:`
+    - prefer_named_assistant=True 時，只要 assistant 有角色 metadata 就用 `[name|character_id]:`
     - user 一律用 `user:`
     - 自動 sanitize 內部標記；接力指令訊息整則跳過
     """
@@ -190,8 +196,9 @@ def format_dialogue_for_analysis(messages: list[dict], force_group: bool = False
         cleaned = sanitize_message_for_llm(raw_content)
         if not cleaned:
             continue
-        if role == "assistant" and is_group:
-            label = speaker_label(m) or "assistant"
+        label = speaker_label(m)
+        if role == "assistant" and (is_group or (prefer_named_assistant and label)):
+            label = label or "assistant"
             lines.append(f"[{label}]: {cleaned}")
         else:
             lines.append(f"{role}: {cleaned}")

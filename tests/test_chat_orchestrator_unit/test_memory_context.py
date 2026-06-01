@@ -74,6 +74,32 @@ def test_retrieved_memory_context_is_empty_without_retrieved_sections():
     assert result.block_details == []
 
 
+def test_retrieved_memory_context_labels_named_assistant_in_single_character_memory():
+    result = build_retrieved_memory_context(
+        core_insights=[],
+        profile_matches=[],
+        blocks=[
+            {
+                "block_id": "single-default",
+                "timestamp": "2026-05-22T10:00:00",
+                "overview": "單一角色回覆使用者。",
+                "raw_dialogues": [
+                    {"role": "user", "content": "你剛才怎麼說？"},
+                    {
+                        "role": "assistant",
+                        "content": "我說先確認上下文。",
+                        "character_name": "預設助理",
+                        "character_id": "default",
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert "[預設助理|default]: 我說先確認上下文。" in result.prompt
+    assert "assistant: 我說先確認上下文。" not in result.prompt
+
+
 def test_static_profile_prompt_uses_flat_sections():
     prompt = format_static_profile_prompt(
         basic_facts=[{"fact_key": "name", "fact_value": "夏雪"}],
@@ -151,7 +177,9 @@ def test_build_final_chat_context_moves_retrieved_memory_to_latest_user_message(
     assert latest_user.count("<retrieved_memory_context>") == 1
     assert "core_memory:" in latest_user
     assert "使用者偏好先驗證" in latest_user
-    assert latest_user.index("<retrieved_memory_context>") < latest_user.index("請整理重點。")
+    assert latest_user.index("<retrieved_memory_context>") < latest_user.index("<user_input>")
+    assert "請整理重點。" in latest_user
+    assert latest_user.strip().endswith("</user_input>")
 
 
 def test_build_final_chat_context_omits_empty_retrieved_memory_block():
@@ -173,6 +201,39 @@ def test_build_final_chat_context_omits_empty_retrieved_memory_block():
     assert "<retrieved_memory_context>" not in sys_prompt
     assert "<retrieved_memory_context>" not in latest_user
     assert "無相關記憶" not in latest_user
+    assert latest_user.strip().endswith("</user_input>")
+
+
+def test_build_final_chat_context_injects_runtime_context_before_latest_user_message():
+    from core.chat_orchestrator.generation_context import build_final_chat_context
+
+    api_messages, _clean_history, sys_prompt = build_final_chat_context(
+        char_sys_prompt="角色 prompt",
+        group_participants_block="",
+        mem_ctx="",
+        reply_rules="用繁體中文回應。",
+        session_messages=[{"role": "user", "content": "可以看一下房間裡面有甚麼東西嗎"}],
+        context_window=5,
+        user_prefs={},
+        session_ctx={
+            "transient_runtime_context": {
+                "source": "personacore_scene",
+                "context_text": (
+                    "[PersonaCore scene awareness]\n"
+                    "Persistent scene objects: window, low table, sofa"
+                ),
+            },
+        },
+        force_group=False,
+    )
+
+    latest_user = api_messages[-1]["content"]
+    assert "<runtime_context>" not in sys_prompt
+    assert "[PersonaCore scene awareness]" not in sys_prompt
+    assert latest_user.index("<runtime_context>") < latest_user.index("<user_input>")
+    assert "可以看一下房間裡面有甚麼東西嗎" in latest_user
+    assert "Persistent scene objects: window, low table, sofa" in latest_user
+    assert latest_user.strip().endswith("</user_input>")
 
 
 def test_youtube_live_chat_system_suffix_omits_dynamic_rules_and_memory_block():
@@ -200,3 +261,22 @@ def test_youtube_live_chat_system_suffix_omits_dynamic_rules_and_memory_block():
     assert "<reply_content_rules>" in sys_prompt
     assert "文字與語氣規則：2. `reply`" not in sys_prompt
     assert "<retrieved_memory_context>" in api_messages[-1]["content"]
+
+
+def test_chat_response_schema_limits_internal_thought_length():
+    from core.chat_orchestrator.generation_context import build_chat_response_schema
+
+    schema = build_chat_response_schema()
+
+    assert schema["properties"]["internal_thought"]["type"] == "string"
+    assert schema["properties"]["internal_thought"]["maxLength"] == 40
+
+
+def test_normalize_internal_thought_trims_to_40_characters():
+    from core.chat_orchestrator.generation_context import normalize_internal_thought
+
+    text = "這是一段超過四十個字的內心獨白，用來確認解析層會穩定截斷多餘內容並忽略模型多寫的部分"
+
+    assert normalize_internal_thought(text) == text[:40]
+    assert len(normalize_internal_thought(text)) == 40
+    assert normalize_internal_thought(None) is None

@@ -465,17 +465,10 @@ class EpisodePlanManagerMixin:
         batch_events: list[dict[str, Any]] | None = None,
         backlog_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        if not self._is_public_live_event_displayable(event):
+            return None
         classified = self._classify_episode_audience_event(plan, event)
         action = classified["action"]
-        if action == "ignore":
-            return None
-        if action not in {
-            "bounded_interrupt",
-            "verify_then_ack",
-            "ignore_or_soft_ack",
-            "ignore_or_deescalate",
-        }:
-            return None
         event_type = classified["event_type"]
         interrupt_state = self._interrupt_state_for_audience_event(
             plan,
@@ -584,11 +577,6 @@ class EpisodePlanManagerMixin:
             if isinstance(turn.get("forbidden_repetition"), dict)
             else {}
         )
-        required_entities = [
-            str(item).strip()
-            for item in evidence.get("required_entities") or []
-            if str(item).strip()
-        ]
         preferred_functions = [
             str(item).strip()
             for item in speaker.get("preferred_role_functions") or []
@@ -640,7 +628,6 @@ class EpisodePlanManagerMixin:
             *self._episode_recommendation_context_lines(plan, turn),
             *self._episode_stance_context_lines(turn),
             *self._episode_evidence_brief_context_lines(turn),
-            self._episode_output_context_line(output),
             "交接要求："
             f"{'需要' if bool(output.get('should_handoff')) else '不需要'}；"
             f"交接功能：{output.get('handoff_target_function') or '未指定'}",
@@ -653,15 +640,8 @@ class EpisodePlanManagerMixin:
                 f"{audience_context.get('instruction') or '目前沒有可用的真實聊天室留言或 Super Chat；禁止杜撰觀眾留言。'}"
                 "本輪請使用 fallback 目標，不要假裝已收到觀眾回應。"
             )
-        if max_cards > 0:
-            lines.append(
-                "證據需求：本輪需要導播規劃的查證邊界；"
-                f"證據容量上限 {max_cards} 個重點，只能作為事實依據，不是立場或段落策略。"
-            )
-        else:
+        if max_cards <= 0:
             lines.append("證據需求：本輪不使用外部話題卡；請依本輪目標與角色開場/收束要求回應。")
-        if required_entities:
-            lines.append("必須涵蓋：" + ", ".join(required_entities))
         handoff = turn.get("handoff") if isinstance(turn.get("handoff"), dict) else {}
         handoff_hint = str(handoff.get("next_turn_hint") or "").strip()
         if handoff_hint:
@@ -704,25 +684,6 @@ class EpisodePlanManagerMixin:
             lines.append("回復規則：本輪不是聊天室打斷，完成後依企劃段落節奏推進。")
         lines.append("</live_episode_turn_context>")
         return "\n".join(lines)
-
-    @staticmethod
-    def _episode_output_context_line(output: dict[str, Any]) -> str:
-        try:
-            max_sentences = int(output.get("max_sentences") or 2)
-        except (TypeError, ValueError):
-            max_sentences = 2
-        max_sentences = max(1, min(max_sentences, 8))
-        must_end_with_question = bool(output.get("must_end_with_question"))
-        allow_audience_question = bool(output.get("allow_audience_question"))
-        if must_end_with_question and allow_audience_question:
-            ending_rule = "結尾必須是可回應真實觀眾事件的問句。"
-        elif must_end_with_question:
-            ending_rule = "結尾若用問句，只能問交接角色或作為下一段轉場，不得問觀眾。"
-        elif allow_audience_question:
-            ending_rule = "可向觀眾提問，但只能在本輪正在回應真實留言或 Super Chat 時使用。"
-        else:
-            ending_rule = "不要求問句結尾；不得向觀眾提問。"
-        return f"輸出限制：最多句數：{max_sentences}；{ending_rule}"
 
     @staticmethod
     def _episode_claim_catalog(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -898,23 +859,11 @@ class EpisodePlanManagerMixin:
             for item in brief.get("facts_to_state") or []
             if str(item).strip()
         ]
-        boundaries = [
-            str(item).strip()
-            for item in brief.get("source_boundaries") or []
-            if str(item).strip()
-        ]
+        if not facts:
+            return []
         lines = ["企劃內嵌事實摘要："]
-        if facts:
-            lines.append("可直接使用的事實：")
-            lines.extend(f"- {fact}" for fact in facts[:6])
-        if boundaries:
-            lines.append("來源邊界：")
-            lines.extend(f"- {boundary}" for boundary in boundaries[:4])
-        if bool(brief.get("do_not_delegate_to_character")):
-            lines.append(
-                "查證責任邊界：上述摘要已由企劃層從來源工件整理完成；"
-                "不得把查證責任推給角色，不要在台詞中提到 FactCards、來源卡或自己正在查資料。"
-            )
+        lines.append("可直接使用的事實：")
+        lines.extend(f"- {fact}" for fact in facts[:6])
         return lines
 
     @staticmethod
@@ -947,18 +896,11 @@ class EpisodePlanManagerMixin:
 
     @staticmethod
     def _episode_dialogue_context_lines(dialogue_policy: dict[str, Any]) -> list[str]:
-        try:
-            max_replies = int(dialogue_policy.get("max_replies") or 1)
-        except (TypeError, ValueError):
-            max_replies = 1
-        max_replies = max(1, min(max_replies, 4))
         autonomy = str(dialogue_policy.get("autonomy") or "guided").strip() or "guided"
         lines = [
             "對話彈性：",
             f"自主度：{autonomy}",
-            f"本段最多 {max_replies} 次角色發言；這是硬上限，不是必須用完。",
             "本次角色任務：提出本輪核心資訊或主觀點；不得一次講完整段落。",
-            "接力煞車：若無新資訊，短收束並推進。",
         ]
         return lines
 
@@ -1150,11 +1092,55 @@ class EpisodePlanManagerMixin:
         normal.sort(key=lambda item: int(item.get("id", 0) or 0))
         return normal[:max_events]
 
-    def _episode_audience_interrupt_block_reason(
+    def _episode_preprocess_requested_event_batch(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+        raw_ids = metadata.get("audience_preprocess_requested_event_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return []
+        requested_ids: list[int] = []
+        for event_id in raw_ids:
+            try:
+                parsed = int(event_id)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0 and parsed not in requested_ids:
+                requested_ids.append(parsed)
+        if not requested_ids:
+            return []
+        event_by_id = {
+            int(event.get("id") or 0): event
+            for event in events
+            if int(event.get("id") or 0)
+        }
+        requested_events = [
+            event_by_id[event_id]
+            for event_id in requested_ids
+            if event_id in event_by_id
+        ]
+        if not requested_events:
+            self.storage.update_director_state(session["session_id"], metadata={
+                "audience_preprocess_requested_event_ids": [],
+                "audience_preprocess_requested_source": "",
+                "audience_preprocess_requested_at": "",
+                "audience_preprocess_request_cleared_at": datetime.now().isoformat(),
+                "audience_preprocess_request_clear_reason": "no_eligible_requested_events",
+            })
+            return []
+        return self._episode_select_audience_event_batch(session, requested_events)
+
+    def _episode_audience_batch_block_reason(
         self,
         session: dict[str, Any],
         state: dict[str, Any],
         selected_events: list[dict[str, Any]],
+        *,
+        audience_last_key: str,
+        sc_last_key: str,
     ) -> str:
         if not selected_events:
             return "no_selected_events"
@@ -1181,7 +1167,7 @@ class EpisodePlanManagerMixin:
                 minimum=0,
                 maximum=3600,
             )
-            last_key = "last_sc_interrupt_at"
+            last_key = sc_last_key
         else:
             cooldown = self._episode_backpressure_int(
                 session.get("director_audience_interrupt_cooldown_seconds", 30),
@@ -1189,11 +1175,39 @@ class EpisodePlanManagerMixin:
                 minimum=0,
                 maximum=3600,
             )
-            last_key = "last_audience_interrupt_at"
+            last_key = audience_last_key
         last_at = self._parse_iso_datetime(metadata.get(last_key))
         if last_at and cooldown > 0 and (datetime.now() - last_at).total_seconds() < cooldown:
             return "interrupt_cooldown"
         return ""
+
+    def _episode_audience_interrupt_block_reason(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        selected_events: list[dict[str, Any]],
+    ) -> str:
+        return self._episode_audience_batch_block_reason(
+            session,
+            state,
+            selected_events,
+            audience_last_key="last_audience_interrupt_at",
+            sc_last_key="last_sc_interrupt_at",
+        )
+
+    def _episode_audience_gap_block_reason(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+        selected_events: list[dict[str, Any]],
+    ) -> str:
+        return self._episode_audience_batch_block_reason(
+            session,
+            state,
+            selected_events,
+            audience_last_key="last_audience_gap_at",
+            sc_last_key="last_sc_gap_at",
+        )
 
     def _episode_project_turn_for_audience_availability(
         self,
@@ -1407,8 +1421,13 @@ class EpisodePlanManagerMixin:
         )
         selected_events = self._episode_select_audience_event_batch(session, completed_events)
         snapshot = self._episode_audience_backlog_snapshot(completed_events, selected_events)
-        block_reason = self._episode_audience_interrupt_block_reason(session, state, selected_events)
-        if selected_events and not block_reason:
+        presentation_mode = self._presentation_enabled(session)
+        block_reason = (
+            self._episode_audience_gap_block_reason(session, state, selected_events)
+            if presentation_mode
+            else self._episode_audience_interrupt_block_reason(session, state, selected_events)
+        )
+        if selected_events and not block_reason and not presentation_mode:
             decision = self._episode_interrupt_decision_for_event(
                 plan,
                 planned_state,
@@ -1420,11 +1439,93 @@ class EpisodePlanManagerMixin:
                 return decision
         planned = self._episode_planned_turn_decision(session, state)
         if isinstance(planned, dict) and planned.get("episode_plan"):
+            defer_reason = block_reason or "no_interrupt_decision"
+            if presentation_mode and selected_events and not block_reason:
+                defer_reason = "presentation_audience_gap_lane"
             planned.setdefault("episode_plan", {})["backlog_snapshot"] = {
                 **snapshot,
-                "defer_reason": block_reason or "no_interrupt_decision",
+                "defer_reason": defer_reason,
             }
         return planned
+
+    def _episode_plan_next_audience_gap_decision(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan, planned_state = self._episode_plan_and_state(session, state)
+        if not plan:
+            return None
+        if str(planned_state.get("plan_status") or "") == "completed":
+            return None
+        completed_events = self._episode_completed_audience_events(
+            session["session_id"],
+            planned_state,
+            limit=500,
+        )
+        selected_events = self._episode_select_audience_event_batch(session, completed_events)
+        snapshot = self._episode_audience_backlog_snapshot(completed_events, selected_events)
+        block_reason = self._episode_audience_gap_block_reason(session, state, selected_events)
+        if not selected_events or block_reason:
+            return None
+        decision = self._episode_interrupt_decision_for_event(
+            plan,
+            planned_state,
+            selected_events[0],
+            batch_events=selected_events,
+            backlog_snapshot=snapshot,
+        )
+        if not decision:
+            return None
+        payload = decision.setdefault("episode_plan", {})
+        payload["mode"] = "audience_gap"
+        payload["backlog_snapshot"] = snapshot
+        return decision
+
+    def _episode_plan_next_audience_prepare_decision(
+        self,
+        session: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan, planned_state = self._episode_plan_and_state(session, state)
+        if not plan:
+            return None
+        if str(planned_state.get("plan_status") or "") == "completed":
+            return None
+        completed_events = self._episode_completed_audience_events(
+            session["session_id"],
+            planned_state,
+            limit=500,
+        )
+        covered_ids: set[int] = set()
+        finder = getattr(self.storage, "list_audience_prepare_event_ids", None)
+        if callable(finder):
+            covered_ids = finder(session["session_id"])
+        if covered_ids:
+            completed_events = [
+                event
+                for event in completed_events
+                if int(event.get("id") or 0) not in covered_ids
+            ]
+        selected_events = self._episode_preprocess_requested_event_batch(session, state, completed_events)
+        if not selected_events:
+            selected_events = self._episode_select_audience_event_batch(session, completed_events)
+        snapshot = self._episode_audience_backlog_snapshot(completed_events, selected_events)
+        if not selected_events:
+            return None
+        decision = self._episode_interrupt_decision_for_event(
+            plan,
+            planned_state,
+            selected_events[0],
+            batch_events=selected_events,
+            backlog_snapshot=snapshot,
+        )
+        if not decision:
+            return None
+        payload = decision.setdefault("episode_plan", {})
+        payload["mode"] = "audience_gap_prepare"
+        payload["backlog_snapshot"] = snapshot
+        return decision
 
     @staticmethod
     def _episode_plan_director_delay_info(
@@ -1500,7 +1601,7 @@ class EpisodePlanManagerMixin:
                 "latest_backlog_snapshot": snapshot,
                 **preserved_interrupt_times,
             }
-        if mode == "audience_interrupt":
+        if mode in {"audience_interrupt", "audience_gap", "audience_gap_prepare"}:
             interrupt_state = (
                 payload.get("interrupt_state")
                 if isinstance(payload.get("interrupt_state"), dict)
@@ -1535,14 +1636,19 @@ class EpisodePlanManagerMixin:
                 "planned_state": planned_state,
                 "interrupt_state": interrupt_state,
                 "audience_batches_since_planned_turn": used_batches + 1,
-                "last_audience_interrupt_at": now,
                 "deferred_event_count": int(snapshot.get("deferred_event_count") or 0),
                 "latest_backlog_snapshot": snapshot,
             }
-            if interrupt_type == "super_chat":
-                update["last_sc_interrupt_at"] = now
-            elif metadata.get("last_sc_interrupt_at"):
-                update["last_sc_interrupt_at"] = metadata.get("last_sc_interrupt_at")
+            if mode in {"audience_gap", "audience_gap_prepare"}:
+                update["last_audience_gap_at"] = now
+                if interrupt_type == "super_chat":
+                    update["last_sc_gap_at"] = now
+            else:
+                update["last_audience_interrupt_at"] = now
+                if interrupt_type == "super_chat":
+                    update["last_sc_interrupt_at"] = now
+                elif metadata.get("last_sc_interrupt_at"):
+                    update["last_sc_interrupt_at"] = metadata.get("last_sc_interrupt_at")
             return update
 
         turn = (

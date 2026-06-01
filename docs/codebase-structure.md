@@ -38,7 +38,7 @@
   - 主專案其他模組不得直接使用 `sqlite3`；如需 DB 操作，新增到對應 mixin 後透過 `StorageManager` facade 呼叫。
 - `core/core_memory.py` — 同上
   - 分區：Embedding 工具 / 查詢擴展 / Memory Block 寫入 / 叢集融合 / 三軌檢索 / Profile
-- `core/llm_gateway.py` — LLM routing；分派 9 種 task type 到可設定 provider（Ollama/OpenAI/OpenRouter/llama.cpp），設定存於 `user_prefs.json`
+- `core/llm_gateway.py` — LLM routing；分派多種 task type 到可設定 provider（Ollama/OpenAI/OpenRouter/llama.cpp），設定存於 `user_prefs.json`
   - 若任務帶 `response_format` 但模型回傳純文字（無 `{`），`LLMRouter.generate()` 會自動以警告 prompt + 降溫重試一次（針對 cloud-proxied 模型忽略 schema 的問題）
 
 ---
@@ -53,8 +53,25 @@
   - `pipeline.py`      — 記憶管線同步/背景執行
   - `orchestration.py` — `_run_chat_orchestration` 單層編排與雙層編排選擇器
   - `execution.py`     — REST `/chat/sync` 與 SSE `/chat/stream-sync` 共用執行核心
+  - `group_loop.py`    — 群組對話 loop 與 speaker selection orchestration
+  - `roster.py`        — session participant / roster event helpers
 - `api/routers/chat_ws.py`  — WebSocket 端點（slim，re-export 內部相容）
 - `api/routers/chat_rest.py`— REST `/chat/sync` 與 SSE `/chat/stream-sync` 端點
+
+### Agents 的 chat context channels
+
+修改 chat request context 行為時，請先區分這兩個 channel：
+
+- `external_context`：bridge / YouTubeBridge 外部內容。它可以改變 live scope、可見 system events、group turn limits，以及 transient memory policy。
+- `transient_context`：app runtime context。它是 final-chat-only，渲染為 `<runtime_context>`，不進 session history，也不會停用一般 user-message memory extraction。
+
+Implementation map：
+
+- Request schema and cap constants：`api/models/requests.py`
+- Payload normalization and mutual exclusion：`api/routers/chat_rest.py`
+- Shared sync / stream execution path：`api/routers/chat/execution.py`
+- Final prompt rendering：`core/prompt_utils.py`
+- Prompt assembly caller：`core/chat_orchestrator/generation_context.py`
 
 ---
 

@@ -34,6 +34,172 @@ from bridge_engine_test_support import (
 )
 
 
+def test_research_gate_module_can_be_constructed_with_manager_adapters():
+    from research_gate import ResearchGateModule, TavilyResearchSearchAdapter
+
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+
+        module = ResearchGateModule(
+            storage=storage,
+            runtime_lookup=lambda session_id: manager._runtimes.setdefault(session_id, LiveRuntime(session_id=session_id)),
+            topic_pack_context_text=manager._topic_pack_context_text,
+            record_topic_pack_usage=manager._record_topic_pack_usage,
+            index_topic_pack_entry=manager.index_topic_pack_entry,
+            search_adapter=TavilyResearchSearchAdapter(),
+        )
+
+        assert module.storage is storage
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_research_gate_module_request_sync_creates_research_fact_card():
+    from research_gate import ResearchGateModule
+
+    class FakeSearchAdapter:
+        def search(self, query: str):
+            assert query == "最新一話聲優陣容"
+            return {
+                "results": [
+                    {
+                        "title": "官方聲優陣容公告",
+                        "url": "https://example.test/cast",
+                        "content": "官方公告列出主役聲優與配角聲優，社群討論集中在聲線變化。",
+                    }
+                ]
+            }
+
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt-main", "display_name": "YouTube Main", "api_key": "key", "enabled": True})
+        storage.upsert_session({"session_id": "live-a", "connector_id": "yt-main", "video_id": "video-a", "live_chat_id": "chat-a", "research_enabled": True})
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        module = ResearchGateModule(
+            storage=storage,
+            runtime_lookup=lambda session_id: LiveRuntime(session_id=session_id),
+            topic_pack_context_text=lambda entries: "\n".join(str(entry["body"]) for entry in entries),
+            record_topic_pack_usage=lambda *_args, **_kwargs: None,
+            index_topic_pack_entry=lambda _entry_id: None,
+            search_adapter=FakeSearchAdapter(),
+        )
+
+        result = module.request_sync("live-a", "最新一話聲優陣容", pack_id=pack["id"], enforce_cooldown=True)
+
+        assert result["status"] == "completed_with_results"
+        assert result["entry"]["source_type"] == "research_gate"
+        assert result["research"]["result_entry_id"] == result["entry"]["id"]
+        assert "官方公告列出主役聲優" in result["entry"]["body"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_research_gate_request_sync_does_not_search_when_research_disabled():
+    from research_gate import ResearchGateModule
+
+    class NoSideEffectSearchAdapter:
+        def search(self, query: str):
+            raise AssertionError("search adapter should not be called")
+
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt-main", "display_name": "YouTube Main", "api_key": "key", "enabled": True})
+        storage.upsert_session({"session_id": "live-a", "connector_id": "yt-main", "video_id": "video-a", "live_chat_id": "chat-a", "research_enabled": False})
+        module = ResearchGateModule(
+            storage=storage,
+            runtime_lookup=lambda session_id: LiveRuntime(session_id=session_id),
+            topic_pack_context_text=lambda entries: "",
+            record_topic_pack_usage=lambda session_id, entries, source, reason: None,
+            index_topic_pack_entry=lambda entry_id: None,
+            search_adapter=NoSideEffectSearchAdapter(),
+        )
+
+        with pytest.raises(ValueError, match="未啟用 Research Gate"):
+            module.request_sync("live-a", "最新一話聲優陣容")
+
+        assert storage.list_research_requests("live-a") == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_manager_reuses_completed_audience_research_context_after_module_extraction():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({"connector_id": "yt-main", "display_name": "YouTube Main", "api_key": "key", "enabled": True})
+        storage.upsert_session({"session_id": "live-a", "connector_id": "yt-main", "video_id": "video-a", "live_chat_id": "chat-a", "research_enabled": True})
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "最新一話聲優陣容",
+            "body": "summary: 官方公告列出主役聲優與配角聲優。",
+            "source_type": "research_gate",
+            "tags": ["research_gate"],
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        query = "最新一話的聲優陣容有什麼看點？"
+        query_key = manager._audience_query_key("live-a", query)
+        manager._update_audience_research_job("live-a", query_key, {
+            "status": "completed_with_results",
+            "in_progress": False,
+            "query": query,
+            "pack_id": pack["id"],
+            "entry_id": entry["id"],
+        })
+
+        context, status = manager._completed_audience_research_context("live-a", query)
+
+        assert status == "completed_with_results"
+        assert "官方公告列出主役聲優" in context
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_manager_live_query_context_delegates_to_research_gate_module(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        session = {
+            "session_id": "live-a",
+            "director_guidance": "",
+            "research_enabled": True,
+        }
+        event = {
+            "message_text": "最新一話的聲優陣容有什麼看點？",
+            "author_display_name": "觀眾A",
+        }
+
+        def fake_live_query_context_for_events(**kwargs):
+            assert kwargs["session"] is session
+            assert kwargs["events"] == [event]
+            assert kwargs["lines"] == ["- 觀眾A: 最新一話的聲優陣容有什麼看點？"]
+            return "MODULE_CONTEXT", {"research_status": "module_used"}
+
+        monkeypatch.setattr(
+            manager._research_gate,
+            "live_query_context_for_events",
+            fake_live_query_context_for_events,
+            raising=False,
+        )
+
+        context, resolution = manager._live_query_context_for_events(
+            session,
+            [event],
+            ["- 觀眾A: 最新一話的聲優陣容有什麼看點？"],
+        )
+
+        assert context == "MODULE_CONTEXT"
+        assert resolution == {"research_status": "module_used"}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_audience_question_queues_research_gate_without_blocking_injection(monkeypatch):
     tmp_dir = _tmp_dir()
     try:
@@ -93,6 +259,233 @@ def test_audience_question_queues_research_gate_without_blocking_injection(monke
         assert summary["query_resolution"]["research_status"] == "queued"
         assert summary["query_resolution"]["fallback_reason"] == "research_incomplete"
         assert not storage.get_events_by_ids("live-a", [event["id"]])[0]["injected_at"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def test_audience_question_rejects_single_wrong_topic_fact_card_and_queues_research(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        magic_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "魔法帽的工作室 第一集 評價",
+            "body": "這張卡描述魔法帽的工作室第一集觀眾評價與動畫演出。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_type": "superChatEvent",
+            "message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "safe_message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "author_display_name": "觀眾A",
+            "amount_display_string": "NT$75",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        queued: list[dict] = []
+
+        monkeypatch.setattr(manager, "_audience_query_intent_from_events", lambda _events: {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": "黃泉使者 劇情 解說",
+            "topic_scope": "anime_work",
+            "risk_label": "clean",
+            "reason": "測試 query。",
+        })
+        monkeypatch.setattr(
+            manager,
+            "_topic_pack_entries_for_query",
+            lambda *_args, **_kwargs: ([{**magic_entry, "similarity": 0.556}], {"top_similarity": 0.556}),
+        )
+
+        def fake_ensure_worker(session: dict, query: str, *, pack_id: int | None = None):
+            queued.append({"query": query, "pack_id": pack_id})
+            return {"status": "queued", "query": query}
+
+        monkeypatch.setattr(manager, "_ensure_audience_research_worker", fake_ensure_worker, raising=False)
+
+        context, summary = manager.build_external_context("live-a", event_ids=[event["id"]])
+
+        assert "魔法帽的工作室" not in context["context_text"]
+        assert "相關查證仍在背景處理" in context["context_text"]
+        assert queued == [{"query": "黃泉使者 劇情 解說", "pack_id": pack["id"]}]
+        assert summary["query_resolution"]["local_answerable"] is False
+        assert summary["query_resolution"]["research_status"] == "queued"
+        assert summary["query_resolution"]["local_rejected_by_topic_count"] == 1
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_topic_pack_entries_can_answer_keeps_gap_rule_for_multiple_matching_entries():
+    entries = [
+        {
+            "title": "黃泉使者 劇情與畫風解說",
+            "body": "作品以柔和線條呈現黃泉使者的療癒氛圍。",
+            "similarity": 0.210,
+        },
+        {
+            "title": "黃泉使者 角色關係整理",
+            "body": "這張卡整理黃泉使者的主要角色與劇情背景。",
+            "similarity": 0.205,
+        },
+    ]
+
+    assert YouTubeBridgeManager._topic_pack_entries_can_answer(
+        entries,
+        query_text="黃泉使者 劇情 解說",
+    ) is False
+    assert YouTubeBridgeManager._topic_pack_entries_can_answer(
+        entries[:1],
+        query_text="黃泉使者 劇情 解說",
+    ) is True
+
+
+def test_audience_question_rejects_wrong_topic_fact_card_sharing_short_suffix(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        wrong_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "異世界使者角色整理",
+            "body": "這張卡只整理異世界作品中的使者定位與配角關係。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_type": "superChatEvent",
+            "message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "safe_message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "author_display_name": "觀眾A",
+            "amount_display_string": "NT$75",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        queued: list[dict] = []
+
+        monkeypatch.setattr(manager, "_audience_query_intent_from_events", lambda _events: {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": "黃泉使者 劇情 解說",
+            "topic_scope": "anime_work",
+            "risk_label": "clean",
+            "reason": "測試 query。",
+        })
+        monkeypatch.setattr(
+            manager,
+            "_topic_pack_entries_for_query",
+            lambda *_args, **_kwargs: ([{**wrong_entry, "similarity": 0.556}], {"top_similarity": 0.556}),
+        )
+
+        def fake_ensure_worker(session: dict, query: str, *, pack_id: int | None = None):
+            queued.append({"query": query, "pack_id": pack_id})
+            return {"status": "queued", "query": query}
+
+        monkeypatch.setattr(manager, "_ensure_audience_research_worker", fake_ensure_worker, raising=False)
+
+        context, summary = manager.build_external_context("live-a", event_ids=[event["id"]])
+
+        assert "異世界使者" not in context["context_text"]
+        assert "相關查證仍在背景處理" in context["context_text"]
+        assert queued == [{"query": "黃泉使者 劇情 解說", "pack_id": pack["id"]}]
+        assert summary["query_resolution"]["local_answerable"] is False
+        assert summary["query_resolution"]["research_status"] == "queued"
+        assert summary["query_resolution"]["local_rejected_by_topic_count"] == 1
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_audience_question_accepts_single_matching_topic_fact_card(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        pack = storage.create_topic_pack({"title": "直播資料包"})
+        yomi_entry = storage.create_topic_pack_entry(pack["id"], {
+            "title": "黃泉使者 劇情與畫風解說",
+            "body": "作品以柔和線條呈現黃泉使者的療癒氛圍，並用單元劇情收束角色情緒。",
+            "source_type": "manual",
+        })
+        storage.link_topic_pack_to_session("live-a", pack["id"])
+        event = storage.save_event({
+            "bridge_session_id": "live-a",
+            "connector_id": "yt-main",
+            "youtube_message_id": "msg-a",
+            "message_type": "superChatEvent",
+            "message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "safe_message_text": "《黃泉使者》的畫風好治癒，可以講一下嗎？",
+            "author_display_name": "觀眾A",
+            "amount_display_string": "NT$75",
+        })
+        _mark_event_clean(storage, event)
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+
+        monkeypatch.setattr(manager, "_audience_query_intent_from_events", lambda _events: {
+            "is_factual_question": True,
+            "needs_external_search": True,
+            "safe_search_allowed": True,
+            "sanitized_query": "黃泉使者 劇情 解說",
+            "topic_scope": "anime_work",
+            "risk_label": "clean",
+            "reason": "測試 query。",
+        })
+        monkeypatch.setattr(
+            manager,
+            "_topic_pack_entries_for_query",
+            lambda *_args, **_kwargs: ([{**yomi_entry, "similarity": 0.556}], {"top_similarity": 0.556}),
+        )
+
+        context, summary = manager.build_external_context("live-a", event_ids=[event["id"]])
+
+        assert "黃泉使者 劇情與畫風解說" in context["context_text"]
+        assert "柔和線條" in context["context_text"]
+        assert summary["query_resolution"]["local_answerable"] is True
+        assert summary["query_resolution"]["research_status"] == "not_needed"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -205,6 +598,47 @@ def test_audience_research_worker_records_completed_status(monkeypatch):
         jobs = state["metadata"]["audience_query_research"]
         assert jobs["voice-cast"]["status"] == "completed_with_results"
         assert jobs["voice-cast"]["in_progress"] is False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def test_audience_research_worker_cleanup_does_not_create_missing_runtime(monkeypatch):
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "api_key": "key",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "video_id": "video-a",
+            "live_chat_id": "chat-a",
+            "research_enabled": True,
+        })
+        manager = YouTubeBridgeManager(storage, memoria_client_factory=OffTopicEmbeddingMemoriaClient)
+        assert "live-a" not in manager._runtimes
+
+        def fake_research_request_sync(session_id: str, query: str, *, pack_id: int | None = None, enforce_cooldown: bool = True):
+            return {
+                "status": "completed_with_results",
+                "entry": {"id": 0, "pack_id": 0},
+                "record": {"status": "completed_with_results"},
+                "embedding": None,
+            }
+
+        monkeypatch.setattr(manager, "_research_request_sync", fake_research_request_sync, raising=False)
+
+        manager._run_audience_research_worker(
+            "live-a",
+            "voice-cast",
+            "最新一話的聲優陣容有什麼看點？",
+            pack_id=None,
+        )
+
+        assert "live-a" not in manager._runtimes
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

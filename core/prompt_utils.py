@@ -2,10 +2,13 @@
 
 此模組存放跨模組共享的 prompt 組裝邏輯，避免在 coordinator / orchestration 重複定義。
 """
+import re
 from datetime import datetime, timezone, timedelta
 
 from core.prompt_manager import get_prompt_manager
 from core.xml_prompt import xml_attr, xml_block
+
+_USER_INPUT_TAIL = re.compile(r'\s*<user_input\b[^>]*>.*?</user_input>\s*\Z', re.DOTALL)
 
 
 def _is_su_private_weather_context(session_ctx: dict | None) -> bool:
@@ -88,6 +91,77 @@ def _build_external_chat_context_block(session_ctx: dict | None) -> str:
     )
 
 
+def _build_runtime_context_block(session_ctx: dict | None) -> str:
+    """注入 app runtime context；只把 context_text 渲染給 final chat LLM。"""
+    if not session_ctx:
+        return ""
+    runtime_context = session_ctx.get("transient_runtime_context")
+    if not isinstance(runtime_context, dict):
+        return ""
+    context_text = str(runtime_context.get("context_text") or "").strip()
+    if not context_text:
+        return ""
+    return get_prompt_manager().get("runtime_context_block").format(
+        context_text=context_text,
+    )
+
+
+def _normalize_prompt_text_for_dedupe(value: str) -> str:
+    return " ".join(str(value or "").replace("\r", "\n").split()).strip()
+
+
+def append_control_before_user_input_tail(content: str, control: str) -> str:
+    """若 user message 已以 <user_input> 結尾，將控制區塊插在它前面。"""
+    text = str(content or "")
+    control_text = str(control or "").strip()
+    if not control_text:
+        return text
+
+    match = _USER_INPUT_TAIL.search(text)
+    if not match:
+        return text + "\n\n" + control_text
+
+    before = text[:match.start()].rstrip()
+    user_input = match.group(0).lstrip().rstrip()
+    return "\n\n".join(part for part in (before, control_text, user_input) if part)
+
+
+def _extract_youtube_live_director_handling_hints(ext: dict) -> list[str]:
+    context_text = str(ext.get("context_text") or "").replace("\r", "\n")
+    hints: list[str] = []
+    for line in context_text.splitlines():
+        stripped = line.strip()
+        for prefix in ("處理提示：", "處理提示:"):
+            if stripped.startswith(prefix):
+                hint = stripped[len(prefix):].strip()
+                if hint:
+                    hints.append(hint)
+                break
+    return hints
+
+
+def _dedupe_external_turn_instruction(instruction: str, ext: dict) -> str:
+    source = str(ext.get("source") or "external").strip() or "external"
+    if source != "youtube_live_director":
+        return instruction
+
+    hints = {
+        _normalize_prompt_text_for_dedupe(hint)
+        for hint in _extract_youtube_live_director_handling_hints(ext)
+    }
+    if not hints:
+        return instruction
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", instruction) if part.strip()]
+    if not paragraphs:
+        return instruction
+
+    first = _normalize_prompt_text_for_dedupe(paragraphs[0])
+    if first in hints:
+        return "\n\n".join(paragraphs[1:]).strip()
+    return instruction
+
+
 def _is_youtube_live_prompt_context(session_ctx: dict | None) -> bool:
     """判斷目前前綴是否服務 YouTube 直播導播流程。"""
     if not session_ctx:
@@ -117,6 +191,7 @@ def build_user_prefix(
     weather_block = _build_su_weather_block(user_prefs, session_ctx)
     user_identity_block = _build_user_identity_block(session_ctx)
     external_chat_context_block = _build_external_chat_context_block(session_ctx)
+    runtime_context_block = _build_runtime_context_block(session_ctx)
 
     env_block = pm.get("environment_context_block").format(
         current_time=current_time,
@@ -138,7 +213,16 @@ def build_user_prefix(
                 )
                 break
 
-    return env_block + user_identity_block + ("\n" + external_chat_context_block if external_chat_context_block else "") + emo_block + "\n\n"
+    blocks = [env_block]
+    if user_identity_block:
+        blocks.append(user_identity_block)
+    if external_chat_context_block:
+        blocks.append(external_chat_context_block)
+    if emo_block.strip():
+        blocks.append(emo_block.strip())
+    if runtime_context_block:
+        blocks.append(runtime_context_block)
+    return "\n".join(blocks) + "\n\n"
 
 
 def build_external_context_turn_control(
@@ -163,6 +247,12 @@ def build_external_context_turn_control(
         session_ctx=session_ctx,
     ).strip()
     instruction = str(content or "").replace("\r", "\n").strip()
+    if (
+        str(ext.get("source") or "").strip() == "youtube_live_director"
+        and ext.get("suppress_external_turn_instruction")
+    ):
+        return prefix
+    instruction = _dedupe_external_turn_instruction(instruction, ext)
     if instruction:
         source = str(ext.get("source") or "external").strip() or "external"
         instruction_block = xml_block(
@@ -185,24 +275,15 @@ def build_retrieved_memory_context_user_block(mem_ctx: str) -> str:
 
 
 def format_latest_user_message_for_llm(content: str, session_ctx: dict | None = None) -> str:
-    """群組模式中明確標示最後一則訊息來自真人使用者。
-
-    Chat API 的 role=user 對多數模型已足夠，但群組模式同時存在多個 AI speaker
-    label 與 user-role 控制區塊時，部分模型會把「我」誤連到前一位 AI。這裡只
-    包裝送進 LLM 的暫態內容，不改寫 DB 中的原始使用者訊息。
-    """
-    if not _is_group_prompt_context(session_ctx):
-        return content
-
-    ctx = session_ctx or {}
-    return xml_block(
-        "latest_user_message",
-        content,
-        attrs={
+    """以明確的 user_input 區塊標示最新真人輸入，避免控制區塊與人類輸入混淆。"""
+    attrs = None
+    if _is_group_prompt_context(session_ctx):
+        ctx = session_ctx or {}
+        attrs = {
             "speaker": "human_user",
             "user_name": ctx.get("user_name") or "",
-        },
-    )
+        }
+    return xml_block("user_input", content, attrs=attrs)
 
 
 def _is_group_prompt_context(session_ctx: dict | None) -> bool:

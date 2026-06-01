@@ -80,6 +80,19 @@ class DirectorManagerMixin:
         return value
 
     @staticmethod
+    def _post_plan_free_talk_group_turn_limit(session: dict[str, Any], mode: str = "idle") -> int:
+        prefix = "post_plan_free_talk_audience" if str(mode or "") == "audience" else "post_plan_free_talk_idle"
+        try:
+            value = int(session.get(f"{prefix}_turns_min", 1) or 1)
+        except (TypeError, ValueError):
+            value = 1
+        try:
+            maximum = int(session.get(f"{prefix}_turns_max", value) or value)
+        except (TypeError, ValueError):
+            maximum = value
+        return max(1, min(max(value, 1), min(max(maximum, value), 12)))
+
+    @staticmethod
     def _director_dialogue_expansion_enabled(session: dict[str, Any] | None = None) -> bool:
         return bool((session or {}).get("director_dialogue_expansion_enabled", True))
 
@@ -531,6 +544,8 @@ class DirectorManagerMixin:
             "duration_closing": f"預定直播時間已到，請簡短宣布本場進入收尾，承接「{topic}」但不要完整總結，不要開新話題，也不要把問題丟回聊天室。",
             "closing_super_chat_thanks": "直播即將收尾，請感謝本場 Super Chat 支持；不適合公開回覆的內容不用提起。",
             "final_closing": f"請做本場最後收尾，簡短回顧「{topic}」最重要的一個重點並正式道別。不要開新話題，不要重複前面已說過的收尾比喻，也不要把問題丟回聊天室。",
+            "post_plan_free_talk_topic": f"雜談話題：{topic}\n請自然延伸這個雜談話題，讓角色彼此接話、補充或提出不同角度；不要提到幕後流程。",
+            "post_plan_free_talk_natural": "自然雜談：請延續直播餘韻，讓角色彼此聊一段輕鬆近況或現場感想；不要提到幕後流程，也不要把問題丟回聊天室。",
         }
         return prompts.get(
             action,
@@ -748,6 +763,8 @@ class DirectorManagerMixin:
             "post_opening_topic_anchor": "帶入本場話題資料。",
             "duration_closing": "預定直播時間已到，開始收束本場直播。",
             "final_closing": "本場直播最後收尾。",
+            "post_plan_free_talk_topic": "雜談話題。",
+            "post_plan_free_talk_natural": "自然雜談。",
             "ask_character": "讓角色接續回應目前話題。",
             "recap": "整理一下剛剛的內容。",
             "close_topic": "收束目前話題。",

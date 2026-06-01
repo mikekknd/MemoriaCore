@@ -205,6 +205,17 @@ class TestFormatDialogueForAnalysis:
         assert "assistant: 你好" in out
         assert "[" not in out  # 無群組標籤
 
+    def test_prefer_named_assistant_labels_single_character(self):
+        msgs = [
+            {"role": "user", "content": "嗨"},
+            {"role": "assistant", "content": "你好",
+             "character_name": "預設助理", "character_id": "default"},
+        ]
+        out = format_dialogue_for_analysis(msgs, prefer_named_assistant=True)
+        assert "user: 嗨" in out
+        assert "[預設助理|default]: 你好" in out
+        assert "assistant: 你好" not in out
+
     def test_group_uses_speaker_label(self):
         msgs = [
             {"role": "user", "content": "嗨"},

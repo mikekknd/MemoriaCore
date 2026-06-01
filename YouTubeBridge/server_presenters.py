@@ -4,6 +4,32 @@ from __future__ import annotations
 from typing import Any
 
 
+_RUNTIME_STATUS_PUBLIC_KEYS = (
+    "session_id",
+    "status",
+    "running",
+    "mode",
+    "last_error",
+    "auto_inject_running",
+    "last_auto_inject_at",
+    "last_auto_inject_error",
+    "auto_test_events_running",
+    "last_auto_test_event_at",
+    "last_auto_test_event_error",
+)
+
+_DIRECTOR_STATE_PUBLIC_KEYS = (
+    "session_id",
+    "director_enabled",
+    "status",
+    "current_topic",
+    "last_director_action_at",
+    "consecutive_ai_turns",
+    "created_at",
+    "updated_at",
+)
+
+
 def sanitize_chat_preview_message(message: dict) -> dict:
     if not isinstance(message, dict):
         return {}
@@ -74,14 +100,25 @@ def sanitize_interaction_metadata(value: Any, *, depth: int = 0) -> Any:
             continue
         if (
             "prompt" in key_lower
-            or key_lower in {"hidden_context", "external_context", "context_text", "raw_context"}
+            or "hidden" in key_lower
+            or "raw" in key_lower
+            or key_lower in {
+                "hidden_context",
+                "external_context",
+                "context_text",
+                "raw_context",
+                "episode_plan_completed_state",
+                "planned_state",
+                "turn_contract",
+                "planned_turn_contracts",
+            }
         ):
             output[key_str] = "[hidden]"
             continue
         if key_lower in {"events", "event_ids", "super_chats", "comments"} and isinstance(raw, list):
             output[key_str] = {"count": len(raw)}
             continue
-        if key_lower == "decision" and isinstance(raw, dict):
+        if key_lower in {"opening_decision", "last_decision", "decision"} and isinstance(raw, dict):
             output[key_str] = {
                 "action": raw.get("action"),
                 "reason": raw.get("reason"),
@@ -121,6 +158,117 @@ def sanitize_interaction(interaction: dict | None) -> dict | None:
             sanitized[key] = sanitize_public_text(sanitized.get(key))
     sanitized["metadata"] = sanitize_interaction_metadata(sanitized.get("metadata") or {})
     return sanitized
+
+
+def sanitize_director_state(director: dict | None) -> dict | None:
+    if not isinstance(director, dict):
+        return None
+    output = {
+        key: director.get(key)
+        for key in _DIRECTOR_STATE_PUBLIC_KEYS
+        if key in director
+    }
+    if isinstance(director.get("metadata"), dict):
+        output["metadata"] = sanitize_interaction_metadata(director.get("metadata") or {})
+    else:
+        output["metadata"] = {}
+    return output
+
+
+def sanitize_runtime_status(status: Any) -> Any:
+    if not isinstance(status, dict):
+        return status
+    output = {
+        key: status.get(key)
+        for key in _RUNTIME_STATUS_PUBLIC_KEYS
+        if key in status
+    }
+    if isinstance(status.get("active_interaction"), dict):
+        output["active_interaction"] = sanitize_interaction(status.get("active_interaction"))
+    if isinstance(status.get("director"), dict):
+        output["director"] = sanitize_director_state(status.get("director"))
+    return output
+
+
+def _event_count_from_result(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    for candidate in (
+        value.get("event_ids"),
+        (value.get("summary") or {}).get("event_ids") if isinstance(value.get("summary"), dict) else None,
+        (value.get("interaction") or {}).get("event_ids") if isinstance(value.get("interaction"), dict) else None,
+        ((value.get("result") or {}).get("summary") or {}).get("event_ids")
+        if isinstance(value.get("result"), dict) and isinstance((value.get("result") or {}).get("summary"), dict)
+        else None,
+        ((value.get("result") or {}).get("interaction") or {}).get("event_ids")
+        if isinstance(value.get("result"), dict) and isinstance((value.get("result") or {}).get("interaction"), dict)
+        else None,
+    ):
+        if isinstance(candidate, list):
+            return len(candidate)
+    return 0
+
+
+def sanitize_closing_result_summary(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key in (
+        "status",
+        "reason",
+        "super_chat_count",
+        "candidate_super_chat_count",
+        "marked",
+        "initial_pending_count",
+        "classified_count",
+        "failed_count",
+        "fallback_count",
+        "batch_count",
+    ):
+        if key in result:
+            output[key] = result.get(key)
+    output["event_count"] = _event_count_from_result(result)
+    return output
+
+
+def sanitize_phase_pipeline_response(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key in ("phase", "status", "session_id", "reason", "injected_at"):
+        if key in payload:
+            output[key] = payload.get(key)
+    if "runtime_status" in payload:
+        output["runtime_status"] = sanitize_runtime_status(payload.get("runtime_status"))
+    if isinstance(payload.get("director"), dict):
+        output["director"] = sanitize_director_state(payload.get("director"))
+    if isinstance(payload.get("interaction"), dict):
+        output["interaction"] = sanitize_interaction(payload.get("interaction"))
+    if isinstance(payload.get("closing"), dict):
+        closing = payload["closing"]
+        summary = sanitize_closing_result_summary(closing)
+        output["closing"] = {
+            "status": str(summary.get("status") or ""),
+            "reason": str(summary.get("reason") or ""),
+            "super_chat_count": int(summary.get("super_chat_count") or 0),
+            "candidate_super_chat_count": int(summary.get("candidate_super_chat_count") or 0),
+            "marked": int(summary.get("marked") or 0),
+            "event_count": int(summary.get("event_count") or 0),
+        }
+    if isinstance(payload.get("finalized"), dict):
+        finalized = payload["finalized"]
+        output["finalized"] = {
+            "session_id": finalized.get("session_id"),
+            "status": finalized.get("status"),
+            "runtime_status": sanitize_runtime_status(finalized.get("runtime_status")),
+            "closing_super_chat_thanks": sanitize_closing_result_summary(
+                finalized.get("closing_super_chat_thanks")
+            ),
+            "closing_safety_resolution": sanitize_closing_result_summary(
+                finalized.get("closing_safety_resolution")
+            ),
+        }
+    return output
 
 
 def sanitize_topic_pack_usage_status(status: dict[str, Any]) -> dict[str, Any]:

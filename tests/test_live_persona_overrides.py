@@ -13,7 +13,7 @@ class _PromptManager:
             "youtube_live_persona_override_block": (
                 "<live_character_prompt>\n{system_prompt}\n</live_character_prompt>\n"
                 "\n"
-                "直播約束：\n- 除非正在回應留言或 Super Chat，不要把問題丟回觀眾。"
+                "直播約束：\n- 請和其他角色互相接話、補充、反駁或提出下一個切入點。"
             ),
             "group_participants_block": (
                 "group={group_name}; current={current_character_name}\n"
@@ -83,6 +83,8 @@ def test_youtube_live_persona_template_does_not_embed_reply_rules_block():
     assert "{reply_rules_block}" not in block["template"]
     assert "{reply_rules_block}" not in block["placeholders"]
     assert "<live_reply_rules>" not in block["template"]
+    assert "不要把問題丟回觀眾" not in block["template"]
+    assert "請和其他角色互相接話、補充、反駁或提出下一個切入點" in block["template"]
 
 
 def test_live_persona_prompt_omits_runtime_scope_and_opening_execution_rules():
@@ -153,6 +155,11 @@ def test_group_participant_block_uses_live_addressing_rules(monkeypatch):
     participants = apply_live_persona_to_participants(list(chars.values()), ctx)
     block = build_group_participants_block(ctx, _CharacterManager({c["character_id"]: c for c in participants}), "coco")
 
+    coco = next(c for c in participants if c["character_id"] == "coco")
+    assert coco["character_summary"] == "原本可可摘要"
+    assert "routing_profile" not in coco
+    assert "今天的直播主持可可" not in json.dumps(participants, ensure_ascii=False)
+    assert "每次接話都要自然接住前一位角色" not in json.dumps(participants, ensure_ascii=False)
     assert "白蓮大人" in block
     assert "直播稱呼" in block
     assert "固定自稱：本小姐" in block

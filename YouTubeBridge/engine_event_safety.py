@@ -49,15 +49,6 @@ class EventSafetyManagerMixin:
 
         async def _run() -> None:
             try:
-                active = self.storage.get_active_interaction(runtime.session_id)
-                if active:
-                    pending = self.storage.list_events_pending_safety(runtime.session_id, limit=limit)
-                    has_super_chat = any(
-                        str(event.get("priority_class") or "") == "super_chat"
-                        for event in pending
-                    )
-                    if not has_super_chat:
-                        return
                 await self.classify_pending_events_serialized(runtime.session_id, limit=limit)
             except asyncio.CancelledError:
                 raise
@@ -81,10 +72,7 @@ class EventSafetyManagerMixin:
         request_events = [
             {
                 "event_id": int(event["id"]),
-                "priority_class": event.get("priority_class", "normal"),
-                "message_type": event.get("message_type", ""),
                 "author_display_name": event.get("author_display_name", ""),
-                "amount_display_string": event.get("amount_display_string", ""),
                 "message_text": event.get("message_text", ""),
             }
             for event in events
@@ -169,6 +157,9 @@ class EventSafetyManagerMixin:
                 )
                 if display_event:
                     await self._broadcast(session_id, {"type": "youtube_live_event", "event": display_event})
+                    runtime = self._runtimes.get(session_id)
+                    if runtime and runtime.audience_preprocess_wake:
+                        runtime.audience_preprocess_wake.set()
         return {
             "session_id": session_id,
             "classified_count": len(updated_events) - failed_count,
@@ -200,9 +191,11 @@ class EventSafetyManagerMixin:
                 confidence = max(0.0, min(float(item.get("confidence", 0) or 0), 1.0))
             except (TypeError, ValueError):
                 confidence = 0.0
-            if not safe_text:
+            if not safe_text and label == "clean":
                 label = "unclassified" if label == "clean" else label
                 safe_text = "安全檢查未完成，暫不顯示原始留言。"
+            if label != "clean" and not safe_summary:
+                safe_summary = "可疑留言已忽略。"
             out[event_id] = {
                 "status": "completed" if label != "unclassified" else "failed",
                 "label": label,

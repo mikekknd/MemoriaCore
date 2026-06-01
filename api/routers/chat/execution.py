@@ -6,7 +6,7 @@ import base64
 import contextlib
 import json
 import queue as sync_queue
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from api.dependencies import get_router, get_storage, get_tts_client, require_db_writes_enabled
 from api.models.requests import ChatSyncRequest
@@ -22,6 +22,8 @@ class PreparedChatExecution:
     current_user: dict
     external_context: dict | None
     external_context_summary: dict
+    transient_context: dict | None
+    transient_context_summary: dict
     session: object
     runtime_session: object | None
     session_id: str
@@ -34,13 +36,34 @@ class PreparedChatExecution:
     include_speech: bool
     session_ctx: dict
     extra_session_ctx: dict | None
+    history_messages: list[dict] = field(default_factory=list)
+
+
+def _load_external_history_messages(session, external_context: dict | None) -> list[dict]:
+    if not isinstance(external_context, dict):
+        return []
+    if str(external_context.get("source") or "").strip() not in {"youtube_live", "youtube_live_director"}:
+        return []
+    history_session_id = str(external_context.get("conversation_history_session_id") or "").strip()
+    if not history_session_id or history_session_id == str(getattr(session, "session_id", "") or ""):
+        return []
+    storage = get_storage()
+    source_info = storage.get_session_info(history_session_id)
+    if not source_info:
+        return []
+    for key in ("user_id", "channel", "channel_uid", "channel_class", "persona_face"):
+        if str(source_info.get(key) or "") != str(getattr(session, key, "") or ""):
+            return []
+    return storage.load_conversation_messages(history_session_id)
 
 
 async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> PreparedChatExecution:
     from api.routers import chat_rest
 
     require_db_writes_enabled()
+    chat_rest._reject_mutually_exclusive_contexts(body)
     external_context, external_context_summary = chat_rest._resolve_external_context_payload(body)
+    transient_context, transient_context_summary = chat_rest._resolve_transient_context_payload(body)
     session = await chat_rest._resolve_session(
         body.session_id,
         current_user,
@@ -67,16 +90,30 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
     orchestration_fn = chat_rest._select_orchestration(user_prefs)
     include_speech = body.include_speech and get_tts_client() is not None
 
-    session_ctx = _build_session_ctx(session, current_user, external_context)
+    session_ctx = _build_session_ctx(
+        session,
+        current_user,
+        external_context,
+        transient_context,
+        body.tool_routing_policy,
+    )
     if memory_write_policy == "transient":
         session_ctx["memory_write_policy"] = "transient"
-    extra_session_ctx = _build_extra_session_ctx(external_context, memory_write_policy)
+    extra_session_ctx = _build_extra_session_ctx(
+        external_context,
+        memory_write_policy,
+        transient_context,
+        body.tool_routing_policy,
+    )
+    history_messages = _load_external_history_messages(session, external_context)
 
     return PreparedChatExecution(
         body=body,
         current_user=current_user,
         external_context=external_context,
         external_context_summary=external_context_summary,
+        transient_context=transient_context,
+        transient_context_summary=transient_context_summary,
         session=session,
         runtime_session=runtime_session,
         session_id=sid,
@@ -89,6 +126,7 @@ async def prepare_chat_execution(body: ChatSyncRequest, current_user: dict) -> P
         include_speech=include_speech,
         session_ctx=session_ctx,
         extra_session_ctx=extra_session_ctx,
+        history_messages=history_messages,
     )
 
 
@@ -110,6 +148,19 @@ async def persist_single_turn_result(
     result,
 ) -> dict:
     from api.routers import chat_rest
+
+    if getattr(result, "generation_discarded", False):
+        from core.system_logger import SystemLogger
+        SystemLogger.log_error(
+            "ChatExecution",
+            "structured output retry failed; discarded assistant turn without writing context.",
+            details={
+                "session_id": prepared.session_id,
+                "discard_reason": getattr(result, "discard_reason", ""),
+                "retrieval_context": getattr(result, "retrieval_context", {}),
+            },
+        )
+        raise RuntimeError("structured generation discarded after invalid retry")
 
     reply_text, new_entities, retrieval_ctx, topic_shifted, pipeline_data, \
         inner_thought, status_metrics, tone, speech, thinking_speech, cited_uids, \
@@ -165,7 +216,13 @@ async def iter_chat_sse_events(prepared: PreparedChatExecution):
         yield event
 
 
-def _build_session_ctx(session, current_user: dict, external_context: dict | None) -> dict:
+def _build_session_ctx(
+    session,
+    current_user: dict,
+    external_context: dict | None,
+    transient_context: dict | None = None,
+    tool_routing_policy: str = "auto",
+) -> dict:
     from api.routers import chat_rest
 
     session_ctx = {
@@ -180,18 +237,30 @@ def _build_session_ctx(session, current_user: dict, external_context: dict | Non
         "session_mode": session.session_mode,
         "group_name": session.group_name,
         "expose_llm_trace": chat_rest._can_expose_llm_trace(current_user),
+        "tool_routing_policy": tool_routing_policy,
     }
     if external_context:
         session_ctx["external_chat_context"] = external_context
+    if transient_context:
+        session_ctx["transient_runtime_context"] = transient_context
     return session_ctx
 
 
-def _build_extra_session_ctx(external_context: dict | None, memory_write_policy: str) -> dict | None:
+def _build_extra_session_ctx(
+    external_context: dict | None,
+    memory_write_policy: str,
+    transient_context: dict | None = None,
+    tool_routing_policy: str = "auto",
+) -> dict | None:
     extra_session_ctx = {}
     if external_context:
         extra_session_ctx["external_chat_context"] = external_context
+    if transient_context:
+        extra_session_ctx["transient_runtime_context"] = transient_context
     if memory_write_policy == "transient":
         extra_session_ctx["memory_write_policy"] = "transient"
+    if tool_routing_policy != "auto":
+        extra_session_ctx["tool_routing_policy"] = tool_routing_policy
     return extra_session_ctx or None
 
 
@@ -211,6 +280,7 @@ async def _execute_group_chat_turns(prepared: PreparedChatExecution) -> ChatSync
             prepared.runtime_session,
             prepared.external_context,
         ),
+        history_messages=prepared.history_messages,
     )
     if not turns:
         return ChatSyncResponseDTO(
@@ -264,7 +334,7 @@ async def _execute_single_chat_turn(
     result = await asyncio.to_thread(
         prepared.orchestration_fn,
         chat_rest._messages_for_orchestration(
-            prepared.runtime_session.messages,
+            list(prepared.history_messages or []) + list(prepared.runtime_session.messages),
             prepared.body,
             prepared.external_context,
         ),
@@ -329,6 +399,7 @@ async def _iter_group_sse_events(prepared: PreparedChatExecution):
             **turn,
         })
 
+    cancel_event = asyncio.Event()
     group_task = asyncio.create_task(chat_rest.run_group_chat_loop(
         session=prepared.runtime_session,
         user_prompt=prepared.orchestration_prompt,
@@ -344,6 +415,7 @@ async def _iter_group_sse_events(prepared: PreparedChatExecution):
             prepared.runtime_session,
             prepared.external_context,
         ),
+        cancel_event=cancel_event,
     ))
 
     try:
@@ -366,6 +438,7 @@ async def _iter_group_sse_events(prepared: PreparedChatExecution):
         async for event in _iter_group_tts_events(prepared, turns):
             yield event
     finally:
+        cancel_event.set()
         if not group_task.done():
             group_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

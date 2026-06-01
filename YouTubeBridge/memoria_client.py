@@ -73,6 +73,26 @@ class MemoriaClient:
         return headers
 
     @staticmethod
+    def _raise_generation_interrupted_if_cancelled(
+        exc: Exception,
+        *,
+        cancel_event: threading.Event | None,
+        should_cancel=None,
+    ) -> None:
+        cancelled = bool(cancel_event and cancel_event.is_set())
+        if not cancelled and should_cancel:
+            try:
+                cancelled = bool(should_cancel())
+            except Exception:
+                cancelled = False
+        if (
+            cancelled
+            and isinstance(exc, RuntimeError)
+            and str(exc) == "'NoneType' object has no attribute 'read'"
+        ):
+            raise GenerationInterrupted("generation interrupted") from exc
+
+    @staticmethod
     def _live_scope_payload(external_context: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(external_context, dict):
             return {}
@@ -239,7 +259,19 @@ class MemoriaClient:
                 watcher.start()
             try:
                 first_result_logged = False
-                for raw_line in response.iter_lines(decode_unicode=True):
+                line_iter = iter(response.iter_lines(decode_unicode=True))
+                while True:
+                    try:
+                        raw_line = next(line_iter)
+                    except StopIteration:
+                        break
+                    except Exception as exc:
+                        self._raise_generation_interrupted_if_cancelled(
+                            exc,
+                            cancel_event=cancel_event,
+                            should_cancel=should_cancel,
+                        )
+                        raise
                     if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
                         response.close()
                         raise GenerationInterrupted("generation interrupted")
@@ -262,6 +294,9 @@ class MemoriaClient:
                         raise RuntimeError(str(event.get("message") or "MemoriaCore stream chat failed"))
                     if event.get("type") == "result":
                         last_result = event
+                        if (cancel_event and cancel_event.is_set()) or (should_cancel and should_cancel()):
+                            response.close()
+                            raise GenerationInterrupted("generation interrupted")
                         if trace_director and not first_result_logged:
                             first_result_logged = True
                             _director_timing_log(
@@ -394,6 +429,34 @@ class MemoriaClient:
         )
         if response.status_code >= 400:
             raise RuntimeError(f"MemoriaCore system event failed: HTTP {response.status_code} {response.text[:500]}")
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    def add_assistant_event(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        character_id: str | None = None,
+        character_name: str | None = None,
+        debug_info: dict[str, Any] | None = None,
+        extracted_entities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_auth()
+        response = self.session.post(
+            f"{self.base_url}/session/{session_id}/assistant-event",
+            json={
+                "content": content,
+                "character_id": character_id,
+                "character_name": character_name,
+                "debug_info": debug_info or {},
+                "extracted_entities": extracted_entities,
+            },
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"MemoriaCore assistant event failed: HTTP {response.status_code} {response.text[:500]}")
         data = response.json()
         return data if isinstance(data, dict) else {}
 

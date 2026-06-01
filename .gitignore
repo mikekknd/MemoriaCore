@@ -25,6 +25,7 @@ AGENTS.md
 
 # Databases & App State
 runtime/
+debug/
 *.db
 *.sqlite3
 chat_history.json

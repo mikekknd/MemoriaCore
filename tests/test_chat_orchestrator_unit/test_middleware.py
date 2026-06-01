@@ -150,6 +150,47 @@ class TestRunMiddleware:
 
         assert ctx.tool_results[0]["tool_name"] == "tavily_search"
 
+    def test_runtime_context_excludes_final_chat_only_transient_context(self):
+        """工具 runtime context 不應收到 final chat only 的 transient_runtime_context。"""
+        import json
+
+        router_result = RouterResult(
+            needs_tools=True,
+            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "tavily_search", "arguments": {"query": "test"}}}],
+            thinking_speech="",
+        )
+        captured_contexts = []
+
+        def capture_execute(tc, runtime_context=None):
+            captured_contexts.append(runtime_context)
+            return "{}"
+
+        runtime_context = {
+            "session_id": "sid-tool",
+            "user_id": "user-tool",
+            "memory_write_policy": "transient",
+            "visual_prompt": "角色外觀",
+            "external_chat_context": {"source": "unit_test"},
+            "transient_runtime_context": {
+                "context_text": "scene text must stay out of tool runtime",
+            },
+        }
+
+        with patch("tools.tavily.execute_tool_call", side_effect=capture_execute):
+            run_middleware(router_result, runtime_context=runtime_context)
+
+        assert len(captured_contexts) == 1
+        captured = captured_contexts[0]
+        serialized = json.dumps(captured, ensure_ascii=False)
+        assert "transient_runtime_context" not in captured
+        assert "scene text must stay out of tool runtime" not in serialized
+        assert "context_text" not in serialized
+        assert captured["session_id"] == "sid-tool"
+        assert captured["user_id"] == "user-tool"
+        assert captured["memory_write_policy"] == "transient"
+        assert captured["external_chat_context"] == {"source": "unit_test"}
+        assert captured["visual_prompt"] == "角色外觀"
+
 
 class TestToolContextOutput:
     def test_thinking_speech_sent_preserved(self):

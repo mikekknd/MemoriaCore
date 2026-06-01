@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 from core.chat_orchestrator.dataclasses import RouterResult, ToolContext
+from core.chat_orchestrator.generation_context import build_tool_runtime_context
 from core.xml_prompt import format_tool_results_xml
 
 
@@ -58,10 +59,15 @@ def run_middleware(
 
     # 3) ThreadPoolExecutor 並行執行所有工具
     results: list[dict] = []
+    tool_runtime_context = (
+        build_tool_runtime_context(runtime_context)
+        if runtime_context is not None
+        else None
+    )
     with ThreadPoolExecutor(max_workers=len(tool_calls) or 1) as executor:
         future_to_tc = {
-            executor.submit(execute_tool_call, tc, runtime_context)
-            if runtime_context is not None
+            executor.submit(execute_tool_call, tc, tool_runtime_context)
+            if tool_runtime_context is not None
             else executor.submit(execute_tool_call, tc): tc
             for tc in tool_calls
         }

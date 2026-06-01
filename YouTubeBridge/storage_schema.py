@@ -27,6 +27,13 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS studio_settings (
+            section TEXT PRIMARY KEY,
+            payload_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS live_episode_plans (
             plan_id TEXT PRIMARY KEY,
             schema_version TEXT NOT NULL,
@@ -93,6 +100,19 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             tts_enabled INTEGER NOT NULL DEFAULT 0,
             tts_provider TEXT DEFAULT 'gpt_sovits',
             presentation_ack_timeout_seconds INTEGER NOT NULL DEFAULT 120,
+            prefetch_wait_timeout_seconds REAL NOT NULL DEFAULT 10.0,
+            post_plan_free_talk_enabled INTEGER NOT NULL DEFAULT 0,
+            post_plan_free_talk_minutes INTEGER NOT NULL DEFAULT 20,
+            post_plan_free_talk_tick_interval_seconds INTEGER NOT NULL DEFAULT 30,
+            post_plan_free_talk_idle_turns_min INTEGER NOT NULL DEFAULT 6,
+            post_plan_free_talk_idle_turns_max INTEGER NOT NULL DEFAULT 6,
+            post_plan_free_talk_audience_turns_min INTEGER NOT NULL DEFAULT 3,
+            post_plan_free_talk_audience_turns_max INTEGER NOT NULL DEFAULT 3,
+            post_plan_free_talk_topic_pack_ids_json TEXT DEFAULT '[]',
+            free_talk_closing_target_batches INTEGER NOT NULL DEFAULT 10,
+            free_talk_closing_min_batch_size INTEGER NOT NULL DEFAULT 5,
+            free_talk_closing_max_batch_size INTEGER NOT NULL DEFAULT 30,
+            free_talk_closing_time_limit_seconds INTEGER NOT NULL DEFAULT 300,
             started_at TEXT DEFAULT '',
             finalized_at TEXT DEFAULT '',
             summary_status TEXT NOT NULL DEFAULT 'pending',
@@ -217,6 +237,9 @@ def init_bridge_db(conn: sqlite3.Connection) -> None:
             addressing_json TEXT DEFAULT '{}',
             opening_intro TEXT DEFAULT '',
             reply_rules TEXT DEFAULT '',
+            avatar_url TEXT DEFAULT '',
+            chat_background_color TEXT DEFAULT '',
+            chat_accent_color TEXT DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -438,6 +461,19 @@ def ensure_live_session_columns(conn: sqlite3.Connection) -> None:
         "tts_enabled": "tts_enabled INTEGER NOT NULL DEFAULT 0",
         "tts_provider": "tts_provider TEXT DEFAULT 'gpt_sovits'",
         "presentation_ack_timeout_seconds": "presentation_ack_timeout_seconds INTEGER NOT NULL DEFAULT 120",
+        "prefetch_wait_timeout_seconds": "prefetch_wait_timeout_seconds REAL NOT NULL DEFAULT 10.0",
+        "post_plan_free_talk_enabled": "post_plan_free_talk_enabled INTEGER NOT NULL DEFAULT 0",
+        "post_plan_free_talk_minutes": "post_plan_free_talk_minutes INTEGER NOT NULL DEFAULT 20",
+        "post_plan_free_talk_tick_interval_seconds": "post_plan_free_talk_tick_interval_seconds INTEGER NOT NULL DEFAULT 30",
+        "post_plan_free_talk_idle_turns_min": "post_plan_free_talk_idle_turns_min INTEGER NOT NULL DEFAULT 6",
+        "post_plan_free_talk_idle_turns_max": "post_plan_free_talk_idle_turns_max INTEGER NOT NULL DEFAULT 6",
+        "post_plan_free_talk_audience_turns_min": "post_plan_free_talk_audience_turns_min INTEGER NOT NULL DEFAULT 3",
+        "post_plan_free_talk_audience_turns_max": "post_plan_free_talk_audience_turns_max INTEGER NOT NULL DEFAULT 3",
+        "post_plan_free_talk_topic_pack_ids_json": "post_plan_free_talk_topic_pack_ids_json TEXT DEFAULT '[]'",
+        "free_talk_closing_target_batches": "free_talk_closing_target_batches INTEGER NOT NULL DEFAULT 10",
+        "free_talk_closing_min_batch_size": "free_talk_closing_min_batch_size INTEGER NOT NULL DEFAULT 5",
+        "free_talk_closing_max_batch_size": "free_talk_closing_max_batch_size INTEGER NOT NULL DEFAULT 30",
+        "free_talk_closing_time_limit_seconds": "free_talk_closing_time_limit_seconds INTEGER NOT NULL DEFAULT 300",
         "started_at": "started_at TEXT DEFAULT ''",
         "finalized_at": "finalized_at TEXT DEFAULT ''",
         "summary_status": "summary_status TEXT NOT NULL DEFAULT 'pending'",
@@ -480,6 +516,9 @@ def ensure_live_persona_overlay_columns(conn: sqlite3.Connection) -> None:
         "addressing_json": "addressing_json TEXT DEFAULT '{}'",
         "opening_intro": "opening_intro TEXT DEFAULT ''",
         "reply_rules": "reply_rules TEXT DEFAULT ''",
+        "avatar_url": "avatar_url TEXT DEFAULT ''",
+        "chat_background_color": "chat_background_color TEXT DEFAULT ''",
+        "chat_accent_color": "chat_accent_color TEXT DEFAULT ''",
         "created_at": "created_at TEXT DEFAULT ''",
         "updated_at": "updated_at TEXT DEFAULT ''",
     }

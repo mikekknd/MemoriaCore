@@ -140,21 +140,8 @@ def apply_live_persona_to_participants(
     participants: list[dict[str, Any]],
     session_ctx: dict | None,
 ) -> list[dict[str, Any]]:
-    """讓 group router 也能看到直播 overlay 的角色摘要。"""
-    ctx = session_ctx or {}
+    """保留群組 router 的角色名冊，但不把直播生成 prompt 混入路由資料。"""
     output: list[dict[str, Any]] = []
     for character in participants:
-        item = dict(character)
-        cid = str(item.get("character_id") or item.get("id") or "").strip()
-        override = live_persona_override_for_character(ctx | {"character_id": cid}, cid)
-        if override:
-            summary_parts = [
-                _compact_text(override.get("system_prompt"), limit=180),
-                _compact_text(override.get("opening_intro"), limit=120),
-                _compact_text(override.get("reply_rules"), limit=120),
-            ]
-            summary = "；".join(part for part in summary_parts if part)
-            if summary:
-                item["character_summary"] = summary
-        output.append(item)
+        output.append(dict(character))
     return output

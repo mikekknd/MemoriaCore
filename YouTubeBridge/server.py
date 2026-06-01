@@ -33,6 +33,8 @@ from models import (
     E2ECheckpointRequest, EpisodePlanBindRequest, EpisodePlanEvidenceImportRequest, EpisodePlanImportRequest,
     FactCardImportRequest, InterruptRequest,
     LiveSessionConfig, MemoriaAuthConfig, ReplyRecentRequest,
+    StudioAvatarUploadRequest,
+    StudioDisplaySettings, StudioLiveDefaults, StudioSettingsPatch, StudioTestSettings,
     YouTubeLiveGlobalSuffixRequest,
     ResearchRequest, SummarizeRequest, TestChatGenerateRequest, TopicPackCreateRequest,
     TopicPackEntryCreateRequest, TopicPackEntryUpdateRequest,
@@ -59,6 +61,7 @@ from server_routes import (
     register_routes,
     research as _research_routes,
     sessions as _sessions_routes,
+    studio_settings as _studio_settings_routes,
     summaries as _summaries_routes,
     testing as _testing_routes,
     topic_packs as _topic_packs_routes,
@@ -74,6 +77,9 @@ STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 UI_ASSETS_ROOT = Path(STATIC_ROOT) / "ui"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 E2E_CHECKPOINT_PATH = PROJECT_ROOT / "runtime" / "youtube_bridge_e2e_checkpoint.json"
+STUDIO_AVATAR_ROOT = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "StudioAvatars"
+FREE_TALK_TOPIC_ROOT = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "freeTalkTopics"
+EPISODE_PLAN_ROOT = PROJECT_ROOT / "runtime" / "YouTubeBridge" / "EpisodePlans"
 logger = logging.getLogger("youtube_bridge")
 
 
@@ -99,6 +105,9 @@ app_state = BridgeAppState(
     chat_preview_cache=chat_preview_cache,
     static_root=Path(STATIC_ROOT),
     ui_assets_root=UI_ASSETS_ROOT,
+    studio_avatar_root=STUDIO_AVATAR_ROOT,
+    free_talk_topic_root=FREE_TALK_TOPIC_ROOT,
+    episode_plan_root=EPISODE_PLAN_ROOT,
     e2e_checkpoint_path=E2E_CHECKPOINT_PATH,
     apply_memoria_config=_apply_memoria_config,
 )
@@ -229,6 +238,7 @@ _ROUTE_MODULES_FOR_SYNC = (
     _topic_packs_routes,
     _fact_cards_routes,
     _research_routes,
+    _studio_settings_routes,
     _summaries_routes,
     _memoria_routes,
 )
@@ -239,9 +249,13 @@ def _sync_route_state() -> None:
     app_state.manager = manager
     app_state.summary_manager = summary_manager
     app_state.chat_preview_cache = chat_preview_cache
+    app_state.studio_avatar_root = STUDIO_AVATAR_ROOT
+    app_state.free_talk_topic_root = FREE_TALK_TOPIC_ROOT
+    app_state.episode_plan_root = EPISODE_PLAN_ROOT
     for route_module in _ROUTE_MODULES_FOR_SYNC:
         route_module.configure(app_state)
     _install_auto_finalize_callback()
+    _install_phase_pipeline_callbacks()
 
 
 async def _auto_finalize_archive_session(session_id: str, *, finalized_by: str, finalized: dict[str, Any]) -> dict[str, Any]:
@@ -280,7 +294,74 @@ def _install_auto_finalize_callback() -> None:
             pass
 
 
+async def _phase_summary_callback(session_id: str, *, summary_phase: str, reason: str) -> dict[str, Any]:
+    summarize_phase = getattr(summary_manager, "summarize_session_phase", None)
+    if callable(summarize_phase):
+        result = await asyncio.to_thread(
+            summarize_phase,
+            session_id,
+            summary_phase=summary_phase,
+            force=True,
+            min_events=1,
+            max_events=1000,
+            chunk_size=120,
+            include_memoria_session=False,
+            safe_memory_text=True,
+        )
+    else:
+        result = await asyncio.to_thread(
+            summary_manager.summarize_session,
+            session_id,
+            force=True,
+            min_events=1,
+            max_events=1000,
+            chunk_size=120,
+            include_memoria_session=False,
+            safe_memory_text=True,
+        )
+        summary = result.get("summary") if isinstance(result, dict) else None
+        if isinstance(summary, dict) and summary.get("id"):
+            updated = storage.update_summary_metadata(
+                int(summary["id"]),
+                metadata={
+                    **(summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}),
+                    "summary_phase": summary_phase,
+                    "phase_summary_reason": str(reason or "")[:120],
+                },
+            )
+            result = {**result, "summary": updated or summary}
+
+    summary = result.get("summary") if isinstance(result, dict) else None
+    if not isinstance(summary, dict):
+        return {
+            "summary": summary,
+            "memory_write": {"status": "skipped", "reason": "summary_not_created"},
+        }
+    return await _sessions_routes._write_summary_shared_memory_without_cleanup(session_id, summary)
+
+
+async def _phase_cleanup_callback(session_id: str) -> dict[str, Any]:
+    deleted = False
+    session = storage.get_session(session_id)
+    if session and session.get("auto_delete_after_processed"):
+        deleted = storage.delete_session(session_id)
+        runtimes = getattr(manager, "_runtimes", None)
+        if isinstance(runtimes, dict):
+            runtimes.pop(session_id, None)
+        chat_preview_cache.pop(session_id, None)
+    return {"deleted": deleted}
+
+
+def _install_phase_pipeline_callbacks() -> None:
+    try:
+        manager.phase_summary_callback = _phase_summary_callback
+        manager.phase_cleanup_callback = _phase_cleanup_callback
+    except Exception:
+        pass
+
+
 _install_auto_finalize_callback()
+_install_phase_pipeline_callbacks()
 
 
 def _route_handler(func):
@@ -296,8 +377,7 @@ health = _route_handler(_ui_routes.health)
 ui_config = _route_handler(_ui_routes.ui_config)
 bridge_ui_asset = _route_handler(_ui_routes.bridge_ui_asset)
 bridge_ui = _route_handler(_ui_routes.bridge_ui)
-bridge_live = _route_handler(_ui_routes.bridge_live)
-bridge_live_chat = _route_handler(_ui_routes.bridge_live_chat)
+bridge_studio = _route_handler(_ui_routes.bridge_studio)
 
 list_connectors = _route_handler(_connectors_routes.list_connectors)
 upsert_connector = _route_handler(_connectors_routes.upsert_connector)
@@ -333,6 +413,7 @@ list_episode_plans = _route_handler(_episode_plans_routes.list_episode_plans)
 sync_local_episode_plans = _route_handler(_episode_plans_routes.sync_local_episode_plans)
 import_episode_plan = _route_handler(_episode_plans_routes.import_episode_plan)
 get_episode_plan = _route_handler(_episode_plans_routes.get_episode_plan)
+get_episode_plan_characters = _route_handler(_episode_plans_routes.get_episode_plan_characters)
 delete_episode_plan = _route_handler(_episode_plans_routes.delete_episode_plan)
 bind_episode_plan = _route_handler(_episode_plans_routes.bind_episode_plan)
 unbind_episode_plan = _route_handler(_episode_plans_routes.unbind_episode_plan)
@@ -387,6 +468,12 @@ memoria_characters = _route_handler(_memoria_routes.memoria_characters)
 memoria_sessions = _route_handler(_memoria_routes.memoria_sessions)
 get_youtube_live_global_suffix = _route_handler(_memoria_routes.get_youtube_live_global_suffix)
 update_youtube_live_global_suffix = _route_handler(_memoria_routes.update_youtube_live_global_suffix)
+
+get_studio_settings = _route_handler(_studio_settings_routes.get_studio_settings)
+update_studio_settings = _route_handler(_studio_settings_routes.update_studio_settings)
+list_studio_avatar_assets = _route_handler(_studio_settings_routes.list_studio_avatar_assets)
+upload_studio_avatar_asset = _route_handler(_studio_settings_routes.upload_studio_avatar_asset)
+get_studio_avatar_asset = _route_handler(_studio_settings_routes.get_studio_avatar_asset)
 
 
 @app.exception_handler(ValueError)

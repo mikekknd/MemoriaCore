@@ -9,6 +9,7 @@ from .interactions import InteractionRepositoryMixin
 from .live_persona import LivePersonaRepositoryMixin
 from .presentation import PresentationRepositoryMixin
 from .sessions import SessionRepositoryMixin
+from .studio_settings import StudioSettingsRepositoryMixin
 from .summaries import SummaryRepositoryMixin
 from .topic_packs import TopicPackRepositoryMixin
 
@@ -21,6 +22,7 @@ __all__ = [
     "LivePersonaRepositoryMixin",
     "PresentationRepositoryMixin",
     "SessionRepositoryMixin",
+    "StudioSettingsRepositoryMixin",
     "SummaryRepositoryMixin",
     "TopicPackRepositoryMixin",
 ]

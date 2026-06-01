@@ -109,6 +109,40 @@ class SummaryRepositoryMixin:
             ).fetchone()
         return self._row_to_summary(row)
 
+    def get_session_summary_by_phase(self, session_id: str, summary_phase: str) -> dict | None:
+        summaries = self.list_session_summaries_by_phase(
+            session_id,
+            summary_phase=summary_phase,
+            limit=1,
+        )
+        return summaries[0] if summaries else None
+
+    def list_session_summaries_by_phase(
+        self,
+        session_id: str,
+        *,
+        summary_phase: str,
+        limit: int = 20,
+    ) -> list[dict]:
+        limit = max(1, min(int(limit or 20), 100))
+        phase = str(summary_phase or "").strip()
+        if not phase:
+            return []
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM youtube_live_summaries
+                WHERE session_id = ?
+                ORDER BY id DESC
+                """,
+                (session_id,),
+            ).fetchall()
+        summaries = [summary for row in rows if (summary := self._row_to_summary(row))]
+        return [
+            summary for summary in summaries
+            if (summary.get("metadata") or {}).get("summary_phase") == phase
+        ][:limit]
+
     def list_summaries(self, *, session_id: str | None = None, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit or 100), 500))
         params: list[Any] = []

@@ -6,7 +6,7 @@
 
 YouTubeBridge 是 MemoriaCore 同 repo 子專案，負責 YouTube Live Chat 讀取、live session 管理、暫存事件、SSE 推送、導播/注入流程，以及把直播留言脈絡送入 MemoriaCore 的 `external_context`。
 
-YouTubeBridge 可獨立啟動，有自己的 FastAPI API server 與由 `server.py` 提供的靜態控制台。它不直接 import MemoriaCore 的 `core/`，也不直接寫入 MemoriaCore 主 DB；需要和 MemoriaCore 溝通時使用 HTTP client。
+YouTubeBridge 可獨立啟動，有自己的 FastAPI API server 與由 `server.py` 提供的 Studio-first 靜態操作面。它不直接 import MemoriaCore 的 `core/`，也不直接寫入 MemoriaCore 主 DB；需要和 MemoriaCore 溝通時使用 HTTP client。
 
 ## 重要入口
 
@@ -17,7 +17,7 @@ YouTubeBridge 可獨立啟動，有自己的 FastAPI API server 與由 `server.p
 - `youtube_client.py`：YouTube Data API client 與訊息 normalize helper。
 - `summary_engine.py`：直播摘要與記憶寫入流程。
 
-不要為了整理資料夾而先搬動這些 facade。很多測試、啟動腳本與外部 session 仍依賴 root-level import。舊的 Streamlit 入口已移除；控制台使用 `server.py` 掛載的 `/ui/` 靜態頁。
+不要為了整理資料夾而先搬動這些 facade。很多測試、啟動腳本與外部 session 仍依賴 root-level import。舊的 Streamlit 入口已移除；主要操作面是 `server.py` 掛載的 `/studio/` Studio。`/ui/` 仍保留作為 legacy 設定/控制面，但 Presentation Player 只由 Studio 承擔。舊 live 與 live-chat browser playback adapter 已移除。
 
 ## 目前資料夾結構
 
@@ -25,13 +25,13 @@ YouTubeBridge 可獨立啟動，有自己的 FastAPI API server 與由 `server.p
 YouTubeBridge/
 ├── server_routes/             # FastAPI route 分拆
 ├── storage_repositories/      # BridgeStorage repository 分拆
-├── static/                    # 控制台與直播頁靜態資源
-│   └── ui/                    # 控制台 JS/CSS modules
+├── static/                    # Studio 與 legacy UI 靜態資源
+│   └── ui/                    # legacy 設定/控制 JS/CSS modules
 ├── tests/                     # YouTubeBridge pytest suite
 ├── bridge_engine.py           # Manager facade，目前仍保留 polling、Research Gate、external context
 ├── engine_*.py                # bridge_engine 拆出的 mixin/helper
 ├── storage.py                 # Storage facade
-└── server.py                  # FastAPI app facade，提供 API 與 /ui/ 靜態控制台
+└── server.py                  # FastAPI app facade，提供 API、/studio/ 主要操作面與 /ui/ legacy 設定/控制面
 ```
 
 ## Engine 模組地圖
@@ -105,6 +105,30 @@ Storage 支援模組：
 - 不要重新新增 Streamlit 入口；YouTubeBridge UI 目前以 `static/` + FastAPI routes 提供。
 - 目前下一個高價值但高耦合拆分候選是 Research Gate / external context，應獨立規劃與驗證。
 - `engine_topic_packs.py` 與 `storage_repositories/topic_packs.py` 仍偏大，但不要和行為修正混在同一批做大搬移。
+
+## YouTube OAuth 直播來源偵測
+
+OAuth 檔案放在 repo runtime：
+
+```text
+runtime/YouTubeBridge/oauth/
+```
+
+支援兩種檔案配置：
+
+- `client_secret.json`：Google Cloud 下載的 OAuth client 設定。
+- `token.json` 或 `youtube_oauth.json`：放 `refresh_token`，也可放 `fallback_channel_id`。
+
+最小 token 檔格式：
+
+```json
+{
+  "refresh_token": "...",
+  "fallback_channel_id": "UC..."
+}
+```
+
+`fallback_channel_id` 只在 OAuth 不可用、需要改用 API key 搜尋公開 active live 時使用；OAuth 正常走 `liveBroadcasts.list(mine=true, broadcastStatus=active)`，不需要頻道 ID。
 
 ## 測試與驗證
 

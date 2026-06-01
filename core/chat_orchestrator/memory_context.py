@@ -124,6 +124,7 @@ def _format_episodic_memories(
         raw_text = format_dialogue_for_analysis(
             block.get("raw_dialogues", []),
             force_group=force_group,
+            prefer_named_assistant=True,
         )
         lines.extend([
             f"- index: {i + 1}",

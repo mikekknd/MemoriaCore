@@ -288,6 +288,83 @@ def test_session_creation_accepts_character_id_and_rejects_unknown(monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_session_assistant_event_appends_trusted_assistant_message_and_enforces_owner(monkeypatch):
+    monkeypatch.setenv("MEMORIACORE_JWT_SECRET", "assistant-event-secret")
+    base = _tmp_dir()
+    storage = _storage(base)
+    deps.storage = storage
+    session_manager.set_storage(storage)
+    session_manager._sessions.clear()
+
+    try:
+        owner_client = TestClient(_app(), client=("127.0.0.1", 50000))
+        owner = owner_client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "owner",
+                "password": "abc123",
+                "password_confirm": "abc123",
+            },
+        )
+        assert owner.status_code == 200, owner.text
+        owner_csrf = owner.json()["csrf_token"]
+        active = asyncio.run(session_manager.create(
+            channel="youtube_live",
+            user_id="1",
+            character_id="host-a",
+            character_ids=["host-a", "analyst-b"],
+            session_mode="group",
+        ))
+
+        created = owner_client.post(
+            f"/api/v1/session/{active.session_id}/assistant-event",
+            headers={"X-CSRF-Token": owner_csrf},
+            json={
+                "content": "已播放的導播台詞。",
+                "character_id": "host-a",
+                "character_name": "主持A",
+                "debug_info": {"event_type": "youtube_live_played_commit"},
+                "extracted_entities": ["動畫新番"],
+            },
+        )
+
+        assert created.status_code == 200, created.text
+        payload = created.json()
+        assert payload["status"] == "created"
+        assert payload["session_id"] == active.session_id
+        assert isinstance(payload["message_id"], int)
+
+        messages = storage.load_conversation_messages(active.session_id)
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == "已播放的導播台詞。"
+        assert messages[-1]["character_id"] == "host-a"
+        assert messages[-1]["character_name"] == "主持A"
+        assert messages[-1]["debug_info"]["event_type"] == "youtube_live_played_commit"
+        assert (asyncio.run(session_manager.get(active.session_id))).last_entities == ["動畫新番"]
+
+        other_client = TestClient(_app(), client=("127.0.0.1", 50001))
+        other = other_client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "other",
+                "password": "abc123",
+                "password_confirm": "abc123",
+            },
+        )
+        assert other.status_code == 200, other.text
+        forbidden = other_client.post(
+            f"/api/v1/session/{active.session_id}/assistant-event",
+            headers={"X-CSRF-Token": other.json()["csrf_token"]},
+            json={"content": "不應寫入。"},
+        )
+        assert forbidden.status_code == 403
+    finally:
+        session_manager._sessions.clear()
+        session_manager.set_storage(None)
+        deps.storage = None
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_conversation_message_persists_character_name():
     base = _tmp_dir()
     storage = _storage(base)

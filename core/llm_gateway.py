@@ -16,6 +16,27 @@ _tokenizer = None
 CHAT_JSON_MAX_TOKENS = 768
 YOUTUBE_SAFETY_JSON_MAX_TOKENS = 4096
 
+
+class StructuredOutputValidationError(RuntimeError):
+    """結構化輸出重試後仍無法解析，呼叫端應丟棄本次生成。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        task_key: str,
+        model: str,
+        retry_reason: str,
+        response_preview: str,
+        llm_call_id: str | None = None,
+    ):
+        super().__init__(message)
+        self.task_key = task_key
+        self.model = model
+        self.retry_reason = retry_reason
+        self.response_preview = response_preview
+        self.llm_call_id = llm_call_id
+
 def get_bge_m3_onnx_instance():
     global _onnx_session, _tokenizer
     if _onnx_session is None:
@@ -705,6 +726,19 @@ class LLMRouter:
             long_markdown_doc = len(stripped) > 500 and (heading_count >= 2 or bullet_count >= 8)
             return has_shell_doc or has_code_fence or long_markdown_doc
 
+        def _looks_like_truncated_or_malformed_json(text: str) -> bool:
+            stripped = (text or "").strip()
+            if not stripped:
+                return False
+            if stripped[0] in ("{", "["):
+                return True
+            schema_key_markers = (
+                '"internal_thought"',
+                '"reply"',
+                '"extracted_entities"',
+            )
+            return any(marker in stripped for marker in schema_key_markers)
+
         def _looks_like_group_speaker_leak(text: str, ctx: dict | None) -> bool:
             if not text or not ctx or ctx.get("session_mode") != "group":
                 return False
@@ -736,6 +770,9 @@ class LLMRouter:
             elif _looks_like_document_dump(response_text):
                 retry_strategy = "regenerate"
                 retry_reason = "document_dump"
+            elif _looks_like_truncated_or_malformed_json(response_text):
+                retry_strategy = "regenerate"
+                retry_reason = "truncated_or_malformed_json"
             else:
                 retry_strategy = "preserve_previous"
                 retry_reason = "format_only"
@@ -795,6 +832,33 @@ class LLMRouter:
                 max_tokens=max_tokens,
                 logit_bias=logit_bias,
             )
+            normalized_retry_json = self._normalize_json_response_text(response_text)
+            if normalized_retry_json is not None:
+                response_text = normalized_retry_json
+            else:
+                SystemLogger.log_error(
+                    f"LLMRouter/{task_key}",
+                    "結構化輸出重試後仍不是合法 JSON，丟棄本次生成。",
+                    details={
+                        "model": route["model"],
+                        "temperature": max(temperature * 0.5, 0.1),
+                        "retry_strategy": "discard",
+                        "retry_reason": "retry_still_invalid_json",
+                        "previous_retry_reason": retry_reason,
+                        "max_tokens": max_tokens,
+                        "llm_call_id": llm_call_id,
+                        "second_response_preview": response_text[:1000],
+                        "log_context": log_context or {},
+                    },
+                )
+                raise StructuredOutputValidationError(
+                    "structured output retry failed: regenerated response is still invalid JSON",
+                    task_key=task_key,
+                    model=route["model"],
+                    retry_reason="retry_still_invalid_json",
+                    response_preview=response_text[:1000],
+                    llm_call_id=llm_call_id,
+                )
 
         SystemLogger.log_llm_response(task_key, route["model"], response_text, llm_call_id=llm_call_id)
         return response_text

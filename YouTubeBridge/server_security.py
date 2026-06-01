@@ -12,13 +12,12 @@ from fastapi import HTTPException
 LOOPBACK_ONLY_PATHS = frozenset({
     "/ui/",
     "/ui",
-    "/live/",
-    "/live",
-    "/live-chat/",
-    "/live-chat",
+    "/studio/",
+    "/studio",
     "/ui-config",
 })
 UI_ASSET_PATH_RE = re.compile(r"^/ui-assets/.+$")
+STUDIO_AVATAR_PATH_RE = re.compile(r"^/studio/avatar-assets/.+$")
 SSE_PATH_RE = re.compile(r"^/sessions/[^/]+/events$")
 PRESENTATION_AUDIO_PATH_RE = re.compile(r"^/sessions/[^/]+/presentation/[^/]+/audio$")
 
@@ -36,6 +35,7 @@ def require_bridge_key(request: Any) -> None:
     if (
         path in LOOPBACK_ONLY_PATHS
         or UI_ASSET_PATH_RE.match(path)
+        or STUDIO_AVATAR_PATH_RE.match(path)
         or SSE_PATH_RE.match(path)
         or PRESENTATION_AUDIO_PATH_RE.match(path)
     ):

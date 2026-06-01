@@ -128,6 +128,209 @@ def test_connector_and_session_roundtrip():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_append_interaction_visible_message_preserves_metadata_and_dedupes():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["char-a"],
+        })
+        interaction = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director",
+            "priority": 50,
+            "status": "running",
+            "metadata": {
+                "result_message_id": 99,
+                "decision": {"action": "planned_turn"},
+            },
+        })
+
+        visible_message = {
+            "message_id": 42,
+            "role": "assistant",
+            "content": "這句已經出現在畫面上。",
+            "timestamp": "2026-05-16T09:20:19",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "source": "director",
+        }
+        storage.append_interaction_visible_message(interaction["job_id"], visible_message)
+        storage.append_interaction_visible_message(interaction["job_id"], visible_message)
+
+        metadata = storage.get_interaction(interaction["job_id"])["metadata"]
+        assert metadata["result_message_id"] == 99
+        assert metadata["decision"] == {"action": "planned_turn"}
+        assert metadata["visible_messages"] == [{
+            **visible_message,
+            "created_at": "2026-05-16T09:20:19",
+        }]
+        assert metadata["last_visible_message"]["content"] == "這句已經出現在畫面上。"
+        assert metadata["has_visible_output"] is True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_session_persists_post_plan_free_talk_fields(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Free Talk Test",
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_minutes": 25,
+        "post_plan_free_talk_tick_interval_seconds": 30,
+        "post_plan_free_talk_idle_turns_min": 6,
+        "post_plan_free_talk_idle_turns_max": 6,
+        "post_plan_free_talk_audience_turns_min": 3,
+        "post_plan_free_talk_audience_turns_max": 3,
+        "post_plan_free_talk_topic_pack_ids": ["anime-casual", "creator-life"],
+    })
+
+    assert saved["post_plan_free_talk_enabled"] is True
+    assert saved["post_plan_free_talk_minutes"] == 25
+    assert saved["post_plan_free_talk_tick_interval_seconds"] == 30
+    assert saved["post_plan_free_talk_idle_turns_min"] == 6
+    assert saved["post_plan_free_talk_idle_turns_max"] == 6
+    assert saved["post_plan_free_talk_audience_turns_min"] == 3
+    assert saved["post_plan_free_talk_audience_turns_max"] == 3
+    assert saved["post_plan_free_talk_topic_pack_ids"] == ["anime-casual", "creator-life"]
+
+
+def test_session_persists_free_talk_closing_batch_settings(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Closing",
+        "free_talk_closing_target_batches": 10,
+        "free_talk_closing_min_batch_size": 5,
+        "free_talk_closing_max_batch_size": 30,
+        "free_talk_closing_time_limit_seconds": 300,
+    })
+
+    assert saved["free_talk_closing_target_batches"] == 10
+    assert saved["free_talk_closing_min_batch_size"] == 5
+    assert saved["free_talk_closing_max_batch_size"] == 30
+    assert saved["free_talk_closing_time_limit_seconds"] == 300
+
+
+def test_session_persists_prefetch_wait_timeout_seconds(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Prefetch Timeout Test",
+        "prefetch_wait_timeout_seconds": 0.25,
+    })
+
+    assert saved["prefetch_wait_timeout_seconds"] == 0.25
+    assert storage.get_session("live-a")["prefetch_wait_timeout_seconds"] == 0.25
+
+
+def test_session_clamps_and_preserves_free_talk_closing_batch_settings(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+
+    saved = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Closing",
+        "free_talk_closing_target_batches": 0,
+        "free_talk_closing_min_batch_size": 500,
+        "free_talk_closing_max_batch_size": 2,
+        "free_talk_closing_time_limit_seconds": 5,
+    })
+    updated = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Closing Updated",
+    })
+
+    assert saved["free_talk_closing_target_batches"] == 1
+    assert saved["free_talk_closing_min_batch_size"] == 100
+    assert saved["free_talk_closing_max_batch_size"] == 100
+    assert saved["free_talk_closing_time_limit_seconds"] == 30
+    assert updated["free_talk_closing_target_batches"] == 1
+    assert updated["free_talk_closing_min_batch_size"] == 100
+    assert updated["free_talk_closing_max_batch_size"] == 100
+    assert updated["free_talk_closing_time_limit_seconds"] == 30
+
+
+def test_session_partial_update_preserves_post_plan_free_talk_fields(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Free Talk Test",
+        "post_plan_free_talk_enabled": True,
+        "post_plan_free_talk_minutes": 25,
+        "post_plan_free_talk_tick_interval_seconds": 30,
+        "post_plan_free_talk_idle_turns_min": 6,
+        "post_plan_free_talk_idle_turns_max": 6,
+        "post_plan_free_talk_audience_turns_min": 3,
+        "post_plan_free_talk_audience_turns_max": 3,
+        "post_plan_free_talk_topic_pack_ids": ["anime-casual"],
+    })
+
+    updated = storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Renamed Free Talk Test",
+    })
+    readback = storage.get_session("live-a")
+
+    assert updated["display_name"] == "Renamed Free Talk Test"
+    assert readback["post_plan_free_talk_enabled"] is True
+    assert readback["post_plan_free_talk_minutes"] == 25
+    assert readback["post_plan_free_talk_tick_interval_seconds"] == 30
+    assert readback["post_plan_free_talk_idle_turns_min"] == 6
+    assert readback["post_plan_free_talk_idle_turns_max"] == 6
+    assert readback["post_plan_free_talk_audience_turns_min"] == 3
+    assert readback["post_plan_free_talk_audience_turns_max"] == 3
+    assert readback["post_plan_free_talk_topic_pack_ids"] == ["anime-casual"]
+
+
 def test_presentation_session_fields_roundtrip():
     tmp_dir = _tmp_dir()
     try:
@@ -211,6 +414,81 @@ def test_presentation_items_and_tts_profiles_roundtrip():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_presented_messages_follow_playback_time_when_prefetch_creates_items_early():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "presentation_enabled": True,
+            "tts_enabled": True,
+        })
+        first = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-a",
+            "message_id": "msg-a:0",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "sequence_index": 0,
+            "text": "第一句。",
+        })
+        prefetched_next_turn = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-b",
+            "message_id": "msg-b:0",
+            "character_id": "char-b",
+            "character_name": "白蓮",
+            "sequence_index": 0,
+            "text": "下一輪第一句。",
+        })
+        second = storage.create_presentation_item({
+            "session_id": "live-a",
+            "interaction_job_id": "job-a",
+            "message_id": "msg-a:1",
+            "character_id": "char-a",
+            "character_name": "可可",
+            "sequence_index": 1,
+            "text": "第二句。",
+        })
+
+        storage.update_presentation_item(
+            first["item_id"],
+            status="played",
+            presented_at="2026-05-15T21:00:00",
+        )
+        storage.update_presentation_item(
+            prefetched_next_turn["item_id"],
+            status="played",
+            presented_at="2026-05-15T21:00:20",
+        )
+        storage.update_presentation_item(
+            second["item_id"],
+            status="played",
+            presented_at="2026-05-15T21:00:10",
+        )
+
+        visible = storage.list_presented_messages("live-a")
+
+        assert [message["content"] for message in visible] == [
+            "第一句。",
+            "第二句。",
+            "下一輪第一句。",
+        ]
+        assert [message["timestamp"] for message in visible] == [
+            "2026-05-15T21:00:00",
+            "2026-05-15T21:00:10",
+            "2026-05-15T21:00:20",
+        ]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_presenting_interaction_is_active():
     tmp_dir = _tmp_dir()
     try:
@@ -266,6 +544,52 @@ def test_prefetch_interaction_is_active_until_consumed():
         storage.update_interaction(prefetching["job_id"], status="completed")
 
         assert storage.get_active_interaction("live-a") is None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_finalize_incomplete_interactions_clears_audience_gap_prepare_statuses():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+        storage.upsert_connector({
+            "connector_id": "yt-main",
+            "display_name": "YouTube Main",
+            "enabled": True,
+        })
+        storage.upsert_session({
+            "session_id": "live-a",
+            "connector_id": "yt-main",
+            "target_memoria_session_id": "mem-a",
+            "character_ids": ["host-a"],
+        })
+        preparing = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "status": "preparing",
+            "metadata": {"prepare_only": True},
+        })
+        prepared = storage.create_interaction({
+            "session_id": "live-a",
+            "source": "director_audience_prepare",
+            "status": "prepared",
+            "metadata": {"prepare_only": True},
+        })
+
+        finalized = storage.finalize_incomplete_interactions(
+            "live-a",
+            reason="test_cleanup",
+            metadata={"cleanup": True},
+        )
+
+        finalized_ids = {item["job_id"] for item in finalized}
+        assert {preparing["job_id"], prepared["job_id"]} <= finalized_ids
+        for job_id in finalized_ids:
+            interaction = storage.get_interaction(job_id)
+            assert interaction["status"] == "interrupted"
+            assert interaction["reason"] == "test_cleanup"
+            assert interaction["completed_at"]
+            assert interaction["metadata"]["cleanup"] is True
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -415,6 +739,26 @@ def test_memoria_config_preserves_password_when_blank():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_studio_settings_roundtrip_and_defaults():
+    tmp_dir = _tmp_dir()
+    try:
+        storage = BridgeStorage(tmp_dir / "youtube_live.db")
+
+        assert storage.get_studio_settings("test_settings") == {}
+        saved = storage.upsert_studio_settings("test_settings", {
+            "normal_comment_count": 12,
+            "auto_comment_enabled": True,
+        })
+        all_settings = storage.get_all_studio_settings()
+
+        assert saved["normal_comment_count"] == 12
+        assert saved["auto_comment_enabled"] is True
+        assert all_settings["test_settings"]["normal_comment_count"] == 12
+        assert storage.get_studio_settings("missing") == {}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_live_event_dedupes_and_preserves_id_lookup_order():
     tmp_dir = _tmp_dir()
     try:
@@ -457,6 +801,42 @@ def test_live_event_dedupes_and_preserves_id_lookup_order():
         assert [event["youtube_message_id"] for event in events] == ["msg-b", "msg-a"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_mark_events_low_signal_skipped_records_reason(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YouTube Main",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Events",
+    })
+    event = storage.save_event({
+        "bridge_session_id": "live-a",
+        "connector_id": "youtube-main",
+        "youtube_message_id": "msg-1",
+        "message_type": "textMessageEvent",
+        "author_channel_id": "u1",
+        "author_display_name": "觀眾",
+        "message_text": "666666",
+        "published_at": "2026-05-15T10:00:00",
+        "received_at": "2026-05-15T10:00:00",
+        "status": "active",
+    })
+
+    updated = storage.mark_events_low_signal_skipped("live-a", {event["id"]: "repeated_short_token"})
+
+    assert updated == 1
+    assert storage.list_events("live-a") == []
+    refreshed = storage.list_events("live-a", include_inactive=True)[0]
+    assert refreshed["status"] == "low_signal_skipped"
+    assert refreshed["metadata"]["low_signal_reason"] == "repeated_short_token"
+    assert refreshed["metadata"]["low_signal_skipped_at"]
 
 
 def test_super_chat_event_starts_pending_until_safety_llm_roundtrip():
@@ -1294,3 +1674,47 @@ def test_delete_session_removes_runtime_data_but_keeps_summary_metadata():
         assert kept["metadata"]["runtime_session_deleted"] is True
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_get_session_summary_by_phase_returns_latest_matching_phase(tmp_path):
+    storage = BridgeStorage(tmp_path / "youtube_live.db")
+    storage.upsert_connector({
+        "connector_id": "youtube-main",
+        "display_name": "YT",
+        "api_key": "",
+        "enabled": True,
+    })
+    storage.upsert_session({
+        "session_id": "live-a",
+        "connector_id": "youtube-main",
+        "display_name": "Summary",
+    })
+
+    old_main = storage.create_summary("live-a", {
+        "title": "正式節目摘要舊版",
+        "summary_text": "old main",
+        "memory_text": "old main memory",
+        "event_count": 1,
+        "metadata": {"summary_phase": "main", "memory_write_status": "completed"},
+    })
+    free_talk = storage.create_summary("live-a", {
+        "title": "雜談摘要",
+        "summary_text": "free",
+        "memory_text": "free memory",
+        "event_count": 3,
+        "metadata": {"summary_phase": "free_talk", "memory_write_status": "completed"},
+    })
+    latest_main = storage.create_summary("live-a", {
+        "title": "正式節目摘要新版",
+        "summary_text": "main",
+        "memory_text": "main memory",
+        "event_count": 2,
+        "metadata": {"summary_phase": "main", "memory_write_status": "completed"},
+    })
+
+    assert storage.get_session_summary_by_phase("live-a", "main")["id"] == latest_main["id"]
+    assert storage.get_session_summary_by_phase("live-a", "free_talk")["id"] == free_talk["id"]
+    assert storage.get_session_summary_by_phase("live-a", "missing") is None
+
+    main_summaries = storage.list_session_summaries_by_phase("live-a", summary_phase="main")
+    assert [summary["id"] for summary in main_summaries] == [latest_main["id"], old_main["id"]]

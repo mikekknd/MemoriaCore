@@ -115,6 +115,8 @@ async def test_single_sse_persist_error_is_reported_as_error_event(monkeypatch):
         current_user={"id": "1"},
         external_context=None,
         external_context_summary={},
+        transient_context=None,
+        transient_context_summary={},
         session=SimpleNamespace(character_id="default"),
         runtime_session=SimpleNamespace(messages=[], last_entities=[]),
         session_id="sid",

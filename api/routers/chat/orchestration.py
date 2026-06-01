@@ -24,8 +24,11 @@ from core.chat_orchestrator.generation_context import (
     build_chat_response_schema,
     build_final_chat_context,
     build_history_preview,
+    build_tool_runtime_context,
     memory_lookup_skip_reason,
+    normalize_internal_thought,
     resolve_orchestration_scope,
+    tool_routing_disabled_for_context,
 )
 from core.xml_prompt import format_tool_context_xml, format_tool_results_xml
 from core.chat_orchestrator.group_context import (
@@ -35,6 +38,7 @@ from core.chat_orchestrator.group_context import (
 from core.chat_orchestrator.group_followup import inject_group_followup_instruction
 from core.chat_orchestrator.live_persona import resolve_live_persona_prompt
 from core.chat_orchestrator.persona_agent import _sanitize_group_reply
+from core.llm_gateway import StructuredOutputValidationError
 from core.opening_penalty import get_opening_penalty_manager
 from api.routers.chat.timer import StepTimer
 from api.routers.chat.pipeline import PipelineContext
@@ -79,7 +83,9 @@ def _run_chat_orchestration(
     is_group_followup_turn = bool(ctx.get("followup_instruction"))
     cached_shared_tool_state = ctx.get("shared_tool_state")
     shared_expand_state = ctx.get("shared_expand_state")
+    routing_disabled = tool_routing_disabled_for_context(ctx)
     reusing_shared_tool_state = (
+        not routing_disabled and
         isinstance(cached_shared_tool_state, SharedToolState)
         and cached_shared_tool_state.executed
     )
@@ -264,7 +270,7 @@ def _run_chat_orchestration(
             # 群組接力 turn 1+：直接複用 turn 0 的工具結果，不再呼叫 router/execute_tool_call。
             # 即使 turn 0 沒有工具結果，接力回合也不應重新路由；否則原始 user_prompt
             # 會同時出現在已處理歷史與當前訊息，污染意圖判斷。
-            cached_state = cached_shared_tool_state
+            cached_state = None if routing_disabled else cached_shared_tool_state
             tool_calls = []
             tool_results = []
             if isinstance(cached_state, SharedToolState) and cached_state.executed:
@@ -326,10 +332,10 @@ def _run_chat_orchestration(
                     "tool_calls": tool_calls,
                 })
                 for tc in tool_calls:
-                    tool_runtime_ctx = {
-                        **(session_ctx or {}),
-                        "visual_prompt": active_char.get("visual_prompt", ""),
-                    }
+                    tool_runtime_ctx = build_tool_runtime_context(
+                        session_ctx,
+                        {"visual_prompt": active_char.get("visual_prompt", "")},
+                    )
                     tool_result = execute_tool_call(tc, tool_runtime_ctx)
                     tool_results.append({
                         "tool_name": tc.get("function", {}).get("name", "unknown"),
@@ -404,6 +410,38 @@ def _run_chat_orchestration(
                         logit_bias=opening_penalty_plan.logit_bias,
                     )
 
+        except StructuredOutputValidationError as e:
+            from core.system_logger import SystemLogger
+            SystemLogger.log_error(
+                "ChatGeneration",
+                f"structured output discarded: {e}",
+                details={
+                    "generation_discarded": True,
+                    "discard_reason": e.retry_reason,
+                    "llm_call_id": e.llm_call_id,
+                    "response_preview": e.response_preview,
+                    "log_context": log_context or {},
+                },
+            )
+            retrieval_ctx["generation_discarded"] = True
+            retrieval_ctx["generation_discard_reason"] = e.retry_reason
+            retrieval_ctx["perf_timing"] = timer.summary()
+            return OrchestrationResult(
+                reply_text="",
+                new_entities=[],
+                retrieval_context=retrieval_ctx,
+                topic_shifted=False,
+                pipeline_data=None,
+                inner_thought=None,
+                status_metrics=None,
+                tone=None,
+                speech=None,
+                thinking_speech="",
+                cited_uids=[],
+                tool_state_export=SharedToolState(executed=False),
+                generation_discarded=True,
+                discard_reason=e.retry_reason,
+            )
         except Exception as e:
             from core.system_logger import SystemLogger
             SystemLogger.log_error("ChatGeneration", f"{type(e).__name__}: {e}")
@@ -426,7 +464,7 @@ def _run_chat_orchestration(
                     reply_text = _sanitize_group_reply(parsed.get("reply", "解析錯誤"), log_context)
                     parsed_reply_valid = isinstance(parsed.get("reply"), str)
                     new_entities = parsed.get("extracted_entities", [])
-                    inner_thought = parsed.get("internal_thought")
+                    inner_thought = normalize_internal_thought(parsed.get("internal_thought"))
                 except Exception:
                     reply_text = _sanitize_group_reply(full_res, log_context)
                     new_entities = []
@@ -508,9 +546,13 @@ def _unpack_orchestration_result(result):
          speech, thinking_speech, cited_uids, tool_state_export)
     """
     if isinstance(result, OrchestrationResult):
-        return result.as_tuple()
+        unpacked = list(result.as_tuple())
+        unpacked[5] = normalize_internal_thought(unpacked[5])
+        return tuple(unpacked)
     if isinstance(result, tuple) and len(result) == 12:
-        return result
+        unpacked = list(result)
+        unpacked[5] = normalize_internal_thought(unpacked[5])
+        return tuple(unpacked)
     try:
         item_count = len(result)
     except TypeError:

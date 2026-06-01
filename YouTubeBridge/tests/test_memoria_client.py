@@ -1,12 +1,14 @@
 import sys
+import threading
 from pathlib import Path
 
+import pytest
 
 BRIDGE_ROOT = Path(__file__).resolve().parents[1]
 if str(BRIDGE_ROOT) not in sys.path:
     sys.path.insert(0, str(BRIDGE_ROOT))
 
-from memoria_client import MemoriaClient
+from memoria_client import GenerationInterrupted, MemoriaClient
 
 
 class _FakeResponse:
@@ -21,11 +23,17 @@ class _FakeStreamResponse:
     status_code = 200
     text = ""
 
+    def __init__(self):
+        self.closed = False
+
     def __enter__(self):
         return self
 
     def __exit__(self, _exc_type, _exc, _tb):
         return False
+
+    def close(self):
+        self.closed = True
 
     def iter_lines(self, decode_unicode=False):
         lines = [
@@ -94,6 +102,31 @@ def test_add_system_event_posts_to_session_endpoint():
     }
 
 
+def test_add_assistant_event_posts_to_session_endpoint():
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    client.add_assistant_event(
+        session_id="mem-a",
+        content="已播放的導播台詞。",
+        character_id="host-a",
+        character_name="主持A",
+        debug_info={"event_type": "youtube_live_played_commit"},
+        extracted_entities=["動畫新番"],
+    )
+
+    assert fake_session.url == "http://memoria.test/api/v1/session/mem-a/assistant-event"
+    assert fake_session.payload == {
+        "content": "已播放的導播台詞。",
+        "character_id": "host-a",
+        "character_name": "主持A",
+        "debug_info": {"event_type": "youtube_live_played_commit"},
+        "extracted_entities": ["動畫新番"],
+    }
+
+
 def test_chat_stream_sync_calls_on_result_for_each_stream_result():
     client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
     fake_session = _FakeSession()
@@ -112,3 +145,188 @@ def test_chat_stream_sync_calls_on_result_for_each_stream_result():
 
     assert result["message_id"] == 2
     assert [event["character_id"] for event in streamed] == ["char-a", "char-b"]
+
+
+class _CancelBeforeResultResponse(_FakeStreamResponse):
+    def __init__(self, cancel_event):
+        super().__init__()
+        self.cancel_event = cancel_event
+        self.status_code = 200
+        self.text = ""
+
+    def iter_lines(self, decode_unicode=False):
+        line = _CancelOnPayloadStrip(
+            'data: {"type": "result", "session_id": "mem-a", "message_id": 3, "reply": "過期", "character_id": "char-b"}',
+            self.cancel_event,
+        )
+        return [line] if decode_unicode else [line.encode("utf-8")]
+
+
+class _CancelOnPayloadStrip(str):
+    def __new__(cls, value, cancel_event):
+        instance = str.__new__(cls, value)
+        instance.cancel_event = cancel_event
+        return instance
+
+    def __getitem__(self, item):
+        value = super().__getitem__(item)
+        if isinstance(item, slice) and item.start == 5:
+            return _CancelOnStripResult(value, self.cancel_event)
+        return value
+
+
+class _CancelOnStripResult(str):
+    def __new__(cls, value, cancel_event):
+        instance = str.__new__(cls, value)
+        instance.cancel_event = cancel_event
+        return instance
+
+    def strip(self, chars=None):
+        self.cancel_event.set()
+        return super().strip(chars)
+
+
+def test_chat_stream_sync_does_not_dispatch_result_after_cancel():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _CancelBeforeResultResponse(cancel_event)
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+    streamed = []
+
+    with pytest.raises(GenerationInterrupted):
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+            on_result=streamed.append,
+        )
+
+    assert streamed == []
+
+
+class _CancelReadErrorResponse(_FakeStreamResponse):
+    def __init__(self, cancel_event):
+        super().__init__()
+        self.cancel_event = cancel_event
+
+    def iter_lines(self, decode_unicode=False):
+        def _lines():
+            self.cancel_event.set()
+            raise RuntimeError("'NoneType' object has no attribute 'read'")
+            yield ""
+
+        return _lines()
+
+
+def test_chat_stream_sync_treats_read_error_after_cancel_as_generation_interrupted():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _CancelReadErrorResponse(cancel_event)
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    with pytest.raises(GenerationInterrupted):
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+        )
+
+
+class _StreamErrorResponse(_FakeStreamResponse):
+    def __init__(self, exc, cancel_event=None, set_cancel=False):
+        super().__init__()
+        self.exc = exc
+        self.cancel_event = cancel_event
+        self.set_cancel = set_cancel
+
+    def iter_lines(self, decode_unicode=False):
+        def _lines():
+            if self.set_cancel and self.cancel_event is not None:
+                self.cancel_event.set()
+            raise self.exc
+            yield ""
+
+        return _lines()
+
+
+def test_chat_stream_sync_keeps_exact_read_error_without_cancel_as_runtime_error():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _StreamErrorResponse(
+        RuntimeError("'NoneType' object has no attribute 'read'"),
+        cancel_event=cancel_event,
+    )
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+        )
+
+    assert exc_info.type is RuntimeError
+    assert str(exc_info.value) == "'NoneType' object has no attribute 'read'"
+
+
+def test_chat_stream_sync_keeps_different_stream_error_after_cancel_as_runtime_error():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _StreamErrorResponse(
+        RuntimeError("different read failure"),
+        cancel_event=cancel_event,
+        set_cancel=True,
+    )
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+        )
+
+    assert exc_info.type is RuntimeError
+    assert str(exc_info.value) == "different read failure"
+
+
+def test_chat_stream_sync_keeps_on_result_read_error_after_cancel_as_runtime_error():
+    cancel_event = threading.Event()
+    client = MemoriaClient(base_url="http://memoria.test/api/v1", admin_bypass=True)
+    fake_session = _FakeSession()
+    fake_session.post = lambda *_args, **_kwargs: _FakeStreamResponse()
+    client.session = fake_session
+    client.ensure_auth = lambda: None
+
+    def fail_on_result(_event):
+        cancel_event.set()
+        raise RuntimeError("'NoneType' object has no attribute 'read'")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.chat_stream_sync(
+            content="直播提示",
+            session_id="mem-a",
+            character_ids=["char-a", "char-b"],
+            external_context={"source": "youtube_live_director", "source_session_id": "yt-a"},
+            cancel_event=cancel_event,
+            on_result=fail_on_result,
+        )
+
+    assert exc_info.type is RuntimeError
+    assert str(exc_info.value) == "'NoneType' object has no attribute 'read'"

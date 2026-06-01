@@ -8,7 +8,7 @@ MemoriaCore 目前已建立 v1 i18n-ready 基礎：
 - `static/locales/zh-TW.json`
 - `static/locales/en-US.json`
 
-已接線範圍：
+已接線或已建立基礎的範圍：
 
 - `static/app.html`
 - `static/dashboard.html`
@@ -24,12 +24,12 @@ MemoriaCore 目前已建立 v1 i18n-ready 基礎：
 - `static/log_viewer.html`
 - `static/db_viewer.html`
 - `app.py`（Streamlit 入口 / sidebar / login）
-- `ui/settings.py`
+- `ui/settings.py`（入口語言 selector 與部分頁面已接線；設定表單仍有待辦）
 - `ui/routing.py`
 - `ui/bots.py`
 - `ui/prompts.py`
-- `ui/log_viewer.py`
-- `ui/db_manager.py`
+- `ui/log_viewer.py`（主要頁面已接線；category label 仍有待辦）
+- `ui/db_manager.py`（主要頁面已接線；開發者工具區仍有待辦）
 
 後續 Agent 若接續多語系工作，請以以下 backlog 為準。
 
@@ -37,13 +37,12 @@ MemoriaCore 目前已建立 v1 i18n-ready 基礎：
 
 ## Backlog
 
-1. 補齊 Streamlit 尚未接線頁面
+1. 補齊 Streamlit 尚未完全接線頁面
 
    - `ui/character.py`
    - `ui/settings.py` 目前只完成入口語言 selector 與部分頁面，設定表單大量 label/help/caption 仍待抽 key。
    - `ui/db_manager.py` 的「開發者工具 / 模擬資料生成器」仍有硬編碼繁中。預設測試主題屬於測試資料內容，可保留或另行決定。
    - `ui/log_viewer.py` 的 category label 仍使用 `CATEGORY_META` 內繁中，可改為 `log_viewer.category.*`。
-   - `ui/chat.py` / `ui/history.py` 已 deprecated，依 AGENTS.md 不要再參考。
 
 2. API 錯誤訊息 i18n
    - 目前許多 `ValueError`、auth error、router error 仍是硬編碼繁中。

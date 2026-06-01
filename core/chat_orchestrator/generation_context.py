@@ -25,6 +25,9 @@ class OrchestrationScope:
     force_group: bool
 
 
+FINAL_CHAT_ONLY_SESSION_CTX_KEYS = {"transient_runtime_context"}
+
+
 def resolve_orchestration_scope(session_ctx: dict | None) -> OrchestrationScope:
     ctx = session_ctx or {}
     user_id = ctx.get("user_id", "default")
@@ -43,11 +46,37 @@ def resolve_orchestration_scope(session_ctx: dict | None) -> OrchestrationScope:
     )
 
 
+def scrub_final_chat_only_session_ctx(session_ctx: dict | None) -> dict:
+    if not isinstance(session_ctx, dict):
+        return {}
+    return {
+        key: value
+        for key, value in session_ctx.items()
+        if key not in FINAL_CHAT_ONLY_SESSION_CTX_KEYS
+    }
+
+
+def build_tool_runtime_context(session_ctx: dict | None, extra: dict | None = None) -> dict:
+    ctx = scrub_final_chat_only_session_ctx(session_ctx)
+    if extra:
+        ctx.update(extra)
+    return ctx
+
+
+def normalize_internal_thought(value: object, *, max_chars: int = 40) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return ""
+    return text[:max_chars]
+
+
 def build_chat_response_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "internal_thought": {"type": "string"},
+            "internal_thought": {"type": "string", "maxLength": 40},
             "reply": {"type": "string"},
             "extracted_entities": {"type": "array", "items": {"type": "string"}},
         },
@@ -55,9 +84,11 @@ def build_chat_response_schema() -> dict:
     }
 
 
-def _tool_calls_disabled_for_context(session_ctx: dict | None) -> bool:
+def tool_routing_disabled_for_context(session_ctx: dict | None) -> bool:
     if not isinstance(session_ctx, dict):
         return False
+    if str(session_ctx.get("tool_routing_policy") or "auto").strip() == "disabled":
+        return True
     if str(session_ctx.get("channel") or "").strip() == "youtube_live":
         return True
     external_context = session_ctx.get("external_chat_context")
@@ -75,15 +106,14 @@ def memory_lookup_skip_reason(session_ctx: dict | None) -> str | None:
     source = ""
     if isinstance(external_context, dict):
         source = str(external_context.get("source") or "").strip()
-    if source in {"youtube_live", "youtube_live_director"}:
-        return source
+        return source or "external_context"
     if str(session_ctx.get("channel") or "").strip() == "youtube_live":
         return "youtube_live"
     return None
 
 
 def build_available_tools(user_prefs: dict, session_ctx: dict | None = None) -> list[dict]:
-    if _tool_calls_disabled_for_context(session_ctx):
+    if tool_routing_disabled_for_context(session_ctx):
         return []
     tools_list: list[dict] = []
     try:
@@ -156,7 +186,7 @@ def build_final_chat_context(
         memory_context = build_retrieved_memory_context_user_block(mem_ctx)
         latest_user = format_latest_user_message_for_llm(api_messages[-1]["content"], session_ctx)
         api_messages[-1] = {**api_messages[-1], "content": memory_context + prefix + latest_user}
-    else:
+    elif not _is_group_followup_context(session_ctx):
         turn_control = build_external_context_turn_control(
             turn_instruction,
             session_messages=session_messages,
@@ -178,6 +208,10 @@ def _is_youtube_live_prompt_context(session_ctx: dict | None) -> bool:
         str(ctx.get("channel") or "").strip() == "youtube_live"
         and str(external.get("source") or "").strip() in {"youtube_live", "youtube_live_director"}
     )
+
+
+def _is_group_followup_context(session_ctx: dict | None) -> bool:
+    return isinstance(session_ctx, dict) and bool(session_ctx.get("followup_instruction"))
 
 
 def build_history_preview(clean_history: list[dict]) -> str:
